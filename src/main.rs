@@ -62,6 +62,22 @@ enum Commands {
         id: String,
     },
 
+    /// Claim a task for work (sets status to InProgress)
+    Claim {
+        /// Task ID to claim
+        id: String,
+
+        /// Assign to a specific actor
+        #[arg(long)]
+        actor: Option<String>,
+    },
+
+    /// Release a claimed task (sets status back to Open)
+    Unclaim {
+        /// Task ID to unclaim
+        id: String,
+    },
+
     /// List tasks that are ready to work on
     Ready,
 
@@ -89,6 +105,74 @@ enum Commands {
         /// Task ID
         id: String,
     },
+
+    /// Manage resources
+    Resource {
+        #[command(subcommand)]
+        command: ResourceCommands,
+    },
+
+    /// Manage actors
+    Actor {
+        #[command(subcommand)]
+        command: ActorCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ResourceCommands {
+    /// Add a new resource
+    Add {
+        /// Resource ID
+        id: String,
+
+        /// Display name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Resource type (money, compute, time, etc.)
+        #[arg(long = "type")]
+        resource_type: Option<String>,
+
+        /// Available amount
+        #[arg(long)]
+        available: Option<f64>,
+
+        /// Unit (usd, hours, gpu-hours, etc.)
+        #[arg(long)]
+        unit: Option<String>,
+    },
+
+    /// List all resources
+    List,
+}
+
+#[derive(Subcommand)]
+enum ActorCommands {
+    /// Add a new actor
+    Add {
+        /// Actor ID
+        id: String,
+
+        /// Display name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Role (engineer, pm, agent, etc.)
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Hourly rate
+        #[arg(long)]
+        rate: Option<f64>,
+
+        /// Available hours (capacity)
+        #[arg(long)]
+        capacity: Option<f64>,
+    },
+
+    /// List all actors
+    List,
 }
 
 fn main() -> Result<()> {
@@ -117,11 +201,47 @@ fn main() -> Result<()> {
             &tag,
         ),
         Commands::Done { id } => commands::done::run(&workgraph_dir, &id),
+        Commands::Claim { id, actor } => commands::claim::claim(&workgraph_dir, &id, actor.as_deref()),
+        Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
         Commands::Ready => commands::ready::run(&workgraph_dir, cli.json),
         Commands::Blocked { id } => commands::blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir),
         Commands::List { status } => commands::list::run(&workgraph_dir, status.as_deref(), cli.json),
         Commands::Graph => commands::graph::run(&workgraph_dir),
         Commands::Cost { id } => commands::cost::run(&workgraph_dir, &id),
+        Commands::Resource { command } => match command {
+            ResourceCommands::Add {
+                id,
+                name,
+                resource_type,
+                available,
+                unit,
+            } => commands::resource::run_add(
+                &workgraph_dir,
+                &id,
+                name.as_deref(),
+                resource_type.as_deref(),
+                available,
+                unit.as_deref(),
+            ),
+            ResourceCommands::List => commands::resource::run_list(&workgraph_dir, cli.json),
+        },
+        Commands::Actor { command } => match command {
+            ActorCommands::Add {
+                id,
+                name,
+                role,
+                rate,
+                capacity,
+            } => commands::actor::run_add(
+                &workgraph_dir,
+                &id,
+                name.as_deref(),
+                role.as_deref(),
+                rate,
+                capacity,
+            ),
+            ActorCommands::List => commands::actor::run_list(&workgraph_dir, cli.json),
+        },
     }
 }
