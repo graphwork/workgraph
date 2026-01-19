@@ -106,6 +106,13 @@ enum Commands {
         id: String,
     },
 
+    /// Show coordination status and ready tasks for parallel execution
+    Coordinate {
+        /// Maximum number of parallel tasks to show
+        #[arg(long)]
+        max_parallel: Option<usize>,
+    },
+
     /// Manage resources
     Resource {
         #[command(subcommand)]
@@ -209,6 +216,9 @@ fn main() -> Result<()> {
         Commands::List { status } => commands::list::run(&workgraph_dir, status.as_deref(), cli.json),
         Commands::Graph => commands::graph::run(&workgraph_dir),
         Commands::Cost { id } => commands::cost::run(&workgraph_dir, &id),
+        Commands::Coordinate { max_parallel } => {
+            commands::coordinate::run(&workgraph_dir, cli.json, max_parallel)
+        }
         Commands::Resource { command } => match command {
             ResourceCommands::Add {
                 id,
