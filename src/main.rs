@@ -113,6 +113,17 @@ enum Commands {
         max_parallel: Option<usize>,
     },
 
+    /// Plan what can be accomplished with given resources
+    Plan {
+        /// Available budget (dollars)
+        #[arg(long)]
+        budget: Option<f64>,
+
+        /// Available hours
+        #[arg(long)]
+        hours: Option<f64>,
+    },
+
     /// Manage resources
     Resource {
         #[command(subcommand)]
@@ -218,6 +229,9 @@ fn main() -> Result<()> {
         Commands::Cost { id } => commands::cost::run(&workgraph_dir, &id),
         Commands::Coordinate { max_parallel } => {
             commands::coordinate::run(&workgraph_dir, cli.json, max_parallel)
+        }
+        Commands::Plan { budget, hours } => {
+            commands::plan::run(&workgraph_dir, budget, hours, cli.json)
         }
         Commands::Resource { command } => match command {
             ResourceCommands::Add {

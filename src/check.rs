@@ -96,14 +96,14 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
             }
         }
 
-        if let Some(ref assigned) = task.assigned {
-            if graph.get_actor(assigned).is_none() {
-                orphans.push(OrphanRef {
-                    from: task.id.clone(),
-                    to: assigned.clone(),
-                    relation: "assigned".to_string(),
-                });
-            }
+        if let Some(ref assigned) = task.assigned
+            && graph.get_actor(assigned).is_none()
+        {
+            orphans.push(OrphanRef {
+                from: task.id.clone(),
+                to: assigned.clone(),
+                relation: "assigned".to_string(),
+            });
         }
 
         for requires in &task.requires {
