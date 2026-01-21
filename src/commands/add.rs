@@ -12,6 +12,7 @@ pub fn run(
     dir: &Path,
     title: &str,
     id: Option<&str>,
+    description: Option<&str>,
     blocked_by: &[String],
     assign: Option<&str>,
     hours: Option<f64>,
@@ -47,6 +48,7 @@ pub fn run(
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
+        description: description.map(String::from),
         status: Status::Open,
         assigned: assign.map(String::from),
         estimate,
@@ -58,6 +60,7 @@ pub fn run(
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
         completed_at: None,
+        log: vec![],
     };
 
     // Append to file

@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// A log entry for tracking progress/notes on a task
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    pub message: String,
+}
+
 /// Cost/time estimate for a task
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Estimate {
@@ -26,6 +35,9 @@ pub enum Status {
 pub struct Task {
     pub id: String,
     pub title: String,
+    /// Detailed description of the task (body, acceptance criteria, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +64,9 @@ pub struct Task {
     /// Timestamp when the task status changed to Done (ISO 8601 / RFC 3339)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    /// Progress log entries
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<LogEntry>,
 }
 
 /// An actor (human or agent)
@@ -213,6 +228,7 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            description: None,
             status: Status::Open,
             assigned: None,
             estimate: None,
@@ -224,6 +240,7 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            log: vec![],
         }
     }
 

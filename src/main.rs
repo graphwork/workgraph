@@ -35,6 +35,10 @@ enum Commands {
         #[arg(long)]
         id: Option<String>,
 
+        /// Detailed description (body, acceptance criteria, etc.)
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+
         /// This task is blocked by another task
         #[arg(long = "blocked-by")]
         blocked_by: Vec<String>,
@@ -184,6 +188,67 @@ enum Commands {
     /// Comprehensive health report combining all analyses
     Analyze,
 
+    /// Archive completed tasks to a separate file
+    Archive {
+        /// Show what would be archived without actually archiving
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Only archive tasks completed more than this duration ago (e.g., 30d, 7d, 1w)
+        #[arg(long)]
+        older: Option<String>,
+
+        /// List archived tasks instead of archiving
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Show detailed information about a single task
+    Show {
+        /// Task ID
+        id: String,
+    },
+
+    /// Add progress log/notes to a task
+    Log {
+        /// Task ID
+        id: String,
+
+        /// Log message (if not provided, lists log entries)
+        message: Option<String>,
+
+        /// Actor adding the log entry
+        #[arg(long)]
+        actor: Option<String>,
+
+        /// List log entries instead of adding
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Visualize the graph with filtering options
+    Viz {
+        /// Include done tasks (default: only open tasks)
+        #[arg(long)]
+        all: bool,
+
+        /// Filter by status (open, in-progress, done, blocked)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Highlight the critical path in red
+        #[arg(long)]
+        critical_path: bool,
+
+        /// Output format (dot, mermaid)
+        #[arg(long, default_value = "dot")]
+        format: String,
+
+        /// Render directly to file (requires dot installed)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+
     /// Manage resources
     Resource {
         #[command(subcommand)]
@@ -263,6 +328,7 @@ fn main() -> Result<()> {
         Commands::Add {
             title,
             id,
+            description,
             blocked_by,
             assign,
             hours,
@@ -272,6 +338,7 @@ fn main() -> Result<()> {
             &workgraph_dir,
             &title,
             id.as_deref(),
+            description.as_deref(),
             &blocked_by,
             assign.as_deref(),
             hours,
@@ -308,6 +375,41 @@ fn main() -> Result<()> {
         Commands::Resources => commands::resources::run(&workgraph_dir, cli.json),
         Commands::CriticalPath => commands::critical_path::run(&workgraph_dir, cli.json),
         Commands::Analyze => commands::analyze::run(&workgraph_dir, cli.json),
+        Commands::Archive {
+            dry_run,
+            older,
+            list,
+        } => commands::archive::run(&workgraph_dir, dry_run, older.as_deref(), list),
+        Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
+        Commands::Log {
+            id,
+            message,
+            actor,
+            list,
+        } => {
+            if list || message.is_none() {
+                commands::log::run_list(&workgraph_dir, &id, cli.json)
+            } else {
+                commands::log::run_add(&workgraph_dir, &id, message.as_deref().unwrap(), actor.as_deref())
+            }
+        }
+        Commands::Viz {
+            all,
+            status,
+            critical_path,
+            format,
+            output,
+        } => {
+            let fmt = format.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let options = commands::viz::VizOptions {
+                all,
+                status,
+                critical_path,
+                format: fmt,
+                output,
+            };
+            commands::viz::run(&workgraph_dir, options)
+        }
         Commands::Resource { command } => match command {
             ResourceCommands::Add {
                 id,

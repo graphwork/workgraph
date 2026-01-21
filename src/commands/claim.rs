@@ -23,7 +23,19 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     // Fail if task is already InProgress or Done
     match task.status {
         Status::InProgress => {
-            anyhow::bail!("Task '{}' is already in progress", id);
+            let since = task
+                .started_at
+                .as_ref()
+                .map(|t| format!(" (since {})", t))
+                .unwrap_or_default();
+            match &task.assigned {
+                Some(assigned) => {
+                    anyhow::bail!("Task '{}' is already claimed by @{}{}", id, assigned, since);
+                }
+                None => {
+                    anyhow::bail!("Task '{}' is already in progress{}", id, since);
+                }
+            }
         }
         Status::Done => {
             anyhow::bail!("Task '{}' is already done", id);
@@ -80,6 +92,7 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            description: None,
             status,
             assigned: None,
             estimate: None,
@@ -91,6 +104,7 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            log: vec![],
         }
     }
 

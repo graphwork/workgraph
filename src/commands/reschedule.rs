@@ -61,6 +61,7 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            description: None,
             status: Status::Open,
             assigned: None,
             estimate: None,
@@ -72,6 +73,7 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            log: vec![],
         }
     }
 

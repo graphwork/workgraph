@@ -25,6 +25,10 @@ pub mod workload;
 pub mod resources;
 pub mod critical_path;
 pub mod analyze;
+pub mod archive;
+pub mod log;
+pub mod show;
+pub mod viz;
 
 use std::path::Path;
 
