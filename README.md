@@ -5,10 +5,14 @@ Task coordination for humans and AI agents.
 ## Install
 
 ```bash
-cargo build --release
+cargo install --path .
 ```
 
-The binary will be at `./target/release/workgraph` (or use `cargo install --path .`).
+Or for development:
+```bash
+cargo build
+./target/debug/wg --help
+```
 
 ## Quick Start
 
@@ -79,6 +83,9 @@ The claim mechanism ensures safe concurrent execution across distributed agents.
 | `wg impact <id>` | Show what depends on this task |
 | `wg bottlenecks` | Find tasks blocking the most work |
 | `wg forecast` | Estimate when work will complete |
+| `wg coordinate` | Show ready tasks for parallel dispatch |
+| `wg analyze` | Comprehensive health report |
+| `wg critical-path` | Show longest dependency chain |
 
 ## Storage
 
