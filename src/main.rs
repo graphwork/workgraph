@@ -333,6 +333,29 @@ enum Commands {
         #[arg(long, default_value = "5")]
         threshold: u64,
     },
+
+    /// Manage task artifacts (produced outputs)
+    Artifact {
+        /// Task ID
+        task: String,
+
+        /// Artifact path to add (omit to list)
+        path: Option<String>,
+
+        /// Remove an artifact instead of adding
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// Show available context for a task from its dependencies
+    Context {
+        /// Task ID
+        task: String,
+
+        /// Show tasks that depend on this task's outputs
+        #[arg(long)]
+        dependents: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -565,6 +588,24 @@ fn main() -> Result<()> {
                 commands::heartbeat::run_check(&workgraph_dir, threshold, cli.json)
             } else {
                 commands::heartbeat::run(&workgraph_dir, actor.as_deref().unwrap())
+            }
+        }
+        Commands::Artifact { task, path, remove } => {
+            if let Some(artifact_path) = path {
+                if remove {
+                    commands::artifact::run_remove(&workgraph_dir, &task, &artifact_path)
+                } else {
+                    commands::artifact::run_add(&workgraph_dir, &task, &artifact_path)
+                }
+            } else {
+                commands::artifact::run_list(&workgraph_dir, &task, cli.json)
+            }
+        }
+        Commands::Context { task, dependents } => {
+            if dependents {
+                commands::context::run_dependents(&workgraph_dir, &task, cli.json)
+            } else {
+                commands::context::run(&workgraph_dir, &task, cli.json)
             }
         }
     }

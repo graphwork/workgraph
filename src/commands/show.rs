@@ -40,6 +40,8 @@ struct TaskDetails {
     inputs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     deliverables: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<String>,
     blocked_by: Vec<BlockerInfo>,
     blocks: Vec<BlockerInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,6 +126,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         skills: task.skills.clone(),
         inputs: task.inputs.clone(),
         deliverables: task.deliverables.clone(),
+        artifacts: task.artifacts.clone(),
         blocked_by: blocked_by_info,
         blocks: blocks_info,
         created_at: task.created_at.clone(),
@@ -316,6 +319,7 @@ mod tests {
             skills: vec![],
             inputs: vec![],
             deliverables: vec![],
+            artifacts: vec![],
             not_before: None,
             created_at: None,
             started_at: None,
@@ -370,6 +374,7 @@ mod tests {
             skills: vec![],
             inputs: vec![],
             deliverables: vec![],
+            artifacts: vec![],
             blocked_by: vec![],
             blocks: vec![BlockerInfo {
                 id: "t2".to_string(),

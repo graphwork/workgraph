@@ -63,6 +63,9 @@ pub struct Task {
     /// Expected output paths/artifacts
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliverables: Vec<String>,
+    /// Actual produced artifacts (paths/references)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
     /// Task is not ready until this timestamp (ISO 8601 / RFC 3339)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_before: Option<String>,
@@ -299,6 +302,7 @@ mod tests {
             skills: vec![],
             inputs: vec![],
             deliverables: vec![],
+            artifacts: vec![],
             not_before: None,
             created_at: None,
             started_at: None,

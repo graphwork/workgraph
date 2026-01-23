@@ -160,6 +160,7 @@ mod tests {
             skills: vec![],
             inputs: vec![],
             deliverables: vec![],
+            artifacts: vec![],
             not_before: None,
             created_at: None,
             started_at: None,
