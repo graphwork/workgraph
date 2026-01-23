@@ -63,6 +63,7 @@ pub fn run(
         skills: skills.to_vec(),
         inputs: inputs.to_vec(),
         deliverables: deliverables.to_vec(),
+        artifacts: vec![],
         not_before: None,
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,

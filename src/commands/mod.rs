@@ -35,6 +35,8 @@ pub mod viz;
 pub mod skills;
 pub mod match_cmd;
 pub mod heartbeat;
+pub mod artifact;
+pub mod context;
 
 use std::path::Path;
 
