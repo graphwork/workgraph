@@ -373,6 +373,28 @@ enum Commands {
         #[arg(long)]
         actor: Option<String>,
     },
+
+    /// Execute a task's shell command (claim + run + done/fail)
+    Exec {
+        /// Task ID to execute
+        task: String,
+
+        /// Actor performing the execution
+        #[arg(long)]
+        actor: Option<String>,
+
+        /// Show what would be executed without running
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Set the exec command for a task (instead of running)
+        #[arg(long)]
+        set: Option<String>,
+
+        /// Clear the exec command for a task
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -631,6 +653,21 @@ fn main() -> Result<()> {
                 commands::trajectory::suggest_for_actor(&workgraph_dir, &actor_id, cli.json)
             } else {
                 commands::trajectory::run(&workgraph_dir, &task, cli.json)
+            }
+        }
+        Commands::Exec {
+            task,
+            actor,
+            dry_run,
+            set,
+            clear,
+        } => {
+            if let Some(cmd) = set {
+                commands::exec::set_exec(&workgraph_dir, &task, &cmd)
+            } else if clear {
+                commands::exec::clear_exec(&workgraph_dir, &task)
+            } else {
+                commands::exec::run(&workgraph_dir, &task, actor.as_deref(), dry_run)
             }
         }
     }

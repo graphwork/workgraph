@@ -230,6 +230,7 @@ mod tests {
             inputs: vec![],
             deliverables: vec![],
             artifacts: vec![],
+            exec: None,
             not_before: None,
             created_at: None,
             started_at: None,

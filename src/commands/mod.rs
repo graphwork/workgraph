@@ -39,6 +39,7 @@ pub mod artifact;
 pub mod context;
 pub mod next;
 pub mod trajectory;
+pub mod exec;
 
 use std::path::Path;
 
