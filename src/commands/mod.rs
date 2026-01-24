@@ -38,6 +38,7 @@ pub mod heartbeat;
 pub mod artifact;
 pub mod context;
 pub mod next;
+pub mod trajectory;
 
 use std::path::Path;
 

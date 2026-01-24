@@ -363,6 +363,16 @@ enum Commands {
         #[arg(long)]
         actor: String,
     },
+
+    /// Show context-efficient task trajectory (claim order for minimal context switching)
+    Trajectory {
+        /// Starting task ID
+        task: String,
+
+        /// Suggest trajectories for an actor based on capabilities
+        #[arg(long)]
+        actor: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -616,5 +626,12 @@ fn main() -> Result<()> {
             }
         }
         Commands::Next { actor } => commands::next::run(&workgraph_dir, &actor, cli.json),
+        Commands::Trajectory { task, actor } => {
+            if let Some(actor_id) = actor {
+                commands::trajectory::suggest_for_actor(&workgraph_dir, &actor_id, cli.json)
+            } else {
+                commands::trajectory::run(&workgraph_dir, &task, cli.json)
+            }
+        }
     }
 }
