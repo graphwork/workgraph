@@ -395,6 +395,25 @@ enum Commands {
         #[arg(long)]
         clear: bool,
     },
+
+    /// Run autonomous agent loop (wake/check/work/sleep cycle)
+    Agent {
+        /// Actor ID for this agent
+        #[arg(long)]
+        actor: String,
+
+        /// Run only one iteration then exit
+        #[arg(long)]
+        once: bool,
+
+        /// Seconds to sleep between iterations (default: 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
+
+        /// Maximum number of tasks to complete before stopping
+        #[arg(long)]
+        max_tasks: Option<u32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -670,5 +689,11 @@ fn main() -> Result<()> {
                 commands::exec::run(&workgraph_dir, &task, actor.as_deref(), dry_run)
             }
         }
+        Commands::Agent {
+            actor,
+            once,
+            interval,
+            max_tasks,
+        } => commands::agent::run(&workgraph_dir, &actor, once, interval, max_tasks, cli.json),
     }
 }

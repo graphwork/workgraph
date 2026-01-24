@@ -40,6 +40,7 @@ pub mod context;
 pub mod next;
 pub mod trajectory;
 pub mod exec;
+pub mod agent;
 
 use std::path::Path;
 
