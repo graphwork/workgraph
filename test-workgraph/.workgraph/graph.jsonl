@@ -1,0 +1,6 @@
+{"kind":"task","id":"fail-task","title":"fail-task","description":"This task intentionally fails to test error handling","status":"open","exec":"exit 1","created_at":"2026-01-25T15:47:23.507860287+00:00"}
+{"kind":"task","id":"write-hello","title":"write-hello","description":"Create hello.py that prints 'Hello, World\\!'","status":"open","exec":"echo 'print(\"Hello, World\\!\")' > hello.py && cat hello.py","created_at":"2026-01-25T15:47:23.499021493+00:00"}
+{"kind":"task","id":"list-files","title":"list-files","description":"Create a bash script that lists all files in the current directory","status":"open","exec":"echo '#\\!/bin/bash\\nls -la' > list.sh && chmod +x list.sh && ./list.sh","created_at":"2026-01-25T15:47:23.505289971+00:00"}
+{"kind":"task","id":"run-hello","title":"run-hello","description":"Run hello.py and verify it prints the correct output","status":"open","blocked_by":["write-hello"],"exec":"python3 hello.py","created_at":"2026-01-25T15:47:23.502164699+00:00"}
+{"kind":"task","id":"recover-failure","title":"recover-failure","description":"Handle the failure from fail-task","status":"open","blocked_by":["fail-task"],"exec":"echo 'Recovered from failure'","created_at":"2026-01-25T15:47:23.510839679+00:00"}
+{"kind":"actor","id":"test-agent","name":"Test Agent","role":"agent","capabilities":["shell","python"]}

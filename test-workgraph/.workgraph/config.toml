@@ -1,0 +1,9 @@
+[agent]
+executor = "claude"
+model = "haiku"
+interval = 10
+command_template = 'claude --model {model} --print "{prompt}"'
+heartbeat_timeout = 5
+
+[project]
+default_skills = []
