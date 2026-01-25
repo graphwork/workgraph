@@ -1,6 +1,23 @@
 # workgraph
 
-Task coordination for humans and AI agents.
+A task graph for getting things done. Works for humans, works for AI agents, works for both at once.
+
+## What is this?
+
+You've got tasks. Some block others. Multiple people (or AIs) need to coordinate without stepping on each other. Workgraph handles that.
+
+```bash
+wg init
+wg add "Design the API"
+wg add "Build the backend" --blocked-by design-the-api
+wg add "Write tests" --blocked-by build-the-backend
+
+wg ready        # what can I work on?
+wg claim design-the-api --actor erik
+wg done design-the-api   # automatically unblocks the next task
+```
+
+That's it. Tasks flow through `open → in-progress → done`. Dependencies are respected. No one works on the same thing twice.
 
 ## Install
 
@@ -8,89 +25,112 @@ Task coordination for humans and AI agents.
 cargo install --path .
 ```
 
-Or for development:
+## The basics
+
+**Tasks** are units of work. They have a status, can block other tasks, and track who's working on them.
+
+**Actors** are the humans or AI agents doing the work. They claim tasks, complete them, and move on.
+
+**The graph** is just tasks pointing at other tasks. "I can't start until X is done." Usually it's a nice clean DAG, but cycles are fine too for iterative stuff.
+
+## Working with it
+
 ```bash
-cargo build
-./target/debug/wg --help
-```
-
-## Quick Start
-
-```bash
-# Initialize a new workgraph in current directory
-wg init
-
-# Add tasks
-wg add "Design API"
-wg add "Implement backend" --blocked-by design-api
-wg add "Write tests" --blocked-by implement-backend
-
-# See what's ready to work on
+# See what's ready
 wg ready
 
-# Claim a task
-wg claim design-api
+# Claim something
+wg claim design-api --actor alice
 
-# Mark it done
+# Log progress as you go
+wg log design-api "Finished endpoint specs"
+
+# Done
 wg done design-api
+
+# Blocked? Find out why
+wg why-blocked build-backend
+
+# What happens if I finish this?
+wg impact design-api
 ```
 
-## Conceptual Model
+## For AI agents
 
-**Core Entities**
-- **Tasks**: Units of work with a title, status, and optional metadata
-- **Actors**: Humans or AI agents that claim and complete tasks
-- **Resources**: Shared assets that tasks may require (future extension point)
+Agents can run autonomously:
 
-**The Graph Model**
+```bash
+# Register an agent
+wg actor add claude-1 --role agent -c coding -c testing
 
-Tasks can block other tasks, forming a directed graph of dependencies. While typically a DAG, cycles are allowed for recurring/iterative work patterns. Use `wg why-blocked` to trace dependency chains and `wg impact` to see downstream effects.
-
-**Status Flow**
-
-```
-open → in-progress → done
-         ↑
-      (claim)
+# Let it loose
+wg agent --actor claude-1
 ```
 
-A task is **blocked** (derived state) when any of its blockers are incomplete. Only unblocked tasks appear in `wg ready`.
+The agent loops: wake up, find work, claim it, do it, mark done, sleep, repeat. Multiple agents can run in parallel on independent tasks.
 
-**Timestamps**
+For tasks with shell commands attached:
 
-Each task tracks `created_at`, `started_at`, and `completed_at` for temporal analysis, forecasting, and performance metrics.
+```bash
+wg exec run-tests --set "cargo test"
+wg agent --actor ci-bot  # will automatically run the command
+```
 
-**Agent Coordination**
+## Analysis
 
-Multiple agents can work in parallel:
-1. `wg ready` — find available tasks
-2. `wg claim <id>` — atomically claim a task (prevents double-work)
-3. `wg done <id>` — mark complete, unblocking dependents
-4. `wg unclaim <id>` — release if interrupted
+```bash
+wg bottlenecks     # what's blocking the most stuff?
+wg critical-path   # longest chain = minimum time to finish
+wg forecast        # when will we be done?
+wg analyze         # full health report
+```
 
-The claim mechanism ensures safe concurrent execution across distributed agents.
+## Context flow
 
-## Commands
+Tasks can declare what files they need and what they produce:
 
-| Command | Description |
-|---------|-------------|
-| `wg init` | Initialize workgraph in current directory |
-| `wg add "task title"` | Add a new task |
-| `wg done <id>` | Mark task as complete |
-| `wg ready` | List tasks ready to work on |
-| `wg claim <id>` | Claim a task for work |
-| `wg why-blocked <id>` | Show why a task is blocked |
-| `wg impact <id>` | Show what depends on this task |
-| `wg bottlenecks` | Find tasks blocking the most work |
-| `wg forecast` | Estimate when work will complete |
-| `wg coordinate` | Show ready tasks for parallel dispatch |
-| `wg analyze` | Comprehensive health report |
-| `wg critical-path` | Show longest dependency chain |
+```bash
+wg add "Design schema" --deliverable schema.sql
+wg add "Build DB layer" --blocked-by design-schema --input schema.sql
+
+# Later, see what's available
+wg context build-db-layer
+```
+
+For AI agents with limited context windows, trajectories suggest the best order to claim tasks:
+
+```bash
+wg trajectory design-schema  # shows the chain of related work
+```
 
 ## Storage
 
-All data lives in `.workgraph/graph.jsonl` — one JSON object per line. Human-readable, version-control friendly, easy to parse.
+Everything lives in `.workgraph/graph.jsonl`. One JSON object per line. Human-readable, git-friendly, easy to hack on.
+
+```jsonl
+{"kind":"task","id":"design-api","title":"Design the API","status":"done"}
+{"kind":"task","id":"build-backend","title":"Build the backend","status":"open","blocked_by":["design-api"]}
+{"kind":"actor","id":"alice","name":"Alice","role":"engineer"}
+```
+
+## Commands at a glance
+
+| Command | What it does |
+|---------|--------------|
+| `wg init` | Start a new workgraph |
+| `wg add "title"` | Create a task |
+| `wg ready` | What can be worked on now? |
+| `wg claim <id>` | Take a task |
+| `wg done <id>` | Finish a task |
+| `wg fail <id>` | Mark as failed (can retry later) |
+| `wg why-blocked <id>` | Trace the blocker chain |
+| `wg impact <id>` | What depends on this? |
+| `wg bottlenecks` | Find high-impact tasks |
+| `wg agent --actor X` | Run autonomous agent loop |
+| `wg analyze` | Full project health report |
+
+See `wg --help` for everything else, or check [docs/](docs/) for the deep dive.
 
 ## License
 
-[MIT](LICENSE)
+MIT
