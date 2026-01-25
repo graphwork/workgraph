@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status, TrustLevel};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
@@ -48,7 +49,7 @@ pub fn run(
     dir: &Path,
     actor_id: &str,
     once: bool,
-    interval_secs: u64,
+    interval_secs: Option<u64>,
     max_tasks: Option<u32>,
     json: bool,
 ) -> Result<()> {
@@ -57,6 +58,11 @@ pub fn run(
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
+
+    // Load config and apply defaults
+    let config = Config::load(dir).unwrap_or_default();
+    let interval_secs = interval_secs.unwrap_or(config.agent.interval);
+    let max_tasks = max_tasks.or(config.agent.max_tasks);
 
     // Verify actor exists
     {
@@ -416,7 +422,7 @@ mod tests {
     fn test_agent_once_with_exec() {
         let temp_dir = setup_graph();
 
-        let result = run(temp_dir.path(), "test-agent", true, 1, None, false);
+        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, false);
         assert!(result.is_ok());
 
         // Verify task is done
@@ -435,7 +441,7 @@ mod tests {
         graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "test-agent", true, 1, None, false);
+        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, false);
         assert!(result.is_ok());
     }
 
@@ -459,7 +465,7 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         // Run with max_tasks=1
-        let result = run(temp_dir.path(), "test-agent", false, 1, Some(1), false);
+        let result = run(temp_dir.path(), "test-agent", false, Some(1), Some(1), false);
         assert!(result.is_ok());
 
         // Only one task should be done
@@ -484,7 +490,7 @@ mod tests {
         graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "test-agent", true, 1, None, false);
+        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, false);
         assert!(result.is_ok()); // Agent should handle failures gracefully
 
         let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
@@ -496,7 +502,7 @@ mod tests {
     fn test_agent_records_heartbeat() {
         let temp_dir = setup_graph();
 
-        run(temp_dir.path(), "test-agent", true, 1, None, false).unwrap();
+        run(temp_dir.path(), "test-agent", true, Some(1), None, false).unwrap();
 
         let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
         let actor = graph.get_actor("test-agent").unwrap();
@@ -511,7 +517,7 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "unknown-agent", true, 1, None, false);
+        let result = run(temp_dir.path(), "unknown-agent", true, Some(1), None, false);
         assert!(result.is_err());
     }
 

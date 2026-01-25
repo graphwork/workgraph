@@ -17,6 +17,7 @@ petgraph = "0.6"
 thiserror = "2.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3.10"

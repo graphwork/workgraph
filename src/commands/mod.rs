@@ -41,6 +41,7 @@ pub mod next;
 pub mod trajectory;
 pub mod exec;
 pub mod agent;
+pub mod config_cmd;
 
 use std::path::Path;
 

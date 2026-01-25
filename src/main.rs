@@ -406,13 +406,36 @@ enum Commands {
         #[arg(long)]
         once: bool,
 
-        /// Seconds to sleep between iterations (default: 10)
-        #[arg(long, default_value = "10")]
-        interval: u64,
+        /// Seconds to sleep between iterations (default from config, fallback: 10)
+        #[arg(long)]
+        interval: Option<u64>,
 
         /// Maximum number of tasks to complete before stopping
         #[arg(long)]
         max_tasks: Option<u32>,
+    },
+
+    /// View or modify project configuration
+    Config {
+        /// Show current configuration
+        #[arg(long)]
+        show: bool,
+
+        /// Initialize default config file
+        #[arg(long)]
+        init: bool,
+
+        /// Set executor (claude, opencode, codex)
+        #[arg(long)]
+        executor: Option<String>,
+
+        /// Set model (opus-4-5, sonnet, haiku)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Set default interval in seconds
+        #[arg(long)]
+        set_interval: Option<u64>,
     },
 }
 
@@ -695,5 +718,25 @@ fn main() -> Result<()> {
             interval,
             max_tasks,
         } => commands::agent::run(&workgraph_dir, &actor, once, interval, max_tasks, cli.json),
+        Commands::Config {
+            show,
+            init,
+            executor,
+            model,
+            set_interval,
+        } => {
+            if init {
+                commands::config_cmd::init(&workgraph_dir)
+            } else if show || (executor.is_none() && model.is_none() && set_interval.is_none()) {
+                commands::config_cmd::show(&workgraph_dir, cli.json)
+            } else {
+                commands::config_cmd::update(
+                    &workgraph_dir,
+                    executor.as_deref(),
+                    model.as_deref(),
+                    set_interval,
+                )
+            }
+        }
     }
 }
