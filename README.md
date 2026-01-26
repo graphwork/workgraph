@@ -24,7 +24,7 @@ Tasks flow through `open → in-progress → done`. Dependencies are respected. 
 From source:
 
 ```bash
-git clone https://github.com/ekg/workgraph
+git clone https://github.com/graphwork/workgraph
 cd workgraph
 cargo install --path .
 ```
@@ -32,7 +32,7 @@ cargo install --path .
 Or directly via cargo:
 
 ```bash
-cargo install --git https://github.com/ekg/workgraph
+cargo install --git https://github.com/graphwork/workgraph
 ```
 
 Verify it works:
