@@ -445,6 +445,20 @@ enum Commands {
         reset_state: bool,
     },
 
+    /// Spawn an agent to work on a specific task
+    Spawn {
+        /// Task ID to spawn an agent for
+        task: String,
+
+        /// Executor to use (claude, shell, or custom config name)
+        #[arg(long)]
+        executor: String,
+
+        /// Timeout duration (e.g., 30m, 1h, 90s)
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+
     /// View or modify project configuration
     Config {
         /// Show current configuration
@@ -752,6 +766,11 @@ fn main() -> Result<()> {
             max_tasks,
             reset_state,
         } => commands::agent::run(&workgraph_dir, &actor, once, interval, max_tasks, reset_state, cli.json),
+        Commands::Spawn {
+            task,
+            executor,
+            timeout,
+        } => commands::spawn::run(&workgraph_dir, &task, &executor, timeout.as_deref(), cli.json),
         Commands::Config {
             show,
             init,

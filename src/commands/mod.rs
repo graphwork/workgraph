@@ -43,6 +43,7 @@ pub mod trajectory;
 pub mod exec;
 pub mod agent;
 pub mod config_cmd;
+pub mod spawn;
 
 use std::path::Path;
 
