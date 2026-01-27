@@ -542,6 +542,12 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
+
+    /// Manage the agent service daemon
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -610,6 +616,38 @@ enum ActorCommands {
 
     /// List all actors
     List,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommands {
+    /// Start the agent service daemon
+    Start {
+        /// Port to listen on (optional, for HTTP API)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Unix socket path (default: /tmp/wg-{project}.sock)
+        #[arg(long)]
+        socket: Option<String>,
+    },
+
+    /// Stop the agent service daemon
+    Stop {
+        /// Force stop (kill running agents)
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Show service status
+    Status,
+
+    /// Run the daemon (internal, called by start)
+    #[command(hide = true)]
+    Daemon {
+        /// Unix socket path
+        #[arg(long)]
+        socket: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -902,6 +940,20 @@ fn main() -> Result<()> {
                 commands::kill::run(&workgraph_dir, &agent_id, force, cli.json)
             } else {
                 anyhow::bail!("Must specify an agent ID or use --all")
+            }
+        }
+        Commands::Service { command } => match command {
+            ServiceCommands::Start { port, socket } => {
+                commands::service::run_start(&workgraph_dir, socket.as_deref(), port, cli.json)
+            }
+            ServiceCommands::Stop { force } => {
+                commands::service::run_stop(&workgraph_dir, force, cli.json)
+            }
+            ServiceCommands::Status => {
+                commands::service::run_status(&workgraph_dir, cli.json)
+            }
+            ServiceCommands::Daemon { socket } => {
+                commands::service::run_daemon(&workgraph_dir, &socket)
             }
         }
     }

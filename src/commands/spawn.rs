@@ -287,6 +287,181 @@ pub fn run(
     Ok(())
 }
 
+/// Spawn an agent and return (agent_id, pid)
+/// This is a helper for the service daemon
+pub fn spawn_agent(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+) -> Result<(String, u32)> {
+    let graph_path = graph_path(dir);
+
+    if !graph_path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+    }
+
+    // Load the graph and get task info
+    let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
+
+    let task = graph
+        .get_task(task_id)
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", task_id))?;
+
+    // Check if task is already claimed
+    match task.status {
+        Status::InProgress => {
+            let since = task
+                .started_at
+                .as_ref()
+                .map(|t| format!(" (since {})", t))
+                .unwrap_or_default();
+            match &task.assigned {
+                Some(assigned) => {
+                    anyhow::bail!("Task '{}' is already claimed by @{}{}", task_id, assigned, since);
+                }
+                None => {
+                    anyhow::bail!("Task '{}' is already in progress{}", task_id, since);
+                }
+            }
+        }
+        Status::Done => {
+            anyhow::bail!("Task '{}' is already done", task_id);
+        }
+        _ => {}
+    }
+
+    // Build context from dependencies
+    let task_context = build_task_context(&graph, task);
+
+    // Create template variables
+    let vars = TemplateVars {
+        task_id: task.id.clone(),
+        task_title: task.title.clone(),
+        task_description: task.description.clone().unwrap_or_default(),
+        task_context: task_context.clone(),
+    };
+
+    // Get task exec command for shell executor
+    let task_exec = task.exec.clone();
+
+    // Load executor config using the registry
+    let executor_registry = ExecutorRegistry::new(dir);
+    let executor_config = executor_registry.load_config(executor_name)?;
+
+    // For shell executor, we need an exec command
+    if executor_config.executor.executor_type == "shell" && task_exec.is_none() {
+        anyhow::bail!("Task '{}' has no exec command for shell executor", task_id);
+    }
+
+    // Load agent registry and prepare agent output directory
+    let mut agent_registry = AgentRegistry::load(dir)?;
+
+    // We need to know the agent ID before spawning to set up the output directory
+    let temp_agent_id = format!("agent-{}", agent_registry.next_agent_id);
+    let output_dir = agent_output_dir(dir, &temp_agent_id);
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create agent output directory at {:?}", output_dir))?;
+
+    let output_file = output_dir.join("output.log");
+    let output_file_str = output_file.to_string_lossy().to_string();
+
+    // Apply templates to executor settings
+    let settings = executor_config.apply_templates(&vars);
+
+    // Build the command
+    let mut cmd = Command::new(&settings.command);
+
+    // Set environment variables from executor config
+    for (key, value) in &settings.env {
+        cmd.env(key, value);
+    }
+
+    // Add task ID and agent ID to environment
+    cmd.env("WG_TASK_ID", task_id);
+    cmd.env("WG_AGENT_ID", &temp_agent_id);
+
+    // Build arguments based on executor type
+    match settings.executor_type.as_str() {
+        "claude" => {
+            // Add base args
+            for arg in &settings.args {
+                cmd.arg(arg);
+            }
+
+            // Add prompt from template
+            if let Some(ref prompt_template) = settings.prompt_template {
+                cmd.arg(&prompt_template.template);
+            }
+        }
+        "shell" => {
+            // For shell, use the task's exec command as the script
+            cmd.arg("-c");
+            cmd.arg(task_exec.as_ref().unwrap());
+        }
+        _ => {
+            // Custom executor - just pass args as-is (already templated)
+            for arg in &settings.args {
+                cmd.arg(arg);
+            }
+        }
+    }
+
+    // Set working directory if specified
+    if let Some(ref wd) = settings.working_dir {
+        cmd.current_dir(wd);
+    }
+
+    // Set up output redirection to log file
+    let log_file = File::create(&output_file)
+        .with_context(|| format!("Failed to create output log at {:?}", output_file))?;
+    let log_file_err = log_file.try_clone()?;
+
+    cmd.stdout(Stdio::from(log_file));
+    cmd.stderr(Stdio::from(log_file_err));
+
+    // Spawn the process (don't wait)
+    let child = cmd.spawn().with_context(|| {
+        format!(
+            "Failed to spawn executor '{}' (command: {})",
+            executor_name, settings.command
+        )
+    })?;
+
+    let pid = child.id();
+
+    // Now claim the task
+    let task = graph.get_task_mut(task_id).unwrap();
+    task.status = Status::InProgress;
+    task.started_at = Some(Utc::now().to_rfc3339());
+    task.assigned = Some(temp_agent_id.clone());
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: Some(temp_agent_id.clone()),
+        message: format!("Spawned by wg spawn --executor {}", executor_name),
+    });
+
+    save_graph(&graph, &graph_path).context("Failed to save graph")?;
+
+    // Register the agent
+    let agent_id = agent_registry.register(pid, task_id, executor_name, &output_file_str);
+    agent_registry.save(dir)?;
+
+    // Write metadata
+    let metadata_path = output_dir.join("metadata.json");
+    let metadata = serde_json::json!({
+        "agent_id": agent_id,
+        "pid": pid,
+        "task_id": task_id,
+        "executor": executor_name,
+        "started_at": Utc::now().to_rfc3339(),
+        "timeout": timeout,
+    });
+    fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
+
+    Ok((agent_id, pid))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
