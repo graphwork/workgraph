@@ -528,6 +528,20 @@ enum Commands {
         #[arg(long)]
         idle: bool,
     },
+
+    /// Kill running agent(s)
+    Kill {
+        /// Agent ID to kill (e.g., agent-1)
+        agent: Option<String>,
+
+        /// Force kill (SIGKILL immediately instead of graceful SIGTERM)
+        #[arg(long)]
+        force: bool,
+
+        /// Kill all running agents
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -880,6 +894,15 @@ fn main() -> Result<()> {
                 None
             };
             commands::agents::run(&workgraph_dir, filter, cli.json)
+        }
+        Commands::Kill { agent, force, all } => {
+            if all {
+                commands::kill::run_all(&workgraph_dir, force, cli.json)
+            } else if let Some(agent_id) = agent {
+                commands::kill::run(&workgraph_dir, &agent_id, force, cli.json)
+            } else {
+                anyhow::bail!("Must specify an agent ID or use --all")
+            }
         }
     }
 }

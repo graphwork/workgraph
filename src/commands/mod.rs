@@ -46,6 +46,7 @@ pub mod config_cmd;
 pub mod spawn;
 pub mod dead_agents;
 pub mod agents;
+pub mod kill;
 
 use std::path::Path;
 
