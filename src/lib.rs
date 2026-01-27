@@ -14,5 +14,6 @@ pub use config::Config;
 pub use service::{
     AgentHandle, AgentEntry, AgentRegistry, AgentStatus, ClaudeExecutor, ClaudeExecutorConfig,
     DefaultExecutor, Executor, ExecutorConfig, ExecutorRegistry, ExecutorSettings, LockedRegistry,
-    PromptTemplate, TemplateVars, spawn_claude_agent, DEFAULT_CLAUDE_PROMPT,
+    PromptTemplate, ShellExecutor, ShellExecutorConfig, TemplateVars, spawn_claude_agent,
+    spawn_shell_agent, DEFAULT_CLAUDE_PROMPT,
 };

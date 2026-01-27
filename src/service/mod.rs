@@ -11,6 +11,7 @@
 pub mod claude;
 pub mod executor;
 pub mod registry;
+pub mod shell;
 
 pub use claude::{ClaudeExecutor, ClaudeExecutorConfig, spawn_claude_agent, DEFAULT_CLAUDE_PROMPT};
 pub use executor::{
@@ -18,3 +19,4 @@ pub use executor::{
     PromptTemplate, TemplateVars,
 };
 pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
+pub use shell::{ShellExecutor, ShellExecutorConfig, spawn_shell_agent};
