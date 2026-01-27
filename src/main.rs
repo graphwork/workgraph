@@ -163,8 +163,20 @@ enum Commands {
         status: Option<String>,
     },
 
-    /// Show the full graph
-    Graph,
+    /// Show the full graph (DOT format for Graphviz)
+    Graph {
+        /// Include archived tasks
+        #[arg(long)]
+        archive: bool,
+
+        /// Only show tasks completed/archived after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only show tasks completed/archived before this date (YYYY-MM-DD)
+        #[arg(long)]
+        until: Option<String>,
+    },
 
     /// Calculate cost of a task including dependencies
     Cost {
@@ -572,7 +584,9 @@ fn main() -> Result<()> {
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir),
         Commands::List { status } => commands::list::run(&workgraph_dir, status.as_deref(), cli.json),
-        Commands::Graph => commands::graph::run(&workgraph_dir),
+        Commands::Graph { archive, since, until } => {
+            commands::graph::run(&workgraph_dir, archive, since.as_deref(), until.as_deref())
+        }
         Commands::Cost { id } => commands::cost::run(&workgraph_dir, &id),
         Commands::Coordinate { max_parallel } => {
             commands::coordinate::run(&workgraph_dir, cli.json, max_parallel)
