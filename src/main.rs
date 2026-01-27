@@ -486,6 +486,29 @@ enum Commands {
         #[arg(long)]
         set_interval: Option<u64>,
     },
+
+    /// Detect and clean up dead agents
+    DeadAgents {
+        /// Check for dead agents without modifying
+        #[arg(long)]
+        check: bool,
+
+        /// Mark dead agents and unclaim their tasks
+        #[arg(long)]
+        cleanup: bool,
+
+        /// Remove dead agents from registry
+        #[arg(long)]
+        remove: bool,
+
+        /// Check if agent processes are still running
+        #[arg(long)]
+        processes: bool,
+
+        /// Override heartbeat timeout threshold (minutes)
+        #[arg(long)]
+        threshold: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -800,6 +823,24 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     set_interval,
                 )
+            }
+        }
+        Commands::DeadAgents {
+            check: _,
+            cleanup,
+            remove,
+            processes,
+            threshold,
+        } => {
+            if processes {
+                commands::dead_agents::run_check_processes(&workgraph_dir, cli.json)
+            } else if remove {
+                commands::dead_agents::run_remove_dead(&workgraph_dir, cli.json).map(|_| ())
+            } else if cleanup {
+                commands::dead_agents::run_cleanup(&workgraph_dir, threshold, cli.json).map(|_| ())
+            } else {
+                // Default to check
+                commands::dead_agents::run_check(&workgraph_dir, threshold, cli.json)
             }
         }
     }
