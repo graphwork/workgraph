@@ -509,6 +509,25 @@ enum Commands {
         #[arg(long)]
         threshold: Option<u64>,
     },
+
+    /// List running agents
+    Agents {
+        /// Only show alive agents (starting, working, idle)
+        #[arg(long)]
+        alive: bool,
+
+        /// Only show dead agents
+        #[arg(long)]
+        dead: bool,
+
+        /// Only show working agents
+        #[arg(long)]
+        working: bool,
+
+        /// Only show idle agents
+        #[arg(long)]
+        idle: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -842,6 +861,25 @@ fn main() -> Result<()> {
                 // Default to check
                 commands::dead_agents::run_check(&workgraph_dir, threshold, cli.json)
             }
+        }
+        Commands::Agents {
+            alive,
+            dead,
+            working,
+            idle,
+        } => {
+            let filter = if alive {
+                Some(commands::agents::AgentFilter::Alive)
+            } else if dead {
+                Some(commands::agents::AgentFilter::Dead)
+            } else if working {
+                Some(commands::agents::AgentFilter::Working)
+            } else if idle {
+                Some(commands::agents::AgentFilter::Idle)
+            } else {
+                None
+            };
+            commands::agents::run(&workgraph_dir, filter, cli.json)
         }
     }
 }
