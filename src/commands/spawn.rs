@@ -24,6 +24,12 @@ use workgraph::service::registry::AgentRegistry;
 
 use super::graph_path;
 
+/// Escape a string for safe use in shell commands
+fn shell_escape(s: &str) -> String {
+    // Use single quotes and escape any single quotes within
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Result of spawning an agent
 #[derive(Debug, Serialize)]
 pub struct SpawnResult {
@@ -177,8 +183,39 @@ pub fn run(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
-    // Build the command
-    let mut cmd = Command::new(&settings.command);
+    // Build the inner command string first
+    let inner_command = match settings.executor_type.as_str() {
+        "claude" => {
+            // Pipe prompt via stdin (not as argument) so tools can execute
+            // --print mode doesn't execute tools, but stdin mode does
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                cmd_parts.push(shell_escape(arg));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+
+            if let Some(ref prompt_template) = settings.prompt_template {
+                format!("echo {} | {}", shell_escape(&prompt_template.template), claude_cmd)
+            } else {
+                claude_cmd
+            }
+        }
+        "shell" => {
+            format!("{} -c {}", shell_escape(&settings.command), shell_escape(task_exec.as_ref().unwrap()))
+        }
+        _ => {
+            let mut parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                parts.push(shell_escape(arg));
+            }
+            parts.join(" ")
+        }
+    };
+
+    // Run command via bash, redirect output to log file
+    // Note: Output is buffered (no PTY) - claude's interactive prompts need TTY-free mode
+    let mut cmd = Command::new("bash");
+    cmd.args(["-c", &format!("{} >> {} 2>&1", inner_command, shell_escape(&output_file_str))]);
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -189,44 +226,16 @@ pub fn run(
     cmd.env("WG_TASK_ID", task_id);
     cmd.env("WG_AGENT_ID", &temp_agent_id);
 
-    // Build arguments based on executor type
-    match settings.executor_type.as_str() {
-        "claude" => {
-            // Add base args
-            for arg in &settings.args {
-                cmd.arg(arg);
-            }
-
-            // Add prompt from template
-            if let Some(ref prompt_template) = settings.prompt_template {
-                cmd.arg(&prompt_template.template);
-            }
-        }
-        "shell" => {
-            // For shell, use the task's exec command as the script
-            cmd.arg("-c");
-            cmd.arg(task_exec.as_ref().unwrap());
-        }
-        _ => {
-            // Custom executor - just pass args as-is (already templated)
-            for arg in &settings.args {
-                cmd.arg(arg);
-            }
-        }
-    }
-
     // Set working directory if specified
     if let Some(ref wd) = settings.working_dir {
         cmd.current_dir(wd);
     }
 
-    // Set up output redirection to log file
-    let log_file = File::create(&output_file)
-        .with_context(|| format!("Failed to create output log at {:?}", output_file))?;
-    let log_file_err = log_file.try_clone()?;
-
-    cmd.stdout(Stdio::from(log_file));
-    cmd.stderr(Stdio::from(log_file_err));
+    // bash handles output redirect internally (>> logfile 2>&1)
+    // so we don't need Rust to capture stdout/stderr
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
 
     // Spawn the process (don't wait)
     let child = cmd.spawn().with_context(|| {
@@ -369,8 +378,39 @@ pub fn spawn_agent(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
-    // Build the command
-    let mut cmd = Command::new(&settings.command);
+    // Build the inner command string first
+    let inner_command = match settings.executor_type.as_str() {
+        "claude" => {
+            // Pipe prompt via stdin (not as argument) so tools can execute
+            // --print mode doesn't execute tools, but stdin mode does
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                cmd_parts.push(shell_escape(arg));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+
+            if let Some(ref prompt_template) = settings.prompt_template {
+                format!("echo {} | {}", shell_escape(&prompt_template.template), claude_cmd)
+            } else {
+                claude_cmd
+            }
+        }
+        "shell" => {
+            format!("{} -c {}", shell_escape(&settings.command), shell_escape(task_exec.as_ref().unwrap()))
+        }
+        _ => {
+            let mut parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                parts.push(shell_escape(arg));
+            }
+            parts.join(" ")
+        }
+    };
+
+    // Run command via bash, redirect output to log file
+    // Note: Output is buffered (no PTY) - claude's interactive prompts need TTY-free mode
+    let mut cmd = Command::new("bash");
+    cmd.args(["-c", &format!("{} >> {} 2>&1", inner_command, shell_escape(&output_file_str))]);
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -381,44 +421,16 @@ pub fn spawn_agent(
     cmd.env("WG_TASK_ID", task_id);
     cmd.env("WG_AGENT_ID", &temp_agent_id);
 
-    // Build arguments based on executor type
-    match settings.executor_type.as_str() {
-        "claude" => {
-            // Add base args
-            for arg in &settings.args {
-                cmd.arg(arg);
-            }
-
-            // Add prompt from template
-            if let Some(ref prompt_template) = settings.prompt_template {
-                cmd.arg(&prompt_template.template);
-            }
-        }
-        "shell" => {
-            // For shell, use the task's exec command as the script
-            cmd.arg("-c");
-            cmd.arg(task_exec.as_ref().unwrap());
-        }
-        _ => {
-            // Custom executor - just pass args as-is (already templated)
-            for arg in &settings.args {
-                cmd.arg(arg);
-            }
-        }
-    }
-
     // Set working directory if specified
     if let Some(ref wd) = settings.working_dir {
         cmd.current_dir(wd);
     }
 
-    // Set up output redirection to log file
-    let log_file = File::create(&output_file)
-        .with_context(|| format!("Failed to create output log at {:?}", output_file))?;
-    let log_file_err = log_file.try_clone()?;
-
-    cmd.stdout(Stdio::from(log_file));
-    cmd.stderr(Stdio::from(log_file_err));
+    // bash handles output redirect internally (>> logfile 2>&1)
+    // so we don't need Rust to capture stdout/stderr
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
 
     // Spawn the process (don't wait)
     let child = cmd.spawn().with_context(|| {

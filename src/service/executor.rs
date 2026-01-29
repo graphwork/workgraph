@@ -395,8 +395,8 @@ impl ExecutorRegistry {
                     executor_type: "claude".to_string(),
                     command: "claude".to_string(),
                     args: vec![
-                        "--print".to_string(),
-                        "--dangerously-skip-permissions".to_string(),
+                        "--permission-mode".to_string(),
+                        "bypassPermissions".to_string(),
                     ],
                     env: HashMap::new(),
                     prompt_template: Some(PromptTemplate {

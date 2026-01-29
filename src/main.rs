@@ -39,8 +39,8 @@ enum Commands {
         #[arg(long, short = 'd')]
         description: Option<String>,
 
-        /// This task is blocked by another task
-        #[arg(long = "blocked-by")]
+        /// This task is blocked by another task (can specify multiple)
+        #[arg(long = "blocked-by", value_delimiter = ',', num_args = 1..)]
         blocked_by: Vec<String>,
 
         /// Assign to an actor
@@ -464,6 +464,29 @@ enum Commands {
         timeout: Option<String>,
     },
 
+    /// Run coordinator loop to auto-spawn agents on ready tasks
+    Coordinator {
+        /// Poll interval in seconds (default: 30)
+        #[arg(long, default_value = "30")]
+        interval: u64,
+
+        /// Maximum number of parallel agents (default: 4)
+        #[arg(long, default_value = "4")]
+        max_agents: usize,
+
+        /// Executor to use for spawned agents (default: claude)
+        #[arg(long, default_value = "claude")]
+        executor: String,
+
+        /// Run once and exit (don't loop)
+        #[arg(long)]
+        once: bool,
+
+        /// Generate systemd user service file
+        #[arg(long)]
+        install_service: bool,
+    },
+
     /// View or modify project configuration
     Config {
         /// Show current configuration
@@ -485,6 +508,30 @@ enum Commands {
         /// Set default interval in seconds
         #[arg(long)]
         set_interval: Option<u64>,
+
+        /// Matrix configuration subcommand
+        #[arg(long)]
+        matrix: bool,
+
+        /// Set Matrix homeserver URL
+        #[arg(long)]
+        homeserver: Option<String>,
+
+        /// Set Matrix username
+        #[arg(long)]
+        username: Option<String>,
+
+        /// Set Matrix password
+        #[arg(long)]
+        password: Option<String>,
+
+        /// Set Matrix access token
+        #[arg(long)]
+        access_token: Option<String>,
+
+        /// Set Matrix default room
+        #[arg(long)]
+        room: Option<String>,
     },
 
     /// Detect and clean up dead agents
@@ -876,14 +923,52 @@ fn main() -> Result<()> {
             executor,
             timeout,
         } => commands::spawn::run(&workgraph_dir, &task, &executor, timeout.as_deref(), cli.json),
+        Commands::Coordinator {
+            interval,
+            max_agents,
+            executor,
+            once,
+            install_service,
+        } => commands::coordinator::run(&workgraph_dir, interval, max_agents, &executor, once, install_service),
         Commands::Config {
             show,
             init,
             executor,
             model,
             set_interval,
+            matrix,
+            homeserver,
+            username,
+            password,
+            access_token,
+            room,
         } => {
-            if init {
+            // Handle Matrix configuration
+            if matrix
+                || homeserver.is_some()
+                || username.is_some()
+                || password.is_some()
+                || access_token.is_some()
+                || room.is_some()
+            {
+                let has_matrix_updates = homeserver.is_some()
+                    || username.is_some()
+                    || password.is_some()
+                    || access_token.is_some()
+                    || room.is_some();
+
+                if has_matrix_updates {
+                    commands::config_cmd::update_matrix(
+                        homeserver.as_deref(),
+                        username.as_deref(),
+                        password.as_deref(),
+                        access_token.as_deref(),
+                        room.as_deref(),
+                    )
+                } else {
+                    commands::config_cmd::show_matrix(cli.json)
+                }
+            } else if init {
                 commands::config_cmd::init(&workgraph_dir)
             } else if show || (executor.is_none() && model.is_none() && set_interval.is_none()) {
                 commands::config_cmd::show(&workgraph_dir, cli.json)
