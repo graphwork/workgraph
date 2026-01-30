@@ -19,6 +19,10 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 libc = "0.2"
+dirs = "5.0"
+matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

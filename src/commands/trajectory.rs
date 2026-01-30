@@ -302,7 +302,7 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, Node, TrustLevel};
+    use workgraph::graph::{Actor, ActorType, Node, TrustLevel};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -344,6 +344,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 

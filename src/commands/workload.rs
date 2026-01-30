@@ -214,7 +214,7 @@ fn print_human_readable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Actor, Estimate, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Actor, ActorType, Estimate, Node, Task, TrustLevel, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -255,6 +255,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 
@@ -586,6 +589,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         };
         graph.add_node(Node::Actor(actor));
 

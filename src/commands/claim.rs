@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::Status;
+use workgraph::graph::{ActorType, Status};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
 
 /// Claim a task for work: sets status to InProgress, optionally assigns an actor
+/// If assigned to a human actor with Matrix binding, sends a notification
 pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     let path = graph_path(dir);
 
@@ -15,6 +16,15 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     }
 
     let mut graph = load_graph(&path).context("Failed to load graph")?;
+
+    // Check if the actor is a human with Matrix binding (before mutating)
+    let should_notify = if let Some(actor_id) = actor {
+        graph.get_actor(actor_id).map(|a| {
+            a.actor_type == ActorType::Human && a.matrix_user_id.is_some()
+        }).unwrap_or(false)
+    } else {
+        false
+    };
 
     let task = graph
         .get_task_mut(id)
@@ -55,6 +65,14 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         Some(actor_id) => println!("Claimed '{}' for '{}'", id, actor_id),
         None => println!("Claimed '{}'", id),
     }
+
+    // Send Matrix notification to human actor
+    if should_notify {
+        if let Err(e) = super::notify::run(dir, id, None, Some("Task assigned to you"), false) {
+            eprintln!("Warning: Failed to send Matrix notification: {}", e);
+        }
+    }
+
     Ok(())
 }
 

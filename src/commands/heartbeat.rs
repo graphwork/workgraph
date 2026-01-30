@@ -271,7 +271,7 @@ pub fn run_check_agents(dir: &Path, threshold_minutes: u64, json: bool) -> Resul
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, Node, TrustLevel, WorkGraph};
+    use workgraph::graph::{Actor, ActorType, Node, TrustLevel, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn setup_with_actor() -> TempDir {
@@ -289,6 +289,9 @@ mod tests {
             context_limit: Some(100000),
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         };
         graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();

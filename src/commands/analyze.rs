@@ -829,7 +829,7 @@ fn print_human_readable(output: &AnalysisOutput) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, Estimate, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Actor, ActorType, Estimate, Node, Task, TrustLevel, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -871,6 +871,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 

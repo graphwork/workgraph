@@ -1,10 +1,10 @@
 //! Coordinator command - auto-spawns agents on ready tasks
 //!
 //! Usage:
-//!   wg coordinator                    # Run loop
+//!   wg coordinator                    # Run loop (uses config.toml settings)
 //!   wg coordinator --once             # Spawn once and exit
-//!   wg coordinator --interval 60      # Poll every 60s
-//!   wg coordinator --max-agents 4     # Limit parallel agents
+//!   wg coordinator --interval 60      # Poll every 60s (overrides config)
+//!   wg coordinator --max-agents 4     # Limit parallel agents (overrides config)
 //!   wg coordinator --install-service  # Generate systemd user service
 
 use anyhow::{Context, Result};
@@ -12,6 +12,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use workgraph::config::Config;
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
 use workgraph::service::registry::AgentRegistry;
@@ -19,16 +20,27 @@ use workgraph::service::registry::AgentRegistry;
 use super::{graph_path, spawn};
 
 /// Run the coordinator loop
+/// CLI arguments override config values if provided
 pub fn run(
     dir: &Path,
-    interval: u64,
-    max_agents: usize,
-    executor: &str,
+    cli_interval: Option<u64>,
+    cli_max_agents: Option<usize>,
+    cli_executor: Option<&str>,
     once: bool,
     install_service: bool,
 ) -> Result<()> {
+    // Load config for defaults
+    let config = Config::load(dir)?;
+
+    // CLI args override config values when explicitly provided
+    let interval = cli_interval.unwrap_or(config.coordinator.interval);
+    let max_agents = cli_max_agents.unwrap_or(config.coordinator.max_agents);
+    let executor = cli_executor
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.coordinator.executor.clone());
+
     if install_service {
-        return generate_systemd_service(dir, interval, max_agents, executor);
+        return generate_systemd_service(dir);
     }
 
     let graph_path = graph_path(dir);
@@ -37,10 +49,10 @@ pub fn run(
     }
 
     println!("Coordinator starting (interval: {}s, max agents: {}, executor: {})",
-             interval, max_agents, executor);
+             interval, max_agents, &executor);
 
     loop {
-        if let Err(e) = coordinator_tick(dir, max_agents, executor) {
+        if let Err(e) = coordinator_tick(dir, max_agents, &executor) {
             eprintln!("Coordinator tick error: {}", e);
         }
 
@@ -121,15 +133,12 @@ fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result<()>
 }
 
 /// Generate systemd user service file
-fn generate_systemd_service(
-    dir: &Path,
-    interval: u64,
-    max_agents: usize,
-    executor: &str,
-) -> Result<()> {
+/// Uses config.toml for settings, so ExecStart is just 'wg coordinator'
+fn generate_systemd_service(dir: &Path) -> Result<()> {
     let workdir = dir.canonicalize()
         .unwrap_or_else(|_| dir.to_path_buf());
 
+    // Simple ExecStart - settings come from .workgraph/config.toml
     let service_content = format!(r#"[Unit]
 Description=Workgraph Coordinator
 After=network.target
@@ -137,7 +146,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={workdir}
-ExecStart={wg} coordinator --interval {interval} --max-agents {max_agents} --executor {executor}
+ExecStart={wg} coordinator
 Restart=on-failure
 RestartSec=10
 
@@ -146,9 +155,6 @@ WantedBy=default.target
 "#,
         workdir = workdir.display(),
         wg = std::env::current_exe()?.display(),
-        interval = interval,
-        max_agents = max_agents,
-        executor = executor,
     );
 
     // Write to ~/.config/systemd/user/wg-coordinator.service
@@ -164,6 +170,9 @@ WantedBy=default.target
     std::fs::write(&service_path, service_content)?;
 
     println!("Created systemd user service: {}", service_path.display());
+    println!();
+    println!("Settings are read from .workgraph/config.toml");
+    println!("To change settings: wg config --max-agents N --interval N");
     println!();
     println!("To enable and start:");
     println!("  systemctl --user daemon-reload");

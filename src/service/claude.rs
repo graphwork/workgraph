@@ -156,9 +156,11 @@ impl Executor for ClaudeExecutor {
         // Write metadata
         self.write_metadata(&agent_dir, task, config)?;
 
-        // Build the command
+        // Build the command - wrap with stdbuf to force line buffering
+        // (otherwise output is block-buffered when stdout is not a TTY)
         let settings = config.apply_templates(vars);
-        let mut cmd = Command::new(&settings.command);
+        let mut cmd = Command::new("stdbuf");
+        cmd.args(["-oL", "-eL", &settings.command]);
 
         // Add model if specified
         if let Some(ref model) = self.model {

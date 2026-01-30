@@ -112,6 +112,34 @@ pub enum TrustLevel {
     Unknown,
 }
 
+/// Actor type: human or agent
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActorType {
+    /// AI agent that executes tasks autonomously
+    #[default]
+    Agent,
+    /// Human actor that receives notifications and responds
+    Human,
+}
+
+fn is_default_actor_type(t: &ActorType) -> bool {
+    *t == ActorType::Agent
+}
+
+/// Response time record for forecasting human response patterns
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResponseTime {
+    /// Task ID
+    pub task_id: String,
+    /// Timestamp when task was assigned/notified (ISO 8601)
+    pub assigned_at: String,
+    /// Timestamp when human responded (ISO 8601)
+    pub responded_at: String,
+    /// Response duration in seconds
+    pub duration_secs: u64,
+}
+
 /// An actor (human or agent)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Actor {
@@ -136,6 +164,15 @@ pub struct Actor {
     /// Last heartbeat timestamp (ISO 8601)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+    /// Actor type: human or agent
+    #[serde(default, skip_serializing_if = "is_default_actor_type")]
+    pub actor_type: ActorType,
+    /// Matrix user ID binding for human actors (@user:server)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix_user_id: Option<String>,
+    /// Response time history for forecasting (human actors only)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub response_times: Vec<ResponseTime>,
 }
 
 fn is_default_trust(level: &TrustLevel) -> bool {
@@ -241,6 +278,16 @@ impl WorkGraph {
         }
     }
 
+    /// Find an actor by their Matrix user ID (@user:server)
+    pub fn get_actor_by_matrix_id(&self, matrix_id: &str) -> Option<&Actor> {
+        self.actors().find(|a| {
+            a.matrix_user_id
+                .as_ref()
+                .map(|m| m == matrix_id)
+                .unwrap_or(false)
+        })
+    }
+
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
         match self.nodes.get(id) {
             Some(Node::Resource(r)) => Some(r),
@@ -329,6 +376,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 

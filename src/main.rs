@@ -466,17 +466,17 @@ enum Commands {
 
     /// Run coordinator loop to auto-spawn agents on ready tasks
     Coordinator {
-        /// Poll interval in seconds (default: 30)
-        #[arg(long, default_value = "30")]
-        interval: u64,
+        /// Poll interval in seconds (default: from config.toml, fallback 30)
+        #[arg(long)]
+        interval: Option<u64>,
 
-        /// Maximum number of parallel agents (default: 4)
-        #[arg(long, default_value = "4")]
-        max_agents: usize,
+        /// Maximum number of parallel agents (default: from config.toml, fallback 4)
+        #[arg(long)]
+        max_agents: Option<usize>,
 
-        /// Executor to use for spawned agents (default: claude)
-        #[arg(long, default_value = "claude")]
-        executor: String,
+        /// Executor to use for spawned agents (default: from config.toml, fallback claude)
+        #[arg(long)]
+        executor: Option<String>,
 
         /// Run once and exit (don't loop)
         #[arg(long)]
@@ -508,6 +508,18 @@ enum Commands {
         /// Set default interval in seconds
         #[arg(long)]
         set_interval: Option<u64>,
+
+        /// Set coordinator max agents
+        #[arg(long)]
+        max_agents: Option<usize>,
+
+        /// Set coordinator poll interval in seconds
+        #[arg(long)]
+        coordinator_interval: Option<u64>,
+
+        /// Set coordinator executor
+        #[arg(long)]
+        coordinator_executor: Option<String>,
 
         /// Matrix configuration subcommand
         #[arg(long)]
@@ -595,6 +607,26 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+
+    /// Send task notification to Matrix room
+    Notify {
+        /// Task ID to notify about
+        task: String,
+
+        /// Target Matrix room (uses default_room from config if not specified)
+        #[arg(long)]
+        room: Option<String>,
+
+        /// Custom message to include with the notification
+        #[arg(long, short)]
+        message: Option<String>,
+    },
+
+    /// Matrix integration commands
+    Matrix {
+        #[command(subcommand)]
+        command: MatrixCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -659,6 +691,14 @@ enum ActorCommands {
         /// Trust level: verified, provisional, unknown
         #[arg(long)]
         trust_level: Option<String>,
+
+        /// Actor type: agent or human (default: agent, or human if --matrix is set)
+        #[arg(long = "type", short = 't')]
+        actor_type: Option<String>,
+
+        /// Matrix user ID for human actors (@user:server)
+        #[arg(long)]
+        matrix: Option<String>,
     },
 
     /// List all actors
@@ -695,6 +735,35 @@ enum ServiceCommands {
         #[arg(long)]
         socket: String,
     },
+}
+
+#[derive(Subcommand)]
+enum MatrixCommands {
+    /// Start the Matrix message listener
+    ///
+    /// Listens to configured Matrix room(s) for commands like:
+    /// - claim <task> - Claim a task for work
+    /// - done <task> - Mark a task as done
+    /// - fail <task> [reason] - Mark a task as failed
+    /// - input <task> <text> - Add input/log entry to a task
+    Listen {
+        /// Matrix room to listen in (uses default_room from config if not specified)
+        #[arg(long)]
+        room: Option<String>,
+    },
+
+    /// Send a message to a Matrix room
+    Send {
+        /// Message to send
+        message: String,
+
+        /// Target Matrix room (uses default_room from config if not specified)
+        #[arg(long)]
+        room: Option<String>,
+    },
+
+    /// Show Matrix connection status
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -830,6 +899,8 @@ fn main() -> Result<()> {
                 capabilities,
                 context_limit,
                 trust_level,
+                actor_type,
+                matrix,
             } => commands::actor::run_add(
                 &workgraph_dir,
                 &id,
@@ -840,6 +911,8 @@ fn main() -> Result<()> {
                 &capabilities,
                 context_limit,
                 trust_level.as_deref(),
+                actor_type.as_deref(),
+                matrix.as_deref(),
             ),
             ActorCommands::List => commands::actor::run_list(&workgraph_dir, cli.json),
         },
@@ -929,13 +1002,16 @@ fn main() -> Result<()> {
             executor,
             once,
             install_service,
-        } => commands::coordinator::run(&workgraph_dir, interval, max_agents, &executor, once, install_service),
+        } => commands::coordinator::run(&workgraph_dir, interval, max_agents, executor.as_deref(), once, install_service),
         Commands::Config {
             show,
             init,
             executor,
             model,
             set_interval,
+            max_agents,
+            coordinator_interval,
+            coordinator_executor,
             matrix,
             homeserver,
             username,
@@ -970,7 +1046,8 @@ fn main() -> Result<()> {
                 }
             } else if init {
                 commands::config_cmd::init(&workgraph_dir)
-            } else if show || (executor.is_none() && model.is_none() && set_interval.is_none()) {
+            } else if show || (executor.is_none() && model.is_none() && set_interval.is_none()
+                && max_agents.is_none() && coordinator_interval.is_none() && coordinator_executor.is_none()) {
                 commands::config_cmd::show(&workgraph_dir, cli.json)
             } else {
                 commands::config_cmd::update(
@@ -978,6 +1055,9 @@ fn main() -> Result<()> {
                     executor.as_deref(),
                     model.as_deref(),
                     set_interval,
+                    max_agents,
+                    coordinator_interval,
+                    coordinator_executor.as_deref(),
                 )
             }
         }
@@ -1039,6 +1119,20 @@ fn main() -> Result<()> {
             }
             ServiceCommands::Daemon { socket } => {
                 commands::service::run_daemon(&workgraph_dir, &socket)
+            }
+        }
+        Commands::Notify { task, room, message } => {
+            commands::notify::run(&workgraph_dir, &task, room.as_deref(), message.as_deref(), cli.json)
+        }
+        Commands::Matrix { command } => match command {
+            MatrixCommands::Listen { room } => {
+                commands::matrix::run_listen(&workgraph_dir, room.as_deref())
+            }
+            MatrixCommands::Send { message, room } => {
+                commands::matrix::run_send(&workgraph_dir, room.as_deref(), &message)
+            }
+            MatrixCommands::Status => {
+                commands::matrix::run_status(&workgraph_dir, cli.json)
             }
         }
     }

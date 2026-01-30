@@ -136,7 +136,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Actor, Node, Status, Task, TrustLevel};
+    use crate::graph::{Actor, ActorType, Node, Status, Task, TrustLevel};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -177,6 +177,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 

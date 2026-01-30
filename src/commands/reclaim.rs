@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Actor, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Actor, ActorType, Node, Task, TrustLevel, WorkGraph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -129,6 +129,9 @@ mod tests {
             context_limit: None,
             trust_level: TrustLevel::Provisional,
             last_seen: None,
+            actor_type: ActorType::Agent,
+            matrix_user_id: None,
+            response_times: vec![],
         }
     }
 
