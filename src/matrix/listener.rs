@@ -108,8 +108,11 @@ impl MatrixListener {
     /// Run the listener loop
     ///
     /// This method runs forever, processing incoming messages and executing commands.
+    /// Uses `tokio::select!` to run sync and message handling concurrently - the sync
+    /// must run in the same async runtime for event handlers to work correctly.
     pub async fn run(&self) -> Result<()> {
-        // Register message handler
+        // Register message handler - this creates a channel that receives messages
+        // when the sync processes them
         let mut rx = self.client.register_message_handler(true);
 
         // Do initial sync to get current state
@@ -118,20 +121,39 @@ impl MatrixListener {
         // Join configured rooms
         self.join_rooms().await?;
 
-        // Start sync loop in background
-        let sync_handle = self.client.start_sync_thread();
-
         println!("Matrix listener started, waiting for messages...");
 
-        // Process incoming messages
-        while let Some(msg) = rx.recv().await {
-            if let Err(e) = self.handle_message(&msg).await {
-                eprintln!("Error handling message: {}", e);
+        // Clone the client for the sync task
+        let client = self.client.inner().clone();
+
+        // Use tokio::select! to run sync and message handling concurrently
+        loop {
+            tokio::select! {
+                // Run a sync cycle - this will trigger event handlers which send to rx
+                sync_result = client.sync_once(matrix_sdk::config::SyncSettings::default().timeout(std::time::Duration::from_secs(30))) => {
+                    if let Err(e) = sync_result {
+                        eprintln!("Sync error: {}", e);
+                        // Brief pause before retrying on error
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+
+                // Process incoming messages from the channel
+                msg = rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            if let Err(e) = self.handle_message(&msg).await {
+                                eprintln!("Error handling message: {}", e);
+                            }
+                        }
+                        None => {
+                            // Channel closed, exit
+                            break;
+                        }
+                    }
+                }
             }
         }
-
-        // Wait for sync thread (this shouldn't happen normally)
-        let _ = sync_handle.join();
 
         Ok(())
     }
