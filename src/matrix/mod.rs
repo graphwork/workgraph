@@ -326,7 +326,7 @@ impl MatrixClient {
     /// Register message handlers and return a receiver for incoming messages
     ///
     /// This sets up event handlers but does NOT start the sync loop.
-    /// You must call `sync_loop()` or `start_sync_thread()` separately to receive messages.
+    /// You must call `sync_once()` in a loop to receive messages (the sync triggers event handlers).
     ///
     /// # Arguments
     /// * `filter_own` - If true, filter out messages from the current user
@@ -334,7 +334,7 @@ impl MatrixClient {
         let (tx, rx) = mpsc::channel(100);
         let own_user_id = self.user_id.clone();
 
-        // Register message handler
+        // Register message handler - this will be called during sync operations
         self.client.add_event_handler({
             move |event: OriginalSyncRoomMessageEvent, room: Room| {
                 let tx = tx.clone();
@@ -364,6 +364,7 @@ impl MatrixClient {
                         is_own,
                     };
 
+                    // Send to channel - ignore errors (receiver might have dropped)
                     let _ = tx.send(msg).await;
                 }
             }
@@ -377,7 +378,8 @@ impl MatrixClient {
     /// This method runs forever and must be awaited. It will sync with the
     /// server and dispatch events to registered handlers.
     ///
-    /// For background sync, use `start_sync_thread()` instead.
+    /// Note: For receiving messages, prefer using `sync_once()` in a loop
+    /// with `tokio::select!` to handle messages concurrently.
     pub async fn sync_loop(&self) -> Result<()> {
         self.client
             .sync(SyncSettings::default())
@@ -388,10 +390,13 @@ impl MatrixClient {
 
     /// Start sync in a background OS thread
     ///
-    /// This spawns a new OS thread with its own tokio runtime to run the sync loop.
-    /// Use this when you need background sync but can't await `sync_loop()`.
+    /// **DEPRECATED**: This method doesn't work correctly because event handlers
+    /// registered with `add_event_handler` need to run within the same async
+    /// context as the sync loop. Use `sync_once()` in a loop with `tokio::select!`
+    /// instead (see `MatrixListener::run()` for an example).
     ///
     /// Returns a handle to the thread.
+    #[deprecated(note = "Use sync_once() in a loop with tokio::select! instead")]
     pub fn start_sync_thread(&self) -> thread::JoinHandle<()> {
         let client = self.client.clone();
 
@@ -411,8 +416,21 @@ impl MatrixClient {
     ///
     /// Useful for one-shot operations where you don't need continuous sync.
     pub async fn sync_once(&self) -> Result<()> {
+        // Use a timeout to prevent hanging on large initial syncs
+        let sync_settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
         self.client
-            .sync_once(SyncSettings::default())
+            .sync_once(sync_settings)
+            .await
+            .context("Sync failed")?;
+        Ok(())
+    }
+
+    /// Run a single sync cycle with custom timeout
+    pub async fn sync_once_with_timeout(&self, timeout_secs: u64) -> Result<()> {
+        let sync_settings =
+            SyncSettings::default().timeout(std::time::Duration::from_secs(timeout_secs));
+        self.client
+            .sync_once(sync_settings)
             .await
             .context("Sync failed")?;
         Ok(())
