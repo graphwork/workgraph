@@ -100,7 +100,8 @@ wg add "Complex task" \
   --hours 4 \
   --skill rust \
   --deliverable src/feature.rs \
-  --blocked-by prerequisite-task
+  --blocked-by prerequisite-task \
+  --model sonnet
 ```
 
 Check the plan:
@@ -161,7 +162,7 @@ Use manual `wg claim` when:
 ### Spawning agents
 
 ```bash
-wg spawn <task-id> --executor <name> [--timeout <duration>]
+wg spawn <task-id> --executor <name> [--timeout <duration>] [--model <model>]
 ```
 
 Spawns an agent process to work on a task:
@@ -177,7 +178,30 @@ wg spawn implement-feature --executor claude
 #   Executor: claude
 #   PID: 54321
 #   Output: .workgraph/agents/agent-7/output.log
+
+# With model override:
+wg spawn simple-task --executor claude --model haiku
 ```
+
+### Model selection for cost optimization
+
+Use `--model` to select haiku (fast/cheap), sonnet (balanced), or opus (most capable):
+
+```bash
+# Set model when creating task (becomes default for that task)
+wg add "Simple formatting fix" --model haiku
+wg add "Complex architecture design" --model opus
+
+# Override at spawn time
+wg spawn my-task --executor claude --model haiku
+```
+
+Model priority: `--model` flag > task's model > executor default
+
+**Cost optimization tips:**
+- Use **haiku** for simple tasks: formatting, linting, file updates
+- Use **sonnet** for typical coding tasks
+- Use **opus** for complex reasoning, proofs, architecture decisions
 
 ### Monitoring agents
 
