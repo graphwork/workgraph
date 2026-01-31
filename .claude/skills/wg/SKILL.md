@@ -282,21 +282,44 @@ type = "shell"
 command = "bash"
 ```
 
-### Coordinator pattern
+### Coordinator
 
-Automate parallel task execution:
+Automate parallel task execution with `wg coordinator`:
 
 ```bash
-while true; do
-    READY=$(wg ready --json | jq -r '.[].id')
-    [ -z "$READY" ] && { sleep 10; continue; }
-
-    for TASK in $READY; do
-        wg spawn "$TASK" --executor claude
-    done
-    sleep 30
-done
+wg coordinator                    # Run continuous loop
+wg coordinator --once             # Spawn once and exit
+wg coordinator --max-agents 3     # Limit parallel agents
+wg coordinator --interval 10      # Check every 10 seconds
+wg coordinator --install-service  # Generate systemd service
 ```
+
+The coordinator:
+1. Detects finished agents (checks if process exited)
+2. Cleans up completed agents from registry
+3. Spawns new agents for ready tasks (up to max)
+4. Repeats on interval until all tasks done
+
+**Example session:**
+```bash
+# Add some tasks
+wg add "Task A" --model haiku
+wg add "Task B" --model haiku
+wg add "Task C" --blocked-by task-a --model haiku
+
+# Run coordinator (spawns A and B in parallel, then C when A done)
+wg coordinator --max-agents 2
+```
+
+**Configure defaults** in `.workgraph/config.toml`:
+```toml
+[coordinator]
+interval = 30        # seconds between checks
+max_agents = 4       # max parallel agents
+executor = "claude"  # default executor
+```
+
+Or set via CLI: `wg config --max-agents 3 --interval 15`
 
 ## All commands
 
@@ -335,6 +358,7 @@ wg config            # view/set config
 wg spawn <id>        # spawn agent for task
 wg agents            # list running agents
 wg kill <agent-id>   # terminate agent
+wg coordinator       # auto-spawn agents on ready tasks
 wg service start     # start service daemon
 wg service stop      # stop service daemon
 wg service status    # daemon status
