@@ -93,6 +93,9 @@ pub struct Task {
     /// Reason for failure or abandonment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// Preferred model for this task (haiku, sonnet, opus)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn is_zero(val: &u32) -> bool {
@@ -362,6 +365,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            model: None,
         }
     }
 

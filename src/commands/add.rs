@@ -22,6 +22,7 @@ pub fn run(
     inputs: &[String],
     deliverables: &[String],
     max_retries: Option<u32>,
+    model: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -73,6 +74,7 @@ pub fn run(
         retry_count: 0,
         max_retries,
         failure_reason: None,
+        model: model.map(String::from),
     };
 
     // Append to file

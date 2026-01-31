@@ -74,6 +74,10 @@ enum Commands {
         /// Maximum number of retries allowed for this task
         #[arg(long)]
         max_retries: Option<u32>,
+
+        /// Preferred model for this task (haiku, sonnet, opus)
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Mark a task as done
@@ -462,6 +466,10 @@ enum Commands {
         /// Timeout duration (e.g., 30m, 1h, 90s)
         #[arg(long)]
         timeout: Option<String>,
+
+        /// Model to use (haiku, sonnet, opus) - overrides task/executor defaults
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Run coordinator loop to auto-spawn agents on ready tasks
@@ -789,6 +797,7 @@ fn main() -> Result<()> {
             input,
             deliverable,
             max_retries,
+            model,
         } => commands::add::run(
             &workgraph_dir,
             &title,
@@ -803,6 +812,7 @@ fn main() -> Result<()> {
             &input,
             &deliverable,
             max_retries,
+            model.as_deref(),
         ),
         Commands::Done { id } => commands::done::run(&workgraph_dir, &id),
         Commands::Fail { id, reason } => commands::fail::run(&workgraph_dir, &id, reason.as_deref()),
@@ -998,7 +1008,8 @@ fn main() -> Result<()> {
             task,
             executor,
             timeout,
-        } => commands::spawn::run(&workgraph_dir, &task, &executor, timeout.as_deref(), cli.json),
+            model,
+        } => commands::spawn::run(&workgraph_dir, &task, &executor, timeout.as_deref(), model.as_deref(), cli.json),
         Commands::Coordinator {
             interval,
             max_agents,

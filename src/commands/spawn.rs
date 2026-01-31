@@ -24,10 +24,21 @@ use workgraph::service::registry::AgentRegistry;
 
 use super::graph_path;
 
-/// Escape a string for safe use in shell commands
+/// Escape a string for safe use in shell commands (for simple args)
 fn shell_escape(s: &str) -> String {
     // Use single quotes and escape any single quotes within
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Generate a heredoc-based command for passing multi-line content safely
+/// Uses a random delimiter to avoid conflicts with content
+fn heredoc_command(content: &str, command: &str) -> String {
+    // Use a delimiter that's unlikely to appear in the content
+    let delimiter = "WGPROMPT_END";
+    format!(
+        "{} <<'{delimiter}'\n{}\n{delimiter}",
+        command, content, delimiter = delimiter
+    )
 }
 
 /// Result of spawning an agent
@@ -107,6 +118,7 @@ pub fn run(
     task_id: &str,
     executor_name: &str,
     timeout: Option<&str>,
+    model: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let graph_path = graph_path(dir);
@@ -158,6 +170,8 @@ pub fn run(
 
     // Get task exec command for shell executor
     let task_exec = task.exec.clone();
+    // Get task model preference
+    let task_model = task.model.clone();
 
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
@@ -183,19 +197,27 @@ pub fn run(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
+    // Determine model: CLI flag > task.model > none
+    let effective_model = model.map(|m| m.to_string()).or(task_model);
+
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
         "claude" => {
-            // Pipe prompt via stdin (not as argument) so tools can execute
-            // --print mode doesn't execute tools, but stdin mode does
+            // Use heredoc to pass prompt safely - avoids all quoting issues
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
             }
+            // Add model flag if specified
+            if let Some(ref m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
             let claude_cmd = cmd_parts.join(" ");
 
             if let Some(ref prompt_template) = settings.prompt_template {
-                format!("echo {} | {}", shell_escape(&prompt_template.template), claude_cmd)
+                // Use heredoc: claude <<'DELIMITER'\n<content>\nDELIMITER
+                heredoc_command(&prompt_template.template, &claude_cmd)
             } else {
                 claude_cmd
             }
@@ -255,7 +277,11 @@ pub fn run(
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(temp_agent_id.clone()),
-        message: format!("Spawned by wg spawn --executor {}", executor_name),
+        message: format!(
+            "Spawned by wg spawn --executor {}{}",
+            executor_name,
+            effective_model.as_ref().map(|m| format!(" --model {}", m)).unwrap_or_default()
+        ),
     });
 
     save_graph(&graph, &graph_path).context("Failed to save graph")?;
@@ -271,6 +297,7 @@ pub fn run(
         "pid": pid,
         "task_id": task_id,
         "executor": executor_name,
+        "model": effective_model,
         "started_at": Utc::now().to_rfc3339(),
         "timeout": timeout,
     });
@@ -289,6 +316,9 @@ pub fn run(
     } else {
         println!("Spawned {} for task '{}'", agent_id, task_id);
         println!("  Executor: {} ({})", executor_name, settings.executor_type);
+        if let Some(ref m) = effective_model {
+            println!("  Model: {}", m);
+        }
         println!("  PID: {}", pid);
         println!("  Output: {}", output_file_str);
     }
@@ -353,6 +383,8 @@ pub fn spawn_agent(
 
     // Get task exec command for shell executor
     let task_exec = task.exec.clone();
+    // Get task model preference
+    let task_model = task.model.clone();
 
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
@@ -378,19 +410,27 @@ pub fn spawn_agent(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
+    // Determine model: task.model preference (CLI model passed via spawn_agent doesn't apply here)
+    let effective_model = task_model;
+
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
         "claude" => {
-            // Pipe prompt via stdin (not as argument) so tools can execute
-            // --print mode doesn't execute tools, but stdin mode does
+            // Use heredoc to pass prompt safely - avoids all quoting issues
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
             }
+            // Add model flag if specified
+            if let Some(ref m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
             let claude_cmd = cmd_parts.join(" ");
 
             if let Some(ref prompt_template) = settings.prompt_template {
-                format!("echo {} | {}", shell_escape(&prompt_template.template), claude_cmd)
+                // Use heredoc: claude <<'DELIMITER'\n<content>\nDELIMITER
+                heredoc_command(&prompt_template.template, &claude_cmd)
             } else {
                 claude_cmd
             }
@@ -506,6 +546,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            model: None,
         }
     }
 
@@ -517,6 +558,31 @@ mod tests {
             graph.add_node(Node::Task(task));
         }
         save_graph(&graph, &path).unwrap();
+    }
+
+    #[test]
+    fn test_heredoc_command_basic() {
+        let result = heredoc_command("Hello world", "echo");
+        assert!(result.starts_with("echo <<'WGPROMPT_END'"));
+        assert!(result.contains("Hello world"));
+        assert!(result.ends_with("WGPROMPT_END"));
+    }
+
+    #[test]
+    fn test_heredoc_command_with_quotes() {
+        // This is the bug case - single quotes in content
+        let content = "The function tanh'(S) → 0 as S → ∞";
+        let result = heredoc_command(content, "claude --print");
+        // Heredoc should preserve quotes without escaping
+        assert!(result.contains("tanh'(S)"));
+        assert!(result.starts_with("claude --print <<'WGPROMPT_END'"));
+    }
+
+    #[test]
+    fn test_heredoc_command_multiline() {
+        let content = "Line 1\nLine 2\nLine 3";
+        let result = heredoc_command(content, "cat");
+        assert!(result.contains("Line 1\nLine 2\nLine 3"));
     }
 
     #[test]
@@ -548,7 +614,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         setup_graph(temp_dir.path(), vec![]);
 
-        let result = run(temp_dir.path(), "nonexistent", "shell", None, false);
+        let result = run(temp_dir.path(), "nonexistent", "shell", None, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -561,7 +627,7 @@ mod tests {
         task.assigned = Some("other-agent".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
-        let result = run(temp_dir.path(), "t1", "shell", None, false);
+        let result = run(temp_dir.path(), "t1", "shell", None, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already claimed"));
     }
@@ -573,7 +639,7 @@ mod tests {
         task.status = Status::Done;
         setup_graph(temp_dir.path(), vec![task]);
 
-        let result = run(temp_dir.path(), "t1", "shell", None, false);
+        let result = run(temp_dir.path(), "t1", "shell", None, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already done"));
     }
@@ -585,7 +651,7 @@ mod tests {
         // Task has no exec command
         setup_graph(temp_dir.path(), vec![task]);
 
-        let result = run(temp_dir.path(), "t1", "shell", None, false);
+        let result = run(temp_dir.path(), "t1", "shell", None, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no exec command"));
     }
@@ -598,7 +664,7 @@ mod tests {
         setup_graph(temp_dir.path(), vec![task]);
 
         // This will actually spawn a process
-        let result = run(temp_dir.path(), "t1", "shell", None, false);
+        let result = run(temp_dir.path(), "t1", "shell", None, None, false);
         assert!(result.is_ok());
 
         // Verify task was claimed
@@ -618,7 +684,10 @@ mod tests {
         task.exec = Some("echo hello".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
-        run(temp_dir.path(), "t1", "shell", None, false).unwrap();
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        // Small wait for the spawned process to create output file
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Check output directory was created
         let agents_dir = temp_dir.path().join("agents");

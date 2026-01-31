@@ -62,6 +62,8 @@ struct TaskDetails {
     max_retries: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -140,6 +142,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         retry_count: task.retry_count,
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
+        model: task.model.clone(),
     };
 
     if json {
@@ -332,6 +335,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            model: None,
         }
     }
 
@@ -393,6 +397,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            model: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

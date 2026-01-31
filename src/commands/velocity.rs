@@ -332,6 +332,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            model: None,
         }
     }
 
