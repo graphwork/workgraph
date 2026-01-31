@@ -8,14 +8,18 @@
 //!   wg coordinator --install-service  # Generate systemd user service
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 use workgraph::config::Config;
-use workgraph::parser::load_graph;
+use workgraph::graph::{LogEntry, Status};
+use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
-use workgraph::service::registry::AgentRegistry;
+use workgraph::service::registry::{AgentRegistry, AgentStatus};
+
+use super::dead_agents::is_process_alive;
 
 use super::{graph_path, spawn};
 
@@ -70,12 +74,17 @@ pub fn run(
 /// Single coordinator tick: spawn agents on ready tasks
 fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result<()> {
     let graph_path = graph_path(dir);
-    let graph = load_graph(&graph_path).context("Failed to load graph")?;
 
-    // Count current active agents
+    // First, clean up completed agents by checking actual process status
+    let finished_agents = cleanup_finished_agents(dir, &graph_path)?;
+    if !finished_agents.is_empty() {
+        println!("[coordinator] Cleaned up {} finished agent(s): {:?}", finished_agents.len(), finished_agents);
+    }
+
+    // Now count truly alive agents (process still running)
     let registry = AgentRegistry::load(dir)?;
     let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
+        .filter(|a| a.is_alive() && is_process_alive(a.pid))
         .count();
 
     if alive_count >= max_agents {
@@ -83,24 +92,13 @@ fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result<()>
         return Ok(());
     }
 
-    // Clean up dead agents
-    let dead_agents: Vec<_> = registry.agents.iter()
-        .filter(|(_, a)| !a.is_alive())
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    if !dead_agents.is_empty() {
-        println!("[coordinator] Cleaning up {} dead agents", dead_agents.len());
-        // Dead agent cleanup is handled by dead_agents command
-        // For now just report
-    }
-
     // Get ready tasks
+    let graph = load_graph(&graph_path).context("Failed to load graph")?;
     let ready = ready_tasks(&graph);
     let slots_available = max_agents.saturating_sub(alive_count);
 
     if ready.is_empty() {
-        let done = graph.tasks().filter(|t| t.status == workgraph::graph::Status::Done).count();
+        let done = graph.tasks().filter(|t| t.status == Status::Done).count();
         let total = graph.tasks().count();
         if done == total && total > 0 {
             println!("[coordinator] All {} tasks complete!", total);
@@ -130,6 +128,59 @@ fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result<()>
     }
 
     Ok(())
+}
+
+/// Clean up agents whose processes have exited
+/// Returns list of cleaned up agent IDs
+fn cleanup_finished_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
+    let mut locked_registry = AgentRegistry::load_locked(dir)?;
+
+    // Find agents that are marked alive but process is gone
+    let finished: Vec<_> = locked_registry.agents.values()
+        .filter(|a| a.is_alive() && !is_process_alive(a.pid))
+        .map(|a| (a.id.clone(), a.task_id.clone(), a.pid))
+        .collect();
+
+    if finished.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Mark these agents as done in registry
+    for (agent_id, _, _) in &finished {
+        if let Some(agent) = locked_registry.get_agent_mut(agent_id) {
+            agent.status = AgentStatus::Done;
+        }
+    }
+    locked_registry.save_ref()?;
+
+    // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
+    let mut graph = load_graph(graph_path).context("Failed to load graph")?;
+    let mut tasks_modified = false;
+
+    for (agent_id, task_id, pid) in &finished {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            // Only unclaim if task is still in progress (agent didn't finish it properly)
+            if task.status == Status::InProgress {
+                task.status = Status::Open;
+                task.assigned = None;
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: None,
+                    message: format!(
+                        "Task unclaimed: agent '{}' (PID {}) process exited",
+                        agent_id, pid
+                    ),
+                });
+                tasks_modified = true;
+            }
+        }
+    }
+
+    if tasks_modified {
+        save_graph(&graph, graph_path).context("Failed to save graph")?;
+    }
+
+    Ok(finished.into_iter().map(|(id, _, _)| id).collect())
 }
 
 /// Generate systemd user service file
