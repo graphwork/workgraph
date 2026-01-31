@@ -30,15 +30,10 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Generate a heredoc-based command for passing multi-line content safely
-/// Uses a random delimiter to avoid conflicts with content
-fn heredoc_command(content: &str, command: &str) -> String {
-    // Use a delimiter that's unlikely to appear in the content
-    let delimiter = "WGPROMPT_END";
-    format!(
-        "{} <<'{delimiter}'\n{}\n{delimiter}",
-        command, content, delimiter = delimiter
-    )
+/// Generate a command that reads prompt from a file
+/// This is more reliable than heredoc when output redirection is involved
+fn prompt_file_command(prompt_file: &str, command: &str) -> String {
+    format!("cat {} | {}", shell_escape(prompt_file), command)
 }
 
 /// Result of spawning an agent
@@ -203,7 +198,7 @@ pub fn run(
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
         "claude" => {
-            // Use heredoc to pass prompt safely - avoids all quoting issues
+            // Write prompt to file and pipe to claude - avoids all quoting issues
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
@@ -216,8 +211,11 @@ pub fn run(
             let claude_cmd = cmd_parts.join(" ");
 
             if let Some(ref prompt_template) = settings.prompt_template {
-                // Use heredoc: claude <<'DELIMITER'\n<content>\nDELIMITER
-                heredoc_command(&prompt_template.template, &claude_cmd)
+                // Write prompt to file for safe passing
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
             } else {
                 claude_cmd
             }
@@ -416,7 +414,7 @@ pub fn spawn_agent(
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
         "claude" => {
-            // Use heredoc to pass prompt safely - avoids all quoting issues
+            // Write prompt to file and pipe to claude - avoids all quoting issues
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
@@ -429,8 +427,11 @@ pub fn spawn_agent(
             let claude_cmd = cmd_parts.join(" ");
 
             if let Some(ref prompt_template) = settings.prompt_template {
-                // Use heredoc: claude <<'DELIMITER'\n<content>\nDELIMITER
-                heredoc_command(&prompt_template.template, &claude_cmd)
+                // Write prompt to file for safe passing
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
             } else {
                 claude_cmd
             }
@@ -561,28 +562,11 @@ mod tests {
     }
 
     #[test]
-    fn test_heredoc_command_basic() {
-        let result = heredoc_command("Hello world", "echo");
-        assert!(result.starts_with("echo <<'WGPROMPT_END'"));
-        assert!(result.contains("Hello world"));
-        assert!(result.ends_with("WGPROMPT_END"));
-    }
-
-    #[test]
-    fn test_heredoc_command_with_quotes() {
-        // This is the bug case - single quotes in content
-        let content = "The function tanh'(S) → 0 as S → ∞";
-        let result = heredoc_command(content, "claude --print");
-        // Heredoc should preserve quotes without escaping
-        assert!(result.contains("tanh'(S)"));
-        assert!(result.starts_with("claude --print <<'WGPROMPT_END'"));
-    }
-
-    #[test]
-    fn test_heredoc_command_multiline() {
-        let content = "Line 1\nLine 2\nLine 3";
-        let result = heredoc_command(content, "cat");
-        assert!(result.contains("Line 1\nLine 2\nLine 3"));
+    fn test_prompt_file_command() {
+        let result = prompt_file_command("/tmp/prompt.txt", "claude --print");
+        assert!(result.contains("cat"));
+        assert!(result.contains("/tmp/prompt.txt"));
+        assert!(result.contains("claude --print"));
     }
 
     #[test]
