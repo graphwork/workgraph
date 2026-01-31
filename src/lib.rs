@@ -6,6 +6,7 @@ pub mod query;
 pub mod check;
 pub mod config;
 pub mod executors;
+#[cfg(feature = "matrix")]
 pub mod matrix;
 pub mod service;
 
@@ -20,6 +21,9 @@ pub use service::{
     PromptTemplate, ShellExecutor, ShellExecutorConfig, TemplateVars, spawn_claude_agent,
     spawn_shell_agent, DEFAULT_CLAUDE_PROMPT,
 };
+#[cfg(feature = "matrix")]
 pub use matrix::{MatrixClient, IncomingMessage, VerificationEvent};
+#[cfg(feature = "matrix")]
 pub use matrix::commands::{MatrixCommand, help_text as matrix_help_text};
+#[cfg(feature = "matrix")]
 pub use matrix::listener::{MatrixListener, ListenerConfig, run_listener};

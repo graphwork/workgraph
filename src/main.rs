@@ -609,6 +609,7 @@ enum Commands {
     },
 
     /// Send task notification to Matrix room
+    #[cfg(feature = "matrix")]
     Notify {
         /// Task ID to notify about
         task: String,
@@ -623,6 +624,7 @@ enum Commands {
     },
 
     /// Matrix integration commands
+    #[cfg(feature = "matrix")]
     Matrix {
         #[command(subcommand)]
         command: MatrixCommands,
@@ -737,6 +739,7 @@ enum ServiceCommands {
     },
 }
 
+#[cfg(feature = "matrix")]
 #[derive(Subcommand)]
 enum MatrixCommands {
     /// Start the Matrix message listener
@@ -1121,9 +1124,11 @@ fn main() -> Result<()> {
                 commands::service::run_daemon(&workgraph_dir, &socket)
             }
         }
+        #[cfg(feature = "matrix")]
         Commands::Notify { task, room, message } => {
             commands::notify::run(&workgraph_dir, &task, room.as_deref(), message.as_deref(), cli.json)
         }
+        #[cfg(feature = "matrix")]
         Commands::Matrix { command } => match command {
             MatrixCommands::Listen { room } => {
                 commands::matrix::run_listen(&workgraph_dir, room.as_deref())

@@ -49,7 +49,9 @@ pub mod dead_agents;
 pub mod agents;
 pub mod kill;
 pub mod service;
+#[cfg(feature = "matrix")]
 pub mod notify;
+#[cfg(feature = "matrix")]
 pub mod matrix;
 
 use std::path::Path;

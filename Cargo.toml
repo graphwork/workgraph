@@ -9,6 +9,10 @@ license = "MIT"
 name = "wg"
 path = "src/main.rs"
 
+[features]
+default = []
+matrix = ["dep:matrix-sdk", "dep:futures-util"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -20,9 +24,11 @@ chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 libc = "0.2"
 dirs = "5.0"
-matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-futures-util = "0.3"
+
+# Optional Matrix integration (requires sqlite3)
+matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
