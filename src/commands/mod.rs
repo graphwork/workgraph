@@ -1,6 +1,9 @@
 pub mod init;
 pub mod add;
 pub mod done;
+pub mod submit;
+pub mod approve;
+pub mod reject;
 pub mod fail;
 pub mod abandon;
 pub mod retry;

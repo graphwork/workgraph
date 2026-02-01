@@ -78,12 +78,50 @@ enum Commands {
         /// Preferred model for this task (haiku, sonnet, opus)
         #[arg(long)]
         model: Option<String>,
+
+        /// Verification criteria - task requires review before done
+        #[arg(long)]
+        verify: Option<String>,
     },
 
-    /// Mark a task as done
+    /// Mark a task as done (fails for verified tasks - use submit instead)
     Done {
         /// Task ID to mark as done
         id: String,
+    },
+
+    /// Submit work for review (for verified tasks)
+    Submit {
+        /// Task ID to submit
+        id: String,
+
+        /// Actor submitting the work
+        #[arg(long)]
+        actor: Option<String>,
+    },
+
+    /// Approve a pending-review task (marks as done)
+    Approve {
+        /// Task ID to approve
+        id: String,
+
+        /// Actor approving the work
+        #[arg(long)]
+        actor: Option<String>,
+    },
+
+    /// Reject a pending-review task (returns to open for rework)
+    Reject {
+        /// Task ID to reject
+        id: String,
+
+        /// Reason for rejection
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Actor rejecting the work
+        #[arg(long)]
+        actor: Option<String>,
     },
 
     /// Mark a task as failed (can be retried)
@@ -798,6 +836,7 @@ fn main() -> Result<()> {
             deliverable,
             max_retries,
             model,
+            verify,
         } => commands::add::run(
             &workgraph_dir,
             &title,
@@ -813,8 +852,12 @@ fn main() -> Result<()> {
             &deliverable,
             max_retries,
             model.as_deref(),
+            verify.as_deref(),
         ),
         Commands::Done { id } => commands::done::run(&workgraph_dir, &id),
+        Commands::Submit { id, actor } => commands::submit::run(&workgraph_dir, &id, actor.as_deref()),
+        Commands::Approve { id, actor } => commands::approve::run(&workgraph_dir, &id, actor.as_deref()),
+        Commands::Reject { id, reason, actor } => commands::reject::run(&workgraph_dir, &id, reason.as_deref(), actor.as_deref()),
         Commands::Fail { id, reason } => commands::fail::run(&workgraph_dir, &id, reason.as_deref()),
         Commands::Abandon { id, reason } => commands::abandon::run(&workgraph_dir, &id, reason.as_deref()),
         Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),

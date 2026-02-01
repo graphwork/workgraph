@@ -179,7 +179,7 @@ fn compute_summary(graph: &WorkGraph) -> Summary {
                     estimated_cost += est.cost.unwrap_or(0.0);
                 }
             }
-            Status::InProgress => {
+            Status::InProgress | Status::PendingReview => {
                 in_progress += 1;
                 // Include in-progress tasks in remaining estimates
                 if let Some(ref est) = task.estimate {
@@ -745,6 +745,7 @@ fn print_human_readable(output: &AnalysisOutput) {
                 Status::Blocked => "blocked".to_string(),
                 Status::Failed => "failed".to_string(),
                 Status::Abandoned => "abandoned".to_string(),
+                Status::PendingReview => "pending-review".to_string(),
             };
 
             let assigned_str = bottleneck
@@ -858,6 +859,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

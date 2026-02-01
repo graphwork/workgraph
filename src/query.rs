@@ -73,7 +73,7 @@ pub fn project_summary(graph: &WorkGraph) -> ProjectSummary {
                 }
             }
             Status::Done => done += 1,
-            Status::InProgress => in_progress += 1,
+            Status::InProgress | Status::PendingReview => in_progress += 1,
             Status::Blocked => {
                 // Explicit blocked status also counts
                 blocked_count += 1;
@@ -324,6 +324,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

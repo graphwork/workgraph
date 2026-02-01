@@ -190,6 +190,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     Status::Done => "done",
                     Status::Failed => "failed",
                     Status::Abandoned => "abandoned",
+                    Status::PendingReview => "pending-review",
                 };
 
                 let hours_str = task
@@ -409,6 +410,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 
@@ -441,6 +443,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

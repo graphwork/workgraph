@@ -30,6 +30,8 @@ pub enum Status {
     Blocked,
     Failed,
     Abandoned,
+    /// Work complete, awaiting verification/review
+    PendingReview,
 }
 
 /// A task node
@@ -96,6 +98,9 @@ pub struct Task {
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Verification criteria - if set, task requires review before done
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
 }
 
 fn is_zero(val: &u32) -> bool {
@@ -366,6 +371,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

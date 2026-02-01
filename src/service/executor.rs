@@ -522,6 +522,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

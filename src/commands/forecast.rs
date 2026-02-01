@@ -138,7 +138,7 @@ fn calculate_remaining_work(graph: &WorkGraph) -> RemainingWork {
         let hours = task.estimate.as_ref().and_then(|e| e.hours).unwrap_or(0.0);
 
         match task.status {
-            Status::InProgress => {
+            Status::InProgress | Status::PendingReview => {
                 in_progress_tasks += 1;
                 in_progress_hours += hours;
             }
@@ -547,6 +547,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

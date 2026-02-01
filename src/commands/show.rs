@@ -64,6 +64,8 @@ struct TaskDetails {
     failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verify: Option<String>,
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -143,6 +145,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
         model: task.model.clone(),
+        verify: task.verify.clone(),
     };
 
     if json {
@@ -286,6 +289,7 @@ fn format_status(status: &Status) -> &'static str {
         Status::Blocked => "blocked",
         Status::Failed => "failed",
         Status::Abandoned => "abandoned",
+        Status::PendingReview => "pending-review",
     }
 }
 
@@ -336,6 +340,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 
@@ -398,6 +403,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

@@ -167,6 +167,8 @@ pub fn run(
     let task_exec = task.exec.clone();
     // Get task model preference
     let task_model = task.model.clone();
+    // Check if task requires verification
+    let task_verified = task.verify.is_some();
 
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
@@ -234,6 +236,17 @@ pub fn run(
 
     // Create a wrapper script that runs the command and handles completion
     // This ensures tasks get marked done/failed even if the agent doesn't do it
+    let complete_cmd = if task_verified {
+        format!("wg submit \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+    } else {
+        format!("wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+    };
+    let complete_msg = if task_verified {
+        "[wrapper] Agent exited successfully, submitting for review"
+    } else {
+        "[wrapper] Agent exited successfully, marking task done"
+    };
+
     let wrapper_script = format!(
         r#"#!/bin/bash
 TASK_ID="{task_id}"
@@ -243,14 +256,14 @@ OUTPUT_FILE="{output_file}"
 {inner_command} >> "$OUTPUT_FILE" 2>&1
 EXIT_CODE=$?
 
-# Check if task is still in progress (agent didn't mark it done/failed)
+# Check if task is still in progress (agent didn't mark it done/failed/submitted)
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
 
 if [ "$TASK_STATUS" = "in_progress" ]; then
     if [ $EXIT_CODE -eq 0 ]; then
         echo "" >> "$OUTPUT_FILE"
-        echo "[wrapper] Agent exited successfully, marking task done" >> "$OUTPUT_FILE"
-        wg done "$TASK_ID" 2>> "$OUTPUT_FILE" || true
+        echo "{complete_msg}" >> "$OUTPUT_FILE"
+        {complete_cmd}
     else
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
@@ -263,6 +276,8 @@ exit $EXIT_CODE
         task_id = task_id,
         output_file = output_file_str,
         inner_command = inner_command,
+        complete_cmd = complete_cmd,
+        complete_msg = complete_msg,
     );
 
     // Write wrapper script
@@ -426,6 +441,8 @@ pub fn spawn_agent(
     let task_exec = task.exec.clone();
     // Get task model preference
     let task_model = task.model.clone();
+    // Check if task requires verification
+    let task_verified = task.verify.is_some();
 
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
@@ -493,6 +510,17 @@ pub fn spawn_agent(
 
     // Create a wrapper script that runs the command and handles completion
     // This ensures tasks get marked done/failed even if the agent doesn't do it
+    let complete_cmd = if task_verified {
+        format!("wg submit \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+    } else {
+        format!("wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+    };
+    let complete_msg = if task_verified {
+        "[wrapper] Agent exited successfully, submitting for review"
+    } else {
+        "[wrapper] Agent exited successfully, marking task done"
+    };
+
     let wrapper_script = format!(
         r#"#!/bin/bash
 TASK_ID="{task_id}"
@@ -502,14 +530,14 @@ OUTPUT_FILE="{output_file}"
 {inner_command} >> "$OUTPUT_FILE" 2>&1
 EXIT_CODE=$?
 
-# Check if task is still in progress (agent didn't mark it done/failed)
+# Check if task is still in progress (agent didn't mark it done/failed/submitted)
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
 
 if [ "$TASK_STATUS" = "in_progress" ]; then
     if [ $EXIT_CODE -eq 0 ]; then
         echo "" >> "$OUTPUT_FILE"
-        echo "[wrapper] Agent exited successfully, marking task done" >> "$OUTPUT_FILE"
-        wg done "$TASK_ID" 2>> "$OUTPUT_FILE" || true
+        echo "{complete_msg}" >> "$OUTPUT_FILE"
+        {complete_cmd}
     else
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
@@ -522,6 +550,8 @@ exit $EXIT_CODE
         task_id = task_id,
         output_file = output_file_str,
         inner_command = inner_command,
+        complete_cmd = complete_cmd,
+        complete_msg = complete_msg,
     );
 
     // Write wrapper script
@@ -634,6 +664,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

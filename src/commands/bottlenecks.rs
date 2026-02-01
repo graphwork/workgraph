@@ -102,6 +102,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 Status::Blocked => "blocked".to_string(),
                 Status::Failed => "FAILED (needs retry!)".to_string(),
                 Status::Abandoned => "abandoned".to_string(),
+                Status::PendingReview => "pending-review".to_string(),
             };
             print!("   Status: {}", status_str);
 
@@ -213,6 +214,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

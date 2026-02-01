@@ -24,6 +24,15 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Verified tasks must use submit -> approve workflow
+    if task.verify.is_some() {
+        anyhow::bail!(
+            "Task '{}' requires verification. Use 'wg submit {}' instead of 'wg done'.\n\
+             After submission, a reviewer must use 'wg approve {}' to complete it.",
+            id, id, id
+        );
+    }
+
     task.status = Status::Done;
     task.completed_at = Some(Utc::now().to_rfc3339());
 

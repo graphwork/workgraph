@@ -61,7 +61,7 @@ pub fn calculate_utilization(graph: &WorkGraph) -> Vec<ResourceUtilization> {
                     .unwrap_or(0.0);
 
                 match task.status {
-                    Status::Open | Status::InProgress | Status::Blocked => {
+                    Status::Open | Status::InProgress | Status::Blocked | Status::PendingReview => {
                         committed += cost;
                         if cost > 0.0 {
                             open_tasks.push(task.id.clone());
@@ -232,6 +232,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

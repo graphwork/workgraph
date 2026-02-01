@@ -74,6 +74,7 @@ pub fn run(dir: &Path, options: VizOptions) -> Result<()> {
                     Status::Blocked => "blocked",
                     Status::Failed => "failed",
                     Status::Abandoned => "abandoned",
+                    Status::PendingReview => "pending-review",
                 };
                 return task_status == status_filter.to_lowercase();
             }
@@ -136,6 +137,7 @@ fn generate_dot(
             Status::Open => "style=filled, fillcolor=white",
             Status::Failed => "style=filled, fillcolor=salmon",
             Status::Abandoned => "style=filled, fillcolor=lightgray",
+            Status::PendingReview => "style=filled, fillcolor=lightskyblue",
         };
 
         // Build label with hours estimate if available
@@ -275,6 +277,7 @@ fn generate_mermaid(
             Status::Open => format!("  {}[\"{}\"]", task.id, label),
             Status::Failed => format!("  {}{{{{\"{}\"}}}}!", task.id, label),
             Status::Abandoned => format!("  {}[\"{}\"]:::abandoned", task.id, label),
+            Status::PendingReview => format!("  {}([\"{}\"]) ", task.id, label), // Stadium shape
         };
         lines.push(node);
     }
@@ -503,6 +506,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 
@@ -535,6 +539,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            verify: None,
         }
     }
 

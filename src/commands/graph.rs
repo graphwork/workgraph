@@ -78,6 +78,7 @@ fn status_color(status: &Status, is_archived: bool) -> &'static str {
         Status::Open => "white",              // Ready to pick up
         Status::Failed => "salmon",           // Red-ish - needs attention
         Status::Abandoned => "lightgray",     // Grayed out
+        Status::PendingReview => "lightskyblue", // Blue - awaiting review
     }
 }
 
