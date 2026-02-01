@@ -71,6 +71,27 @@ Need to stop mid-task:
 wg unclaim <task-id>
 ```
 
+### Verified tasks
+
+Some tasks require human review before completion. These use a submit/approve workflow:
+
+```bash
+# Create a verified task
+wg add "Critical feature" --verify "Check tests pass and code reviewed"
+
+# Agent works and submits (can't use wg done)
+wg submit <task-id>  # → status: pending-review [R]
+
+# Reviewer approves or rejects
+wg approve <task-id>              # → status: done
+wg reject <task-id> --reason "..."  # → status: open (retry)
+```
+
+**Status indicators:**
+- `[R]` = pending-review (awaiting verification)
+
+**Auto-submit:** When spawned agents complete verified tasks, the wrapper automatically uses `submit` instead of `done`.
+
 ### Discovering new work
 
 Add tasks as you discover them:
@@ -327,6 +348,9 @@ Or set via CLI: `wg config --max-agents 3 --interval 15`
 wg init              # start a workgraph
 wg add <title>       # create task
 wg done <id>         # complete task
+wg submit <id>       # submit for review (verified tasks)
+wg approve <id>      # approve pending review
+wg reject <id>       # reject and return to open
 wg fail <id>         # mark failed
 wg abandon <id>      # give up on task
 wg retry <id>        # retry failed task
