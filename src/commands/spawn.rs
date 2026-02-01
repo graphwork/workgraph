@@ -232,10 +232,54 @@ pub fn run(
         }
     };
 
-    // Run command via bash, redirect output to log file
-    // Note: Output is buffered (no PTY) - claude's interactive prompts need TTY-free mode
+    // Create a wrapper script that runs the command and handles completion
+    // This ensures tasks get marked done/failed even if the agent doesn't do it
+    let wrapper_script = format!(
+        r#"#!/bin/bash
+TASK_ID="{task_id}"
+OUTPUT_FILE="{output_file}"
+
+# Run the agent command
+{inner_command} >> "$OUTPUT_FILE" 2>&1
+EXIT_CODE=$?
+
+# Check if task is still in progress (agent didn't mark it done/failed)
+TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+
+if [ "$TASK_STATUS" = "in_progress" ]; then
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Agent exited successfully, marking task done" >> "$OUTPUT_FILE"
+        wg done "$TASK_ID" 2>> "$OUTPUT_FILE" || true
+    else
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
+        wg fail "$TASK_ID" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
+
+exit $EXIT_CODE
+"#,
+        task_id = task_id,
+        output_file = output_file_str,
+        inner_command = inner_command,
+    );
+
+    // Write wrapper script
+    let wrapper_path = output_dir.join("run.sh");
+    fs::write(&wrapper_path, &wrapper_script)
+        .with_context(|| format!("Failed to write wrapper script: {:?}", wrapper_path))?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Run the wrapper script
     let mut cmd = Command::new("bash");
-    cmd.args(["-c", &format!("{} >> {} 2>&1", inner_command, shell_escape(&output_file_str))]);
+    cmd.arg(&wrapper_path);
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -251,8 +295,7 @@ pub fn run(
         cmd.current_dir(wd);
     }
 
-    // bash handles output redirect internally (>> logfile 2>&1)
-    // so we don't need Rust to capture stdout/stderr
+    // Wrapper script handles output redirect internally
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
@@ -448,10 +491,54 @@ pub fn spawn_agent(
         }
     };
 
-    // Run command via bash, redirect output to log file
-    // Note: Output is buffered (no PTY) - claude's interactive prompts need TTY-free mode
+    // Create a wrapper script that runs the command and handles completion
+    // This ensures tasks get marked done/failed even if the agent doesn't do it
+    let wrapper_script = format!(
+        r#"#!/bin/bash
+TASK_ID="{task_id}"
+OUTPUT_FILE="{output_file}"
+
+# Run the agent command
+{inner_command} >> "$OUTPUT_FILE" 2>&1
+EXIT_CODE=$?
+
+# Check if task is still in progress (agent didn't mark it done/failed)
+TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+
+if [ "$TASK_STATUS" = "in_progress" ]; then
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Agent exited successfully, marking task done" >> "$OUTPUT_FILE"
+        wg done "$TASK_ID" 2>> "$OUTPUT_FILE" || true
+    else
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
+        wg fail "$TASK_ID" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
+
+exit $EXIT_CODE
+"#,
+        task_id = task_id,
+        output_file = output_file_str,
+        inner_command = inner_command,
+    );
+
+    // Write wrapper script
+    let wrapper_path = output_dir.join("run.sh");
+    fs::write(&wrapper_path, &wrapper_script)
+        .with_context(|| format!("Failed to write wrapper script: {:?}", wrapper_path))?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Run the wrapper script
     let mut cmd = Command::new("bash");
-    cmd.args(["-c", &format!("{} >> {} 2>&1", inner_command, shell_escape(&output_file_str))]);
+    cmd.arg(&wrapper_path);
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -467,8 +554,7 @@ pub fn spawn_agent(
         cmd.current_dir(wd);
     }
 
-    // bash handles output redirect internally (>> logfile 2>&1)
-    // so we don't need Rust to capture stdout/stderr
+    // Wrapper script handles output redirect internally
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
