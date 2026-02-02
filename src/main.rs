@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod commands;
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "wg")]
@@ -658,6 +659,13 @@ enum Commands {
         command: ServiceCommands,
     },
 
+    /// Launch interactive TUI dashboard
+    Tui {
+        /// Data refresh rate in milliseconds (default: 2000)
+        #[arg(long, default_value = "2000")]
+        refresh_rate: u64,
+    },
+
     /// Send task notification to Matrix room
     #[cfg(feature = "matrix")]
     Notify {
@@ -780,17 +788,47 @@ enum ServiceCommands {
         /// Background poll interval in seconds (overrides config.toml coordinator.poll_interval)
         #[arg(long)]
         interval: Option<u64>,
+
+        /// Model to use for spawned agents (overrides config.toml coordinator.model)
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Stop the agent service daemon
     Stop {
-        /// Force stop (kill running agents)
+        /// Force stop (SIGKILL the daemon immediately)
         #[arg(long)]
         force: bool,
+
+        /// Also kill running agents (by default, detached agents continue running)
+        #[arg(long)]
+        kill_agents: bool,
     },
 
     /// Show service status
     Status,
+
+    /// Reload daemon configuration without restarting
+    ///
+    /// With flags: applies the specified overrides to the running daemon.
+    /// Without flags: re-reads config.toml from disk.
+    Reload {
+        /// Maximum number of parallel agents
+        #[arg(long)]
+        max_agents: Option<usize>,
+
+        /// Executor to use for spawned agents
+        #[arg(long)]
+        executor: Option<String>,
+
+        /// Background poll interval in seconds
+        #[arg(long)]
+        interval: Option<u64>,
+
+        /// Model to use for spawned agents
+        #[arg(long)]
+        model: Option<String>,
+    },
 
     /// Generate a systemd user service file for the wg service daemon
     Install,
@@ -813,6 +851,10 @@ enum ServiceCommands {
         /// Background poll interval in seconds (overrides config.toml coordinator.poll_interval)
         #[arg(long)]
         interval: Option<u64>,
+
+        /// Model to use for spawned agents (overrides config.toml coordinator.model)
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -1199,7 +1241,7 @@ fn main() -> Result<()> {
             }
         }
         Commands::Service { command } => match command {
-            ServiceCommands::Start { port, socket, max_agents, executor, interval } => {
+            ServiceCommands::Start { port, socket, max_agents, executor, interval, model } => {
                 commands::service::run_start(
                     &workgraph_dir,
                     socket.as_deref(),
@@ -1207,28 +1249,41 @@ fn main() -> Result<()> {
                     max_agents,
                     executor.as_deref(),
                     interval,
+                    model.as_deref(),
                     cli.json,
                 )
             }
-            ServiceCommands::Stop { force } => {
-                commands::service::run_stop(&workgraph_dir, force, cli.json)
+            ServiceCommands::Stop { force, kill_agents } => {
+                commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
             }
             ServiceCommands::Status => {
                 commands::service::run_status(&workgraph_dir, cli.json)
             }
+            ServiceCommands::Reload { max_agents, executor, interval, model } => {
+                commands::service::run_reload(
+                    &workgraph_dir,
+                    max_agents,
+                    executor.as_deref(),
+                    interval,
+                    model.as_deref(),
+                    cli.json,
+                )
+            }
             ServiceCommands::Install => {
                 commands::coordinator::generate_systemd_service(&workgraph_dir)
             }
-            ServiceCommands::Daemon { socket, max_agents, executor, interval } => {
+            ServiceCommands::Daemon { socket, max_agents, executor, interval, model } => {
                 commands::service::run_daemon(
                     &workgraph_dir,
                     &socket,
                     max_agents,
                     executor.as_deref(),
                     interval,
+                    model.as_deref(),
                 )
             }
         }
+        Commands::Tui { refresh_rate } => tui::run(workgraph_dir, refresh_rate),
         #[cfg(feature = "matrix")]
         Commands::Notify { task, room, message } => {
             commands::notify::run(&workgraph_dir, &task, room.as_deref(), message.as_deref(), cli.json)

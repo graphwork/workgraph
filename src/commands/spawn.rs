@@ -315,6 +315,20 @@ exit $EXIT_CODE
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
 
+    // Detach the agent into its own session so it survives daemon restart/crash.
+    // setsid() creates a new session and process group, making the agent
+    // independent of the daemon's process group.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
     // Spawn the process (don't wait)
     let child = cmd.spawn().with_context(|| {
         format!(
@@ -389,6 +403,7 @@ pub fn spawn_agent(
     task_id: &str,
     executor_name: &str,
     timeout: Option<&str>,
+    model: Option<&str>,
 ) -> Result<(String, u32)> {
     let graph_path = graph_path(dir);
 
@@ -468,8 +483,8 @@ pub fn spawn_agent(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
-    // Determine model: task.model preference (CLI model passed via spawn_agent doesn't apply here)
-    let effective_model = task_model;
+    // Determine model: coordinator/CLI model > task.model > none
+    let effective_model = model.map(|m| m.to_string()).or(task_model);
 
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
@@ -589,6 +604,20 @@ exit $EXIT_CODE
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
 
+    // Detach the agent into its own session so it survives daemon restart/crash.
+    // setsid() creates a new session and process group, making the agent
+    // independent of the daemon's process group.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
     // Spawn the process (don't wait)
     let child = cmd.spawn().with_context(|| {
         format!(
@@ -607,7 +636,11 @@ exit $EXIT_CODE
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(temp_agent_id.clone()),
-        message: format!("Spawned by wg spawn --executor {}", executor_name),
+        message: format!(
+            "Spawned by coordinator --executor {}{}",
+            executor_name,
+            effective_model.as_ref().map(|m| format!(" --model {}", m)).unwrap_or_default()
+        ),
     });
 
     save_graph(&graph, &graph_path).context("Failed to save graph")?;
@@ -616,13 +649,14 @@ exit $EXIT_CODE
     let agent_id = agent_registry.register(pid, task_id, executor_name, &output_file_str);
     agent_registry.save(dir)?;
 
-    // Write metadata
+    // Write metadata (includes model for auditability)
     let metadata_path = output_dir.join("metadata.json");
     let metadata = serde_json::json!({
         "agent_id": agent_id,
         "pid": pid,
         "task_id": task_id,
         "executor": executor_name,
+        "model": effective_model,
         "started_at": Utc::now().to_rfc3339(),
         "timeout": timeout,
     });

@@ -54,8 +54,10 @@ pub fn run(
             anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
         }
 
-        println!("Running single coordinator tick (max_agents={}, executor={})...", max_agents, &executor);
-        match coordinator_tick(dir, max_agents, &executor) {
+        let model = config.coordinator.model.clone();
+        println!("Running single coordinator tick (max_agents={}, executor={}, model={})...",
+                 max_agents, &executor, model.as_deref().unwrap_or("default"));
+        match coordinator_tick(dir, max_agents, &executor, model.as_deref()) {
             Ok(result) => {
                 println!("Tick complete: {} alive, {} ready, {} spawned",
                          result.agents_alive, result.tasks_ready, result.agents_spawned);
@@ -90,7 +92,7 @@ pub struct TickResult {
 }
 
 /// Single coordinator tick: spawn agents on ready tasks
-pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result<TickResult> {
+pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Option<&str>) -> Result<TickResult> {
     let graph_path = graph_path(dir);
 
     // Load config for heartbeat timeout
@@ -100,7 +102,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result
     // Clean up dead agents: process exited OR heartbeat stale
     let finished_agents = cleanup_dead_agents(dir, &graph_path, heartbeat_timeout_secs)?;
     if !finished_agents.is_empty() {
-        println!("[coordinator] Cleaned up {} dead agent(s): {:?}", finished_agents.len(), finished_agents);
+        eprintln!("[coordinator] Cleaned up {} dead agent(s): {:?}", finished_agents.len(), finished_agents);
     }
 
     // Now count truly alive agents (process still running and heartbeat fresh)
@@ -110,7 +112,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result
         .count();
 
     if alive_count >= max_agents {
-        println!("[coordinator] Max agents ({}) running, waiting...", max_agents);
+        eprintln!("[coordinator] Max agents ({}) running, waiting...", max_agents);
         return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
     }
 
@@ -124,9 +126,9 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result
         let done = graph.tasks().filter(|t| t.status == Status::Done).count();
         let total = graph.tasks().count();
         if done == total && total > 0 {
-            println!("[coordinator] All {} tasks complete!", total);
+            eprintln!("[coordinator] All {} tasks complete!", total);
         } else {
-            println!("[coordinator] No ready tasks (done: {}/{})", done, total);
+            eprintln!("[coordinator] No ready tasks (done: {}/{})", done, total);
         }
         return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
     }
@@ -140,10 +142,10 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str) -> Result
             continue;
         }
 
-        println!("[coordinator] Spawning agent for: {} - {}", task.id, task.title);
-        match spawn::spawn_agent(dir, &task.id, executor, None) {
+        eprintln!("[coordinator] Spawning agent for: {} - {}", task.id, task.title);
+        match spawn::spawn_agent(dir, &task.id, executor, None, model) {
             Ok((agent_id, pid)) => {
-                println!("[coordinator] Spawned {} (PID {})", agent_id, pid);
+                eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
                 spawned += 1;
             }
             Err(e) => {

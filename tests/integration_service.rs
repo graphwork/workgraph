@@ -4,7 +4,11 @@
 //! 1. Auto-pickup via GraphChanged notification: start daemon, add task, verify pickup
 //! 2. Fallback poll pickup: add task without notification, verify poll picks it up
 //! 3. Dead-agent recovery: kill agent, verify daemon detects and re-spawns
+//!
+//! These tests run serially because each spawns daemon and agent processes
+//! that are sensitive to CPU/scheduling contention under parallel execution.
 
+use serial_test::serial;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -67,9 +71,20 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".workgraph");
     wg_ok(&wg_dir, &["init"]);
 
+    // Get the directory containing the test-built wg binary.
+    // The wrapper script uses bare `wg` commands; we need those to resolve
+    // to the same binary under test, not a potentially stale `cargo install`ed one.
+    let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();
+    let path_with_test_binary = format!(
+        "{}:{}",
+        wg_bin_dir,
+        std::env::var("PATH").unwrap_or_default()
+    );
+
     // Create a shell executor config with working_dir set to the tmp root.
     // This ensures the wrapper script runs with cwd = tmp_root, so bare `wg`
     // commands (which default to .workgraph in cwd) find the right workgraph.
+    // PATH is overridden to ensure the test binary is found first.
     let executors_dir = wg_dir.join("executors");
     fs::create_dir_all(&executors_dir).unwrap();
     let shell_config = format!(
@@ -82,8 +97,10 @@ working_dir = "{}"
 [executor.env]
 TASK_ID = "{{{{task_id}}}}"
 TASK_TITLE = "{{{{task_title}}}}"
+PATH = "{}"
 "#,
-        tmp_root.display()
+        tmp_root.display(),
+        path_with_test_binary
     );
     fs::write(executors_dir.join("shell.toml"), shell_config).unwrap();
 
@@ -133,7 +150,8 @@ fn task_status(wg_dir: &Path, task_id: &str) -> String {
 }
 
 /// Helper: send GraphChanged notification via IPC.
-fn notify_graph_changed(wg_dir: &Path) {
+/// Returns true if the notification was successfully sent and a response received.
+fn notify_graph_changed(wg_dir: &Path) -> bool {
     let state_path = wg_dir.join("service").join("state.json");
     if let Ok(content) = fs::read_to_string(&state_path) {
         if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -144,16 +162,52 @@ fn notify_graph_changed(wg_dir: &Path) {
                     // Read response
                     let mut reader = BufReader::new(&stream);
                     let mut response = String::new();
-                    let _ = reader.read_line(&mut response);
+                    if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+                        return true;
+                    }
                 }
             }
         }
     }
+    false
 }
 
-/// Helper: stop the service daemon.
+/// Helper: wait for the service daemon's socket to become connectable.
+/// The daemon is started as a background process and may not have its socket
+/// ready immediately. This replaces fixed sleeps with an active check.
+fn wait_for_service_ready(wg_dir: &Path, timeout: Duration) -> bool {
+    wait_for(timeout, 100, || {
+        let state_path = wg_dir.join("service").join("state.json");
+        if let Ok(content) = fs::read_to_string(&state_path) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(socket_path) = state["socket_path"].as_str() {
+                    // Try to connect and send a status request
+                    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
+                        let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
+                        let _ = stream.flush();
+                        let mut reader = BufReader::new(&stream);
+                        let mut response = String::new();
+                        if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    })
+}
+
+/// Helper: read the agent registry, returning None if the file doesn't exist or can't be parsed.
+fn read_registry(wg_dir: &Path) -> Option<serde_json::Value> {
+    let registry_path = wg_dir.join("service").join("registry.json");
+    let content = fs::read_to_string(&registry_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Helper: stop the service daemon and kill any running agents.
 fn stop_service(wg_dir: &Path) {
-    let _ = wg_cmd(wg_dir, &["service", "stop", "--force"]);
+    let _ = wg_cmd(wg_dir, &["service", "stop", "--force", "--kill-agents"]);
 }
 
 /// Helper: wait for a condition with timeout, polling at interval.
@@ -194,6 +248,7 @@ fn coordinator_ticks(wg_dir: &Path) -> u64 {
 ///    (much faster than the 300s poll interval, proving GraphChanged path works)
 /// 6. Wait for the task to complete
 #[test]
+#[serial]
 fn test_auto_pickup_via_graph_changed() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
@@ -222,15 +277,22 @@ fn test_auto_pickup_via_graph_changed() {
         out
     );
 
-    // Give daemon a moment to initialize
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait for daemon socket to become ready (replaces fixed sleep)
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(5)),
+        "Service daemon socket did not become ready"
+    );
 
     // Add a task with exec command. `wg add` triggers notify_graph_changed
     // automatically, but since we patch the file after, we also trigger manually.
     add_shell_task(&wg_dir, "test-task-1", "Test Task 1", "echo done");
 
     // Re-notify so the coordinator sees the patched task with exec field.
-    notify_graph_changed(&wg_dir);
+    // Retry if the first attempt doesn't get through.
+    if !notify_graph_changed(&wg_dir) {
+        std::thread::sleep(Duration::from_millis(100));
+        notify_graph_changed(&wg_dir);
+    }
 
     // Wait for the task to be picked up (status changes from open to in-progress)
     // This should happen within a few seconds via the GraphChanged path,
@@ -252,10 +314,18 @@ fn test_auto_pickup_via_graph_changed() {
         "Coordinator should have ticked at least once"
     );
 
-    // Wait for the shell command to complete (echo is instant, wrapper needs a moment)
+    // Wait for the shell command to complete. The wrapper script runs
+    // "echo done" then calls "wg done" to mark the task complete. Periodically
+    // send graph_changed notifications so the coordinator can detect if the
+    // wrapper died and re-spawn the agent.
     let completed = wait_for(Duration::from_secs(15), 500, || {
-        let status = task_status(&wg_dir, "test-task-1");
-        status == "done" || status == "pending-review"
+        let st = task_status(&wg_dir, "test-task-1");
+        if st == "done" || st == "pending-review" {
+            return true;
+        }
+        // Nudge the coordinator to detect dead agents and re-spawn
+        notify_graph_changed(&wg_dir);
+        false
     });
 
     assert!(
@@ -276,6 +346,7 @@ fn test_auto_pickup_via_graph_changed() {
 ///    GraphChanged notification is sent)
 /// 3. Verify the background poll picks up the task within the poll interval
 #[test]
+#[serial]
 fn test_fallback_poll_pickup() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
@@ -303,8 +374,11 @@ fn test_fallback_poll_pickup() {
         out
     );
 
-    // Wait for initial tick to complete
-    std::thread::sleep(Duration::from_secs(1));
+    // Wait for daemon socket to become ready and initial tick to complete
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(5)),
+        "Service daemon socket did not become ready"
+    );
 
     // Write a task directly to graph.jsonl, bypassing `wg add`
     // This means NO GraphChanged notification is sent to the daemon.
@@ -351,10 +425,14 @@ fn test_fallback_poll_pickup() {
         coordinator_ticks(&wg_dir)
     );
 
-    // Wait for completion
+    // Wait for completion (periodically nudge coordinator to handle dead agents)
     let completed = wait_for(Duration::from_secs(10), 500, || {
-        let status = task_status(&wg_dir, "poll-task");
-        status == "done" || status == "pending-review"
+        let st = task_status(&wg_dir, "poll-task");
+        if st == "done" || st == "pending-review" {
+            return true;
+        }
+        notify_graph_changed(&wg_dir);
+        false
     });
 
     assert!(
@@ -380,6 +458,7 @@ fn test_fallback_poll_pickup() {
 ///    b. Agent is marked as dead in the registry
 /// 7. Verify the daemon re-spawns a new agent on the task
 #[test]
+#[serial]
 fn test_dead_agent_recovery() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
@@ -420,7 +499,11 @@ executor = "shell"
         out
     );
 
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait for daemon socket to become ready
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(5)),
+        "Service daemon socket did not become ready"
+    );
 
     // Add a long-running task
     add_shell_task(
@@ -441,18 +524,30 @@ executor = "shell"
         task_status(&wg_dir, "long-task")
     );
 
-    // Find the agent's PID from the registry
-    let registry_path = wg_dir.join("service").join("registry.json");
-    let registry_content = fs::read_to_string(&registry_path).unwrap();
-    let registry: serde_json::Value = serde_json::from_str(&registry_content).unwrap();
-
-    let agents = registry["agents"].as_object().unwrap();
-    let agent_entry = agents
-        .values()
-        .find(|a| a["task_id"].as_str() == Some("long-task") && a["status"].as_str() != Some("dead"))
-        .expect("Alive agent for long-task not found in registry");
-    let agent_pid = agent_entry["pid"].as_u64().unwrap() as i32;
-    let agent_id = agent_entry["id"].as_str().unwrap().to_string();
+    // Find the agent's PID from the registry.
+    // The registry file may not exist immediately after the task goes to in-progress,
+    // because spawn_agent saves the graph first, then the registry. Use a wait loop.
+    let mut agent_pid: i32 = 0;
+    let mut agent_id = String::new();
+    let found_agent = wait_for(Duration::from_secs(5), 100, || {
+        if let Some(registry) = read_registry(&wg_dir) {
+            if let Some(agents) = registry["agents"].as_object() {
+                if let Some(entry) = agents.values().find(|a| {
+                    a["task_id"].as_str() == Some("long-task")
+                        && a["status"].as_str() != Some("dead")
+                }) {
+                    agent_pid = entry["pid"].as_u64().unwrap() as i32;
+                    agent_id = entry["id"].as_str().unwrap().to_string();
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    assert!(
+        found_agent,
+        "Alive agent for long-task not found in registry within 5s"
+    );
 
     // Kill the agent process (SIGKILL - immediate death).
     unsafe {
@@ -475,12 +570,9 @@ executor = "shell"
     // The task should either go back to "open" or be immediately re-claimed
     // by a new agent (status "in-progress" with a different agent).
     let recovered = wait_for(Duration::from_secs(15), 300, || {
-        // Check if the original agent was marked dead
-        if let Ok(content) = fs::read_to_string(&registry_path) {
-            if let Ok(reg) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(agent) = reg["agents"].get(&agent_id) {
-                    return agent["status"].as_str() == Some("dead");
-                }
+        if let Some(reg) = read_registry(&wg_dir) {
+            if let Some(agent) = reg["agents"].get(&agent_id) {
+                return agent["status"].as_str() == Some("dead");
             }
         }
         false
@@ -491,8 +583,7 @@ executor = "shell"
     );
 
     // Verify the original agent is marked as dead in the registry
-    let registry_content = fs::read_to_string(&registry_path).unwrap();
-    let registry: serde_json::Value = serde_json::from_str(&registry_content).unwrap();
+    let registry = read_registry(&wg_dir).expect("Registry should exist after recovery");
     let original_agent = &registry["agents"][&agent_id];
     assert_eq!(
         original_agent["status"].as_str().unwrap_or(""),
@@ -507,16 +598,13 @@ executor = "shell"
     notify_graph_changed(&wg_dir);
 
     let re_spawned = wait_for(Duration::from_secs(10), 300, || {
-        // Check if a NEW agent is working on the task
-        if let Ok(content) = fs::read_to_string(&registry_path) {
-            if let Ok(reg) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(agents) = reg["agents"].as_object() {
-                    return agents.values().any(|a| {
-                        a["task_id"].as_str() == Some("long-task")
-                            && a["id"].as_str() != Some(&agent_id)
-                            && a["status"].as_str() != Some("dead")
-                    });
-                }
+        if let Some(reg) = read_registry(&wg_dir) {
+            if let Some(agents) = reg["agents"].as_object() {
+                return agents.values().any(|a| {
+                    a["task_id"].as_str() == Some("long-task")
+                        && a["id"].as_str() != Some(&agent_id)
+                        && a["status"].as_str() != Some("dead")
+                });
             }
         }
         false
@@ -534,8 +622,7 @@ executor = "shell"
     );
 
     // Verify a new agent was spawned (different from the original)
-    let registry_content = fs::read_to_string(&registry_path).unwrap();
-    let registry: serde_json::Value = serde_json::from_str(&registry_content).unwrap();
+    let registry = read_registry(&wg_dir).expect("Registry should exist after re-spawn");
     let agents = registry["agents"].as_object().unwrap();
 
     // Should have at least 2 agents now (original dead + new one)

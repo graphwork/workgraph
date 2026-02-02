@@ -22,6 +22,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -29,6 +30,131 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use workgraph::config::Config;
 use workgraph::service::AgentRegistry;
+
+// ---------------------------------------------------------------------------
+// Persistent daemon logger
+// ---------------------------------------------------------------------------
+
+/// Maximum log file size before rotation (10 MB)
+const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Path to the daemon log file
+pub fn log_file_path(dir: &Path) -> PathBuf {
+    dir.join("service").join("daemon.log")
+}
+
+/// A simple file-based logger with timestamps and size-based rotation.
+///
+/// The logger keeps one backup (`daemon.log.1`) and truncates when the active
+/// log exceeds [`LOG_MAX_BYTES`].
+#[derive(Clone)]
+pub struct DaemonLogger {
+    inner: Arc<Mutex<DaemonLoggerInner>>,
+}
+
+struct DaemonLoggerInner {
+    file: fs::File,
+    path: PathBuf,
+    written: u64,
+}
+
+impl DaemonLogger {
+    /// Open (or create) the log file at `.workgraph/service/daemon.log`.
+    pub fn open(dir: &Path) -> Result<Self> {
+        let service_dir = dir.join("service");
+        if !service_dir.exists() {
+            fs::create_dir_all(&service_dir)?;
+        }
+        let path = log_file_path(dir);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open daemon log at {:?}", path))?;
+        let written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(DaemonLoggerInner {
+                file,
+                path,
+                written,
+            })),
+        })
+    }
+
+    /// Write a timestamped line to the log.  `level` is a short tag like
+    /// `INFO`, `WARN`, or `ERROR`.
+    pub fn log(&self, level: &str, msg: &str) {
+        let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+        let line = format!("{} [{}] {}\n", ts, level, msg);
+        if let Ok(mut inner) = self.inner.lock() {
+            let _ = inner.file.write_all(line.as_bytes());
+            let _ = inner.file.flush();
+            inner.written += line.len() as u64;
+            if inner.written >= LOG_MAX_BYTES {
+                Self::rotate(&mut inner);
+            }
+        }
+    }
+
+    pub fn info(&self, msg: &str) {
+        self.log("INFO", msg);
+    }
+
+    pub fn warn(&self, msg: &str) {
+        self.log("WARN", msg);
+    }
+
+    pub fn error(&self, msg: &str) {
+        self.log("ERROR", msg);
+    }
+
+    /// Rotate: rename current log to `.log.1` (overwriting any previous
+    /// backup) and open a fresh file.
+    fn rotate(inner: &mut DaemonLoggerInner) {
+        let backup = inner.path.with_extension("log.1");
+        // Best-effort: ignore errors during rotation
+        let _ = fs::rename(&inner.path, &backup);
+        if let Ok(f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inner.path)
+        {
+            inner.file = f;
+            inner.written = 0;
+        }
+    }
+
+    /// Install a panic hook that writes the panic info to this log before
+    /// the process aborts.
+    pub fn install_panic_hook(&self) {
+        let logger = self.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = format!("PANIC: {}", info);
+            logger.log("FATAL", &msg);
+            default_hook(info);
+        }));
+    }
+}
+
+/// Read the last `n` lines from the daemon log that match the given level
+/// (or all lines if `level_filter` is `None`).  Returns up to `n` lines,
+/// most recent last.
+pub fn tail_log(dir: &Path, n: usize, level_filter: Option<&str>) -> Vec<String> {
+    let path = log_file_path(dir);
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let filtered: Vec<String> = if let Some(level) = level_filter {
+        let tag = format!("[{}]", level);
+        lines.iter().filter(|l| l.contains(&tag)).map(|l| l.to_string()).collect()
+    } else {
+        lines.iter().map(|l| l.to_string()).collect()
+    };
+    filtered.into_iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+}
 
 /// Default socket path (project-specific)
 pub fn default_socket_path(dir: &Path) -> PathBuf {
@@ -112,6 +238,9 @@ pub struct CoordinatorState {
     pub poll_interval: u64,
     /// Effective config: executor name
     pub executor: String,
+    /// Effective config: model for spawned agents
+    #[serde(default)]
+    pub model: Option<String>,
     /// Total coordinator ticks completed
     pub ticks: u64,
     /// ISO 8601 timestamp of the last tick
@@ -155,6 +284,8 @@ pub enum IpcRequest {
         executor: String,
         #[serde(default)]
         timeout: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
     },
     /// List all agents
     Agents,
@@ -172,9 +303,24 @@ pub enum IpcRequest {
     Shutdown {
         #[serde(default)]
         force: bool,
+        /// Whether to also kill running agents (default: false, agents continue independently)
+        #[serde(default)]
+        kill_agents: bool,
     },
     /// Notify that the graph has changed; triggers an immediate coordinator tick
     GraphChanged,
+    /// Reconfigure the coordinator at runtime.
+    /// If all fields are None, re-read config.toml from disk.
+    Reconfigure {
+        #[serde(default)]
+        max_agents: Option<usize>,
+        #[serde(default)]
+        executor: Option<String>,
+        #[serde(default)]
+        poll_interval: Option<u64>,
+        #[serde(default)]
+        model: Option<String>,
+    },
 }
 
 /// IPC Response types
@@ -207,7 +353,7 @@ impl IpcResponse {
 
 /// Start the service daemon
 #[cfg(unix)]
-pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_agents: Option<usize>, executor: Option<&str>, interval: Option<u64>, json: bool) -> Result<()> {
+pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_agents: Option<usize>, executor: Option<&str>, interval: Option<u64>, model: Option<&str>, json: bool) -> Result<()> {
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
         if is_process_running(state.pid) {
@@ -259,11 +405,29 @@ pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_
         args.push("--interval".to_string());
         args.push(i.to_string());
     }
+    if let Some(m) = model {
+        args.push("--model".to_string());
+        args.push(m.to_string());
+    }
+    // Redirect daemon stderr to the log file so early startup crashes and
+    // unexpected panics that bypass the DaemonLogger are captured.
+    let log_path = log_file_path(&dir);
+    let service_dir = dir.join("service");
+    if !service_dir.exists() {
+        fs::create_dir_all(&service_dir)
+            .context("Failed to create service directory for log file")?;
+    }
+    let stderr_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("Failed to open daemon log at {:?}", log_path))?;
+
     let child = process::Command::new(&current_exe)
         .args(&args)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
-        .stderr(process::Stdio::null())
+        .stderr(stderr_file)
         .spawn()
         .context("Failed to spawn daemon process")?;
 
@@ -293,31 +457,40 @@ pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_
     let eff_executor = executor
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.coordinator.executor.clone());
+    let eff_model: Option<String> = model
+        .map(|s| s.to_string())
+        .or_else(|| config.coordinator.model.clone());
+
+    let log_path_str = log_path.to_string_lossy().to_string();
 
     if json {
         let output = serde_json::json!({
             "status": "started",
             "pid": pid,
             "socket": socket_str,
+            "log": log_path_str,
             "coordinator": {
                 "max_agents": eff_max_agents,
                 "poll_interval": eff_poll_interval,
                 "executor": eff_executor,
+                "model": eff_model,
             }
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Service started (PID {})", pid);
         println!("Socket: {}", socket_str);
-        println!("Coordinator: max_agents={}, poll_interval={}s, executor={}",
-                 eff_max_agents, eff_poll_interval, eff_executor);
+        println!("Log: {}", log_path_str);
+        let model_str = eff_model.as_deref().unwrap_or("default");
+        println!("Coordinator: max_agents={}, poll_interval={}s, executor={}, model={}",
+                 eff_max_agents, eff_poll_interval, eff_executor, model_str);
     }
 
     Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn run_start(_dir: &Path, _socket_path: Option<&str>, _port: Option<u16>, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _json: bool) -> Result<()> {
+pub fn run_start(_dir: &Path, _socket_path: Option<&str>, _port: Option<u16>, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -337,10 +510,29 @@ fn reap_zombies() {
     }
 }
 
+/// Mutable coordinator runtime config, updated by Reconfigure IPC.
+struct DaemonConfig {
+    max_agents: usize,
+    executor: String,
+    poll_interval: Duration,
+    model: Option<String>,
+}
+
 /// Run the actual daemon loop (called by forked process)
 #[cfg(unix)]
-pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, cli_executor: Option<&str>, cli_interval: Option<u64>) -> Result<()> {
+pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, cli_executor: Option<&str>, cli_interval: Option<u64>, cli_model: Option<&str>) -> Result<()> {
     let socket = PathBuf::from(socket_path);
+
+    // --- Persistent logging setup ---
+    let logger = DaemonLogger::open(dir)
+        .context("Failed to initialise daemon logger")?;
+    logger.install_panic_hook();
+
+    logger.info(&format!(
+        "Daemon starting (PID {}, socket {})",
+        std::process::id(),
+        socket_path,
+    ));
 
     // Ensure socket directory exists
     if let Some(parent) = socket.parent() {
@@ -374,23 +566,28 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
 
     // Load coordinator config, CLI args override config values
     let config = Config::load(&dir).unwrap_or_default();
-    let coordinator_max_agents = cli_max_agents.unwrap_or(config.coordinator.max_agents);
-    let coordinator_executor = cli_executor.map(|s| s.to_string()).unwrap_or_else(|| config.coordinator.executor.clone());
-    // The poll_interval is the slow background safety-net timer.
-    // CLI --interval overrides it; otherwise use config.coordinator.poll_interval.
-    let poll_interval = Duration::from_secs(cli_interval.unwrap_or(config.coordinator.poll_interval));
+    let mut daemon_cfg = DaemonConfig {
+        max_agents: cli_max_agents.unwrap_or(config.coordinator.max_agents),
+        executor: cli_executor.map(|s| s.to_string()).unwrap_or_else(|| config.coordinator.executor.clone()),
+        // The poll_interval is the slow background safety-net timer.
+        // CLI --interval overrides it; otherwise use config.coordinator.poll_interval.
+        poll_interval: Duration::from_secs(cli_interval.unwrap_or(config.coordinator.poll_interval)),
+        model: cli_model.map(|s| s.to_string()).or_else(|| config.coordinator.model.clone()),
+    };
 
-    eprintln!(
-        "[service] Coordinator config: poll_interval={}s, max_agents={}, executor={}",
-        poll_interval.as_secs(), coordinator_max_agents, &coordinator_executor
-    );
+    logger.info(&format!(
+        "Coordinator config: poll_interval={}s, max_agents={}, executor={}, model={}",
+        daemon_cfg.poll_interval.as_secs(), daemon_cfg.max_agents, &daemon_cfg.executor,
+        daemon_cfg.model.as_deref().unwrap_or("default"),
+    ));
 
     // Initialize coordinator state on disk
     let mut coord_state = CoordinatorState {
         enabled: true,
-        max_agents: coordinator_max_agents,
-        poll_interval: poll_interval.as_secs(),
-        executor: coordinator_executor.clone(),
+        max_agents: daemon_cfg.max_agents,
+        poll_interval: daemon_cfg.poll_interval.as_secs(),
+        executor: daemon_cfg.executor.clone(),
+        model: daemon_cfg.model.clone(),
         ticks: 0,
         last_tick: None,
         agents_alive: 0,
@@ -400,23 +597,26 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
     coord_state.save(&dir);
 
     // Track last coordinator tick time - run immediately on start
-    let mut last_coordinator_tick = Instant::now() - poll_interval;
+    let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
     while running {
         // Reap zombie child processes (agents that have exited).
-        // Without this, SIGKILL'd agents remain as zombies and
-        // is_process_alive(pid) keeps returning true.
+        // Even though agents call setsid() to create a new session, they are
+        // still children of the daemon (parent-child is set at fork, not
+        // affected by setsid). Without reaping, killed agents remain as
+        // zombies and is_process_alive(pid) keeps returning true.
         reap_zombies();
 
         match listener.accept() {
             Ok((stream, _)) => {
                 let mut wake_coordinator = false;
-                if let Err(e) = handle_connection(&dir, stream, &mut running, &mut wake_coordinator) {
-                    eprintln!("Error handling connection: {}", e);
+                if let Err(e) = handle_connection(&dir, stream, &mut running, &mut wake_coordinator, &mut daemon_cfg, &logger) {
+                    logger.error(&format!("Error handling connection: {}", e));
                 }
                 if wake_coordinator {
+                    logger.info("GraphChanged received, scheduling immediate coordinator tick");
                     // Force an immediate coordinator tick
-                    last_coordinator_tick = Instant::now() - poll_interval;
+                    last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -424,50 +624,69 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
-                eprintln!("Accept error: {}", e);
+                logger.error(&format!("Accept error: {}", e));
             }
         }
 
         // Background safety-net tick: runs on poll_interval even without IPC events.
         // The fast-path is GraphChanged IPC which resets last_coordinator_tick.
-        if last_coordinator_tick.elapsed() >= poll_interval {
+        if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
             last_coordinator_tick = Instant::now();
+            logger.info(&format!(
+                "Coordinator tick #{} starting (max_agents={}, executor={})",
+                coord_state.ticks + 1, daemon_cfg.max_agents, &daemon_cfg.executor
+            ));
             match super::coordinator::coordinator_tick(
                 &dir,
-                coordinator_max_agents,
-                &coordinator_executor,
+                daemon_cfg.max_agents,
+                &daemon_cfg.executor,
+                daemon_cfg.model.as_deref(),
             ) {
                 Ok(result) => {
                     coord_state.ticks += 1;
                     coord_state.last_tick = Some(chrono::Utc::now().to_rfc3339());
+                    coord_state.max_agents = daemon_cfg.max_agents;
+                    coord_state.poll_interval = daemon_cfg.poll_interval.as_secs();
+                    coord_state.executor = daemon_cfg.executor.clone();
+                    coord_state.model = daemon_cfg.model.clone();
                     coord_state.agents_alive = result.agents_alive;
                     coord_state.tasks_ready = result.tasks_ready;
                     coord_state.agents_spawned = result.agents_spawned;
                     coord_state.save(&dir);
+                    logger.info(&format!(
+                        "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}",
+                        coord_state.ticks, result.agents_alive, result.tasks_ready, result.agents_spawned
+                    ));
                 }
                 Err(e) => {
-                    eprintln!("[service] Coordinator tick error: {}", e);
+                    coord_state.ticks += 1;
+                    coord_state.save(&dir);
+                    logger.error(&format!("Coordinator tick error: {}", e));
                 }
             }
         }
     }
+
+    logger.info("Daemon shutting down");
 
     // Cleanup
     let _ = fs::remove_file(&socket);
     CoordinatorState::remove(&dir);
     ServiceState::remove(&dir)?;
 
+    logger.info("Daemon shutdown complete");
+
     Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn run_daemon(_dir: &Path, _socket_path: &str, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>) -> Result<()> {
+pub fn run_daemon(_dir: &Path, _socket_path: &str, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>) -> Result<()> {
     anyhow::bail!("Daemon is only supported on Unix systems")
 }
 
 /// Handle a single IPC connection
 #[cfg(unix)]
-fn handle_connection(dir: &Path, stream: UnixStream, running: &mut bool, wake_coordinator: &mut bool) -> Result<()> {
+fn handle_connection(dir: &Path, stream: UnixStream, running: &mut bool, wake_coordinator: &mut bool, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
@@ -493,13 +712,14 @@ fn handle_connection(dir: &Path, stream: UnixStream, running: &mut bool, wake_co
         let request: IpcRequest = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
+                logger.warn(&format!("Invalid IPC request: {}", e));
                 let response = IpcResponse::error(&format!("Invalid request: {}", e));
                 write_response(&mut write_stream, &response)?;
                 continue;
             }
         };
 
-        let response = handle_request(dir, request, running, wake_coordinator);
+        let response = handle_request(dir, request, running, wake_coordinator, daemon_cfg, logger);
         write_response(&mut write_stream, &response)?;
 
         // Check if we should stop
@@ -520,18 +740,27 @@ fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> Result<()>
 }
 
 /// Handle an IPC request
-fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coordinator: &mut bool) -> IpcResponse {
+fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coordinator: &mut bool, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
     match request {
-        IpcRequest::Spawn { task_id, executor, timeout } => {
-            handle_spawn(dir, &task_id, &executor, timeout.as_deref())
+        IpcRequest::Spawn { task_id, executor, timeout, model } => {
+            logger.info(&format!("IPC Spawn: task_id={}, executor={}, timeout={:?}, model={:?}", task_id, executor, timeout, model));
+            let resp = handle_spawn(dir, &task_id, &executor, timeout.as_deref(), model.as_deref());
+            if !resp.ok {
+                logger.error(&format!("Spawn failed for task {}: {}", task_id, resp.error.as_deref().unwrap_or("unknown")));
+            }
+            resp
         }
         IpcRequest::Agents => handle_agents(dir),
-        IpcRequest::Kill { agent_id, force } => handle_kill(dir, &agent_id, force),
+        IpcRequest::Kill { agent_id, force } => {
+            logger.info(&format!("IPC Kill: agent_id={}, force={}", agent_id, force));
+            handle_kill(dir, &agent_id, force)
+        }
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),
         IpcRequest::Status => handle_status(dir),
-        IpcRequest::Shutdown { force } => {
+        IpcRequest::Shutdown { force, kill_agents } => {
+            logger.info(&format!("IPC Shutdown: force={}, kill_agents={}", force, kill_agents));
             *running = false;
-            handle_shutdown(dir, force)
+            handle_shutdown(dir, kill_agents, logger)
         }
         IpcRequest::GraphChanged => {
             *wake_coordinator = true;
@@ -540,18 +769,23 @@ fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coor
                 "action": "coordinator_wake_scheduled",
             }))
         }
+        IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
+            logger.info(&format!("IPC Reconfigure: max_agents={:?}, executor={:?}, poll_interval={:?}, model={:?}", max_agents, executor, poll_interval, model));
+            handle_reconfigure(dir, daemon_cfg, max_agents, executor, poll_interval, model, logger)
+        }
     }
 }
 
 /// Handle spawn request
-fn handle_spawn(dir: &Path, task_id: &str, executor: &str, timeout: Option<&str>) -> IpcResponse {
+fn handle_spawn(dir: &Path, task_id: &str, executor: &str, timeout: Option<&str>, model: Option<&str>) -> IpcResponse {
     // Use the spawn command implementation
-    match crate::commands::spawn::spawn_agent(dir, task_id, executor, timeout) {
+    match crate::commands::spawn::spawn_agent(dir, task_id, executor, timeout, model) {
         Ok((agent_id, pid)) => IpcResponse::success(serde_json::json!({
             "agent_id": agent_id,
             "pid": pid,
             "task_id": task_id,
             "executor": executor,
+            "model": model,
         })),
         Err(e) => IpcResponse::error(&e.to_string()),
     }
@@ -640,6 +874,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
             "max_agents": coord.max_agents,
             "poll_interval": coord.poll_interval,
             "executor": coord.executor,
+            "model": coord.model,
             "ticks": coord.ticks,
             "last_tick": coord.last_tick,
             "agents_alive": coord.agents_alive,
@@ -650,23 +885,97 @@ fn handle_status(dir: &Path) -> IpcResponse {
 }
 
 /// Handle shutdown request
-fn handle_shutdown(dir: &Path, force: bool) -> IpcResponse {
-    if force {
-        // Kill all agents
+fn handle_shutdown(dir: &Path, kill_agents: bool, logger: &DaemonLogger) -> IpcResponse {
+    if kill_agents {
+        // Only kill agents if explicitly requested.
+        // Agents are detached (setsid) and survive daemon stop by default.
         if let Err(e) = crate::commands::kill::run_all(dir, true, true) {
-            eprintln!("Error killing agents: {}", e);
+            logger.error(&format!("Error killing agents during shutdown: {}", e));
         }
     }
 
     IpcResponse::success(serde_json::json!({
         "status": "shutting_down",
-        "force": force,
+        "kill_agents": kill_agents,
+    }))
+}
+
+/// Handle reconfigure request: update daemon config at runtime.
+/// If all fields are None, re-read config.toml from disk.
+fn handle_reconfigure(
+    dir: &Path,
+    daemon_cfg: &mut DaemonConfig,
+    max_agents: Option<usize>,
+    executor: Option<String>,
+    poll_interval: Option<u64>,
+    model: Option<String>,
+    logger: &DaemonLogger,
+) -> IpcResponse {
+    let has_overrides = max_agents.is_some() || executor.is_some() || poll_interval.is_some() || model.is_some();
+
+    if has_overrides {
+        // Apply individual overrides
+        if let Some(n) = max_agents {
+            daemon_cfg.max_agents = n;
+        }
+        if let Some(e) = executor {
+            daemon_cfg.executor = e;
+        }
+        if let Some(i) = poll_interval {
+            daemon_cfg.poll_interval = Duration::from_secs(i);
+        }
+        if let Some(m) = model {
+            daemon_cfg.model = Some(m);
+        }
+    } else {
+        // No flags: re-read config.toml from disk
+        match Config::load(dir) {
+            Ok(config) => {
+                daemon_cfg.max_agents = config.coordinator.max_agents;
+                daemon_cfg.executor = config.coordinator.executor;
+                daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
+                daemon_cfg.model = config.coordinator.model;
+            }
+            Err(e) => {
+                logger.error(&format!("Failed to reload config.toml: {}", e));
+                return IpcResponse::error(&format!("Failed to reload config.toml: {}", e));
+            }
+        }
+    }
+
+    // Update persisted coordinator state so `wg service status` reflects the change
+    if let Some(mut coord_state) = CoordinatorState::load(dir) {
+        coord_state.max_agents = daemon_cfg.max_agents;
+        coord_state.executor = daemon_cfg.executor.clone();
+        coord_state.poll_interval = daemon_cfg.poll_interval.as_secs();
+        coord_state.model = daemon_cfg.model.clone();
+        coord_state.save(dir);
+    }
+
+    logger.info(&format!(
+        "Reconfigured: max_agents={}, executor={}, poll_interval={}s, model={}{}",
+        daemon_cfg.max_agents,
+        daemon_cfg.executor,
+        daemon_cfg.poll_interval.as_secs(),
+        daemon_cfg.model.as_deref().unwrap_or("default"),
+        if has_overrides { "" } else { " (from config.toml)" },
+    ));
+
+    IpcResponse::success(serde_json::json!({
+        "status": "reconfigured",
+        "source": if has_overrides { "flags" } else { "config.toml" },
+        "config": {
+            "max_agents": daemon_cfg.max_agents,
+            "executor": daemon_cfg.executor,
+            "poll_interval": daemon_cfg.poll_interval.as_secs(),
+            "model": daemon_cfg.model,
+        }
     }))
 }
 
 /// Stop the service daemon
 #[cfg(unix)]
-pub fn run_stop(dir: &Path, force: bool, json: bool) -> Result<()> {
+pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {
@@ -684,7 +993,7 @@ pub fn run_stop(dir: &Path, force: bool, json: bool) -> Result<()> {
     let socket = PathBuf::from(&state.socket_path);
     if socket.exists() {
         if let Ok(mut stream) = UnixStream::connect(&socket) {
-            let request = IpcRequest::Shutdown { force };
+            let request = IpcRequest::Shutdown { force, kill_agents };
             let json_req = serde_json::to_string(&request)?;
             let _ = writeln!(stream, "{}", json_req);
             let _ = stream.flush();
@@ -713,17 +1022,22 @@ pub fn run_stop(dir: &Path, force: bool, json: bool) -> Result<()> {
             "status": "stopped",
             "pid": state.pid,
             "force": force,
+            "kill_agents": kill_agents,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Service stopped (PID {})", state.pid);
+        if kill_agents {
+            println!("Service stopped (PID {}), agents killed", state.pid);
+        } else {
+            println!("Service stopped (PID {}), agents continue running", state.pid);
+        }
     }
 
     Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn run_stop(_dir: &Path, _force: bool, _json: bool) -> Result<()> {
+pub fn run_stop(_dir: &Path, _force: bool, _kill_agents: bool, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -779,8 +1093,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load(dir).unwrap_or_default();
 
+    // Log file info
+    let log_path = log_file_path(dir);
+    let log_path_str = log_path.to_string_lossy().to_string();
+    let log_exists = log_path.exists();
+    let recent_errors = tail_log(dir, 5, Some("ERROR"));
+    let recent_fatals = tail_log(dir, 5, Some("FATAL"));
+
     if json {
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "status": "running",
             "pid": state.pid,
             "socket": state.socket_path,
@@ -796,27 +1117,48 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "max_agents": coord.max_agents,
                 "poll_interval": coord.poll_interval,
                 "executor": coord.executor,
+                "model": coord.model,
                 "ticks": coord.ticks,
                 "last_tick": coord.last_tick,
                 "agents_alive": coord.agents_alive,
                 "tasks_ready": coord.tasks_ready,
                 "agents_spawned_last_tick": coord.agents_spawned,
+            },
+            "log": {
+                "path": log_path_str,
+                "exists": log_exists,
             }
         });
+        if !recent_errors.is_empty() || !recent_fatals.is_empty() {
+            let mut all_errors: Vec<String> = recent_fatals;
+            all_errors.extend(recent_errors);
+            output["log"]["recent_errors"] = serde_json::json!(all_errors);
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
         println!("Agents: {} alive, {} idle, {} total", alive_count, idle_count, registry.agents.len());
-        println!("Coordinator: enabled, max_agents={}, poll_interval={}s, executor={}",
-                 coord.max_agents, coord.poll_interval, coord.executor);
+        let model_str = coord.model.as_deref().unwrap_or("default");
+        println!("Coordinator: enabled, max_agents={}, poll_interval={}s, executor={}, model={}",
+                 coord.max_agents, coord.poll_interval, coord.executor, model_str);
         if let Some(ref last) = coord.last_tick {
             println!("  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={})",
                      last, coord.ticks, coord.agents_alive, coord.max_agents,
                      coord.tasks_ready, coord.agents_spawned);
         } else {
             println!("  No ticks yet");
+        }
+        println!("Log: {}", log_path_str);
+        if !recent_errors.is_empty() || !recent_fatals.is_empty() {
+            println!("  Recent errors:");
+            for line in &recent_fatals {
+                println!("    {}", line);
+            }
+            for line in &recent_errors {
+                println!("    {}", line);
+            }
         }
     }
 
@@ -825,6 +1167,59 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
 
 #[cfg(not(unix))]
 pub fn run_status(_dir: &Path, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Reload service daemon configuration at runtime
+#[cfg(unix)]
+pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>, interval: Option<u64>, model: Option<&str>, json: bool) -> Result<()> {
+    let request = IpcRequest::Reconfigure {
+        max_agents,
+        executor: executor.map(|s| s.to_string()),
+        poll_interval: interval,
+        model: model.map(|s| s.to_string()),
+    };
+
+    let response = send_request(dir, request)?;
+
+    if !response.ok {
+        let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if json {
+        if let Some(data) = &response.data {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        }
+    } else {
+        let has_flags = max_agents.is_some() || executor.is_some() || interval.is_some() || model.is_some();
+        if has_flags {
+            println!("Configuration updated");
+        } else {
+            println!("Configuration reloaded from config.toml");
+        }
+        if let Some(data) = &response.data {
+            if let Some(cfg) = data.get("config") {
+                let ma = cfg.get("max_agents").and_then(|v| v.as_u64()).unwrap_or(0);
+                let ex = cfg.get("executor").and_then(|v| v.as_str()).unwrap_or("?");
+                let pi = cfg.get("poll_interval").and_then(|v| v.as_u64()).unwrap_or(0);
+                let mdl = cfg.get("model").and_then(|v| v.as_str()).unwrap_or("default");
+                println!("Effective config: max_agents={}, executor={}, poll_interval={}s, model={}", ma, ex, pi, mdl);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_reload(_dir: &Path, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -995,17 +1390,20 @@ mod tests {
             task_id: "task-1".to_string(),
             executor: "claude".to_string(),
             timeout: Some("30m".to_string()),
+            model: Some("sonnet".to_string()),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"spawn\""));
         assert!(json.contains("\"task_id\":\"task-1\""));
+        assert!(json.contains("\"model\":\"sonnet\""));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::Spawn { task_id, executor, timeout } => {
+            IpcRequest::Spawn { task_id, executor, timeout, model } => {
                 assert_eq!(task_id, "task-1");
                 assert_eq!(executor, "claude");
                 assert_eq!(timeout, Some("30m".to_string()));
+                assert_eq!(model, Some("sonnet".to_string()));
             }
             _ => panic!("Wrong request type"),
         }
@@ -1070,5 +1468,176 @@ mod tests {
         // No state file, should report not running
         let result = run_status(temp_dir.path(), false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ipc_reconfigure_serialization_with_flags() {
+        let req = IpcRequest::Reconfigure {
+            max_agents: Some(8),
+            executor: Some("opencode".to_string()),
+            poll_interval: Some(120),
+            model: Some("sonnet".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"reconfigure\""));
+        assert!(json.contains("\"max_agents\":8"));
+        assert!(json.contains("\"executor\":\"opencode\""));
+        assert!(json.contains("\"poll_interval\":120"));
+        assert!(json.contains("\"model\":\"sonnet\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
+                assert_eq!(max_agents, Some(8));
+                assert_eq!(executor, Some("opencode".to_string()));
+                assert_eq!(poll_interval, Some(120));
+                assert_eq!(model, Some("sonnet".to_string()));
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_reconfigure_serialization_no_flags() {
+        // No flags means re-read from disk
+        let req = IpcRequest::Reconfigure {
+            max_agents: None,
+            executor: None,
+            poll_interval: None,
+            model: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"reconfigure\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
+                assert!(max_agents.is_none());
+                assert!(executor.is_none());
+                assert!(poll_interval.is_none());
+                assert!(model.is_none());
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_handle_reconfigure_with_flags() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create initial coordinator state on disk
+        let coord = CoordinatorState {
+            enabled: true,
+            max_agents: 4,
+            poll_interval: 60,
+            executor: "claude".to_string(),
+            ..Default::default()
+        };
+        fs::create_dir_all(dir.join("service")).unwrap();
+        coord.save(dir);
+
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+        };
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        let resp = handle_reconfigure(dir, &mut cfg, Some(8), Some("opencode".to_string()), None, Some("haiku".to_string()), &logger);
+        assert!(resp.ok);
+        assert_eq!(cfg.max_agents, 8);
+        assert_eq!(cfg.executor, "opencode");
+        assert_eq!(cfg.poll_interval, Duration::from_secs(60)); // unchanged
+        assert_eq!(cfg.model, Some("haiku".to_string()));
+
+        // Verify persisted state was updated
+        let loaded = CoordinatorState::load(dir).unwrap();
+        assert_eq!(loaded.max_agents, 8);
+        assert_eq!(loaded.executor, "opencode");
+    }
+
+    #[test]
+    fn test_handle_reconfigure_from_disk() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Write a config.toml
+        let config_content = r#"
+[coordinator]
+max_agents = 10
+executor = "shell"
+poll_interval = 120
+"#;
+        fs::write(dir.join("config.toml"), config_content).unwrap();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let coord = CoordinatorState {
+            enabled: true,
+            max_agents: 4,
+            poll_interval: 60,
+            executor: "claude".to_string(),
+            ..Default::default()
+        };
+        coord.save(dir);
+
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+        };
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        // No flags → re-read from disk
+        let resp = handle_reconfigure(dir, &mut cfg, None, None, None, None, &logger);
+        assert!(resp.ok);
+        assert_eq!(cfg.max_agents, 10);
+        assert_eq!(cfg.executor, "shell");
+        assert_eq!(cfg.poll_interval, Duration::from_secs(120));
+        assert_eq!(cfg.model, None); // config.toml doesn't set model
+    }
+
+    #[test]
+    fn test_daemon_logger_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        logger.info("test message");
+        logger.error("test error");
+        logger.warn("test warning");
+
+        let log_path = log_file_path(dir);
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("[INFO] test message"));
+        assert!(content.contains("[ERROR] test error"));
+        assert!(content.contains("[WARN] test warning"));
+    }
+
+    #[test]
+    fn test_tail_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        logger.info("info 1");
+        logger.error("error 1");
+        logger.info("info 2");
+        logger.error("error 2");
+        logger.error("error 3");
+
+        // Get last 2 error lines
+        let errors = tail_log(dir, 2, Some("ERROR"));
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("error 2"));
+        assert!(errors[1].contains("error 3"));
+
+        // Get all lines
+        let all = tail_log(dir, 100, None);
+        assert_eq!(all.len(), 5);
     }
 }

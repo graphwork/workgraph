@@ -76,6 +76,11 @@ pub struct CoordinatorConfig {
     /// Executor to use for spawned agents
     #[serde(default = "default_executor")]
     pub executor: String,
+
+    /// Model to use for spawned agents (e.g., "opus-4-5", "sonnet", "haiku")
+    /// Overrides agent.model when set. Can be further overridden by CLI --model.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 fn default_max_agents() -> usize {
@@ -97,6 +102,7 @@ impl Default for CoordinatorConfig {
             interval: default_coordinator_interval(),
             poll_interval: default_poll_interval(),
             executor: default_executor(),
+            model: None,
         }
     }
 }
