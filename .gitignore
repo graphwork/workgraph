@@ -1,1 +1,8 @@
 /target
+
+# Workgraph runtime state (project-specific)
+.workgraph/graph.jsonl
+.workgraph/service/
+.workgraph/agents/
+
+# Keep executor configs as examples (they're templates, not state)
