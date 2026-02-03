@@ -50,8 +50,22 @@ pub struct MatrixClient {
     sync_token: Option<String>,
 }
 
+/// Login response from Matrix API
+#[derive(Debug, Deserialize)]
+struct LoginResponse {
+    access_token: String,
+    user_id: String,
+    #[allow(dead_code)]
+    device_id: String,
+}
+
 impl MatrixClient {
     /// Create a new Matrix client
+    ///
+    /// Authentication priority:
+    /// 1. Cached access token from disk (from previous login)
+    /// 2. access_token from config
+    /// 3. Login with password to get new token
     pub async fn new(workgraph_dir: &Path, config: &MatrixConfig) -> Result<Self> {
         let homeserver_url = config
             .homeserver_url
@@ -62,21 +76,31 @@ impl MatrixClient {
 
         let user_id = config.username.as_ref().context("username is required")?.clone();
 
-        let access_token = config
-            .access_token
-            .as_ref()
-            .context("access_token is required for matrix-lite (password auth not supported)")?
-            .clone();
-
         let state_dir = workgraph_dir.join(MATRIX_STATE_DIR);
         std::fs::create_dir_all(&state_dir)?;
-
-        // Try to load sync token from disk
-        let sync_token = Self::load_sync_token(&state_dir);
 
         let http = HttpClient::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
+
+        // Try to get access token: cached > config > login
+        let access_token = if let Some(cached) = Self::load_access_token(&state_dir) {
+            cached
+        } else if let Some(token) = &config.access_token {
+            // Save config token as cached for future use
+            Self::save_access_token_static(&state_dir, token);
+            token.clone()
+        } else if let Some(password) = &config.password {
+            // Login with password
+            let token = Self::login(&http, &homeserver_url, &user_id, password).await?;
+            Self::save_access_token_static(&state_dir, &token);
+            token
+        } else {
+            anyhow::bail!("No access_token or password configured. Set one in ~/.config/workgraph/matrix.toml");
+        };
+
+        // Try to load sync token from disk
+        let sync_token = Self::load_sync_token(&state_dir);
 
         Ok(Self {
             http,
@@ -86,6 +110,64 @@ impl MatrixClient {
             workgraph_dir: workgraph_dir.to_path_buf(),
             sync_token,
         })
+    }
+
+    /// Login with username and password to get an access token
+    async fn login(http: &HttpClient, homeserver: &str, user_id: &str, password: &str) -> Result<String> {
+        // Extract localpart from user_id (@user:server -> user)
+        let localpart = user_id
+            .strip_prefix('@')
+            .and_then(|s| s.split(':').next())
+            .unwrap_or(user_id);
+
+        let url = format!("{}/_matrix/client/v3/login", homeserver);
+
+        let body = serde_json::json!({
+            "type": "m.login.password",
+            "identifier": {
+                "type": "m.id.user",
+                "user": localpart
+            },
+            "password": password,
+            "initial_device_display_name": "workgraph"
+        });
+
+        let resp = http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("Login request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Login failed: {} - {}", status, body);
+        }
+
+        let login_resp: LoginResponse = resp.json().await.context("Failed to parse login response")?;
+        Ok(login_resp.access_token)
+    }
+
+    fn load_access_token(state_dir: &Path) -> Option<String> {
+        let path = state_dir.join("access_token");
+        std::fs::read_to_string(path).ok().filter(|s| !s.is_empty())
+    }
+
+    fn save_access_token_static(state_dir: &Path, token: &str) {
+        let path = state_dir.join("access_token");
+        let _ = std::fs::write(path, token);
+    }
+
+    fn save_access_token(&self) {
+        Self::save_access_token_static(&self.state_dir(), &self.access_token);
+    }
+
+    /// Clear cached credentials (forces re-login on next use)
+    pub fn clear_cache(workgraph_dir: &Path) {
+        let state_dir = workgraph_dir.join(MATRIX_STATE_DIR);
+        let _ = std::fs::remove_file(state_dir.join("access_token"));
+        let _ = std::fs::remove_file(state_dir.join("sync_token"));
     }
 
     fn state_dir(&self) -> PathBuf {

@@ -182,6 +182,57 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Login with password and cache the access token
+pub fn run_login(dir: &Path) -> Result<()> {
+    let matrix_config = MatrixConfig::load().context("Failed to load Matrix config")?;
+
+    if matrix_config.homeserver_url.is_none() || matrix_config.username.is_none() {
+        anyhow::bail!(
+            "Matrix not configured. Set homeserver and username in ~/.config/workgraph/matrix.toml:\n\n\
+             homeserver_url = \"https://matrix.org\"\n\
+             username = \"@user:matrix.org\"\n\
+             password = \"your_password\""
+        );
+    }
+
+    if matrix_config.password.is_none() && matrix_config.access_token.is_none() {
+        anyhow::bail!(
+            "No password or access_token configured.\n\n\
+             Add to ~/.config/workgraph/matrix.toml:\n\
+             password = \"your_password\""
+        );
+    }
+
+    // Clear any cached token to force re-login
+    MatrixClient::clear_cache(dir);
+
+    let rt = Runtime::new().context("Failed to create async runtime")?;
+
+    rt.block_on(async {
+        let mut client = MatrixClient::new(dir, &matrix_config)
+            .await
+            .context("Login failed")?;
+
+        // Do a sync to verify the token works
+        client.sync_once().await.context("Failed to sync - token may be invalid")?;
+
+        if let Some(user_id) = client.user_id() {
+            println!("Logged in as {}", user_id);
+            println!("Access token cached in .workgraph/matrix/");
+        }
+
+        Ok(())
+    })
+}
+
+/// Logout and clear cached credentials
+pub fn run_logout(dir: &Path) -> Result<()> {
+    MatrixClient::clear_cache(dir);
+    println!("Logged out. Cached credentials cleared.");
+    println!("Run 'wg matrix login' to log in again.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     // Tests would require Matrix test infrastructure

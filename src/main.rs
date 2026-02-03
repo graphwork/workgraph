@@ -908,6 +908,12 @@ enum MatrixCommands {
 
     /// Show Matrix connection status
     Status,
+
+    /// Login with password (caches access token)
+    Login,
+
+    /// Logout and clear cached credentials
+    Logout,
 }
 
 fn main() -> Result<()> {
@@ -1319,6 +1325,12 @@ fn main() -> Result<()> {
             }
             MatrixCommands::Status => {
                 commands::matrix::run_status(&workgraph_dir, cli.json)
+            }
+            MatrixCommands::Login => {
+                commands::matrix::run_login(&workgraph_dir)
+            }
+            MatrixCommands::Logout => {
+                commands::matrix::run_logout(&workgraph_dir)
             }
         }
     }
