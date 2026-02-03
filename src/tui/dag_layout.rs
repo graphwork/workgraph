@@ -220,7 +220,9 @@ impl DagLayout {
 
         // Build a mapping from task ID (String) to a numeric ID for ascii-dag
         // and collect the edges
-        let task_ids: Vec<String> = tasks.keys().cloned().collect();
+        // Sort task_ids for deterministic layout ordering (HashMap iteration is non-deterministic)
+        let mut task_ids: Vec<String> = tasks.keys().cloned().collect();
+        task_ids.sort();
         let id_to_num: HashMap<&str, usize> = task_ids
             .iter()
             .enumerate()
@@ -418,7 +420,10 @@ impl DagLayout {
         }
 
         // Build back-edges for cycles (will be routed later in reroute_edges)
-        let layout_back_edges: Vec<BackEdge> = back_edge_set
+        // Sort for deterministic ordering (HashSet iteration is non-deterministic)
+        let mut back_edge_list: Vec<(usize, usize)> = back_edge_set.into_iter().collect();
+        back_edge_list.sort();
+        let layout_back_edges: Vec<BackEdge> = back_edge_list
             .iter()
             .filter_map(|&(from_num, to_num)| {
                 let from_id = num_to_id.get(&from_num).copied()?;
@@ -1511,5 +1516,54 @@ mod tests {
         let edges = vec![(0, 0)];
         let back_edges = detect_back_edges(1, &edges);
         assert_eq!(back_edges.len(), 1, "Should detect self-loop as back-edge");
+    }
+
+    #[test]
+    fn test_dag_layout_deterministic_ordering() {
+        // Test that layout is deterministic across multiple runs
+        // This verifies the fix for HashMap/HashSet non-deterministic iteration
+        let mut graph = WorkGraph::new();
+        add_task(&mut graph, make_task("z", "Task Z", vec![]));
+        add_task(&mut graph, make_task("a", "Task A", vec!["z"]));
+        add_task(&mut graph, make_task("m", "Task M", vec!["z"]));
+        add_task(&mut graph, make_task("b", "Task B", vec!["a", "m"]));
+
+        let critical = HashSet::new();
+        let agents = HashMap::new();
+
+        // Compute layout multiple times and verify consistency
+        let mut first_node_order: Option<Vec<String>> = None;
+        let mut first_node_positions: Option<Vec<(usize, usize)>> = None;
+
+        for iteration in 0..10 {
+            let mut layout = DagLayout::compute(&graph, &critical, &agents);
+            center_layers(&mut layout);
+            reroute_edges(&mut layout, &graph);
+
+            let node_order: Vec<String> = layout.nodes.iter()
+                .map(|n| n.task_id.clone())
+                .collect();
+            let node_positions: Vec<(usize, usize)> = layout.nodes.iter()
+                .map(|n| (n.x, n.y))
+                .collect();
+
+            if let Some(ref first) = first_node_order {
+                assert_eq!(
+                    &node_order, first,
+                    "Node order changed on iteration {}", iteration
+                );
+            } else {
+                first_node_order = Some(node_order);
+            }
+
+            if let Some(ref first) = first_node_positions {
+                assert_eq!(
+                    &node_positions, first,
+                    "Node positions changed on iteration {}", iteration
+                );
+            } else {
+                first_node_positions = Some(node_positions);
+            }
+        }
     }
 }

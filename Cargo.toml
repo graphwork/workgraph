@@ -10,8 +10,9 @@ name = "wg"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["matrix-lite"]
 matrix = ["dep:matrix-sdk", "dep:futures-util"]
+matrix-lite = ["dep:reqwest", "dep:urlencoding"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +33,10 @@ ascii-dag = "0.8"
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
 futures-util = { version = "0.3", optional = true }
+
+# Lightweight Matrix integration (just HTTP, no E2EE/sqlite)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+urlencoding = { version = "2.1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

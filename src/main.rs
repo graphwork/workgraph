@@ -668,7 +668,7 @@ enum Commands {
     Status,
 
     /// Send task notification to Matrix room
-    #[cfg(feature = "matrix")]
+    #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
     Notify {
         /// Task ID to notify about
         task: String,
@@ -683,7 +683,7 @@ enum Commands {
     },
 
     /// Matrix integration commands
-    #[cfg(feature = "matrix")]
+    #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
     Matrix {
         #[command(subcommand)]
         command: MatrixCommands,
@@ -880,7 +880,7 @@ enum ServiceCommands {
     },
 }
 
-#[cfg(feature = "matrix")]
+#[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 #[derive(Subcommand)]
 enum MatrixCommands {
     /// Start the Matrix message listener
@@ -1305,11 +1305,11 @@ fn main() -> Result<()> {
         Commands::Tui { refresh_rate } => tui::run(workgraph_dir, refresh_rate),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
-        #[cfg(feature = "matrix")]
+        #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify { task, room, message } => {
             commands::notify::run(&workgraph_dir, &task, room.as_deref(), message.as_deref(), cli.json)
         }
-        #[cfg(feature = "matrix")]
+        #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Matrix { command } => match command {
             MatrixCommands::Listen { room } => {
                 commands::matrix::run_listen(&workgraph_dir, room.as_deref())

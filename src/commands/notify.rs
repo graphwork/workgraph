@@ -8,7 +8,13 @@ use serde::Serialize;
 use std::path::Path;
 use workgraph::graph::{Status, Task};
 use workgraph::parser::load_graph;
-use workgraph::{MatrixClient, MatrixConfig};
+use workgraph::MatrixConfig;
+
+// Use the appropriate Matrix client based on the enabled feature
+#[cfg(feature = "matrix")]
+use workgraph::MatrixClient;
+#[cfg(all(feature = "matrix-lite", not(feature = "matrix")))]
+use workgraph::MatrixClientLite as MatrixClient;
 
 use super::graph_path;
 

@@ -54,9 +54,9 @@ pub mod kill;
 pub mod service;
 pub mod quickstart;
 pub mod status;
-#[cfg(feature = "matrix")]
+#[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
-#[cfg(feature = "matrix")]
+#[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
 
 use std::path::Path;

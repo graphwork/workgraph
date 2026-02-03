@@ -9,7 +9,12 @@ use std::path::Path;
 use tokio::runtime::Runtime;
 
 use workgraph::config::MatrixConfig;
+
+// Use the appropriate Matrix types based on the enabled feature
+#[cfg(feature = "matrix")]
 use workgraph::{ListenerConfig, MatrixClient, MatrixListener};
+#[cfg(all(feature = "matrix-lite", not(feature = "matrix")))]
+use workgraph::{ListenerConfigLite as ListenerConfig, MatrixClientLite as MatrixClient, MatrixListenerLite as MatrixListener};
 
 /// Run the Matrix listener
 ///
@@ -52,7 +57,7 @@ pub fn run_listen(dir: &Path, room: Option<&str>) -> Result<()> {
     let rt = Runtime::new().context("Failed to create async runtime")?;
 
     rt.block_on(async {
-        let listener = MatrixListener::new(dir, &matrix_config, listener_config)
+        let mut listener = MatrixListener::new(dir, &matrix_config, listener_config)
             .await
             .context("Failed to create Matrix listener")?;
 
@@ -84,7 +89,7 @@ pub fn run_send(dir: &Path, room: Option<&str>, message: &str) -> Result<()> {
     let rt = Runtime::new().context("Failed to create async runtime")?;
 
     rt.block_on(async {
-        let client = MatrixClient::new(dir, &matrix_config)
+        let mut client = MatrixClient::new(dir, &matrix_config)
             .await
             .context("Failed to create Matrix client")?;
 

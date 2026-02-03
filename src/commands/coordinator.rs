@@ -20,6 +20,25 @@ use super::dead_agents::is_process_alive;
 
 use super::{graph_path, spawn};
 
+/// Send Matrix notification (if enabled)
+#[cfg(feature = "matrix-lite")]
+fn notify_matrix(dir: &Path, message: &str) {
+    use tokio::runtime::Runtime;
+
+    if let Ok(config) = workgraph::config::Config::load(dir) {
+        if config.coordinator.notify_matrix {
+            if let Ok(rt) = Runtime::new() {
+                let _ = rt.block_on(workgraph::send_notification(dir, message));
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "matrix-lite"))]
+fn notify_matrix(_dir: &Path, _message: &str) {
+    // Matrix-lite not enabled, no-op
+}
+
 /// Run the coordinator command (deprecated - delegates to service)
 ///
 /// - `--once`: Run a single coordinator tick and exit (kept for debugging)
@@ -127,6 +146,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         let total = graph.tasks().count();
         if done == total && total > 0 {
             eprintln!("[coordinator] All {} tasks complete!", total);
+            notify_matrix(dir, &format!("✅ All {} tasks complete!", total));
         } else {
             eprintln!("[coordinator] No ready tasks (done: {}/{})", done, total);
         }

@@ -8,6 +8,8 @@ pub mod config;
 pub mod executors;
 #[cfg(feature = "matrix")]
 pub mod matrix;
+#[cfg(feature = "matrix-lite")]
+pub mod matrix_lite;
 pub mod service;
 
 pub use graph::{WorkGraph, Node, NodeKind, Task, Actor, ActorType, Resource, Estimate, ResponseTime};
@@ -27,3 +29,9 @@ pub use matrix::{MatrixClient, IncomingMessage, VerificationEvent};
 pub use matrix::commands::{MatrixCommand, help_text as matrix_help_text};
 #[cfg(feature = "matrix")]
 pub use matrix::listener::{MatrixListener, ListenerConfig, run_listener};
+#[cfg(feature = "matrix-lite")]
+pub use matrix_lite::{MatrixClient as MatrixClientLite, IncomingMessage as IncomingMessageLite, send_notification, send_notification_to_room};
+#[cfg(feature = "matrix-lite")]
+pub use matrix_lite::commands::{MatrixCommand as MatrixCommandLite, help_text as matrix_lite_help_text};
+#[cfg(feature = "matrix-lite")]
+pub use matrix_lite::listener::{MatrixListener as MatrixListenerLite, ListenerConfig as ListenerConfigLite, run_listener as run_listener_lite};
