@@ -12,12 +12,11 @@ wg add "Design the API"
 wg add "Build the backend" --blocked-by design-the-api
 wg add "Write tests" --blocked-by build-the-backend
 
-wg ready        # what can I work on?
-wg claim design-the-api --actor erik
-wg done design-the-api   # automatically unblocks the next task
+wg service start   # spawns agents on ready tasks automatically
+wg agents          # who's working on what?
 ```
 
-Tasks flow through `open → in-progress → done`. Dependencies are respected. No one works on the same thing twice.
+Tasks flow through `open → in-progress → done`. Dependencies are respected. The service handles claiming and spawning — no one works on the same thing twice.
 
 ## Install
 
@@ -82,7 +81,11 @@ wg actor add claude --name "Claude" --role agent -c coding -c testing -c docs
 ### 4. Start working
 
 ```bash
-wg ready                         # see what's available
+# Service mode (recommended) — auto-spawns agents on ready tasks
+wg service start
+
+# Or manual mode — claim and work on tasks yourself
+wg ready
 wg claim set-up-ci-pipeline --actor erik
 # ... do the work ...
 wg done set-up-ci-pipeline       # unblocks deploy-to-staging
@@ -90,7 +93,7 @@ wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 
 ## Using with AI Coding Assistants
 
-Workgraph includes a skill definition that teaches AI assistants the full protocol.
+Workgraph includes a skill definition that teaches AI assistants to use the service as a coordinator.
 
 ### Claude Code
 
@@ -106,60 +109,67 @@ cp -r .claude/skills/wg /path/to/your-project/.claude/skills/
 
 The skill has YAML frontmatter so Claude auto-detects when to use it. You can also invoke explicitly with `/wg`.
 
-### OpenCode / Codex / Other Agents
+Add this to your project's `CLAUDE.md` (or `~/.claude/CLAUDE.md` for global):
 
-```bash
-cat .claude/skills/wg/SKILL.md >> /path/to/your-project/AGENTS.md
+```markdown
+Use workgraph for task management.
+
+At the start of each session, run `wg quickstart` in your terminal to orient yourself.
+Use `wg service start` to dispatch work — do not manually claim tasks.
 ```
 
-Or just add the core instruction:
+### OpenCode / Codex / Other Agents
+
+Add the core instruction to your agent's system prompt or `AGENTS.md`:
 
 ```markdown
 ## Task Management
 
-Use workgraph (`wg`) for task coordination:
-- `wg ready` to see available tasks
-- `wg claim <task> --actor <name>` before working
-- `wg done <task>` when complete
-- `wg fail <task> --reason "..."` if blocked
+Use workgraph (`wg`) for task coordination. Run `wg quickstart` to orient yourself.
 
+As a top-level agent, use service mode — do not manually claim tasks:
+- `wg service start` to start the coordinator
+- `wg add "Task" --blocked-by dep` to define work
+- `wg list` / `wg agents` to monitor progress
+
+The service automatically spawns agents and claims tasks.
 See `wg --help` for all commands.
 ```
 
 ### What the skill teaches
 
-The full skill covers:
-- When to use workgraph (multi-step projects, cross-session work, coordination)
-- The claim/work/done protocol
-- Progress logging and artifact tracking
-- Planning with dependencies
-- Analysis commands for project health
-- Agent service (spawn, kill, monitoring)
-- Multi-agent coordination rules
-
-It's designed to be self-contained - an agent can read it and immediately know how to participate.
+The skill teaches agents to:
+- Run `wg quickstart` at session start to orient themselves
+- Act as a coordinator: start the service, define tasks, monitor progress
+- Let the service handle claiming and spawning — not do it manually
+- Use manual mode only as a fallback when working alone without the service
 
 ## Agentic workflows
 
-### Pattern 1: Human plans, agent executes
+### Pattern 1: Service mode (recommended)
 
-You define the work, agent does it:
+Start the service and let it handle everything:
 
 ```bash
-# You: create the plan
+# Define the work
 wg add "Refactor auth module" --skill rust
 wg add "Update tests" --blocked-by refactor-auth-module --skill testing
 wg add "Update docs" --blocked-by refactor-auth-module --skill docs
 
-# Agent: execute
-wg agent --actor claude --max-tasks 10
+# Start the service — it spawns agents on ready tasks automatically
+wg service start --max-agents 4
+
+# Monitor
+wg agents    # who's working on what
+wg list      # task status
+wg tui       # interactive dashboard
 ```
 
-The agent will work through ready tasks, respecting dependencies.
+The service claims tasks, spawns agents, detects dead agents, and picks up newly unblocked work — all automatically.
 
-### Pattern 2: Agent plans and executes
+### Pattern 2: Agent plans, service executes
 
-Let the agent figure out what needs doing:
+Let a top-level agent define the work, then the service dispatches it:
 
 ```markdown
 # In CLAUDE.md or your prompt:
@@ -167,54 +177,33 @@ Let the agent figure out what needs doing:
 Break down this goal into tasks using workgraph:
 1. Analyze what needs to be done
 2. Create tasks with `wg add`, linking dependencies with --blocked-by
-3. Work through them with `wg ready` / `wg claim` / `wg done`
-4. If you discover more work, add it to the graph
+3. Start `wg service start` to dispatch work automatically
+4. Monitor with `wg list` and `wg agents`
+5. If you discover more work, add it to the graph — the service picks it up
 ```
 
-### Pattern 3: Top-level coordinator
-
-One agent manages the work, spawns sub-agents for execution:
-
-```markdown
-# Coordinator prompt:
-
-You are a project coordinator. Your job:
-1. Check `wg ready` for available work
-2. For each ready task, spawn a sub-agent to handle it
-3. Sub-agents should `wg claim`, do the work, then `wg done` or `wg fail`
-4. Monitor progress with `wg list` and `wg analyze`
-5. Replan if needed - add tasks, adjust dependencies
-6. Continue until `wg ready` returns nothing and all tasks are done
-```
-
-### Pattern 4: Parallel agents
-
-Multiple agents working simultaneously:
-
-```bash
-# Terminal 1
-wg agent --actor claude-1
-
-# Terminal 2
-wg agent --actor claude-2
-
-# Terminal 3
-wg agent --actor claude-3
-```
-
-Each agent claims different tasks. The claim mechanism prevents conflicts.
-
-### Pattern 5: Mixed human + AI
+### Pattern 3: Mixed human + AI
 
 ```bash
 # Human claims the design work
 wg claim design-api --actor erik
 
-# Agent handles implementation once design is done
-wg agent --actor claude
+# Service handles implementation once design is done
+wg service start
 ```
 
-The agent waits for your work to complete before touching dependent tasks.
+The service waits for your work to complete before spawning agents on dependent tasks.
+
+### Pattern 4: Manual mode (single agent, no service)
+
+For simple cases where you don't need parallel execution:
+
+```bash
+wg ready                         # see what's available
+wg claim set-up-ci-pipeline --actor claude
+# ... do the work ...
+wg done set-up-ci-pipeline       # unblocks dependents
+```
 
 ## Service
 
@@ -441,7 +430,6 @@ For most projects:
    wg add "Step 1"
    wg add "Step 2" --blocked-by step-1
    wg add "Step 3" --blocked-by step-2
-   # ... etc
    ```
 
 2. **Check the structure**:
@@ -451,14 +439,13 @@ For most projects:
    wg bottlenecks    # what should we prioritize?
    ```
 
-3. **Execute**: Either manually or with agents
+3. **Execute**: Start the service and let it dispatch
    ```bash
-   wg agent --actor claude --once  # one task at a time, review between
-   # or
-   wg agent --actor claude         # let it run
+   wg service start --max-agents 4
+   wg tui            # watch progress in the dashboard
    ```
 
-4. **Adapt**: As you learn more, update the graph
+4. **Adapt**: As you learn more, update the graph — the service picks up changes
    ```bash
    wg add "New thing we discovered" --blocked-by whatever
    wg fail stuck-task --reason "Need to rethink this"
