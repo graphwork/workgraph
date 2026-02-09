@@ -1196,4 +1196,176 @@ Begin working on the task now.
             model
         );
     }
+
+    /// Test: spawn a Claude agent to create roles, motivations, and agents from scratch.
+    ///
+    /// This test verifies that:
+    /// 1. An LLM agent can be spawned with a task to build agency components
+    /// 2. The agent can execute wg CLI commands to create roles and motivations
+    /// 3. The agency system correctly persists and retrieves the created entities
+    /// 4. An agent pairing role + motivation can be created
+    #[test]
+    fn test_agent_creation_via_llm() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = setup_llm_workgraph(tmp.path());
+        let model = test_model();
+
+        // Add a task that instructs Claude to create agency components
+        let task_desc = r#"You MUST create agency components using the wg CLI. Run these commands in order:
+
+Step 1 — Create a role:
+```
+wg role add "CodeReviewer" --outcome "High-quality code reviews with constructive feedback" --skill code-review --description "Reviews code for quality and correctness"
+```
+
+Step 2 — Create a motivation:
+```
+wg motivation add "Thorough" --accept "Slower delivery" --reject "Incomplete reviews" --description "Prioritizes thoroughness over speed"
+```
+
+Step 3 — Get the hashes from the output above, then create an agent:
+```
+wg agent create "Thorough Reviewer" --role <ROLE_HASH> --motivation <MOTIVATION_HASH>
+```
+Replace <ROLE_HASH> and <MOTIVATION_HASH> with the 8-char prefixes printed in steps 1 and 2.
+
+Step 4 — Verify and complete:
+```
+wg agent list
+wg done create-agency-components
+```
+
+IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
+
+        wg_ok(
+            &wg_dir,
+            &[
+                "add",
+                "Build agency components",
+                "--id",
+                "create-agency-components",
+                "-d",
+                task_desc,
+            ],
+        );
+
+        // Spawn a Claude agent to execute the task
+        let output = wg_cmd(
+            &wg_dir,
+            &["spawn", "create-agency-components", "--executor", "claude", "--model", &model],
+        );
+        assert!(
+            output.status.success(),
+            "wg spawn failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Wait for the task to complete (up to 180s for LLM, as this is more complex)
+        let completed = wait_for(Duration::from_secs(180), 1000, || {
+            let status = task_status(&wg_dir, "create-agency-components");
+            status == "done" || status == "failed"
+        });
+        assert!(
+            completed,
+            "create-agency-components did not complete within 180s. Status: {}",
+            task_status(&wg_dir, "create-agency-components")
+        );
+
+        // Verify the task succeeded
+        let final_status = task_status(&wg_dir, "create-agency-components");
+        assert_eq!(
+            final_status, "done",
+            "create-agency-components should be done, got: {}",
+            final_status
+        );
+
+        // Verify the role and motivation were actually created
+        // Check that the agency directory exists
+        let agency_dir = wg_dir.join("agency");
+        assert!(agency_dir.exists(), "Agency directory should exist");
+
+        let roles_dir = agency_dir.join("roles");
+        assert!(roles_dir.exists(), "Roles directory should exist");
+
+        let motivations_dir = agency_dir.join("motivations");
+        assert!(motivations_dir.exists(), "Motivations directory should exist");
+
+        // List roles to verify at least one was created
+        let roles_output = wg_ok(&wg_dir, &["role", "list", "--json"]);
+        let roles_json: serde_json::Value = serde_json::from_str(&roles_output)
+            .expect("Failed to parse role list JSON");
+        assert!(
+            roles_json.is_array(),
+            "role list --json should return an array"
+        );
+        let roles_array = roles_json
+            .as_array()
+            .expect("Expected array of roles");
+        assert!(
+            !roles_array.is_empty(),
+            "At least one role should have been created"
+        );
+
+        // Check that CodeReviewer role exists
+        let has_code_reviewer = roles_array.iter().any(|r| {
+            r.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.contains("CodeReviewer") || s.contains("code"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_code_reviewer,
+            "CodeReviewer role should exist in the created roles"
+        );
+
+        // List motivations to verify at least one was created
+        let motivations_output = wg_ok(&wg_dir, &["motivation", "list", "--json"]);
+        let motivations_json: serde_json::Value = serde_json::from_str(&motivations_output)
+            .expect("Failed to parse motivation list JSON");
+        assert!(
+            motivations_json.is_array(),
+            "motivation list --json should return an array"
+        );
+        let motivations_array = motivations_json
+            .as_array()
+            .expect("Expected array of motivations");
+        assert!(
+            !motivations_array.is_empty(),
+            "At least one motivation should have been created"
+        );
+
+        // Check that Thorough motivation exists
+        let has_thorough = motivations_array.iter().any(|m| {
+            m.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.contains("Thorough"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_thorough,
+            "Thorough motivation should exist in the created motivations"
+        );
+
+        // Verify an agent was created (role+motivation pairing)
+        let agents_output = wg_ok(&wg_dir, &["agent", "list", "--json"]);
+        let agents_json: serde_json::Value = serde_json::from_str(&agents_output)
+            .expect("Failed to parse agent list JSON");
+        let agents_array = agents_json.as_array().expect("Expected array of agents");
+        let has_reviewer_agent = agents_array.iter().any(|a| {
+            a.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_lowercase().contains("reviewer"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_reviewer_agent,
+            "An agent with 'reviewer' in the name should have been created. Agents: {:?}",
+            agents_array.iter().filter_map(|a| a.get("name").and_then(|n| n.as_str())).collect::<Vec<_>>()
+        );
+
+        eprintln!(
+            "LLM agent creation test passed: role, motivation, and agent created (model: {})",
+            model
+        );
+    }
 }

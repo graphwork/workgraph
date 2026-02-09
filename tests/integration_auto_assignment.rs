@@ -1198,4 +1198,98 @@ Begin working on the task now.
             assigned, model
         );
     }
+
+    /// Test that `wg evaluate` can evaluate a completed task and record
+    /// an evaluation JSON file with scores and dimensions.
+    ///
+    /// Flow:
+    /// 1. Set up agency with an agent, assign it to a task
+    /// 2. Manually mark the task done (no need to spawn an LLM for that)
+    /// 3. Run `wg evaluate` which internally spawns its own Claude process
+    /// 4. Verify evaluation file was created with valid scores
+    #[test]
+    fn test_llm_evaluation_recording() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = setup_llm_workgraph(tmp.path());
+        let model = test_model();
+
+        // Set up agency with an agent
+        let (agent_id, _, _) = setup_agency(&wg_dir);
+
+        // Create a task, assign the agent, and mark it done
+        let mut task = make_task_with_desc(
+            "eval-target",
+            "Implement fizzbuzz",
+            "Write a fizzbuzz function in Rust that prints 1..100",
+        );
+        task.agent = Some(agent_id.clone());
+        task.status = Status::Done;
+        task.started_at = Some(chrono::Utc::now().to_rfc3339());
+        task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        task.log = vec![workgraph::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("agent-1".to_string()),
+            message: "Implemented fizzbuzz with pattern matching".to_string(),
+        }];
+        setup_workgraph(&wg_dir, vec![task]);
+
+        // Write config so wg evaluate uses our test model
+        let config_content = format!(
+            "[agency]\nevaluator_model = \"{}\"\n",
+            model
+        );
+        fs::write(wg_dir.join("config.toml"), &config_content).unwrap();
+
+        // Run wg evaluate directly (it spawns its own claude process internally)
+        let output = wg_cmd(
+            &wg_dir,
+            &["evaluate", "eval-target", "--evaluator-model", &model],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "wg evaluate failed.\nstdout: {}\nstderr: {}",
+            stdout, stderr
+        );
+
+        // Verify evaluation JSON was created
+        let evaluations_dir = wg_dir.join("agency").join("evaluations");
+        assert!(
+            evaluations_dir.exists(),
+            "evaluations directory should exist after wg evaluate"
+        );
+
+        let eval_files: Vec<_> = fs::read_dir(&evaluations_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+        assert!(
+            !eval_files.is_empty(),
+            "At least one evaluation JSON should exist"
+        );
+
+        // Parse the evaluation and check it has valid structure
+        let eval_content = fs::read_to_string(eval_files[0].path()).unwrap();
+        let eval: serde_json::Value = serde_json::from_str(&eval_content)
+            .expect("Evaluation file should be valid JSON");
+
+        assert!(
+            eval["score"].is_f64() || eval["score"].is_i64(),
+            "Evaluation should have a numeric score. Got: {}",
+            serde_json::to_string_pretty(&eval).unwrap()
+        );
+        let score = eval["score"].as_f64().unwrap();
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "Score should be between 0 and 1, got: {}",
+            score
+        );
+
+        eprintln!(
+            "LLM evaluation test passed: score={:.2} (model: {})",
+            score, model
+        );
+    }
 }
