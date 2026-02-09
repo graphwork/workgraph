@@ -23,6 +23,7 @@ pub struct TemplateVars {
     pub task_context: String,
     pub task_identity: String,
     pub working_dir: String,
+    pub skills_preamble: String,
 }
 
 impl TemplateVars {
@@ -40,6 +41,8 @@ impl TemplateVars {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        let skills_preamble = Self::resolve_skills_preamble(workgraph_dir);
+
         Self {
             task_id: task.id.clone(),
             task_title: task.title.clone(),
@@ -47,6 +50,7 @@ impl TemplateVars {
             task_context: context.unwrap_or_default().to_string(),
             task_identity,
             working_dir,
+            skills_preamble,
         }
     }
 
@@ -92,6 +96,47 @@ impl TemplateVars {
         agency::render_identity_prompt(&role, &motivation, &resolved_skills)
     }
 
+    /// Read skills preamble from project-level `.claude/skills/` directory.
+    ///
+    /// If `using-superpowers/SKILL.md` exists, its content is included so that
+    /// agents spawned via `--print` (which don't trigger SessionStart hooks)
+    /// still get the skill-invocation discipline.
+    fn resolve_skills_preamble(workgraph_dir: Option<&Path>) -> String {
+        let project_root = match workgraph_dir.and_then(|d| d.parent()) {
+            Some(r) => r,
+            None => return String::new(),
+        };
+
+        let skill_path = project_root
+            .join(".claude")
+            .join("skills")
+            .join("using-superpowers")
+            .join("SKILL.md");
+
+        match std::fs::read_to_string(&skill_path) {
+            Ok(content) => {
+                // Strip YAML frontmatter if present
+                let body = if content.starts_with("---") {
+                    content
+                        .splitn(3, "---")
+                        .nth(2)
+                        .unwrap_or(&content)
+                        .trim()
+                } else {
+                    content.trim()
+                };
+                format!(
+                    "<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n\
+                     Below is your introduction to using skills. \
+                     For all other skills, use the Skill tool:\n\n\
+                     {}\n</EXTREMELY_IMPORTANT>\n",
+                    body
+                )
+            }
+            Err(_) => String::new(),
+        }
+    }
+
     /// Apply template substitution to a string.
     pub fn apply(&self, template: &str) -> String {
         template
@@ -101,6 +146,7 @@ impl TemplateVars {
             .replace("{{task_context}}", &self.task_context)
             .replace("{{task_identity}}", &self.task_identity)
             .replace("{{working_dir}}", &self.working_dir)
+            .replace("{{skills_preamble}}", &self.skills_preamble)
     }
 }
 
@@ -467,7 +513,7 @@ impl ExecutorRegistry {
                     ],
                     env: HashMap::new(),
                     prompt_template: Some(PromptTemplate {
-                        template: r#"# Task Assignment
+                        template: r#"{{skills_preamble}}# Task Assignment
 
 You are an AI agent working on a task in a workgraph project.
 
