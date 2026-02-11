@@ -51,7 +51,7 @@ enum Commands {
         id: Option<String>,
 
         /// Detailed description (body, acceptance criteria, etc.)
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', alias = "desc")]
         description: Option<String>,
 
         /// This task is blocked by another task (can specify multiple)
