@@ -7,7 +7,7 @@
 //!
 //! No E2EE, no SQLite, no heavy dependencies.
 
-pub mod commands;
+pub use crate::matrix_commands as commands;
 pub mod listener;
 
 use std::collections::HashMap;

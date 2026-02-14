@@ -545,10 +545,6 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
-        /// Check for stale agents instead of actors
-        #[arg(long)]
-        agents: bool,
-
         /// Minutes without heartbeat before agent is considered stale (default: 5)
         #[arg(long, default_value = "5")]
         threshold: u64,
@@ -790,10 +786,6 @@ enum Commands {
 
     /// Detect and clean up dead agents
     DeadAgents {
-        /// Check for dead agents without modifying
-        #[arg(long)]
-        check: bool,
-
         /// Mark dead agents and unclaim their tasks
         #[arg(long)]
         cleanup: bool,
@@ -1818,17 +1810,12 @@ fn main() -> Result<()> {
         Commands::Heartbeat {
             agent,
             check,
-            agents,
             threshold,
+            ..
         } => {
             if check || agent.is_none() {
-                if agents {
-                    commands::heartbeat::run_check_agents(&workgraph_dir, threshold, cli.json)
-                } else {
-                    commands::heartbeat::run_check(&workgraph_dir, threshold, cli.json)
-                }
+                commands::heartbeat::run_check_agents(&workgraph_dir, threshold, cli.json)
             } else {
-                // Use run_auto to automatically detect agent vs actor
                 commands::heartbeat::run_auto(&workgraph_dir, agent.as_deref().unwrap())
             }
         }
@@ -2067,7 +2054,6 @@ fn main() -> Result<()> {
             }
         }
         Commands::DeadAgents {
-            check: _,
             cleanup,
             remove,
             processes,

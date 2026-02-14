@@ -10,7 +10,7 @@
 //!
 //! State is stored in `.workgraph/matrix/` for session reuse.
 
-pub mod commands;
+pub use crate::matrix_commands as commands;
 pub mod listener;
 
 use std::path::{Path, PathBuf};

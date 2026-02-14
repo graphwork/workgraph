@@ -368,14 +368,17 @@ impl WorkGraph {
         }
     }
 
+    /// Insert a node (task or resource) into the graph.
     pub fn add_node(&mut self, node: Node) {
         self.nodes.insert(node.id().to_string(), node);
     }
 
+    /// Look up a node by ID.
     pub fn get_node(&self, id: &str) -> Option<&Node> {
         self.nodes.get(id)
     }
 
+    /// Look up a task by ID, returning `None` if the node is a resource.
     pub fn get_task(&self, id: &str) -> Option<&Task> {
         match self.nodes.get(id) {
             Some(Node::Task(t)) => Some(t),
@@ -383,6 +386,7 @@ impl WorkGraph {
         }
     }
 
+    /// Look up a task by ID (mutable), returning `None` if the node is a resource.
     pub fn get_task_mut(&mut self, id: &str) -> Option<&mut Task> {
         match self.nodes.get_mut(id) {
             Some(Node::Task(t)) => Some(t),
@@ -390,6 +394,7 @@ impl WorkGraph {
         }
     }
 
+    /// Look up a resource by ID, returning `None` if the node is a task.
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
         match self.nodes.get(id) {
             Some(Node::Resource(r)) => Some(r),

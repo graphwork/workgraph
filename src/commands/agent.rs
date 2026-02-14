@@ -186,9 +186,6 @@ enum IterationResult {
     Failed(String, String),
     /// No work available
     Idle,
-    /// Agent should stop
-    #[allow(dead_code)]
-    Stop(String),
 }
 
 /// Run the autonomous agent loop
@@ -280,12 +277,6 @@ pub fn run(
                 if !json {
                     println!("No work available, sleeping {}s...", interval_secs);
                 }
-            }
-            IterationResult::Stop(reason) => {
-                if !json {
-                    println!("Stopping: {}", reason);
-                }
-                break;
             }
         }
 

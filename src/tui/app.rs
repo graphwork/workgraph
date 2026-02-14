@@ -53,9 +53,6 @@ pub struct AgentInfo {
     pub pid: u32,
     pub uptime: String,
     pub status: AgentStatus,
-    /// Whether the OS process is actually running
-    #[allow(dead_code)]
-    pub process_alive: bool,
     /// Path to the agent's output log file
     pub output_file: String,
 }
@@ -75,7 +72,6 @@ impl AgentInfo {
             pid: entry.pid,
             uptime: entry.uptime_human(),
             status: effective_status,
-            process_alive,
             output_file: entry.output_file.clone(),
         }
     }
@@ -1460,7 +1456,6 @@ mod tests {
                 pid: 0,
                 uptime: "0s".to_string(),
                 status: AgentStatus::Working,
-                process_alive: false,
                 output_file: String::new(),
             },
             lines: lines.into_iter().map(|s| s.to_string()).collect(),
@@ -1532,7 +1527,6 @@ mod tests {
                 pid: 1,
                 uptime: "1m".into(),
                 status: AgentStatus::Working,
-                process_alive: true,
                 output_file: String::new(),
             },
             AgentInfo {
@@ -1542,7 +1536,6 @@ mod tests {
                 pid: 2,
                 uptime: "2m".into(),
                 status: AgentStatus::Done,
-                process_alive: false,
                 output_file: String::new(),
             },
         ]
@@ -2169,7 +2162,6 @@ mod tests {
             pid: 1,
             uptime: "1s".into(),
             status: AgentStatus::Working,
-            process_alive: true,
             output_file: String::new(),
         };
         assert!(info.is_alive());
@@ -2196,7 +2188,6 @@ mod tests {
             pid: 1,
             uptime: "1s".into(),
             status: AgentStatus::Dead,
-            process_alive: false,
             output_file: String::new(),
         };
         assert!(info.is_dead());

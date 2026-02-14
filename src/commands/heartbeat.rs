@@ -3,17 +3,6 @@ use chrono::Utc;
 use std::path::Path;
 use workgraph::service::AgentRegistry;
 
-/// Record heartbeat for a non-agent actor ID.
-///
-/// Actor nodes have been removed from the graph. This function now only
-/// works for agent IDs (use `run_agent` directly or `run_auto`).
-pub fn run(_dir: &Path, actor_id: &str) -> Result<()> {
-    anyhow::bail!(
-        "Actor '{}' not found. Actor nodes have been removed. Use 'wg agent create' to register agents.",
-        actor_id
-    );
-}
-
 /// Update an agent's last_heartbeat timestamp
 ///
 /// This is for agent processes registered in the service registry.
@@ -34,36 +23,18 @@ pub fn is_agent_id(id: &str) -> bool {
     id.starts_with("agent-")
 }
 
-/// Record heartbeat for either an actor or an agent
+/// Record heartbeat for an agent
 ///
-/// Automatically detects whether the ID refers to an agent (agent-N format)
-/// or an actor defined in the graph.
+/// Validates the ID is an agent ID (agent-N format) before recording.
 pub fn run_auto(dir: &Path, id: &str) -> Result<()> {
     if is_agent_id(id) {
         run_agent(dir, id)
     } else {
-        run(dir, id)
+        anyhow::bail!(
+            "Unknown ID '{}'. Actor nodes have been removed. Use agent IDs (e.g., agent-1).",
+            id
+        )
     }
-}
-
-/// Check for stale actors (no heartbeat within threshold)
-///
-/// Actor nodes have been removed from the graph. Use `--agents` flag
-/// to check agent heartbeats instead.
-pub fn run_check(_dir: &Path, threshold_minutes: u64, json: bool) -> Result<()> {
-    if json {
-        let output = serde_json::json!({
-            "threshold_minutes": threshold_minutes,
-            "stale": [],
-            "active": [],
-            "message": "Actor nodes have been removed. Use --agents to check agent heartbeats.",
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("No actors registered (actor nodes have been removed).");
-        println!("Use 'wg heartbeat --check --agents' to check agent heartbeats.");
-    }
-    Ok(())
 }
 
 /// Check for stale agents (no heartbeat within threshold)
@@ -221,19 +192,19 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         // Actor nodes no longer exist, so heartbeat for non-agent IDs should fail
-        let result = run(temp_dir.path(), "test-agent");
+        let result = run_auto(temp_dir.path(), "test-agent");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_check_stale_no_actors() {
+    fn test_check_agents_no_agents() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        // Should succeed with no actors found
-        let result = run_check(temp_dir.path(), 5, false);
+        // Should succeed with no agents registered
+        let result = run_check_agents(temp_dir.path(), 5, false);
         assert!(result.is_ok());
     }
 

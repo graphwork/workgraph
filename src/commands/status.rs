@@ -567,4 +567,67 @@ mod tests {
         // Most recent should be first (t1 is most recent)
         assert_eq!(recent[0].task_id, "t1");
     }
+
+    #[test]
+    fn test_format_duration_edge_cases() {
+        assert_eq!(format_duration_short(0), "0s");
+        assert_eq!(format_duration_short(59), "59s");
+        assert_eq!(format_duration_short(60), "1m");
+        assert_eq!(format_duration_short(119), "1m");
+        assert_eq!(format_duration_short(120), "2m");
+    }
+
+    #[test]
+    fn test_gather_task_summary_empty_graph() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let graph = WorkGraph::new();
+        save_graph(&graph, &path).unwrap();
+
+        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        assert_eq!(summary.ready, 0);
+        assert_eq!(summary.in_progress, 0);
+        assert_eq!(summary.done_total, 0);
+        assert_eq!(summary.blocked, 0);
+    }
+
+    #[test]
+    fn test_gather_task_summary_delayed_vs_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+
+        // Delayed task: no blockers but has future ready_after
+        let mut delayed = make_task("delayed", "Delayed task");
+        let future = Utc::now() + chrono::Duration::hours(1);
+        delayed.ready_after = Some(future.to_rfc3339());
+        graph.add_node(Node::Task(delayed));
+
+        // Blocked task: has unfinished blocker
+        let mut blocked = make_task("blocked", "Blocked task");
+        blocked.blocked_by = vec!["blocker".to_string()];
+        graph.add_node(Node::Task(blocked));
+
+        // The blocker itself (open)
+        graph.add_node(Node::Task(make_task("blocker", "Blocker")));
+
+        save_graph(&graph, &path).unwrap();
+
+        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        assert_eq!(summary.delayed, 1);
+        assert_eq!(summary.blocked, 1);
+        assert_eq!(summary.ready, 1); // blocker is ready
+    }
+
+    #[test]
+    fn test_gather_recent_activity_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let graph = WorkGraph::new();
+        save_graph(&graph, &path).unwrap();
+
+        let recent = gather_recent_activity(temp_dir.path()).unwrap();
+        assert_eq!(recent.len(), 0);
+    }
 }

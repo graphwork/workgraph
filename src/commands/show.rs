@@ -481,4 +481,63 @@ mod tests {
         assert!(json.contains("\"assigned\":\"agent-1\""));
         assert!(json.contains("\"description\":\"Test description\""));
     }
+
+    #[test]
+    fn test_format_status_all_variants() {
+        assert_eq!(format_status(&Status::Open), "open");
+        assert_eq!(format_status(&Status::InProgress), "in-progress");
+        assert_eq!(format_status(&Status::Done), "done");
+        assert_eq!(format_status(&Status::Blocked), "blocked");
+        assert_eq!(format_status(&Status::Failed), "failed");
+        assert_eq!(format_status(&Status::Abandoned), "abandoned");
+        assert_eq!(format_status(&Status::PendingReview), "pending-review");
+    }
+
+    #[test]
+    fn test_format_countdown_invalid_timestamp() {
+        let result = format_countdown("not-a-timestamp");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_countdown_past_timestamp() {
+        let past = "2020-01-01T00:00:00+00:00";
+        let result = format_countdown(past);
+        assert_eq!(result, " (elapsed)");
+    }
+
+    #[test]
+    fn test_run_nonexistent_task() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let graph = WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        let result = run(temp_dir.path(), "no-such-task", false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_run_basic_task() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Test task")));
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        let result = run(temp_dir.path(), "t1", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_json_output() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Test task")));
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        let result = run(temp_dir.path(), "t1", true);
+        assert!(result.is_ok());
+    }
 }

@@ -242,4 +242,69 @@ mod tests {
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_match_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let graph = WorkGraph::new();
+        save_graph(&graph, &path).unwrap();
+
+        let result = run(temp_dir.path(), "no-such-task", false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_match_task_with_no_skills() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Generic task")));
+        save_graph(&graph, &path).unwrap();
+
+        let agent = make_agent("generalist", vec!["rust"]);
+        setup_agents(temp_dir.path(), &[agent]);
+
+        // No skills required — all agents should match
+        let result = run(temp_dir.path(), "t1", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_match_no_agents_registered() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("t1", "Orphan task");
+        task.skills = vec!["rust".to_string()];
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+
+        // Initialize agency but add no agents
+        let agency_dir = temp_dir.path().join("agency");
+        agency::init(&agency_dir).unwrap();
+
+        let result = run(temp_dir.path(), "t1", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_match_json_output() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("t1", "Rust task");
+        task.skills = vec!["rust".to_string()];
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+
+        let agent = make_agent("rust-dev", vec!["rust"]);
+        setup_agents(temp_dir.path(), &[agent]);
+
+        let result = run(temp_dir.path(), "t1", true);
+        assert!(result.is_ok());
+    }
 }
