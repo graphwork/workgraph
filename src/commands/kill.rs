@@ -363,7 +363,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task is unclaimed
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("task-1").unwrap();
         assert_eq!(task.status, Status::Open);
         assert!(task.assigned.is_none());

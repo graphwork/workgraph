@@ -1954,7 +1954,7 @@ mod tests {
 
     #[test]
     fn log_viewer_page_up() {
-        let mut viewer = make_log_viewer((0..50).map(|i| "line").collect());
+        let mut viewer = make_log_viewer((0..50).map(|_| "line").collect());
         viewer.scroll_offset = 20;
         viewer.auto_scroll = true;
         viewer.page_up(20); // jump = 10

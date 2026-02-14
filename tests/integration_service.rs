@@ -152,20 +152,18 @@ fn task_status(wg_dir: &Path, task_id: &str) -> String {
 /// Returns true if the notification was successfully sent and a response received.
 fn notify_graph_changed(wg_dir: &Path) -> bool {
     let state_path = wg_dir.join("service").join("state.json");
-    if let Ok(content) = fs::read_to_string(&state_path) {
-        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(socket_path) = state["socket_path"].as_str() {
-                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
-                    let _ = writeln!(stream, r#"{{"cmd":"graph_changed"}}"#);
-                    let _ = stream.flush();
-                    // Read response
-                    let mut reader = BufReader::new(&stream);
-                    let mut response = String::new();
-                    if reader.read_line(&mut response).is_ok() && !response.is_empty() {
-                        return true;
-                    }
-                }
-            }
+    if let Ok(content) = fs::read_to_string(&state_path)
+        && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(socket_path) = state["socket_path"].as_str()
+        && let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path)
+    {
+        let _ = writeln!(stream, r#"{{"cmd":"graph_changed"}}"#);
+        let _ = stream.flush();
+        // Read response
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+            return true;
         }
     }
     false
@@ -177,19 +175,18 @@ fn notify_graph_changed(wg_dir: &Path) -> bool {
 fn wait_for_service_ready(wg_dir: &Path, timeout: Duration) -> bool {
     wait_for(timeout, 100, || {
         let state_path = wg_dir.join("service").join("state.json");
-        if let Ok(content) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(socket_path) = state["socket_path"].as_str() {
-                    // Try to connect and send a status request
-                    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
-                        let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
-                        let _ = stream.flush();
-                        let mut reader = BufReader::new(&stream);
-                        let mut response = String::new();
-                        if reader.read_line(&mut response).is_ok() && !response.is_empty() {
-                            return true;
-                        }
-                    }
+        if let Ok(content) = fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(socket_path) = state["socket_path"].as_str()
+        {
+            // Try to connect and send a status request
+            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
+                let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
+                let _ = stream.flush();
+                let mut reader = BufReader::new(&stream);
+                let mut response = String::new();
+                if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+                    return true;
                 }
             }
         }
@@ -227,10 +224,10 @@ where
 /// Helper: get the number of coordinator ticks from the coordinator state file.
 fn coordinator_ticks(wg_dir: &Path) -> u64 {
     let state_path = wg_dir.join("service").join("coordinator-state.json");
-    if let Ok(content) = fs::read_to_string(&state_path) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            return val["ticks"].as_u64().unwrap_or(0);
-        }
+    if let Ok(content) = fs::read_to_string(&state_path)
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        return val["ticks"].as_u64().unwrap_or(0);
     }
     0
 }
@@ -524,17 +521,15 @@ executor = "shell"
     let mut agent_pid: i32 = 0;
     let mut agent_id = String::new();
     let found_agent = wait_for(Duration::from_secs(5), 100, || {
-        if let Some(registry) = read_registry(&wg_dir) {
-            if let Some(agents) = registry["agents"].as_object() {
-                if let Some(entry) = agents.values().find(|a| {
-                    a["task_id"].as_str() == Some("long-task")
-                        && a["status"].as_str() != Some("dead")
-                }) {
-                    agent_pid = entry["pid"].as_u64().unwrap() as i32;
-                    agent_id = entry["id"].as_str().unwrap().to_string();
-                    return true;
-                }
-            }
+        if let Some(registry) = read_registry(&wg_dir)
+            && let Some(agents) = registry["agents"].as_object()
+            && let Some(entry) = agents.values().find(|a| {
+                a["task_id"].as_str() == Some("long-task") && a["status"].as_str() != Some("dead")
+            })
+        {
+            agent_pid = entry["pid"].as_u64().unwrap() as i32;
+            agent_id = entry["id"].as_str().unwrap().to_string();
+            return true;
         }
         false
     });
@@ -564,10 +559,10 @@ executor = "shell"
     // The task should either go back to "open" or be immediately re-claimed
     // by a new agent (status "in-progress" with a different agent).
     let recovered = wait_for(Duration::from_secs(15), 300, || {
-        if let Some(reg) = read_registry(&wg_dir) {
-            if let Some(agent) = reg["agents"].get(&agent_id) {
-                return agent["status"].as_str() == Some("dead");
-            }
+        if let Some(reg) = read_registry(&wg_dir)
+            && let Some(agent) = reg["agents"].get(&agent_id)
+        {
+            return agent["status"].as_str() == Some("dead");
         }
         false
     });
@@ -592,14 +587,14 @@ executor = "shell"
     notify_graph_changed(&wg_dir);
 
     let re_spawned = wait_for(Duration::from_secs(10), 300, || {
-        if let Some(reg) = read_registry(&wg_dir) {
-            if let Some(agents) = reg["agents"].as_object() {
-                return agents.values().any(|a| {
-                    a["task_id"].as_str() == Some("long-task")
-                        && a["id"].as_str() != Some(&agent_id)
-                        && a["status"].as_str() != Some("dead")
-                });
-            }
+        if let Some(reg) = read_registry(&wg_dir)
+            && let Some(agents) = reg["agents"].as_object()
+        {
+            return agents.values().any(|a| {
+                a["task_id"].as_str() == Some("long-task")
+                    && a["id"].as_str() != Some(&agent_id)
+                    && a["status"].as_str() != Some("dead")
+            });
         }
         false
     });

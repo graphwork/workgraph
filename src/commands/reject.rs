@@ -120,7 +120,7 @@ mod tests {
 
         run(&dir, "t1", Some("needs more work"), Some("reviewer")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.status, Status::Open);
     }
@@ -135,7 +135,7 @@ mod tests {
 
         run(&dir, "t1", None, None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.assigned, None);
     }
@@ -150,7 +150,7 @@ mod tests {
 
         run(&dir, "t1", None, None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.retry_count, 3);
     }
@@ -164,7 +164,7 @@ mod tests {
 
         run(&dir, "t1", Some("Tests are failing"), Some("reviewer")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.log.len(), 1);
         assert!(t.log[0].message.contains("Tests are failing"));
@@ -180,7 +180,7 @@ mod tests {
 
         run(&dir, "t1", None, None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert!(t.log[0].message.contains("no reason given"));
     }

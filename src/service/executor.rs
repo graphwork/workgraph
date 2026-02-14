@@ -77,18 +77,33 @@ impl TemplateVars {
         // Look up the Agent entity by hash
         let agent = match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
             Ok(a) => a,
-            Err(_) => return String::new(),
+            Err(e) => {
+                eprintln!("Warning: could not resolve agent '{}': {}", agent_hash, e);
+                return String::new();
+            }
         };
 
         let role = match agency::find_role_by_prefix(&roles_dir, &agent.role_id) {
             Ok(r) => r,
-            Err(_) => return String::new(),
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not resolve role '{}' for agent '{}': {}",
+                    agent.role_id, agent_hash, e
+                );
+                return String::new();
+            }
         };
 
         let motivation =
             match agency::find_motivation_by_prefix(&motivations_dir, &agent.motivation_id) {
                 Ok(m) => m,
-                Err(_) => return String::new(),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not resolve motivation '{}' for agent '{}': {}",
+                        agent.motivation_id, agent_hash, e
+                    );
+                    return String::new();
+                }
             };
 
         // Resolve skills from the role, using the project root (parent of .workgraph/)

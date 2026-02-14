@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(agent.status, AgentStatus::Dead);
 
         // Verify task is unclaimed
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("task-1").unwrap();
         assert_eq!(task.status, Status::Open);
         assert!(task.assigned.is_none());
@@ -526,7 +526,7 @@ mod tests {
         run_cleanup(temp_dir.path(), Some(1), false).unwrap();
 
         // Verify log entry was added
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("task-1").unwrap();
         assert!(!task.log.is_empty());
         let log = task.log.last().unwrap();

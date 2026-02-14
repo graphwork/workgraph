@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "A lightweight work coordination graph for humans and AI agents"
 license = "MIT"
+repository = "https://github.com/erikg/workgraph"
+homepage = "https://github.com/erikg/workgraph"
 
 [[bin]]
 name = "wg"
@@ -25,7 +27,6 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 serde_yaml = "0.9"
-libc = "0.2"
 dirs = "5.0"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

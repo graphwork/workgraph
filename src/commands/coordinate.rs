@@ -511,10 +511,9 @@ mod tests {
 
         let status = get_coordination_status(&graph);
 
-        // Blockers don't exist in graph, so blocked_by check returns false (unwrap_or(false))
-        // These tasks won't be in the blocked list since their blockers aren't found
-        assert!(status.ready.is_empty() || status.blocked.is_empty() || true);
-        // The important thing is it doesn't panic
+        // Blockers don't exist in graph, so blocked_by check returns false (unwrap_or(false)).
+        // The important thing is it doesn't panic.
+        let _ = status;
     }
 
     // --- Failed/abandoned status handling ---

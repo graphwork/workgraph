@@ -303,10 +303,10 @@ fn test_generation_increments_through_deep_chain() {
     // Create chain of 5 generations
     for i in 1..=5u32 {
         let mut role = agency::build_role(
-            &format!("R{}", i),
-            &format!("gen-{}", i),
+            format!("R{}", i),
+            format!("gen-{}", i),
             vec![],
-            &format!("o{}", i),
+            format!("o{}", i),
         );
         role.lineage = Lineage::mutation(&roles[(i - 1) as usize].id, i - 1, &format!("e{}", i));
         agency::save_role(&role, &roles_dir).unwrap();

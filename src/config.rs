@@ -489,10 +489,12 @@ name = "My Project"
 
     #[test]
     fn test_matrix_config_access_token() {
-        let mut config = MatrixConfig::default();
-        config.homeserver_url = Some("https://matrix.org".to_string());
-        config.username = Some("@user:matrix.org".to_string());
-        config.access_token = Some("syt_abc123".to_string());
+        let config = MatrixConfig {
+            homeserver_url: Some("https://matrix.org".to_string()),
+            username: Some("@user:matrix.org".to_string()),
+            access_token: Some("syt_abc123".to_string()),
+            ..Default::default()
+        };
         assert!(config.has_credentials());
     }
 

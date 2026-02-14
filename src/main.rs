@@ -360,14 +360,16 @@ enum Commands {
         id: String,
     },
 
-    /// Show coordination status and ready tasks for parallel execution
+    /// Show coordination status: ready tasks, in-progress tasks, and opportunities
+    /// for parallel execution. Useful for sprint planning or standup reviews.
     Coordinate {
         /// Maximum number of parallel tasks to show
         #[arg(long)]
         max_parallel: Option<usize>,
     },
 
-    /// Plan what can be accomplished with given resources
+    /// Plan what work fits within a budget or hour constraint. Lists tasks by
+    /// priority that can be accomplished with the given resources.
     Plan {
         /// Available budget (dollars)
         #[arg(long)]
@@ -401,26 +403,33 @@ enum Commands {
     /// Analyze cycles in the graph with classification
     Loops,
 
-    /// Analyze graph structure - entry points, dead ends, high-impact roots
+    /// Analyze graph structure: entry points (no dependencies), dead ends
+    /// (nothing depends on them), fan-out (tasks blocking many others),
+    /// and high-impact root tasks.
     Structure,
 
-    /// Find tasks blocking the most work (bottleneck analysis)
+    /// Find tasks blocking the most downstream work. Ranks tasks by how
+    /// many other tasks are transitively waiting on them.
     Bottlenecks,
 
-    /// Show task completion velocity over time
+    /// Show task completion velocity: tasks completed per week over a
+    /// rolling window. Helps gauge team throughput and trends.
     Velocity {
         /// Number of weeks to show (default: 4)
         #[arg(long)]
         weeks: Option<usize>,
     },
 
-    /// Show task age distribution - how long tasks have been open
+    /// Show task age distribution: how long open/in-progress tasks have
+    /// been waiting. Highlights stale work that may need attention.
     Aging,
 
-    /// Show project completion forecast based on velocity and remaining work
+    /// Forecast project completion date based on recent velocity and
+    /// remaining open tasks. Uses linear extrapolation.
     Forecast,
 
-    /// Show agent workload balance and assignment distribution
+    /// Show agent workload balance: how many tasks each agent has claimed
+    /// or completed, to identify over/under-utilization.
     Workload,
 
     /// Show resource utilization - committed vs available capacity
@@ -530,7 +539,7 @@ enum Commands {
     Heartbeat {
         /// Agent ID to record heartbeat for (omit to check status)
         /// Agent IDs start with "agent-" (e.g., agent-1, agent-7)
-        actor: Option<String>,
+        agent: Option<String>,
 
         /// Check for stale agents (no heartbeat within threshold)
         #[arg(long)]
@@ -1807,12 +1816,12 @@ fn main() -> Result<()> {
         } => commands::assign::run(&workgraph_dir, &task, agent_hash.as_deref(), clear),
         Commands::Match { task } => commands::match_cmd::run(&workgraph_dir, &task, cli.json),
         Commands::Heartbeat {
-            actor,
+            agent,
             check,
             agents,
             threshold,
         } => {
-            if check || actor.is_none() {
+            if check || agent.is_none() {
                 if agents {
                     commands::heartbeat::run_check_agents(&workgraph_dir, threshold, cli.json)
                 } else {
@@ -1820,7 +1829,7 @@ fn main() -> Result<()> {
                 }
             } else {
                 // Use run_auto to automatically detect agent vs actor
-                commands::heartbeat::run_auto(&workgraph_dir, actor.as_deref().unwrap())
+                commands::heartbeat::run_auto(&workgraph_dir, agent.as_deref().unwrap())
             }
         }
         Commands::Artifact { task, path, remove } => {

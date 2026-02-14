@@ -595,7 +595,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task is done
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
     }
@@ -649,7 +649,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Only one task should be done
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let done_count = graph.tasks().filter(|t| t.status == Status::Done).count();
         assert_eq!(done_count, 1);
     }
@@ -678,7 +678,7 @@ mod tests {
         );
         assert!(result.is_ok()); // Agent should handle failures gracefully
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
     }
@@ -689,7 +689,7 @@ mod tests {
 
         claim_task(temp_dir.path(), "t1", "test-agent").unwrap();
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::InProgress);
         assert_eq!(task.assigned, Some("test-agent".to_string()));
@@ -702,7 +702,7 @@ mod tests {
         claim_task(temp_dir.path(), "t1", "test-agent").unwrap();
         complete_task(temp_dir.path(), "t1", "test-agent").unwrap();
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
         assert!(task.completed_at.is_some());
@@ -715,7 +715,7 @@ mod tests {
         claim_task(temp_dir.path(), "t1", "test-agent").unwrap();
         fail_task(temp_dir.path(), "t1", "test-agent", "Test failure").unwrap();
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
         assert_eq!(task.failure_reason, Some("Test failure".to_string()));

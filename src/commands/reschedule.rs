@@ -110,7 +110,7 @@ mod tests {
 
         run(dir.path(), "t1", Some(24.0), None).unwrap();
 
-        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(task.not_before.is_some());
 
@@ -129,7 +129,7 @@ mod tests {
 
         run(dir.path(), "t1", None, Some("2099-06-15T10:00:00Z")).unwrap();
 
-        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.not_before, Some("2099-06-15T10:00:00Z".to_string()));
     }
@@ -144,7 +144,7 @@ mod tests {
         // Call with no duration or timestamp to clear
         run(dir.path(), "t1", None, None).unwrap();
 
-        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(task.not_before.is_none());
     }

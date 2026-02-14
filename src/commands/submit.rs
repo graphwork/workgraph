@@ -152,7 +152,7 @@ mod tests {
 
         run(&dir, "t1", Some("agent-1")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.status, Status::PendingReview);
     }
@@ -166,7 +166,7 @@ mod tests {
 
         run(&dir, "t1", Some("agent-1")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.log.len(), 1);
         assert_eq!(t.log[0].message, "Work submitted for review");
@@ -236,7 +236,7 @@ mod tests {
 
         run(&dir, "t1", None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.status, Status::PendingReview);
         assert_eq!(t.log[0].actor, None);

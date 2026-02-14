@@ -1017,7 +1017,7 @@ mod tests {
         // "b" is depended on by "c"
         assert_eq!(index.get("b").unwrap(), &vec!["c".to_string()]);
         // "c" is not depended on by anything
-        assert!(index.get("c").is_none());
+        assert!(!index.contains_key("c"));
     }
 
     #[test]
@@ -1068,7 +1068,7 @@ mod tests {
 
         assert_eq!(index.get("b").unwrap(), &vec!["d".to_string()]);
         assert_eq!(index.get("c").unwrap(), &vec!["d".to_string()]);
-        assert!(index.get("d").is_none());
+        assert!(!index.contains_key("d"));
     }
 
     // ========== tasks_within_constraint() edge cases ==========

@@ -230,7 +230,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task is done
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
     }
@@ -250,7 +250,7 @@ mod tests {
         assert!(result.is_err());
 
         // Verify task is failed
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
     }
@@ -278,7 +278,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task is still open (dry run doesn't execute)
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Open);
     }
@@ -296,7 +296,7 @@ mod tests {
         let result = set_exec(temp_dir.path(), "t1", "echo test");
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.exec, Some("echo test".to_string()));
     }
@@ -308,7 +308,7 @@ mod tests {
         let result = clear_exec(temp_dir.path(), "t1");
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(task.exec.is_none());
     }

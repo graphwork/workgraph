@@ -189,7 +189,7 @@ mod tests {
         let result = run_add(temp_dir.path(), "t1", "output.txt");
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(task.artifacts.contains(&"output.txt".to_string()));
     }
@@ -202,7 +202,7 @@ mod tests {
         let result = run_add(temp_dir.path(), "t1", "output.txt");
         assert!(result.is_ok()); // Should succeed but not duplicate
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.artifacts.len(), 1);
     }
@@ -215,7 +215,7 @@ mod tests {
         let result = run_remove(temp_dir.path(), "t1", "output.txt");
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(task.artifacts.is_empty());
     }

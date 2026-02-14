@@ -109,7 +109,7 @@ mod tests {
         let result = run(&dir, "t1", Some("no longer needed"));
         assert!(result.is_ok());
 
-        let reloaded = load_graph(&graph_path(&dir)).unwrap();
+        let reloaded = load_graph(graph_path(&dir)).unwrap();
         let task = reloaded.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Abandoned);
         assert_eq!(task.failure_reason.as_deref(), Some("no longer needed"));
@@ -138,7 +138,7 @@ mod tests {
         let result = run(&dir, "t1", None);
         assert!(result.is_ok());
 
-        let reloaded = load_graph(&graph_path(&dir)).unwrap();
+        let reloaded = load_graph(graph_path(&dir)).unwrap();
         let task = reloaded.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Abandoned);
         assert!(task.failure_reason.is_none());
@@ -159,7 +159,7 @@ mod tests {
         let result = run(&dir, "t1", Some("giving up"));
         assert!(result.is_ok());
 
-        let reloaded = load_graph(&graph_path(&dir)).unwrap();
+        let reloaded = load_graph(graph_path(&dir)).unwrap();
         let task = reloaded.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Abandoned);
         assert_eq!(task.failure_reason.as_deref(), Some("giving up"));
@@ -197,7 +197,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Should not add another log entry
-        let reloaded = load_graph(&graph_path(&dir)).unwrap();
+        let reloaded = load_graph(graph_path(&dir)).unwrap();
         let task = reloaded.get_task("t1").unwrap();
         assert!(task.log.is_empty());
     }
@@ -239,7 +239,7 @@ mod tests {
 
         run(&dir, "t1", Some("requirements changed")).unwrap();
 
-        let reloaded = load_graph(&graph_path(&dir)).unwrap();
+        let reloaded = load_graph(graph_path(&dir)).unwrap();
         let task = reloaded.get_task("t1").unwrap();
         let last_log = task.log.last().unwrap();
         assert!(last_log.message.contains("requirements changed"));

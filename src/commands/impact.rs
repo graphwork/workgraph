@@ -282,7 +282,7 @@ mod tests {
 
         let index = build_reverse_index(&graph);
         assert_eq!(index.get("t1"), Some(&vec!["t2".to_string()]));
-        assert!(index.get("t2").is_none());
+        assert!(!index.contains_key("t2"));
     }
 
     #[test]
@@ -396,10 +396,10 @@ mod tests {
 
         let mut total_hours = 0.0;
         for dep_id in &visited {
-            if let Some(dep_task) = graph.get_task(dep_id) {
-                if let Some(ref estimate) = dep_task.estimate {
-                    total_hours += estimate.hours.unwrap_or(0.0);
-                }
+            if let Some(dep_task) = graph.get_task(dep_id)
+                && let Some(ref estimate) = dep_task.estimate
+            {
+                total_hours += estimate.hours.unwrap_or(0.0);
             }
         }
 

@@ -6,6 +6,7 @@ pub mod config;
 pub mod graph;
 #[cfg(feature = "matrix")]
 pub mod matrix;
+pub mod matrix_commands;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix_lite;
 pub mod parser;

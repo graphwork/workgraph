@@ -397,10 +397,12 @@ impl WorkGraph {
         }
     }
 
+    /// Iterate over all nodes (tasks and resources) in the graph.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }
 
+    /// Iterate over all tasks in the graph, skipping resource nodes.
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.nodes.values().filter_map(|n| match n {
             Node::Task(t) => Some(t),
@@ -408,6 +410,7 @@ impl WorkGraph {
         })
     }
 
+    /// Iterate over all resources in the graph, skipping task nodes.
     pub fn resources(&self) -> impl Iterator<Item = &Resource> {
         self.nodes.values().filter_map(|n| match n {
             Node::Resource(r) => Some(r),
@@ -415,14 +418,17 @@ impl WorkGraph {
         })
     }
 
+    /// Remove a node by ID, returning the removed node if it existed.
     pub fn remove_node(&mut self, id: &str) -> Option<Node> {
         self.nodes.remove(id)
     }
 
+    /// Return the total number of nodes (tasks + resources) in the graph.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Return true if the graph contains no nodes.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }

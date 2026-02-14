@@ -140,7 +140,7 @@ mod tests {
 
         run(&dir, "t1", Some("reviewer")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.status, Status::Done);
         assert!(t.completed_at.is_some());
@@ -155,7 +155,7 @@ mod tests {
 
         run(&dir, "t1", Some("reviewer")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.log.len(), 1);
         assert_eq!(t.log[0].message, "Work approved and marked done");
@@ -237,7 +237,7 @@ mod tests {
 
         run(&dir, "source", None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let target = graph.get_task("target").unwrap();
         assert_eq!(
             target.status,
@@ -256,7 +256,7 @@ mod tests {
 
         run(&dir, "t1", None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let t = graph.get_task("t1").unwrap();
         assert_eq!(t.status, Status::Done);
         assert_eq!(t.log[0].actor, None);

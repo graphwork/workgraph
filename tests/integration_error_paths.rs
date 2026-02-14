@@ -515,7 +515,7 @@ fn test_concurrent_writes_produce_valid_graph() {
     // The graph must still be parseable — no corruption
     let final_graph = load_graph(path.as_ref()).unwrap();
     assert!(
-        final_graph.len() >= 1,
+        !final_graph.is_empty(),
         "Graph must contain at least the seed task"
     );
     assert!(

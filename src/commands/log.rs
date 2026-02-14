@@ -134,7 +134,7 @@ mod tests {
 
         run_add(&dir, "t1", "Started working on this", None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.log.len(), 1);
         assert_eq!(task.log[0].message, "Started working on this");
@@ -156,7 +156,7 @@ mod tests {
 
         run_add(&dir, "t1", "Reviewed the PR", Some("alice")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.log.len(), 1);
         assert_eq!(task.log[0].actor.as_deref(), Some("alice"));
@@ -175,7 +175,7 @@ mod tests {
         run_add(&dir, "t1", "First entry", None).unwrap();
         run_add(&dir, "t1", "Second entry", Some("bot")).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.log.len(), 2);
         assert_eq!(task.log[0].message, "First entry");
@@ -195,7 +195,7 @@ mod tests {
         // Empty message is allowed — the function doesn't validate content
         run_add(&dir, "t1", "", None).unwrap();
 
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.log.len(), 1);
         assert_eq!(task.log[0].message, "");
@@ -274,7 +274,7 @@ mod tests {
         run_add(&dir, "t1", "Check JSON", Some("tester")).unwrap();
 
         // Verify the data that would be serialized is valid JSON
-        let graph = load_graph(&graph_path(&dir)).unwrap();
+        let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
         let json_str = serde_json::to_string_pretty(&task.log).unwrap();
         let parsed: Vec<LogEntry> = serde_json::from_str(&json_str).unwrap();

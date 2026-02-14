@@ -197,23 +197,9 @@ pub fn get_summary(dir: &Path) -> Result<AgentSummary> {
 
     let total = agents.len();
     let alive = agents.iter().filter(|a| is_effectively_alive(a)).count();
-    let working = agents
-        .iter()
-        .filter(|a| a.status == AgentStatus::Working && is_process_alive(a.pid))
-        .count();
-    let idle = agents
-        .iter()
-        .filter(|a| a.status == AgentStatus::Idle && is_process_alive(a.pid))
-        .count();
     let dead = agents.iter().filter(|a| is_effectively_dead(a)).count();
 
-    Ok(AgentSummary {
-        total,
-        alive,
-        working,
-        idle,
-        dead,
-    })
+    Ok(AgentSummary { total, alive, dead })
 }
 
 /// Summary of agent counts
@@ -222,8 +208,6 @@ pub fn get_summary(dir: &Path) -> Result<AgentSummary> {
 pub struct AgentSummary {
     pub total: usize,
     pub alive: usize,
-    pub working: usize,
-    pub idle: usize,
     pub dead: usize,
 }
 

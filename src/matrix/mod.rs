@@ -14,7 +14,6 @@ pub mod commands;
 pub mod listener;
 
 use std::path::{Path, PathBuf};
-use std::thread;
 
 use anyhow::{Context, Result};
 use matrix_sdk::{
@@ -386,30 +385,6 @@ impl MatrixClient {
             .await
             .context("Sync loop failed")?;
         Ok(())
-    }
-
-    /// Start sync in a background OS thread
-    ///
-    /// **DEPRECATED**: This method doesn't work correctly because event handlers
-    /// registered with `add_event_handler` need to run within the same async
-    /// context as the sync loop. Use `sync_once()` in a loop with `tokio::select!`
-    /// instead (see `MatrixListener::run()` for an example).
-    ///
-    /// Returns a handle to the thread.
-    #[deprecated(note = "Use sync_once() in a loop with tokio::select! instead")]
-    pub fn start_sync_thread(&self) -> thread::JoinHandle<()> {
-        let client = self.client.clone();
-
-        thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime");
-
-            rt.block_on(async {
-                let _ = client.sync(SyncSettings::default()).await;
-            });
-        })
     }
 
     /// Run a single sync cycle

@@ -316,10 +316,10 @@ mod tests {
                         is_overloaded: false,
                     });
                 workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
+                if let Some(ref estimate) = task.estimate
+                    && let Some(hours) = estimate.hours
+                {
+                    workload.assigned_hours += hours;
                 }
                 if task.status == Status::InProgress {
                     workload.in_progress_count += 1;
@@ -331,12 +331,12 @@ mod tests {
     /// Calculate load percentages for all workloads (mirrors run() logic)
     fn calculate_loads(workloads: &mut HashMap<String, AgentWorkload>) {
         for workload in workloads.values_mut() {
-            if let Some(capacity) = workload.capacity {
-                if capacity > 0.0 {
-                    let load = (workload.assigned_hours / capacity) * 100.0;
-                    workload.load_percent = Some(load);
-                    workload.is_overloaded = load > 100.0;
-                }
+            if let Some(capacity) = workload.capacity
+                && capacity > 0.0
+            {
+                let load = (workload.assigned_hours / capacity) * 100.0;
+                workload.load_percent = Some(load);
+                workload.is_overloaded = load > 100.0;
             }
         }
     }

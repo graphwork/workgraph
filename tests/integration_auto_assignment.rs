@@ -270,10 +270,10 @@ fn build_assign_subgraph(dir: &Path) {
 
         mutable_graph.add_node(Node::Task(assign_task));
 
-        if let Some(t) = mutable_graph.get_task_mut(&ready_task.id) {
-            if !t.blocked_by.contains(&assign_task_id) {
-                t.blocked_by.push(assign_task_id.clone());
-            }
+        if let Some(t) = mutable_graph.get_task_mut(&ready_task.id)
+            && !t.blocked_by.contains(&assign_task_id)
+        {
+            t.blocked_by.push(assign_task_id.clone());
         }
 
         graph_modified = true;
@@ -298,7 +298,7 @@ fn test_assign_subgraph_created_for_ready_task() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // assign-task-1 should exist
     let assign_task = graph.get_task("assign-task-1");
@@ -324,7 +324,7 @@ fn test_assign_subgraph_blocks_original_task() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // The assign task should have blocks = [task-1]
     let assign = graph.get_task("assign-task-1").unwrap();
@@ -370,7 +370,7 @@ fn test_assign_subgraph_includes_description() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     let assign = graph.get_task("assign-task-2").unwrap();
     let desc = assign.description.as_ref().unwrap();
 
@@ -409,7 +409,7 @@ fn test_assign_subgraph_includes_skills() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     let assign = graph.get_task("assign-task-3").unwrap();
     let desc = assign.description.as_ref().unwrap();
 
@@ -432,7 +432,7 @@ fn test_assign_subgraph_skips_already_assigned_agent() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(
         graph.get_task("assign-task-4").is_none(),
         "should NOT create assign task for task that already has an agent"
@@ -451,7 +451,7 @@ fn test_assign_subgraph_skips_already_claimed() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(
         graph.get_task("assign-task-5").is_none(),
         "should NOT create assign task for task that is already claimed (assigned field set)"
@@ -470,7 +470,7 @@ fn test_assign_subgraph_idempotent() {
     build_assign_subgraph(dir);
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // The assign-task-6 task should exist exactly once (not duplicated)
     assert!(
@@ -500,7 +500,7 @@ fn test_assign_subgraph_not_created_when_disabled() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(
         graph.get_task("assign-task-7").is_none(),
         "should NOT create assign task when auto_assign is disabled"
@@ -524,7 +524,7 @@ fn test_assign_subgraph_multiple_ready_tasks() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     assert!(
         graph.get_task("assign-a").is_some(),
@@ -568,7 +568,7 @@ fn test_assign_subgraph_skips_blocked_tasks() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     assert!(
         graph.get_task("assign-task-a").is_some(),
@@ -673,7 +673,7 @@ fn test_full_assignment_pipeline() {
     // Run the assignment subgraph construction
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // Verify assign task was created
     let assign = graph.get_task("assign-feature-1").unwrap();
@@ -731,7 +731,7 @@ fn test_assignment_pipeline_with_mixed_tasks() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // Only the ready, unassigned task should get an assign subtask
     assert!(
@@ -879,7 +879,7 @@ fn test_agent_field_persists_through_save_load() {
     task.agent = Some("abc123def456".to_string());
     setup_workgraph(dir, vec![task]);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     let loaded = graph.get_task("persist-1").unwrap();
     assert_eq!(
         loaded.agent.as_deref(),
@@ -906,7 +906,7 @@ fn test_assigned_agent_survives_subgraph_construction() {
 
     build_assign_subgraph(dir);
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // Agent field should be preserved
     let t1 = graph.get_task("survive-1").unwrap();

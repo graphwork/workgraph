@@ -252,7 +252,7 @@ mod tests {
     fn test_load_skips_empty_lines_and_comments() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# This is a comment").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
             r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#
@@ -406,9 +406,7 @@ mod tests {
         // Write with \r\n line endings
         write!(
             file,
-            "{}\r\n{}\r\n",
-            r#"{"id":"t1","kind":"task","title":"CRLF Task 1","status":"open"}"#,
-            r#"{"id":"t2","kind":"task","title":"CRLF Task 2","status":"done"}"#,
+            "{{\"id\":\"t1\",\"kind\":\"task\",\"title\":\"CRLF Task 1\",\"status\":\"open\"}}\r\n{{\"id\":\"t2\",\"kind\":\"task\",\"title\":\"CRLF Task 2\",\"status\":\"done\"}}\r\n",
         )
         .unwrap();
         file.flush().unwrap();
@@ -425,10 +423,7 @@ mod tests {
         // Mix \n and \r\n in the same file
         write!(
             file,
-            "{}\n{}\r\n{}\n",
-            r#"{"id":"t1","kind":"task","title":"LF","status":"open"}"#,
-            r#"{"id":"t2","kind":"task","title":"CRLF","status":"open"}"#,
-            r#"{"id":"t3","kind":"task","title":"LF again","status":"open"}"#,
+            "{{\"id\":\"t1\",\"kind\":\"task\",\"title\":\"LF\",\"status\":\"open\"}}\n{{\"id\":\"t2\",\"kind\":\"task\",\"title\":\"CRLF\",\"status\":\"open\"}}\r\n{{\"id\":\"t3\",\"kind\":\"task\",\"title\":\"LF again\",\"status\":\"open\"}}\n",
         )
         .unwrap();
         file.flush().unwrap();
@@ -754,7 +749,7 @@ mod tests {
         )
         .unwrap();
         writeln!(file, "# Mid-file comment").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
             r#"{{"id":"t2","kind":"task","title":"Task 2","status":"open"}}"#
@@ -828,6 +823,6 @@ mod tests {
         assert!(success_count.load(Ordering::SeqCst) > 0);
 
         // The graph should be parseable (no EOF errors or corruption)
-        assert!(final_graph.len() > 0);
+        assert!(!final_graph.is_empty());
     }
 }

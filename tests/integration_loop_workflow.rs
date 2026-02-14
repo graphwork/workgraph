@@ -141,7 +141,7 @@ fn test_add_with_loops_to_creates_loop_edge() {
     );
 
     // Load graph and verify loop edge was created
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let looper = graph.get_task("looper").unwrap();
 
     assert_eq!(
@@ -199,7 +199,7 @@ fn test_add_with_loop_delay() {
         ],
     );
 
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("delayed").unwrap();
     assert_eq!(task.loops_to.len(), 1);
     assert_eq!(task.loops_to[0].delay.as_deref(), Some("30s"));
@@ -225,7 +225,7 @@ fn test_show_displays_loop_iteration() {
         delay: None,
     }];
     graph.add_node(Node::Task(task));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // wg show --json should include loop_iteration
     let output = wg_ok(&wg_dir, &["--json", "show", "iter-task"]);
@@ -274,7 +274,7 @@ fn test_done_reactivates_loop_target() {
 
     graph.add_node(Node::Task(target));
     graph.add_node(Node::Task(looper));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // Mark looper as done via CLI (it's already Done, so we need it InProgress first)
     // Actually, let's set up a clean scenario:
@@ -292,7 +292,7 @@ fn test_done_reactivates_loop_target() {
 
     graph.add_node(Node::Task(target));
     graph.add_node(Node::Task(looper));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // Mark looper as done via CLI
     let output = wg_ok(&wg_dir, &["done", "looper"]);
@@ -305,7 +305,7 @@ fn test_done_reactivates_loop_target() {
     );
 
     // Verify graph state: target should be re-opened with iteration incremented
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let target = graph.get_task("target").unwrap();
     assert_eq!(
         target.status,
@@ -362,7 +362,7 @@ fn test_loops_displays_active_loops() {
     graph.add_node(Node::Task(task_a));
     graph.add_node(Node::Task(task_b));
     graph.add_node(Node::Task(task_c));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // Human-readable output
     let output = wg_ok(&wg_dir, &["loops"]);
@@ -412,7 +412,7 @@ fn test_loops_shows_exhausted_loops() {
         delay: None,
     }];
     graph.add_node(Node::Task(task));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     let output = wg_ok(&wg_dir, &["loops"]);
     assert!(
@@ -447,25 +447,25 @@ fn test_multiple_iterations_until_max() {
         delay: None,
     }];
     graph.add_node(Node::Task(task));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // Iteration 1: complete -> re-opens
     wg_ok(&wg_dir, &["done", "repeater"]);
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("repeater").unwrap();
     assert_eq!(task.status, Status::Open, "Iter 1: should re-open");
     assert_eq!(task.loop_iteration, 1, "Iter 1: loop_iteration should be 1");
 
     // Iteration 2: complete -> re-opens
     wg_ok(&wg_dir, &["done", "repeater"]);
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("repeater").unwrap();
     assert_eq!(task.status, Status::Open, "Iter 2: should re-open");
     assert_eq!(task.loop_iteration, 2, "Iter 2: loop_iteration should be 2");
 
     // Iteration 3: complete -> re-opens (iteration goes 2->3, but 3 == max, so next time won't fire)
     wg_ok(&wg_dir, &["done", "repeater"]);
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("repeater").unwrap();
     // After this done, evaluate_loop_edges checks if iteration < max_iterations
     // iteration was 2, 2 < 3 → fires, sets to 3
@@ -478,7 +478,7 @@ fn test_multiple_iterations_until_max() {
 
     // Iteration 4: complete -> stays Done (3 >= 3, loop exhausted)
     wg_ok(&wg_dir, &["done", "repeater"]);
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("repeater").unwrap();
     assert_eq!(
         task.status,
@@ -518,13 +518,13 @@ fn test_loop_with_ready_after_delay() {
         delay: Some("1h".to_string()),
     }];
     graph.add_node(Node::Task(task));
-    save_graph(&graph, &graph_path(&wg_dir)).unwrap();
+    save_graph(&graph, graph_path(&wg_dir)).unwrap();
 
     // Complete the task to trigger the loop
     wg_ok(&wg_dir, &["done", "delayed"]);
 
     // Verify the task is re-opened but has ready_after set
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let task = graph.get_task("delayed").unwrap();
     assert_eq!(task.status, Status::Open, "Task should be re-opened");
     assert_eq!(task.loop_iteration, 1);
@@ -612,7 +612,7 @@ fn test_chain_loop_via_cli() {
     );
 
     // Verify: A should be re-opened with loop_iteration=1
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let a = graph.get_task("a").unwrap();
     assert_eq!(a.status, Status::Open, "A should be re-opened");
     assert_eq!(a.loop_iteration, 1);

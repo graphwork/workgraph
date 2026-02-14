@@ -237,7 +237,7 @@ mod tests {
 
         let index = build_reverse_index(&graph);
         assert_eq!(index.get("t1"), Some(&vec!["t2".to_string()]));
-        assert!(index.get("t2").is_none());
+        assert!(!index.contains_key("t2"));
     }
 
     #[test]

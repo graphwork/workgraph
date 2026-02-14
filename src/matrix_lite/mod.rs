@@ -44,7 +44,6 @@ pub struct MatrixClient {
     homeserver_url: String,
     access_token: String,
     user_id: String,
-    #[allow(dead_code)]
     workgraph_dir: PathBuf,
     /// Sync token for incremental sync
     sync_token: Option<String>,
@@ -52,11 +51,8 @@ pub struct MatrixClient {
 
 /// Login response from Matrix API
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct LoginResponse {
     access_token: String,
-    user_id: String,
-    device_id: String,
 }
 
 impl MatrixClient {
@@ -171,11 +167,6 @@ impl MatrixClient {
     fn save_access_token_static(state_dir: &Path, token: &str) {
         let path = state_dir.join("access_token");
         let _ = std::fs::write(path, token);
-    }
-
-    #[allow(dead_code)]
-    fn save_access_token(&self) {
-        Self::save_access_token_static(&self.state_dir(), &self.access_token);
     }
 
     /// Create a new client by logging in with password (ignores cached/config tokens)
@@ -513,9 +504,6 @@ struct TimelineEvent {
 #[derive(Debug, Deserialize)]
 struct MessageContent {
     body: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    msgtype: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -118,6 +118,14 @@ pub fn run(
         bail!("Agency not initialized. Run `wg agency init` first.");
     }
 
+    // Pre-flight: check that claude CLI is available
+    if Command::new("claude").arg("--version").output().is_err() {
+        bail!(
+            "The 'claude' CLI is required for evolve but was not found in PATH.\n\
+             Install it from https://docs.anthropic.com/en/docs/claude-code and ensure it is on your PATH."
+        );
+    }
+
     // Parse strategy
     let strategy = match strategy {
         Some(s) => Strategy::from_str(s)?,

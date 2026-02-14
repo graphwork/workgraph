@@ -118,7 +118,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify resource was added
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let resource = graph.get_resource("budget-q1");
         assert!(resource.is_some());
         assert_eq!(resource.unwrap().id, "budget-q1");
@@ -139,7 +139,7 @@ mod tests {
 
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let resource = graph.get_resource("budget-q1").unwrap();
         assert_eq!(resource.id, "budget-q1");
         assert_eq!(resource.name, Some("Q1 Budget".to_string()));

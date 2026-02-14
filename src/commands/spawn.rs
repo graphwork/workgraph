@@ -57,12 +57,12 @@ fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
         anyhow::bail!("Empty timeout string");
     }
 
-    let (num_str, unit) = if timeout_str.ends_with('s') {
-        (&timeout_str[..timeout_str.len() - 1], "s")
-    } else if timeout_str.ends_with('m') {
-        (&timeout_str[..timeout_str.len() - 1], "m")
-    } else if timeout_str.ends_with('h') {
-        (&timeout_str[..timeout_str.len() - 1], "h")
+    let (num_str, unit) = if let Some(s) = timeout_str.strip_suffix('s') {
+        (s, "s")
+    } else if let Some(s) = timeout_str.strip_suffix('m') {
+        (s, "m")
+    } else if let Some(s) = timeout_str.strip_suffix('h') {
+        (s, "h")
     } else {
         // Default to seconds if no unit
         (timeout_str, "s")
@@ -582,7 +582,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task was claimed
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
+        let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::InProgress);
 

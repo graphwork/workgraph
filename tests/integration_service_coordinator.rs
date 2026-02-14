@@ -127,7 +127,7 @@ fn test_coordinator_identifies_ready_tasks() {
     save_test_graph(&wg_dir, &graph);
 
     // Load and check ready tasks
-    let loaded = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let loaded = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let ready = ready_tasks(&loaded);
 
     // Should find ready-1 and ready-2, but not done-1, ip-1, or blocked-1
@@ -158,7 +158,7 @@ fn test_coordinator_unblocks_when_blocker_done() {
 
     save_test_graph(&wg_dir, &graph);
 
-    let loaded = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let loaded = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let ready = ready_tasks(&loaded);
     assert_eq!(ready.len(), 1);
     assert_eq!(ready[0].id, "downstream");
@@ -261,7 +261,7 @@ fn test_coordinator_skips_assigned_tasks() {
 
     save_test_graph(&wg_dir, &graph);
 
-    let loaded = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let loaded = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let ready = ready_tasks(&loaded);
 
     // Both are technically "ready" (open, no blockers), but coordinator should
@@ -792,10 +792,10 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
         .filter_map(|t| {
             if t.blocked_by.len() == 1 {
                 let source_id = &t.blocked_by[0];
-                if let Some(source) = mutable_graph.get_task(source_id) {
-                    if source.status == Status::Failed {
-                        return Some((t.id.clone(), source_id.clone()));
-                    }
+                if let Some(source) = mutable_graph.get_task(source_id)
+                    && source.status == Status::Failed
+                {
+                    return Some((t.id.clone(), source_id.clone()));
                 }
             }
             None

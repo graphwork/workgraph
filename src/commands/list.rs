@@ -99,7 +99,7 @@ mod tests {
     use chrono::Duration;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Estimate, Node, Task, WorkGraph};
+    use workgraph::graph::{Node, Task, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {

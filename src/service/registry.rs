@@ -816,7 +816,7 @@ mod tests {
 
         let agent = registry.get_agent("agent-1").unwrap();
         let uptime = agent.uptime_secs().unwrap();
-        assert!(uptime >= 0 && uptime < 5); // Should be nearly instant
+        assert!((0..5).contains(&uptime)); // Should be nearly instant
 
         let human = agent.uptime_human();
         assert!(human.ends_with('s')); // Less than a minute
@@ -829,7 +829,7 @@ mod tests {
 
         let agent = registry.get_agent("agent-1").unwrap();
         let secs = agent.seconds_since_heartbeat().unwrap();
-        assert!(secs >= 0 && secs < 5);
+        assert!((0..5).contains(&secs));
     }
 
     #[test]
