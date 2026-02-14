@@ -96,16 +96,6 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
             }
         }
 
-        if let Some(ref assigned) = task.assigned
-            && graph.get_actor(assigned).is_none()
-        {
-            orphans.push(OrphanRef {
-                from: task.id.clone(),
-                to: assigned.clone(),
-                relation: "assigned".to_string(),
-            });
-        }
-
         for requires in &task.requires {
             if graph.get_resource(requires).is_none() {
                 orphans.push(OrphanRef {
@@ -136,7 +126,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Actor, ActorType, Node, Status, Task, TrustLevel};
+    use crate::graph::{Node, Status, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -166,23 +156,6 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-        }
-    }
-
-    fn make_actor(id: &str) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: None,
-            role: None,
-            rate: None,
-            capacity: None,
-            capabilities: vec![],
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
         }
     }
 
@@ -260,12 +233,12 @@ mod tests {
     fn test_no_orphans_with_valid_refs() {
         let mut graph = WorkGraph::new();
 
-        let actor = make_actor("erik");
-        let mut task = make_task("t1", "Task 1");
-        task.assigned = Some("erik".to_string());
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.blocked_by = vec!["t1".to_string()];
 
-        graph.add_node(Node::Actor(actor));
-        graph.add_node(Node::Task(task));
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
 
         let orphans = check_orphans(&graph);
         assert!(orphans.is_empty());
@@ -284,21 +257,6 @@ mod tests {
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].to, "nonexistent");
         assert_eq!(orphans[0].relation, "blocked_by");
-    }
-
-    #[test]
-    fn test_detects_orphan_assigned() {
-        let mut graph = WorkGraph::new();
-
-        let mut task = make_task("t1", "Task 1");
-        task.assigned = Some("ghost".to_string());
-
-        graph.add_node(Node::Task(task));
-
-        let orphans = check_orphans(&graph);
-        assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].to, "ghost");
-        assert_eq!(orphans[0].relation, "assigned");
     }
 
     #[test]

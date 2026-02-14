@@ -176,11 +176,6 @@ pub fn default_socket_path(dir: &Path) -> PathBuf {
     PathBuf::from(format!("/tmp/wg-{}.sock", project_name))
 }
 
-/// Path to the PID file for the service
-pub fn pid_file_path(dir: &Path) -> PathBuf {
-    dir.join("service").join("daemon.pid")
-}
-
 /// Path to the service state file
 pub fn state_file_path(dir: &Path) -> PathBuf {
     dir.join("service").join("state.json")
@@ -324,21 +319,28 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
     }
 
-    // Get ready tasks
-    let graph = load_graph(&graph_path).context("Failed to load graph")?;
-    let ready = ready_tasks(&graph);
+    // Load graph once at the start
+    let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
+
+    // Check if there are any ready tasks, return early if none
+    {
+        let ready = ready_tasks(&graph);
+        if ready.is_empty() {
+            let done = graph.tasks().filter(|t| t.status == Status::Done).count();
+            let total = graph.tasks().count();
+            if done == total && total > 0 {
+                eprintln!("[coordinator] All {} tasks complete!", total);
+            } else {
+                eprintln!("[coordinator] No ready tasks (done: {}/{})", done, total);
+            }
+            return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
+        }
+    }
+
     let slots_available = max_agents.saturating_sub(alive_count);
 
-    if ready.is_empty() {
-        let done = graph.tasks().filter(|t| t.status == Status::Done).count();
-        let total = graph.tasks().count();
-        if done == total && total > 0 {
-            eprintln!("[coordinator] All {} tasks complete!", total);
-        } else {
-            eprintln!("[coordinator] No ready tasks (done: {}/{})", done, total);
-        }
-        return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
-    }
+    // Track if graph has been modified during auto-assign or auto-evaluate
+    let mut graph_modified = false;
 
     // Auto-assign: build assignment subgraph for unassigned ready tasks.
     //
@@ -348,40 +350,45 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
     // spawned on the assignment task, inspects the agency via wg CLI, and calls
     // `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
     if config.agency.auto_assign {
-        let mut mutable_graph = load_graph(&graph_path)
-            .context("Failed to reload graph for auto-assign subgraph")?;
-        let mut graph_modified = false;
+        // Collect task data to avoid holding references while mutating graph
+        let ready_task_data: Vec<_> = {
+            let ready = ready_tasks(&graph);
+            ready.iter()
+                .map(|t| (t.id.clone(), t.title.clone(), t.description.clone(),
+                          t.skills.clone(), t.agent.clone(), t.assigned.clone(), t.tags.clone()))
+                .collect()
+        };
 
-        for ready_task in &ready {
+        for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags) in ready_task_data {
             // Skip tasks that already have an agent or are already claimed
-            if ready_task.agent.is_some() || ready_task.assigned.is_some() {
+            if task_agent.is_some() || task_assigned.is_some() {
                 continue;
             }
 
             // Skip tasks tagged with assignment/evaluation/evolution to prevent
             // infinite regress (assign-assign-assign-...)
             let dominated_tags = ["assignment", "evaluation", "evolution"];
-            if ready_task.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if task_tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
                 continue;
             }
 
-            let assign_task_id = format!("assign-{}", ready_task.id);
+            let assign_task_id = format!("assign-{}", task_id);
 
             // Skip if assignment task already exists (idempotent)
-            if mutable_graph.get_task(&assign_task_id).is_some() {
+            if graph.get_task(&assign_task_id).is_some() {
                 continue;
             }
 
             // Build description for the assigner with the original task's context
             let mut desc = format!(
                 "Assign an agent to task '{}'.\n\n## Original Task\n**Title:** {}\n",
-                ready_task.id, ready_task.title,
+                task_id, task_title,
             );
-            if let Some(ref d) = ready_task.description {
+            if let Some(ref d) = task_desc {
                 desc.push_str(&format!("**Description:** {}\n", d));
             }
-            if !ready_task.skills.is_empty() {
-                desc.push_str(&format!("**Skills:** {}\n", ready_task.skills.join(", ")));
+            if !task_skills.is_empty() {
+                desc.push_str(&format!("**Skills:** {}\n", task_skills.join(", ")));
             }
             desc.push_str(&format!(
                 "\n## Instructions\n\
@@ -391,18 +398,18 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                  wg assign {} <agent-hash>\n\
                  wg done {}\n\
                  ```",
-                ready_task.id, assign_task_id,
+                task_id, assign_task_id,
             ));
 
             // Create the assignment task (blocks the original)
             let assign_task = Task {
                 id: assign_task_id.clone(),
-                title: format!("Assign agent for: {}", ready_task.title),
+                title: format!("Assign agent for: {}", task_title),
                 description: Some(desc),
                 status: Status::Open,
                 assigned: None,
                 estimate: None,
-                blocks: vec![ready_task.id.clone()],
+                blocks: vec![task_id.clone()],
                 blocked_by: vec![],
                 requires: vec![],
                 tags: vec!["assignment".to_string(), "agency".to_string()],
@@ -424,10 +431,10 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 agent: config.agency.assigner_agent.clone(),
             };
 
-            mutable_graph.add_node(Node::Task(assign_task));
+            graph.add_node(Node::Task(assign_task));
 
             // Add the assignment task as a blocker on the original task
-            if let Some(t) = mutable_graph.get_task_mut(&ready_task.id) {
+            if let Some(t) = graph.get_task_mut(&task_id) {
                 if !t.blocked_by.contains(&assign_task_id) {
                     t.blocked_by.push(assign_task_id.clone());
                 }
@@ -435,15 +442,9 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
 
             eprintln!(
                 "[coordinator] Created assignment task '{}' blocking '{}'",
-                assign_task_id, ready_task.id,
+                assign_task_id, task_id,
             );
             graph_modified = true;
-        }
-
-        if graph_modified {
-            if let Err(e) = save_graph(&mutable_graph, &graph_path) {
-                eprintln!("[coordinator] Failed to save assignment subgraph: {}", e);
-            }
         }
     }
 
@@ -459,24 +460,36 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
     // auto-evaluated to prevent infinite regress.  Abandoned tasks are also
     // excluded.
     if config.agency.auto_evaluate {
-        let mut mutable_graph = load_graph(&graph_path)
-            .context("Failed to reload graph for auto-evaluate subgraph")?;
-        let mut graph_modified = false;
+        // Load agents to identify human operators — their work quality isn't
+        // a reflection of a role+motivation prompt so we skip auto-evaluation.
+        let agents_dir = dir.join("agency").join("agents");
+        let all_agents = agency::load_all_agents(&agents_dir).unwrap_or_default();
+        let human_agent_ids: std::collections::HashSet<&str> = all_agents
+            .iter()
+            .filter(|a| a.is_human())
+            .map(|a| a.id.as_str())
+            .collect();
 
         // Collect all tasks (not just ready ones) that might need eval tasks.
         // We iterate all non-terminal tasks so eval tasks are created early.
-        let tasks_needing_eval: Vec<_> = mutable_graph
+        let tasks_needing_eval: Vec<_> = graph
             .tasks()
             .filter(|t| {
                 // Skip tasks that already have an evaluation task
                 let eval_id = format!("evaluate-{}", t.id);
-                if mutable_graph.get_task(&eval_id).is_some() {
+                if graph.get_task(&eval_id).is_some() {
                     return false;
                 }
                 // Skip tasks tagged with evaluation/assignment/evolution
                 let dominated_tags = ["evaluation", "assignment", "evolution"];
                 if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
                     return false;
+                }
+                // Skip tasks assigned to human agents
+                if let Some(ref agent_id) = t.agent {
+                    if human_agent_ids.contains(agent_id.as_str()) {
+                        return false;
+                    }
                 }
                 // Only create for tasks that are active (Open, InProgress, Blocked)
                 // or already completed (Done, PendingReview, Failed) without an eval task
@@ -489,7 +502,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
             let eval_task_id = format!("evaluate-{}", task_id);
 
             // Double-check (the filter above already checks but graph may have changed)
-            if mutable_graph.get_task(&eval_task_id).is_some() {
+            if graph.get_task(&eval_task_id).is_some() {
                 continue;
             }
 
@@ -530,7 +543,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 agent: config.agency.evaluator_agent.clone(),
             };
 
-            mutable_graph.add_node(Node::Task(eval_task));
+            graph.add_node(Node::Task(eval_task));
 
             eprintln!(
                 "[coordinator] Created evaluation task '{}' blocked by '{}'",
@@ -543,14 +556,14 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         // `ready_tasks()` only unblocks when the blocker is Done. For Failed
         // tasks we still want evaluation to proceed (§4.3: "Failed tasks also
         // get evaluated"), so we remove the blocker explicitly.
-        let eval_fixups: Vec<(String, String)> = mutable_graph
+        let eval_fixups: Vec<(String, String)> = graph
             .tasks()
             .filter(|t| t.id.starts_with("evaluate-") && t.status == Status::Open)
             .filter_map(|t| {
                 // The eval task blocks on a single task: the original
                 if t.blocked_by.len() == 1 {
                     let source_id = &t.blocked_by[0];
-                    if let Some(source) = mutable_graph.get_task(source_id) {
+                    if let Some(source) = graph.get_task(source_id) {
                         if source.status == Status::Failed {
                             return Some((t.id.clone(), source_id.clone()));
                         }
@@ -561,7 +574,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
             .collect();
 
         for (eval_id, source_id) in &eval_fixups {
-            if let Some(t) = mutable_graph.get_task_mut(eval_id) {
+            if let Some(t) = graph.get_task_mut(eval_id) {
                 t.blocked_by.retain(|b| b != source_id);
                 graph_modified = true;
                 eprintln!(
@@ -570,33 +583,40 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 );
             }
         }
+    }
 
-        if graph_modified {
-            if let Err(e) = save_graph(&mutable_graph, &graph_path) {
-                eprintln!("[coordinator] Failed to save auto-evaluate subgraph: {}", e);
-            }
+    // Save graph once if it was modified during auto-assign or auto-evaluate
+    if graph_modified {
+        if let Err(e) = save_graph(&graph, &graph_path) {
+            eprintln!("[coordinator] Failed to save graph after auto-assign/auto-evaluate: {}", e);
         }
     }
 
-    // Re-load graph after potential subgraph construction so we spawn on the
-    // current set of ready tasks (which now includes assign-* tasks and excludes
-    // original tasks that became blocked).
-    let graph = load_graph(&graph_path).context("Failed to reload graph for spawning")?;
-    let ready = ready_tasks(&graph);
+    // Get final ready tasks (recalculated if graph was modified)
+    let final_ready = ready_tasks(&graph);
 
     // Spawn agents on ready tasks
     let mut spawned = 0;
-    let to_spawn = ready.iter().take(slots_available);
+    let agents_dir = dir.join("agency").join("agents");
+    let to_spawn = final_ready.iter().take(slots_available);
     for task in to_spawn {
         // Skip if already claimed
         if task.assigned.is_some() {
             continue;
         }
 
+        // Resolve executor: agent.executor > config.coordinator.executor
+        let effective_executor = task.agent.as_ref()
+            .and_then(|agent_hash| {
+                agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()
+            })
+            .map(|agent| agent.executor)
+            .unwrap_or_else(|| executor.to_string());
+
         // Task-level model takes priority over service-level model
         let effective_model = task.model.as_deref().or(model);
-        eprintln!("[coordinator] Spawning agent for: {} - {}", task.id, task.title);
-        match spawn::spawn_agent(dir, &task.id, executor, None, effective_model) {
+        eprintln!("[coordinator] Spawning agent for: {} - {} (executor: {})", task.id, task.title, effective_executor);
+        match spawn::spawn_agent(dir, &task.id, &effective_executor, None, effective_model) {
             Ok((agent_id, pid)) => {
                 eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
                 spawned += 1;
@@ -607,7 +627,7 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         }
     }
 
-    Ok(TickResult { agents_alive: alive_count + spawned, tasks_ready: ready.len(), agents_spawned: spawned })
+    Ok(TickResult { agents_alive: alive_count + spawned, tasks_ready: final_ready.len(), agents_spawned: spawned })
 }
 
 /// Reason an agent was detected as dead

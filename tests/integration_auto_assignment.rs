@@ -126,6 +126,12 @@ fn setup_agency(dir: &Path) -> (String, String, String) {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
 
@@ -166,6 +172,12 @@ fn setup_second_agent(dir: &Path) -> String {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
 
@@ -773,6 +785,12 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
 

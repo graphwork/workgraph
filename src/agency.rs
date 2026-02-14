@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::graph::TrustLevel;
+
 /// A resolved skill with its name and content loaded into memory.
 #[derive(Debug, Clone)]
 pub struct ResolvedSkill {
@@ -136,6 +138,10 @@ pub struct AgentIdentity {
     pub motivation_id: String,
 }
 
+fn default_executor() -> String {
+    "claude".to_string()
+}
+
 /// A first-class agent entity: a persistent, reusable, named pairing of a role and a motivation.
 ///
 /// Agent ID = SHA-256(role_id + motivation_id). Performance is tracked at the agent level
@@ -150,6 +156,47 @@ pub struct Agent {
     pub performance: PerformanceRecord,
     #[serde(default)]
     pub lineage: Lineage,
+    /// Skills/capabilities this agent has (for task matching)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Hourly rate for cost tracking
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    /// Maximum concurrent task capacity
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<f64>,
+    /// Trust level for this agent
+    #[serde(default, skip_serializing_if = "is_default_trust")]
+    pub trust_level: TrustLevel,
+    /// Contact info (email, matrix ID, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// Executor backend to use (default: "claude")
+    #[serde(default = "default_executor", skip_serializing_if = "is_default_executor")]
+    pub executor: String,
+}
+
+/// Executor types that represent human operators (not AI agents).
+const HUMAN_EXECUTORS: &[&str] = &["matrix", "email", "shell"];
+
+/// Returns true if the given executor string represents a human operator.
+pub fn is_human_executor(executor: &str) -> bool {
+    HUMAN_EXECUTORS.contains(&executor)
+}
+
+impl Agent {
+    /// Returns true if this agent uses a human executor (matrix, email, shell).
+    pub fn is_human(&self) -> bool {
+        is_human_executor(&self.executor)
+    }
+}
+
+fn is_default_trust(level: &TrustLevel) -> bool {
+    *level == TrustLevel::Provisional
+}
+
+fn is_default_executor(executor: &str) -> bool {
+    executor == "claude"
 }
 
 /// An evaluation of agent performance on a specific task.
@@ -1121,6 +1168,143 @@ pub fn seed_starters(agency_dir: &Path) -> Result<(usize, usize), AgencyError> {
     }
 
     Ok((roles_created, motivations_created))
+}
+
+// ---------------------------------------------------------------------------
+// Evolution utilities
+// ---------------------------------------------------------------------------
+
+/// Mutate a parent role to produce a child with updated fields and correct lineage.
+///
+/// Any `None` field inherits the parent's value. The child gets a fresh content-hash ID
+/// based on its (possibly mutated) description, skills, and desired_outcome.
+pub fn mutate_role(
+    parent: &Role,
+    run_id: &str,
+    new_name: Option<&str>,
+    new_description: Option<&str>,
+    new_skills: Option<Vec<SkillRef>>,
+    new_desired_outcome: Option<&str>,
+) -> Role {
+    let description = new_description
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| parent.description.clone());
+    let skills = new_skills.unwrap_or_else(|| parent.skills.clone());
+    let desired_outcome = new_desired_outcome
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| parent.desired_outcome.clone());
+
+    let id = content_hash_role(&skills, &desired_outcome, &description);
+
+    Role {
+        id,
+        name: new_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| parent.name.clone()),
+        description,
+        skills,
+        desired_outcome,
+        performance: PerformanceRecord {
+            task_count: 0,
+            avg_score: None,
+            evaluations: vec![],
+        },
+        lineage: Lineage::mutation(&parent.id, parent.lineage.generation, run_id),
+    }
+}
+
+/// Crossover two motivations: union their accept/reject lists and set crossover lineage.
+///
+/// Produces a new motivation whose acceptable_tradeoffs and unacceptable_tradeoffs are
+/// the deduplicated union of both parents' lists.
+pub fn crossover_motivations(
+    parent_a: &Motivation,
+    parent_b: &Motivation,
+    run_id: &str,
+    name: &str,
+    description: &str,
+) -> Motivation {
+    let mut acceptable: Vec<String> = parent_a.acceptable_tradeoffs.clone();
+    for t in &parent_b.acceptable_tradeoffs {
+        if !acceptable.contains(t) {
+            acceptable.push(t.clone());
+        }
+    }
+
+    let mut unacceptable: Vec<String> = parent_a.unacceptable_tradeoffs.clone();
+    for t in &parent_b.unacceptable_tradeoffs {
+        if !unacceptable.contains(t) {
+            unacceptable.push(t.clone());
+        }
+    }
+
+    let id = content_hash_motivation(&acceptable, &unacceptable, description);
+    let max_gen = parent_a
+        .lineage
+        .generation
+        .max(parent_b.lineage.generation);
+
+    Motivation {
+        id,
+        name: name.to_string(),
+        description: description.to_string(),
+        acceptable_tradeoffs: acceptable,
+        unacceptable_tradeoffs: unacceptable,
+        performance: PerformanceRecord {
+            task_count: 0,
+            avg_score: None,
+            evaluations: vec![],
+        },
+        lineage: Lineage::crossover(&[&parent_a.id, &parent_b.id], max_gen, run_id),
+    }
+}
+
+/// Tournament selection: pick the role with the highest average score.
+///
+/// Returns `None` if the slice is empty. Roles without a score (`avg_score == None`)
+/// are treated as having score 0.0.
+pub fn tournament_select_role(candidates: &[Role]) -> Option<&Role> {
+    candidates.iter().max_by(|a, b| {
+        let sa = a.performance.avg_score.unwrap_or(0.0);
+        let sb = b.performance.avg_score.unwrap_or(0.0);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+/// Identify roles whose average score falls below the given threshold.
+///
+/// Only roles with at least `min_evals` evaluations are considered; roles with
+/// fewer evaluations are never flagged for retirement (they haven't been tested enough).
+pub fn roles_below_threshold(roles: &[Role], threshold: f64, min_evals: u32) -> Vec<&Role> {
+    roles
+        .iter()
+        .filter(|r| {
+            r.performance.task_count >= min_evals
+                && r.performance.avg_score.map_or(false, |s| s < threshold)
+        })
+        .collect()
+}
+
+/// Gap analysis: given a set of required skill names and the current roles,
+/// return the skill names that are not covered by any existing role.
+///
+/// A skill is "covered" if at least one role has a `SkillRef::Name(n)` where
+/// `n` matches the required skill (case-sensitive).
+pub fn uncovered_skills(required: &[&str], roles: &[Role]) -> Vec<String> {
+    let covered: std::collections::HashSet<&str> = roles
+        .iter()
+        .flat_map(|r| r.skills.iter())
+        .filter_map(|s| match s {
+            SkillRef::Name(n) => Some(n.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    required
+        .iter()
+        .filter(|&&skill| !covered.contains(skill))
+        .map(|&s| s.to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -2341,6 +2525,337 @@ performance:
         assert_eq!(ref0.task_id, "task-abc");
         assert_eq!(ref0.timestamp, "2025-05-01T12:00:00Z");
         assert_eq!(ref0.context_id, "motivation-xyz");
+    }
+
+    // -- Evolution utility tests ---------------------------------------------
+
+    #[test]
+    fn test_mutate_role_produces_valid_child_with_parent_lineage() {
+        let parent = build_role(
+            "Programmer",
+            "Writes code to implement features.",
+            vec![
+                SkillRef::Name("coding".into()),
+                SkillRef::Name("debugging".into()),
+            ],
+            "Working code",
+        );
+
+        let child = mutate_role(
+            &parent,
+            "evo-run-1",
+            Some("Test-Focused Programmer"),
+            None, // inherit description
+            Some(vec![
+                SkillRef::Name("coding".into()),
+                SkillRef::Name("debugging".into()),
+                SkillRef::Name("testing".into()),
+            ]),
+            Some("Working, tested code"),
+        );
+
+        // Child has a content-hash ID that differs from parent (skills/outcome changed)
+        assert_ne!(child.id, parent.id);
+        assert_eq!(child.id.len(), 64);
+        // Name was overridden
+        assert_eq!(child.name, "Test-Focused Programmer");
+        // Description inherited from parent
+        assert_eq!(child.description, parent.description);
+        // Skills were mutated
+        assert_eq!(child.skills.len(), 3);
+        // Desired outcome was mutated
+        assert_eq!(child.desired_outcome, "Working, tested code");
+        // Lineage tracks the parent
+        assert_eq!(child.lineage.parent_ids, vec![parent.id.clone()]);
+        assert_eq!(child.lineage.generation, parent.lineage.generation + 1);
+        assert_eq!(child.lineage.created_by, "evolver-evo-run-1");
+        // Performance starts fresh
+        assert_eq!(child.performance.task_count, 0);
+        assert!(child.performance.avg_score.is_none());
+    }
+
+    #[test]
+    fn test_mutate_role_inherits_all_when_no_overrides() {
+        let parent = build_role(
+            "Architect",
+            "Designs systems.",
+            vec![SkillRef::Name("system-design".into())],
+            "Design document",
+        );
+
+        let child = mutate_role(&parent, "run-2", None, None, None, None);
+
+        // Content is identical, so content-hash ID is the same
+        assert_eq!(child.id, parent.id);
+        // Name inherited
+        assert_eq!(child.name, parent.name);
+        // Lineage still tracks parent
+        assert_eq!(child.lineage.parent_ids, vec![parent.id.clone()]);
+        assert_eq!(child.lineage.generation, 1);
+    }
+
+    #[test]
+    fn test_mutate_role_generation_increments_from_parent() {
+        let mut parent = build_role("Gen3", "Third gen", vec![], "Outcome");
+        parent.lineage = Lineage::mutation("gen2-id", 2, "old-run");
+        assert_eq!(parent.lineage.generation, 3);
+
+        let child = mutate_role(&parent, "new-run", None, Some("Fourth gen"), None, None);
+        assert_eq!(child.lineage.generation, 4);
+        assert_eq!(child.lineage.parent_ids, vec![parent.id]);
+    }
+
+    #[test]
+    fn test_crossover_motivations_merges_accept_reject_lists() {
+        let parent_a = build_motivation(
+            "Careful",
+            "Prioritizes reliability.",
+            vec!["Slow".into(), "Verbose".into()],
+            vec!["Unreliable".into(), "Untested".into()],
+        );
+        let parent_b = build_motivation(
+            "Fast",
+            "Prioritizes speed.",
+            vec!["Less documentation".into(), "Verbose".into()], // "Verbose" overlaps
+            vec!["Broken code".into(), "Untested".into()],       // "Untested" overlaps
+        );
+
+        let child = crossover_motivations(
+            &parent_a,
+            &parent_b,
+            "xover-run",
+            "Careful-Fast Hybrid",
+            "Balances speed and reliability.",
+        );
+
+        // Acceptable: union, deduplicated — Slow, Verbose, Less documentation
+        assert_eq!(child.acceptable_tradeoffs.len(), 3);
+        assert!(child.acceptable_tradeoffs.contains(&"Slow".to_string()));
+        assert!(child.acceptable_tradeoffs.contains(&"Verbose".to_string()));
+        assert!(child
+            .acceptable_tradeoffs
+            .contains(&"Less documentation".to_string()));
+
+        // Unacceptable: union, deduplicated — Unreliable, Untested, Broken code
+        assert_eq!(child.unacceptable_tradeoffs.len(), 3);
+        assert!(child
+            .unacceptable_tradeoffs
+            .contains(&"Unreliable".to_string()));
+        assert!(child
+            .unacceptable_tradeoffs
+            .contains(&"Untested".to_string()));
+        assert!(child
+            .unacceptable_tradeoffs
+            .contains(&"Broken code".to_string()));
+
+        // Lineage is crossover of both parents
+        assert_eq!(child.lineage.parent_ids.len(), 2);
+        assert!(child.lineage.parent_ids.contains(&parent_a.id));
+        assert!(child.lineage.parent_ids.contains(&parent_b.id));
+        assert_eq!(child.lineage.generation, 1); // max(0,0) + 1
+        assert_eq!(child.lineage.created_by, "evolver-xover-run");
+
+        // Name and description match what was passed in
+        assert_eq!(child.name, "Careful-Fast Hybrid");
+        assert_eq!(child.description, "Balances speed and reliability.");
+
+        // Content-hash ID is valid
+        assert_eq!(child.id.len(), 64);
+    }
+
+    #[test]
+    fn test_crossover_motivations_generation_uses_max() {
+        let mut parent_a = build_motivation("A", "A", vec!["a".into()], vec![]);
+        parent_a.lineage = Lineage::mutation("ancestor", 4, "r1");
+        assert_eq!(parent_a.lineage.generation, 5);
+
+        let mut parent_b = build_motivation("B", "B", vec!["b".into()], vec![]);
+        parent_b.lineage = Lineage::mutation("ancestor2", 1, "r2");
+        assert_eq!(parent_b.lineage.generation, 2);
+
+        let child =
+            crossover_motivations(&parent_a, &parent_b, "xr", "Hybrid", "Hybrid desc");
+        // max(5, 2) + 1 = 6
+        assert_eq!(child.lineage.generation, 6);
+    }
+
+    #[test]
+    fn test_crossover_motivations_no_overlap() {
+        let parent_a = build_motivation("A", "A", vec!["x".into()], vec!["p".into()]);
+        let parent_b = build_motivation("B", "B", vec!["y".into()], vec!["q".into()]);
+
+        let child = crossover_motivations(&parent_a, &parent_b, "r", "C", "C");
+        assert_eq!(child.acceptable_tradeoffs, vec!["x", "y"]);
+        assert_eq!(child.unacceptable_tradeoffs, vec!["p", "q"]);
+    }
+
+    #[test]
+    fn test_tournament_select_role_picks_highest_scored() {
+        let mut low = build_role("Low", "Low scorer", vec![], "Low outcome");
+        low.performance.avg_score = Some(0.3);
+        low.performance.task_count = 5;
+
+        let mut mid = build_role("Mid", "Mid scorer", vec![], "Mid outcome");
+        mid.performance.avg_score = Some(0.6);
+        mid.performance.task_count = 5;
+
+        let mut high = build_role("High", "High scorer", vec![], "High outcome");
+        high.performance.avg_score = Some(0.9);
+        high.performance.task_count = 5;
+
+        let candidates = vec![low.clone(), mid.clone(), high.clone()];
+        let winner = tournament_select_role(&candidates).unwrap();
+        assert_eq!(winner.id, high.id);
+    }
+
+    #[test]
+    fn test_tournament_select_role_none_scores_treated_as_zero() {
+        let mut scored = build_role("Scored", "Has a score", vec![], "Outcome");
+        scored.performance.avg_score = Some(0.1);
+
+        let unscored = build_role("Unscored", "No score yet", vec![], "Outcome2");
+        // unscored.performance.avg_score remains None (treated as 0.0)
+
+        let candidates = vec![unscored.clone(), scored.clone()];
+        let winner = tournament_select_role(&candidates).unwrap();
+        assert_eq!(winner.id, scored.id);
+    }
+
+    #[test]
+    fn test_tournament_select_role_empty_returns_none() {
+        let result = tournament_select_role(&[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_tournament_select_role_single_candidate() {
+        let role = build_role("Only", "Only one", vec![], "Only outcome");
+        let candidates = vec![role.clone()];
+        let winner = tournament_select_role(&candidates).unwrap();
+        assert_eq!(winner.id, role.id);
+    }
+
+    #[test]
+    fn test_roles_below_threshold_filters_low_scorers() {
+        let mut good = build_role("Good", "Good role", vec![], "Good outcome");
+        good.performance.avg_score = Some(0.8);
+        good.performance.task_count = 10;
+
+        let mut bad = build_role("Bad", "Bad role", vec![], "Bad outcome");
+        bad.performance.avg_score = Some(0.2);
+        bad.performance.task_count = 10;
+
+        let mut mediocre = build_role("Meh", "Mediocre role", vec![], "Meh outcome");
+        mediocre.performance.avg_score = Some(0.49);
+        mediocre.performance.task_count = 10;
+
+        let roles = vec![good.clone(), bad.clone(), mediocre.clone()];
+        let to_retire = roles_below_threshold(&roles, 0.5, 5);
+
+        assert_eq!(to_retire.len(), 2);
+        let retired_ids: Vec<&str> = to_retire.iter().map(|r| r.id.as_str()).collect();
+        assert!(retired_ids.contains(&bad.id.as_str()));
+        assert!(retired_ids.contains(&mediocre.id.as_str()));
+    }
+
+    #[test]
+    fn test_roles_below_threshold_respects_min_evals() {
+        let mut low_but_new = build_role("New", "Barely tested", vec![], "New outcome");
+        low_but_new.performance.avg_score = Some(0.1);
+        low_but_new.performance.task_count = 2; // below min_evals
+
+        let mut low_and_tested = build_role("Old", "Thoroughly tested", vec![], "Old outcome");
+        low_and_tested.performance.avg_score = Some(0.1);
+        low_and_tested.performance.task_count = 10; // above min_evals
+
+        let roles = vec![low_but_new.clone(), low_and_tested.clone()];
+        let to_retire = roles_below_threshold(&roles, 0.5, 5);
+
+        // Only the well-tested low scorer should be flagged
+        assert_eq!(to_retire.len(), 1);
+        assert_eq!(to_retire[0].id, low_and_tested.id);
+    }
+
+    #[test]
+    fn test_roles_below_threshold_skips_unscored() {
+        let unscored = build_role("Unscored", "No evals", vec![], "Outcome");
+        // avg_score is None, task_count is 0
+
+        let roles = vec![unscored];
+        let to_retire = roles_below_threshold(&roles, 0.5, 0);
+        // None score => map_or(false, ...) => not flagged
+        assert!(to_retire.is_empty());
+    }
+
+    #[test]
+    fn test_uncovered_skills_identifies_missing() {
+        let role_a = build_role(
+            "Coder",
+            "Writes code",
+            vec![
+                SkillRef::Name("coding".into()),
+                SkillRef::Name("debugging".into()),
+            ],
+            "Code",
+        );
+        let role_b = build_role(
+            "Reviewer",
+            "Reviews code",
+            vec![SkillRef::Name("code-review".into())],
+            "Reviews",
+        );
+
+        let required = vec!["coding", "testing", "security-audit", "debugging"];
+        let roles = vec![role_a, role_b];
+        let missing = uncovered_skills(&required, &roles);
+
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&"testing".to_string()));
+        assert!(missing.contains(&"security-audit".to_string()));
+    }
+
+    #[test]
+    fn test_uncovered_skills_all_covered() {
+        let role = build_role(
+            "Full Stack",
+            "Does everything",
+            vec![
+                SkillRef::Name("coding".into()),
+                SkillRef::Name("testing".into()),
+            ],
+            "Everything",
+        );
+
+        let required = vec!["coding", "testing"];
+        let missing = uncovered_skills(&required, &[role]);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn test_uncovered_skills_empty_roles() {
+        let required = vec!["coding", "testing"];
+        let missing = uncovered_skills(&required, &[]);
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&"coding".to_string()));
+        assert!(missing.contains(&"testing".to_string()));
+    }
+
+    #[test]
+    fn test_uncovered_skills_ignores_non_name_refs() {
+        let role = build_role(
+            "Inline Role",
+            "Has inline skills only",
+            vec![
+                SkillRef::Inline("coding instructions".into()),
+                SkillRef::File(PathBuf::from("skills/coding.md")),
+            ],
+            "Outcome",
+        );
+
+        let required = vec!["coding"];
+        let missing = uncovered_skills(&required, &[role]);
+        // Inline and File refs don't match by name
+        assert_eq!(missing, vec!["coding"]);
     }
 
 }

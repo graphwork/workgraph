@@ -2,17 +2,18 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
+use workgraph::agency;
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
 
 use super::graph_path;
 
-/// Information about an actor's workload
+/// Information about an agent's workload
 #[derive(Debug, Serialize)]
-struct ActorWorkload {
+struct AgentWorkload {
     id: String,
-    name: Option<String>,
+    name: String,
     assigned_count: usize,
     assigned_hours: f64,
     in_progress_count: usize,
@@ -24,7 +25,7 @@ struct ActorWorkload {
 /// JSON output structure
 #[derive(Debug, Serialize)]
 struct WorkloadOutput {
-    actors: Vec<ActorWorkload>,
+    agents: Vec<AgentWorkload>,
     unassigned_count: usize,
     ready_unassigned_count: usize,
 }
@@ -42,24 +43,27 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let ready = ready_tasks(&graph);
     let ready_ids: std::collections::HashSet<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
-    // Build actor workload map
-    let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
+    // Build agent workload map
+    let mut agent_workloads: HashMap<String, AgentWorkload> = HashMap::new();
 
-    // Initialize with known actors from the graph
-    for actor in graph.actors() {
-        actor_workloads.insert(
-            actor.id.clone(),
-            ActorWorkload {
-                id: actor.id.clone(),
-                name: actor.name.clone(),
-                assigned_count: 0,
-                assigned_hours: 0.0,
-                in_progress_count: 0,
-                capacity: actor.capacity,
-                load_percent: None,
-                is_overloaded: false,
-            },
-        );
+    // Initialize with known agents from the agency directory
+    let agents_dir = dir.join("agency").join("agents");
+    if let Ok(agents) = agency::load_all_agents(&agents_dir) {
+        for agent in agents {
+            agent_workloads.insert(
+                agent.id.clone(),
+                AgentWorkload {
+                    id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    assigned_count: 0,
+                    assigned_hours: 0.0,
+                    in_progress_count: 0,
+                    capacity: agent.capacity,
+                    load_percent: None,
+                    is_overloaded: false,
+                },
+            );
+        }
     }
 
     let mut unassigned_count = 0;
@@ -73,12 +77,12 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         }
 
         match &task.assigned {
-            Some(actor_id) => {
-                // Get or create actor entry
-                let workload = actor_workloads.entry(actor_id.clone()).or_insert_with(|| {
-                    ActorWorkload {
-                        id: actor_id.clone(),
-                        name: None,
+            Some(agent_id) => {
+                // Get or create agent entry
+                let workload = agent_workloads.entry(agent_id.clone()).or_insert_with(|| {
+                    AgentWorkload {
+                        id: agent_id.clone(),
+                        name: agent_id.clone(),
                         assigned_count: 0,
                         assigned_hours: 0.0,
                         in_progress_count: 0,
@@ -112,7 +116,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     }
 
     // Calculate load percentages
-    for workload in actor_workloads.values_mut() {
+    for workload in agent_workloads.values_mut() {
         if let Some(capacity) = workload.capacity {
             if capacity > 0.0 {
                 let load = (workload.assigned_hours / capacity) * 100.0;
@@ -122,77 +126,71 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         }
     }
 
-    // Sort actors by id for consistent output
-    let mut actors: Vec<ActorWorkload> = actor_workloads.into_values().collect();
-    actors.sort_by(|a, b| a.id.cmp(&b.id));
+    // Sort agents by id for consistent output
+    let mut agents: Vec<AgentWorkload> = agent_workloads.into_values().collect();
+    agents.sort_by(|a, b| a.id.cmp(&b.id));
 
     if json {
         let output = WorkloadOutput {
-            actors,
+            agents,
             unassigned_count,
             ready_unassigned_count,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        print_human_readable(&actors, unassigned_count, ready_unassigned_count);
+        print_human_readable(&agents, unassigned_count, ready_unassigned_count);
     }
 
     Ok(())
 }
 
 fn print_human_readable(
-    actors: &[ActorWorkload],
+    agents: &[AgentWorkload],
     unassigned_count: usize,
     ready_unassigned_count: usize,
 ) {
-    if actors.is_empty() && unassigned_count == 0 {
-        println!("No tasks or actors found.");
+    if agents.is_empty() && unassigned_count == 0 {
+        println!("No tasks or agents found.");
         return;
     }
 
-    println!("Actor Workload (open + in-progress tasks):\n");
+    println!("Agent Workload (open + in-progress tasks):\n");
 
-    if actors.is_empty() {
-        println!("  No actors defined.");
+    if agents.is_empty() {
+        println!("  No agents defined.");
     } else {
-        for actor in actors {
-            // Display name with @ prefix
-            let display_name = if actor.id.starts_with('@') {
-                actor.id.clone()
-            } else {
-                format!("@{}", actor.id)
-            };
-            println!("  {}", display_name);
+        for agent in agents {
+            println!("  {} ({})", agent.name, agency::short_hash(&agent.id));
 
             // Assigned tasks and hours
-            let hours_str = format!("{:.0}h estimated", actor.assigned_hours);
+            let hours_str = format!("{:.0}h estimated", agent.assigned_hours);
             println!(
                 "    Assigned: {} task{} ({})",
-                actor.assigned_count,
-                if actor.assigned_count == 1 { "" } else { "s" },
+                agent.assigned_count,
+                if agent.assigned_count == 1 { "" } else { "s" },
                 hours_str
             );
 
             // In-progress count
             println!(
                 "    In progress: {} task{}",
-                actor.in_progress_count,
-                if actor.in_progress_count == 1 { "" } else { "s" }
+                agent.in_progress_count,
+                if agent.in_progress_count == 1 { "" } else { "s" }
             );
 
             // Capacity
-            if let Some(capacity) = actor.capacity {
+            if let Some(capacity) = agent.capacity {
                 println!("    Capacity: {:.0}h/week", capacity);
             }
 
             // Load percentage
-            if let Some(load) = actor.load_percent {
-                if actor.is_overloaded {
+            if let Some(load) = agent.load_percent {
+                if agent.is_overloaded {
                     println!("    Load: {:.0}% [WARNING: overloaded]", load);
                 } else {
                     println!("    Load: {:.0}%", load);
                 }
-            } else if actor.capacity.is_none() {
+            } else if agent.capacity.is_none() {
                 // No capacity set - can't calculate load
                 println!("    Load: N/A (no capacity set)");
             }
@@ -214,7 +212,8 @@ fn print_human_readable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Actor, ActorType, Estimate, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::agency::{Agent, Lineage, PerformanceRecord};
+    use workgraph::graph::{Estimate, Node, Task, TrustLevel, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -247,20 +246,93 @@ mod tests {
         }
     }
 
-    fn make_actor(id: &str, capacity: Option<f64>) -> Actor {
-        Actor {
+    fn make_agent(id: &str, name: &str, capacity: Option<f64>) -> Agent {
+        Agent {
             id: id.to_string(),
-            name: Some(format!("{} Name", id)),
-            role: None,
+            role_id: String::new(),
+            motivation_id: String::new(),
+            name: name.to_string(),
+            performance: PerformanceRecord {
+                task_count: 0,
+                avg_score: None,
+                evaluations: vec![],
+            },
+            lineage: Lineage::default(),
+            capabilities: vec![],
             rate: None,
             capacity,
-            capabilities: vec![],
-            context_limit: None,
             trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
+            contact: None,
+            executor: "claude".to_string(),
+        }
+    }
+
+    /// Build an AgentWorkload map from a slice of Agents (mirrors run() logic)
+    fn build_agent_workloads(agents: &[Agent]) -> HashMap<String, AgentWorkload> {
+        let mut map = HashMap::new();
+        for agent in agents {
+            map.insert(
+                agent.id.clone(),
+                AgentWorkload {
+                    id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    assigned_count: 0,
+                    assigned_hours: 0.0,
+                    in_progress_count: 0,
+                    capacity: agent.capacity,
+                    load_percent: None,
+                    is_overloaded: false,
+                },
+            );
+        }
+        map
+    }
+
+    /// Process tasks into an agent workload map (mirrors run() logic)
+    fn process_tasks(
+        graph: &WorkGraph,
+        workloads: &mut HashMap<String, AgentWorkload>,
+    ) {
+        for task in graph.tasks() {
+            if task.status == Status::Done {
+                continue;
+            }
+            if let Some(agent_id) = &task.assigned {
+                let workload = workloads.entry(agent_id.clone()).or_insert_with(|| {
+                    AgentWorkload {
+                        id: agent_id.clone(),
+                        name: agent_id.clone(),
+                        assigned_count: 0,
+                        assigned_hours: 0.0,
+                        in_progress_count: 0,
+                        capacity: None,
+                        load_percent: None,
+                        is_overloaded: false,
+                    }
+                });
+                workload.assigned_count += 1;
+                if let Some(ref estimate) = task.estimate {
+                    if let Some(hours) = estimate.hours {
+                        workload.assigned_hours += hours;
+                    }
+                }
+                if task.status == Status::InProgress {
+                    workload.in_progress_count += 1;
+                }
+            }
+        }
+    }
+
+    /// Calculate load percentages for all workloads (mirrors run() logic)
+    fn calculate_loads(workloads: &mut HashMap<String, AgentWorkload>) {
+        for workload in workloads.values_mut() {
+            if let Some(capacity) = workload.capacity {
+                if capacity > 0.0 {
+                    let load = (workload.assigned_hours / capacity) * 100.0;
+                    workload.load_percent = Some(load);
+                    workload.is_overloaded = load > 100.0;
+                }
+            }
         }
     }
 
@@ -271,7 +343,7 @@ mod tests {
         let ready_ids: std::collections::HashSet<&str> =
             ready.iter().map(|t| t.id.as_str()).collect();
 
-        let actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
+        let agent_workloads: HashMap<String, AgentWorkload> = HashMap::new();
         let mut unassigned_count = 0;
         let mut ready_unassigned_count = 0;
 
@@ -290,17 +362,14 @@ mod tests {
             }
         }
 
-        assert!(actor_workloads.is_empty());
+        assert!(agent_workloads.is_empty());
         assert_eq!(unassigned_count, 0);
         assert_eq!(ready_unassigned_count, 0);
     }
 
     #[test]
-    fn test_single_actor_single_task() {
+    fn test_single_agent_single_task() {
         let mut graph = WorkGraph::new();
-
-        let actor = make_actor("alice", Some(40.0));
-        graph.add_node(Node::Actor(actor));
 
         let mut task = make_task("t1", "Task 1");
         task.assigned = Some("alice".to_string());
@@ -310,51 +379,12 @@ mod tests {
         });
         graph.add_node(Node::Task(task));
 
-        // Simulate the workload calculation
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
+        let agents = vec![make_agent("alice", "Alice", Some(40.0))];
+        let mut workloads = build_agent_workloads(&agents);
+        process_tasks(&graph, &mut workloads);
+        calculate_loads(&mut workloads);
 
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.get_mut(actor_id).unwrap();
-                workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
-                }
-            }
-        }
-
-        // Calculate load
-        for workload in actor_workloads.values_mut() {
-            if let Some(capacity) = workload.capacity {
-                if capacity > 0.0 {
-                    let load = (workload.assigned_hours / capacity) * 100.0;
-                    workload.load_percent = Some(load);
-                    workload.is_overloaded = load > 100.0;
-                }
-            }
-        }
-
-        let alice = actor_workloads.get("alice").unwrap();
+        let alice = workloads.get("alice").unwrap();
         assert_eq!(alice.assigned_count, 1);
         assert_eq!(alice.assigned_hours, 8.0);
         assert_eq!(alice.load_percent, Some(20.0));
@@ -362,11 +392,8 @@ mod tests {
     }
 
     #[test]
-    fn test_overloaded_actor() {
+    fn test_overloaded_agent() {
         let mut graph = WorkGraph::new();
-
-        let actor = make_actor("bob", Some(40.0));
-        graph.add_node(Node::Actor(actor));
 
         // Add tasks totaling 50 hours (over 40h capacity)
         for i in 1..=5 {
@@ -379,49 +406,12 @@ mod tests {
             graph.add_node(Node::Task(task));
         }
 
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
+        let agents = vec![make_agent("bob", "Bob", Some(40.0))];
+        let mut workloads = build_agent_workloads(&agents);
+        process_tasks(&graph, &mut workloads);
+        calculate_loads(&mut workloads);
 
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.get_mut(actor_id).unwrap();
-                workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
-                }
-            }
-        }
-
-        for workload in actor_workloads.values_mut() {
-            if let Some(capacity) = workload.capacity {
-                if capacity > 0.0 {
-                    let load = (workload.assigned_hours / capacity) * 100.0;
-                    workload.load_percent = Some(load);
-                    workload.is_overloaded = load > 100.0;
-                }
-            }
-        }
-
-        let bob = actor_workloads.get("bob").unwrap();
+        let bob = workloads.get("bob").unwrap();
         assert_eq!(bob.assigned_count, 5);
         assert_eq!(bob.assigned_hours, 50.0);
         assert_eq!(bob.load_percent, Some(125.0));
@@ -465,9 +455,6 @@ mod tests {
     fn test_in_progress_tasks_counted() {
         let mut graph = WorkGraph::new();
 
-        let actor = make_actor("alice", Some(40.0));
-        graph.add_node(Node::Actor(actor));
-
         let mut t1 = make_task("t1", "Task 1");
         t1.assigned = Some("alice".to_string());
         t1.status = Status::InProgress;
@@ -487,42 +474,11 @@ mod tests {
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
 
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
+        let agents = vec![make_agent("alice", "Alice", Some(40.0))];
+        let mut workloads = build_agent_workloads(&agents);
+        process_tasks(&graph, &mut workloads);
 
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.get_mut(actor_id).unwrap();
-                workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
-                }
-                if task.status == Status::InProgress {
-                    workload.in_progress_count += 1;
-                }
-            }
-        }
-
-        let alice = actor_workloads.get("alice").unwrap();
+        let alice = workloads.get("alice").unwrap();
         assert_eq!(alice.assigned_count, 2);
         assert_eq!(alice.assigned_hours, 12.0);
         assert_eq!(alice.in_progress_count, 1);
@@ -531,9 +487,6 @@ mod tests {
     #[test]
     fn test_done_tasks_not_counted() {
         let mut graph = WorkGraph::new();
-
-        let actor = make_actor("alice", Some(40.0));
-        graph.add_node(Node::Actor(actor));
 
         let mut t1 = make_task("t1", "Task 1");
         t1.assigned = Some("alice".to_string());
@@ -545,58 +498,18 @@ mod tests {
 
         graph.add_node(Node::Task(t1));
 
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
+        let agents = vec![make_agent("alice", "Alice", Some(40.0))];
+        let mut workloads = build_agent_workloads(&agents);
+        process_tasks(&graph, &mut workloads);
 
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.get_mut(actor_id).unwrap();
-                workload.assigned_count += 1;
-            }
-        }
-
-        let alice = actor_workloads.get("alice").unwrap();
+        let alice = workloads.get("alice").unwrap();
         assert_eq!(alice.assigned_count, 0);
         assert_eq!(alice.assigned_hours, 0.0);
     }
 
     #[test]
-    fn test_actor_without_capacity() {
+    fn test_agent_without_capacity() {
         let mut graph = WorkGraph::new();
-
-        // Actor without capacity (like an agent)
-        let actor = Actor {
-            id: "claude-agent".to_string(),
-            name: Some("Claude Agent".to_string()),
-            role: Some("agent".to_string()),
-            rate: None,
-            capacity: None,
-            capabilities: vec![],
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
-        };
-        graph.add_node(Node::Actor(actor));
 
         let mut task = make_task("t1", "Task 1");
         task.assigned = Some("claude-agent".to_string());
@@ -606,39 +519,12 @@ mod tests {
         });
         graph.add_node(Node::Task(task));
 
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
+        let agents = vec![make_agent("claude-agent", "Claude Agent", None)];
+        let mut workloads = build_agent_workloads(&agents);
+        process_tasks(&graph, &mut workloads);
+        calculate_loads(&mut workloads);
 
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.get_mut(actor_id).unwrap();
-                workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
-                }
-            }
-        }
-
-        let agent = actor_workloads.get("claude-agent").unwrap();
+        let agent = workloads.get("claude-agent").unwrap();
         assert_eq!(agent.assigned_count, 1);
         assert_eq!(agent.assigned_hours, 8.0);
         assert!(agent.capacity.is_none());
@@ -647,67 +533,26 @@ mod tests {
     }
 
     #[test]
-    fn test_implicit_actor_from_assignment() {
+    fn test_implicit_agent_from_assignment() {
         let mut graph = WorkGraph::new();
 
-        // Task assigned to actor not explicitly defined
+        // Task assigned to agent not explicitly defined
         let mut task = make_task("t1", "Task 1");
-        task.assigned = Some("implicit-actor".to_string());
+        task.assigned = Some("implicit-agent".to_string());
         task.estimate = Some(Estimate {
             hours: Some(8.0),
             cost: None,
         });
         graph.add_node(Node::Task(task));
 
-        let mut actor_workloads: HashMap<String, ActorWorkload> = HashMap::new();
+        // No known agents
+        let mut workloads: HashMap<String, AgentWorkload> = HashMap::new();
+        process_tasks(&graph, &mut workloads);
 
-        // Initialize with known actors
-        for actor in graph.actors() {
-            actor_workloads.insert(
-                actor.id.clone(),
-                ActorWorkload {
-                    id: actor.id.clone(),
-                    name: actor.name.clone(),
-                    assigned_count: 0,
-                    assigned_hours: 0.0,
-                    in_progress_count: 0,
-                    capacity: actor.capacity,
-                    load_percent: None,
-                    is_overloaded: false,
-                },
-            );
-        }
-
-        for task in graph.tasks() {
-            if task.status == Status::Done {
-                continue;
-            }
-            if let Some(actor_id) = &task.assigned {
-                let workload = actor_workloads.entry(actor_id.clone()).or_insert_with(|| {
-                    ActorWorkload {
-                        id: actor_id.clone(),
-                        name: None,
-                        assigned_count: 0,
-                        assigned_hours: 0.0,
-                        in_progress_count: 0,
-                        capacity: None,
-                        load_percent: None,
-                        is_overloaded: false,
-                    }
-                });
-                workload.assigned_count += 1;
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
-                }
-            }
-        }
-
-        assert!(actor_workloads.contains_key("implicit-actor"));
-        let implicit = actor_workloads.get("implicit-actor").unwrap();
+        assert!(workloads.contains_key("implicit-agent"));
+        let implicit = workloads.get("implicit-agent").unwrap();
         assert_eq!(implicit.assigned_count, 1);
         assert_eq!(implicit.assigned_hours, 8.0);
-        assert!(implicit.name.is_none());
+        assert_eq!(implicit.name, "implicit-agent");
     }
 }

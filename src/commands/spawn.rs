@@ -14,7 +14,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Serialize;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use workgraph::graph::{LogEntry, Status};
@@ -43,10 +43,14 @@ pub struct SpawnResult {
     pub pid: u32,
     pub task_id: String,
     pub executor: String,
+    pub executor_type: String,
     pub output_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Parse a timeout duration string like "30m", "1h", "90s"
+#[cfg(test)]
 fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
     let timeout_str = timeout_str.trim();
     if timeout_str.is_empty() {
@@ -107,15 +111,16 @@ fn build_task_context(
     }
 }
 
-/// Run the spawn command
-pub fn run(
+/// Internal shared implementation for spawning an agent.
+/// Both `run()` (CLI) and `spawn_agent()` (coordinator) delegate here.
+fn spawn_agent_inner(
     dir: &Path,
     task_id: &str,
     executor_name: &str,
     timeout: Option<&str>,
     model: Option<&str>,
-    json: bool,
-) -> Result<()> {
+    spawned_by: &str,
+) -> Result<SpawnResult> {
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
@@ -189,7 +194,7 @@ pub fn run(
     // Apply templates to executor settings
     let settings = executor_config.apply_templates(&vars);
 
-    // Determine model: CLI flag > task.model > none
+    // Determine model: CLI/coordinator model > task.model > none
     let effective_model = model.map(|m| m.to_string()).or(task_model);
 
     // Build the inner command string first
@@ -346,7 +351,8 @@ exit $EXIT_CODE
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(temp_agent_id.clone()),
         message: format!(
-            "Spawned by wg spawn --executor {}{}",
+            "Spawned by {} --executor {}{}",
+            spawned_by,
             executor_name,
             effective_model.as_ref().map(|m| format!(" --model {}", m)).unwrap_or_default()
         ),
@@ -365,30 +371,44 @@ exit $EXIT_CODE
         "pid": pid,
         "task_id": task_id,
         "executor": executor_name,
-        "model": effective_model,
+        "model": &effective_model,
         "started_at": Utc::now().to_rfc3339(),
         "timeout": timeout,
     });
     fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
-    // Output result
+    Ok(SpawnResult {
+        agent_id,
+        pid,
+        task_id: task_id.to_string(),
+        executor: executor_name.to_string(),
+        executor_type: settings.executor_type.clone(),
+        output_file: output_file_str,
+        model: effective_model,
+    })
+}
+
+/// Run the spawn command (CLI entry point)
+pub fn run(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let result = spawn_agent_inner(dir, task_id, executor_name, timeout, model, "wg spawn")?;
+
     if json {
-        let result = SpawnResult {
-            agent_id: agent_id.clone(),
-            pid,
-            task_id: task_id.to_string(),
-            executor: executor_name.to_string(),
-            output_file: output_file_str.clone(),
-        };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("Spawned {} for task '{}'", agent_id, task_id);
-        println!("  Executor: {} ({})", executor_name, settings.executor_type);
-        if let Some(ref m) = effective_model {
+        println!("Spawned {} for task '{}'", result.agent_id, task_id);
+        println!("  Executor: {} ({})", executor_name, result.executor_type);
+        if let Some(ref m) = result.model {
             println!("  Model: {}", m);
         }
-        println!("  PID: {}", pid);
-        println!("  Output: {}", output_file_str);
+        println!("  PID: {}", result.pid);
+        println!("  Output: {}", result.output_file);
     }
 
     Ok(())
@@ -403,262 +423,8 @@ pub fn spawn_agent(
     timeout: Option<&str>,
     model: Option<&str>,
 ) -> Result<(String, u32)> {
-    let graph_path = graph_path(dir);
-
-    if !graph_path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
-    }
-
-    // Load the graph and get task info
-    let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
-
-    let task = graph
-        .get_task(task_id)
-        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", task_id))?;
-
-    // Check if task is already claimed
-    match task.status {
-        Status::InProgress => {
-            let since = task
-                .started_at
-                .as_ref()
-                .map(|t| format!(" (since {})", t))
-                .unwrap_or_default();
-            match &task.assigned {
-                Some(assigned) => {
-                    anyhow::bail!("Task '{}' is already claimed by @{}{}", task_id, assigned, since);
-                }
-                None => {
-                    anyhow::bail!("Task '{}' is already in progress{}", task_id, since);
-                }
-            }
-        }
-        Status::Done => {
-            anyhow::bail!("Task '{}' is already done", task_id);
-        }
-        _ => {}
-    }
-
-    // Build context from dependencies
-    let task_context = build_task_context(&graph, task);
-
-    // Create template variables
-    let vars = TemplateVars::from_task(task, Some(&task_context), Some(dir));
-
-    // Get task exec command for shell executor
-    let task_exec = task.exec.clone();
-    // Get task model preference
-    let task_model = task.model.clone();
-    // Check if task requires verification
-    let task_verified = task.verify.is_some();
-
-    // Load executor config using the registry
-    let executor_registry = ExecutorRegistry::new(dir);
-    let executor_config = executor_registry.load_config(executor_name)?;
-
-    // For shell executor, we need an exec command
-    if executor_config.executor.executor_type == "shell" && task_exec.is_none() {
-        anyhow::bail!("Task '{}' has no exec command for shell executor", task_id);
-    }
-
-    // Load agent registry and prepare agent output directory
-    let mut agent_registry = AgentRegistry::load(dir)?;
-
-    // We need to know the agent ID before spawning to set up the output directory
-    let temp_agent_id = format!("agent-{}", agent_registry.next_agent_id);
-    let output_dir = agent_output_dir(dir, &temp_agent_id);
-    fs::create_dir_all(&output_dir)
-        .with_context(|| format!("Failed to create agent output directory at {:?}", output_dir))?;
-
-    let output_file = output_dir.join("output.log");
-    let output_file_str = output_file.to_string_lossy().to_string();
-
-    // Apply templates to executor settings
-    let settings = executor_config.apply_templates(&vars);
-
-    // Determine model: coordinator/CLI model > task.model > none
-    let effective_model = model.map(|m| m.to_string()).or(task_model);
-
-    // Build the inner command string first
-    let inner_command = match settings.executor_type.as_str() {
-        "claude" => {
-            // Write prompt to file and pipe to claude - avoids all quoting issues
-            let mut cmd_parts = vec![shell_escape(&settings.command)];
-            for arg in &settings.args {
-                cmd_parts.push(shell_escape(arg));
-            }
-            // Add model flag if specified
-            if let Some(ref m) = effective_model {
-                cmd_parts.push("--model".to_string());
-                cmd_parts.push(shell_escape(m));
-            }
-            let claude_cmd = cmd_parts.join(" ");
-
-            if let Some(ref prompt_template) = settings.prompt_template {
-                // Write prompt to file for safe passing
-                let prompt_file = output_dir.join("prompt.txt");
-                fs::write(&prompt_file, &prompt_template.template)
-                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
-                prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
-            } else {
-                claude_cmd
-            }
-        }
-        "shell" => {
-            format!("{} -c {}", shell_escape(&settings.command), shell_escape(task_exec.as_ref().unwrap()))
-        }
-        _ => {
-            let mut parts = vec![shell_escape(&settings.command)];
-            for arg in &settings.args {
-                parts.push(shell_escape(arg));
-            }
-            parts.join(" ")
-        }
-    };
-
-    // Create a wrapper script that runs the command and handles completion
-    // This ensures tasks get marked done/failed even if the agent doesn't do it
-    let complete_cmd = if task_verified {
-        format!("wg submit \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
-    } else {
-        format!("wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
-    };
-    let complete_msg = if task_verified {
-        "[wrapper] Agent exited successfully, submitting for review"
-    } else {
-        "[wrapper] Agent exited successfully, marking task done"
-    };
-
-    let wrapper_script = format!(
-        r#"#!/bin/bash
-TASK_ID="{task_id}"
-OUTPUT_FILE="{output_file}"
-
-# Allow nested Claude Code sessions (spawned agents are independent)
-unset CLAUDECODE
-
-# Run the agent command
-{inner_command} >> "$OUTPUT_FILE" 2>&1
-EXIT_CODE=$?
-
-# Check if task is still in progress (agent didn't mark it done/failed/submitted)
-TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
-
-if [ "$TASK_STATUS" = "in-progress" ]; then
-    if [ $EXIT_CODE -eq 0 ]; then
-        echo "" >> "$OUTPUT_FILE"
-        echo "{complete_msg}" >> "$OUTPUT_FILE"
-        {complete_cmd}
-    else
-        echo "" >> "$OUTPUT_FILE"
-        echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
-        wg fail "$TASK_ID" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || true
-    fi
-fi
-
-exit $EXIT_CODE
-"#,
-        task_id = task_id,
-        output_file = output_file_str,
-        inner_command = inner_command,
-        complete_cmd = complete_cmd,
-        complete_msg = complete_msg,
-    );
-
-    // Write wrapper script
-    let wrapper_path = output_dir.join("run.sh");
-    fs::write(&wrapper_path, &wrapper_script)
-        .with_context(|| format!("Failed to write wrapper script: {:?}", wrapper_path))?;
-
-    // Make executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755))?;
-    }
-
-    // Run the wrapper script
-    let mut cmd = Command::new("bash");
-    cmd.arg(&wrapper_path);
-
-    // Set environment variables from executor config
-    for (key, value) in &settings.env {
-        cmd.env(key, value);
-    }
-
-    // Add task ID and agent ID to environment
-    cmd.env("WG_TASK_ID", task_id);
-    cmd.env("WG_AGENT_ID", &temp_agent_id);
-
-    // Set working directory if specified
-    if let Some(ref wd) = settings.working_dir {
-        cmd.current_dir(wd);
-    }
-
-    // Wrapper script handles output redirect internally
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-
-    // Detach the agent into its own session so it survives daemon restart/crash.
-    // setsid() creates a new session and process group, making the agent
-    // independent of the daemon's process group.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-
-    // Spawn the process (don't wait)
-    let child = cmd.spawn().with_context(|| {
-        format!(
-            "Failed to spawn executor '{}' (command: {})",
-            executor_name, settings.command
-        )
-    })?;
-
-    let pid = child.id();
-
-    // Now claim the task
-    let task = graph.get_task_mut(task_id).unwrap();
-    task.status = Status::InProgress;
-    task.started_at = Some(Utc::now().to_rfc3339());
-    task.assigned = Some(temp_agent_id.clone());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(temp_agent_id.clone()),
-        message: format!(
-            "Spawned by coordinator --executor {}{}",
-            executor_name,
-            effective_model.as_ref().map(|m| format!(" --model {}", m)).unwrap_or_default()
-        ),
-    });
-
-    save_graph(&graph, &graph_path).context("Failed to save graph")?;
-
-    // Register the agent
-    let agent_id = agent_registry.register(pid, task_id, executor_name, &output_file_str);
-    agent_registry.save(dir)?;
-
-    // Write metadata (includes model for auditability)
-    let metadata_path = output_dir.join("metadata.json");
-    let metadata = serde_json::json!({
-        "agent_id": agent_id,
-        "pid": pid,
-        "task_id": task_id,
-        "executor": executor_name,
-        "model": effective_model,
-        "started_at": Utc::now().to_rfc3339(),
-        "timeout": timeout,
-    });
-    fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
-
-    Ok((agent_id, pid))
+    let result = spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")?;
+    Ok((result.agent_id, result.pid))
 }
 
 #[cfg(test)]

@@ -167,15 +167,6 @@ pub fn run(dir: &Path, include_archive: bool, since: Option<&str>, until: Option
         );
     }
 
-    // Print actors
-    for actor in graph.actors() {
-        let name = actor.name.as_deref().unwrap_or(&actor.id);
-        println!(
-            "  \"{}\" [label=\"{}\", shape=ellipse, style=filled, fillcolor=lightblue];",
-            actor.id, name
-        );
-    }
-
     // Print resources
     for resource in graph.resources() {
         let name = resource.name.as_deref().unwrap_or(&resource.id);

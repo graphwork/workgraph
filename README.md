@@ -84,14 +84,21 @@ wg edit my-task --model opus
 wg edit my-task --add-skill security --remove-skill docs
 ```
 
-### 4. Register yourself (or your agent)
+### 4. Register yourself (or your AI agent)
 
 ```bash
 # Human
-wg actor add erik --name "Erik" --role engineer -c rust -c python
+wg agent create "Erik" \
+  --executor matrix \
+  --contact "@erik:server" \
+  --capabilities rust,python \
+  --trust-level verified
 
 # AI agent
-wg actor add claude --name "Claude" --role agent -c coding -c testing -c docs
+wg agent create "Claude Coder" \
+  --role <role-hash> \
+  --motivation <motivation-hash> \
+  --capabilities coding,testing,docs
 ```
 
 ### 5. Start working
@@ -106,6 +113,24 @@ wg claim set-up-ci-pipeline --actor erik
 # ... do the work ...
 wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 ```
+
+### 6. Verification workflow
+
+Tasks created with `--verify` require human approval before completion:
+
+```bash
+# Create a task that needs review
+wg add "Security audit" --verify "All findings documented with severity ratings"
+
+# Agent works on it, then submits for review (wg done will refuse)
+wg submit security-audit
+
+# Human reviews and approves or rejects
+wg approve security-audit
+wg reject security-audit --reason "Missing OWASP top 10 coverage"
+```
+
+Rejected tasks return to `open` for rework. Approved tasks transition to `done` and unblock dependents.
 
 ## Using with AI Coding Assistants
 
@@ -267,6 +292,7 @@ heartbeat_timeout = 5  # minutes before agent is considered dead (default: 5)
 [agency]
 auto_evaluate = false    # auto-create evaluation tasks on completion
 auto_assign = false      # auto-create identity assignment tasks
+auto_triage = false      # auto-triage dead agents using LLM
 assigner_model = "haiku" # model for assigner agents
 evaluator_model = "opus" # model for evaluator agents
 evolver_model = "opus"   # model for evolver agents
@@ -286,6 +312,10 @@ wg config --auto-assign true
 wg config --assigner-model haiku
 wg config --evaluator-model opus
 wg config --evolver-model opus
+
+# Triage settings
+wg config --auto-triage true
+wg config --triage-model haiku
 ```
 
 CLI flags on `wg service start` override config.toml:
@@ -344,6 +374,15 @@ Killing an agent automatically unclaims its task so another agent can pick it up
 wg dead-agents --check     # check for dead agents (read-only)
 wg dead-agents --cleanup   # mark dead and unclaim their tasks
 wg dead-agents --remove    # remove dead agents from registry
+```
+
+**Smart triage:** When a dead agent is detected, the coordinator can automatically triage the situation using an LLM. Triage reads the agent's output log and decides whether the task was actually completed (mark done), still running (leave alone), or needs to be restarted (re-spawn). Enable it with:
+
+```bash
+wg config --auto-triage true
+wg config --triage-model haiku      # cheap model is usually sufficient
+wg config --triage-timeout 30       # seconds
+wg config --triage-max-log-bytes 50000
 ```
 
 ### Model selection
@@ -550,7 +589,7 @@ For most projects:
 
 **Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `pending-review`) and can block other tasks. Tasks can carry a per-task `model` override and an `agent` identity assignment.
 
-**Actors** are humans or AI agents. They claim tasks to work on them.
+**Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 
 **The graph** is tasks connected by "blocked-by" relationships. A task is blocked until all its blockers are done. Concurrent writes are protected by flock-based file locking.
 
@@ -560,20 +599,40 @@ For most projects:
 
 **Agency**: Composable agent identities (role + motivation) that are assigned to tasks, evaluated after completion, and evolved over time based on performance data.
 
-## Analysis commands
+## Query and analysis
 
 ```bash
-wg ready           # what can be worked on now?
-wg list            # all tasks
-wg show <id>       # full task details
-wg why-blocked <id> # trace the blocker chain
-wg impact <id>     # what depends on this?
-wg bottlenecks     # tasks blocking the most work
-wg critical-path   # longest dependency chain
-wg forecast        # when will we be done?
-wg analyze         # comprehensive health report
-wg status          # quick one-screen overview
-wg dag             # ASCII dependency graph
+wg ready              # what can be worked on now?
+wg list               # all tasks (--status to filter)
+wg show <id>          # full task details
+wg status             # quick one-screen overview
+wg dag                # ASCII dependency graph (--all to include done)
+
+wg why-blocked <id>   # trace the blocker chain
+wg impact <id>        # what depends on this?
+wg context <id>       # available context from completed dependencies
+wg bottlenecks        # tasks blocking the most work
+wg critical-path      # longest dependency chain
+
+wg forecast           # project completion estimate
+wg velocity           # task completion rate over time
+wg aging              # how long tasks have been open
+wg workload           # agent assignment distribution
+wg structure          # entry points, dead ends, high-impact roots
+wg analyze            # comprehensive health report (all of the above)
+```
+
+See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference including `viz`, `plan`, `coordinate`, `archive`, `reschedule`, and more.
+
+## Utilities
+
+```bash
+wg log <id> "message"     # add progress notes to a task
+wg artifact <id> path     # record a file produced by a task
+wg viz --format mermaid   # generate DOT/mermaid/ASCII graph
+wg archive                # archive completed tasks
+wg check                  # check graph for cycles and issues
+wg trajectory <id>        # optimal task claim order for agents
 ```
 
 ## Storage
@@ -583,7 +642,6 @@ Everything lives in `.workgraph/graph.jsonl`. One JSON object per line. Human-re
 ```jsonl
 {"kind":"task","id":"design-api","title":"Design the API","status":"done"}
 {"kind":"task","id":"build-backend","title":"Build the backend","status":"open","blocked_by":["design-api"],"model":"sonnet"}
-{"kind":"actor","id":"claude","name":"Claude","role":"agent","capabilities":["coding","testing"]}
 ```
 
 Configuration is in `.workgraph/config.toml`:

@@ -6,7 +6,7 @@ use std::path::Path;
 use workgraph::check::check_all;
 use workgraph::graph::{Status, WorkGraph};
 use workgraph::parser::load_graph;
-use workgraph::query::ready_tasks;
+use workgraph::query::{build_reverse_index, ready_tasks};
 
 use super::graph_path;
 
@@ -447,22 +447,6 @@ fn compute_bottlenecks(graph: &WorkGraph, now: &DateTime<Utc>) -> Vec<Bottleneck
     bottlenecks
 }
 
-/// Build a reverse index: for each task, find what tasks list it in their `blocked_by`
-fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-
-    for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
-            index
-                .entry(blocker_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
-
-    index
-}
-
 /// Recursively collect all transitive dependents
 fn collect_transitive_dependents(
     reverse_index: &HashMap<String, Vec<String>>,
@@ -478,18 +462,11 @@ fn collect_transitive_dependents(
     }
 }
 
-/// Compute workload information
+/// Compute workload information from task assignments
 fn compute_workload(graph: &WorkGraph) -> WorkloadSection {
     let mut actor_hours: HashMap<String, f64> = HashMap::new();
-    let mut actor_capacity: HashMap<String, Option<f64>> = HashMap::new();
 
-    // Initialize with known actors
-    for actor in graph.actors() {
-        actor_hours.insert(actor.id.clone(), 0.0);
-        actor_capacity.insert(actor.id.clone(), actor.capacity);
-    }
-
-    // Sum up hours for each actor
+    // Sum up hours for each assignee from tasks
     for task in graph.tasks() {
         if task.status == Status::Done {
             continue;
@@ -501,34 +478,15 @@ fn compute_workload(graph: &WorkGraph) -> WorkloadSection {
                 .and_then(|e| e.hours)
                 .unwrap_or(0.0);
             *actor_hours.entry(actor_id.clone()).or_default() += hours;
-            actor_capacity.entry(actor_id.clone()).or_insert(None);
         }
     }
 
     let total_actors = actor_hours.len();
-    let mut overloaded = Vec::new();
-    let mut balanced_count = 0;
-
-    for (actor_id, hours) in &actor_hours {
-        let capacity = actor_capacity.get(actor_id).and_then(|c| *c);
-        let load_percent = capacity.map(|c| if c > 0.0 { (hours / c) * 100.0 } else { 0.0 });
-        let is_overloaded = load_percent.map(|l| l > 100.0).unwrap_or(false);
-
-        if is_overloaded {
-            overloaded.push(WorkloadInfo {
-                id: actor_id.clone(),
-                load_percent,
-                is_overloaded,
-            });
-        } else {
-            balanced_count += 1;
-        }
-    }
 
     WorkloadSection {
         total_actors,
-        balanced_actors: balanced_count,
-        overloaded,
+        balanced_actors: total_actors,
+        overloaded: vec![],
     }
 }
 
@@ -830,7 +788,7 @@ fn print_human_readable(output: &AnalysisOutput) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, ActorType, Estimate, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Estimate, Node, Task, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -861,23 +819,6 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-        }
-    }
-
-    fn make_actor(id: &str, capacity: Option<f64>) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: Some(format!("{} Name", id)),
-            role: None,
-            rate: None,
-            capacity,
-            capabilities: vec![],
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
         }
     }
 
@@ -998,13 +939,10 @@ mod tests {
     fn test_compute_workload() {
         let mut graph = WorkGraph::new();
 
-        let actor = make_actor("alice", Some(40.0));
-        graph.add_node(Node::Actor(actor));
-
         let mut t1 = make_task("t1", "Task 1");
         t1.assigned = Some("alice".to_string());
         t1.estimate = Some(Estimate {
-            hours: Some(50.0), // Overloaded
+            hours: Some(50.0),
             cost: None,
         });
         graph.add_node(Node::Task(t1));
@@ -1012,8 +950,7 @@ mod tests {
         let workload = compute_workload(&graph);
 
         assert_eq!(workload.total_actors, 1);
-        assert!(!workload.overloaded.is_empty());
-        assert!(workload.overloaded[0].is_overloaded);
+        assert_eq!(workload.balanced_actors, 1);
     }
 
     #[test]

@@ -433,12 +433,6 @@ enum Commands {
         command: ResourceCommands,
     },
 
-    /// Manage actors
-    Actor {
-        #[command(subcommand)]
-        command: ActorCommands,
-    },
-
     /// Manage skills (Claude Code skill installation, task skill queries)
     Skill {
         #[command(subcommand)]
@@ -870,54 +864,6 @@ enum ResourceCommands {
 }
 
 #[derive(Subcommand)]
-enum ActorCommands {
-    /// Add a new actor
-    Add {
-        /// Actor ID
-        id: String,
-
-        /// Display name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Role (engineer, pm, agent, etc.)
-        #[arg(long)]
-        role: Option<String>,
-
-        /// Hourly rate
-        #[arg(long)]
-        rate: Option<f64>,
-
-        /// Available hours (capacity)
-        #[arg(long)]
-        capacity: Option<f64>,
-
-        /// Capabilities/skills this actor has (can be repeated)
-        #[arg(long = "capability", short = 'c')]
-        capabilities: Vec<String>,
-
-        /// Maximum context size in tokens
-        #[arg(long)]
-        context_limit: Option<u64>,
-
-        /// Trust level: verified, provisional, unknown
-        #[arg(long)]
-        trust_level: Option<String>,
-
-        /// Actor type: agent or human (default: agent, or human if --matrix is set)
-        #[arg(long = "type", short = 't')]
-        actor_type: Option<String>,
-
-        /// Matrix user ID for human actors (@user:server)
-        #[arg(long)]
-        matrix: Option<String>,
-    },
-
-    /// List all actors
-    List,
-}
-
-#[derive(Subcommand)]
 enum SkillCommands {
     /// List all skills used across tasks
     List,
@@ -1054,13 +1000,37 @@ enum AgentCommands {
         /// Agent name
         name: String,
 
-        /// Role ID (or prefix)
+        /// Role ID (or prefix) — optional for human agents
         #[arg(long)]
-        role: String,
+        role: Option<String>,
 
-        /// Motivation ID (or prefix)
+        /// Motivation ID (or prefix) — optional for human agents
         #[arg(long)]
-        motivation: String,
+        motivation: Option<String>,
+
+        /// Skills/capabilities (comma-separated or repeated)
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Vec<String>,
+
+        /// Hourly rate for cost tracking
+        #[arg(long)]
+        rate: Option<f64>,
+
+        /// Maximum concurrent task capacity
+        #[arg(long)]
+        capacity: Option<f64>,
+
+        /// Trust level (verified, provisional, unknown)
+        #[arg(long)]
+        trust_level: Option<String>,
+
+        /// Contact info (email, matrix ID, etc.)
+        #[arg(long)]
+        contact: Option<String>,
+
+        /// Executor backend (claude, matrix, email, shell)
+        #[arg(long, default_value = "claude")]
+        executor: String,
     },
 
     /// List all agents
@@ -1447,7 +1417,6 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Viz { .. } => "viz",
         Commands::Dag { .. } => "dag",
         Commands::Resource { .. } => "resource",
-        Commands::Actor { .. } => "actor",
         Commands::Skill { .. } => "skill",
         Commands::Agency { .. } => "agency",
         Commands::Role { .. } => "role",
@@ -1655,33 +1624,6 @@ fn main() -> Result<()> {
             ),
             ResourceCommands::List => commands::resource::run_list(&workgraph_dir, cli.json),
         },
-        Commands::Actor { command } => match command {
-            ActorCommands::Add {
-                id,
-                name,
-                role,
-                rate,
-                capacity,
-                capabilities,
-                context_limit,
-                trust_level,
-                actor_type,
-                matrix,
-            } => commands::actor::run_add(
-                &workgraph_dir,
-                &id,
-                name.as_deref(),
-                role.as_deref(),
-                rate,
-                capacity,
-                &capabilities,
-                context_limit,
-                trust_level.as_deref(),
-                actor_type.as_deref(),
-                matrix.as_deref(),
-            ),
-            ActorCommands::List => commands::actor::run_list(&workgraph_dir, cli.json),
-        },
         Commands::Skill { command } => match command {
             SkillCommands::List => commands::skills::run_list(&workgraph_dir, cli.json),
             SkillCommands::Task { id } => commands::skills::run_task(&workgraph_dir, &id, cli.json),
@@ -1787,8 +1729,29 @@ fn main() -> Result<()> {
             }
         }
         Commands::Agent { command } => match command {
-            AgentCommands::Create { name, role, motivation } => {
-                commands::agent_crud::run_create(&workgraph_dir, &name, &role, &motivation)
+            AgentCommands::Create {
+                name,
+                role,
+                motivation,
+                capabilities,
+                rate,
+                capacity,
+                trust_level,
+                contact,
+                executor,
+            } => {
+                commands::agent_crud::run_create(
+                    &workgraph_dir,
+                    &name,
+                    role.as_deref(),
+                    motivation.as_deref(),
+                    &capabilities,
+                    rate,
+                    capacity,
+                    trust_level.as_deref(),
+                    contact.as_deref(),
+                    &executor,
+                )
             }
             AgentCommands::List => commands::agent_crud::run_list(&workgraph_dir, cli.json),
             AgentCommands::Show { id } => commands::agent_crud::run_show(&workgraph_dir, &id, cli.json),

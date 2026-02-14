@@ -5,7 +5,6 @@ pub mod parser;
 pub mod query;
 pub mod check;
 pub mod config;
-pub mod executors;
 #[cfg(feature = "matrix")]
 pub mod matrix;
 #[cfg(feature = "matrix-lite")]
@@ -14,16 +13,14 @@ pub mod service;
 pub mod agency;
 pub mod usage;
 
-pub use graph::{WorkGraph, Node, NodeKind, Task, Actor, ActorType, Resource, Estimate, ResponseTime};
+pub use graph::{WorkGraph, Node, NodeKind, Task, Resource, Estimate, TrustLevel};
 pub use parser::{load_graph, save_graph};
-pub use query::{ready_tasks, blocked_by, cost_of};
+pub use query::{build_reverse_index, ready_tasks, blocked_by, cost_of};
 pub use check::{check_cycles, check_orphans, CheckResult};
 pub use config::{AgencyConfig, Config, HelpConfig, MatrixConfig};
 pub use service::{
-    AgentHandle, AgentEntry, AgentRegistry, AgentStatus, ClaudeExecutor, ClaudeExecutorConfig,
-    DefaultExecutor, Executor, ExecutorConfig, ExecutorRegistry, ExecutorSettings, LockedRegistry,
-    PromptTemplate, ShellExecutor, ShellExecutorConfig, TemplateVars, spawn_claude_agent,
-    spawn_shell_agent, DEFAULT_CLAUDE_PROMPT,
+    AgentEntry, AgentRegistry, AgentStatus, ExecutorConfig, ExecutorRegistry, ExecutorSettings,
+    LockedRegistry, PromptTemplate, TemplateVars,
 };
 #[cfg(feature = "matrix")]
 pub use matrix::{MatrixClient, IncomingMessage, VerificationEvent};

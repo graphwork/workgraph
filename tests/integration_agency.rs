@@ -437,6 +437,12 @@ fn test_full_agency_lifecycle_new_design() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     let agents_dir = agency_dir.join("agents");
     agency::save_agent(&agent, &agents_dir).unwrap();
@@ -769,6 +775,12 @@ fn test_full_agency_lifecycle_new_design() {
             evaluations: vec![],
         },
         lineage: Lineage::mutation(&agent_id, 0, "agent-evo-1"),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&evolved_agent, &agents_dir).unwrap();
 
@@ -956,6 +968,12 @@ fn test_agent_independent_performance() {
         name: "agent-a".to_string(),
         performance: PerformanceRecord { task_count: 0, avg_score: None, evaluations: vec![] },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     let agent_b = Agent {
         id: agent_b_id.clone(),
@@ -964,6 +982,12 @@ fn test_agent_independent_performance() {
         name: "agent-b".to_string(),
         performance: PerformanceRecord { task_count: 0, avg_score: None, evaluations: vec![] },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent_a, &agents_dir).unwrap();
     agency::save_agent(&agent_b, &agents_dir).unwrap();

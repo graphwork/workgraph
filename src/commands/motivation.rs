@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::agency::{self, Motivation};
+use workgraph::agency::{self};
 
 /// Get the agency base directory (creates it if needed).
 fn agency_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {

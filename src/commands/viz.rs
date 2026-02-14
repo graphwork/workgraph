@@ -103,7 +103,7 @@ pub fn run(dir: &Path, options: VizOptions) -> Result<()> {
     let output = match options.format {
         OutputFormat::Dot => generate_dot(&graph, &tasks_to_show, &task_ids, &critical_path_set),
         OutputFormat::Mermaid => {
-            generate_mermaid(&graph, &tasks_to_show, &task_ids, &critical_path_set)
+            generate_mermaid(&tasks_to_show, &task_ids, &critical_path_set)
         }
         OutputFormat::Ascii => {
             generate_ascii(&graph, &tasks_to_show, &task_ids)
@@ -172,20 +172,17 @@ fn generate_dot(
         ));
     }
 
-    // Print actors that have tasks assigned
+    // Print assigned actors as ellipse nodes
     let assigned_actors: HashSet<&str> = tasks
         .iter()
         .filter_map(|t| t.assigned.as_deref())
         .collect();
 
-    for actor in graph.actors() {
-        if assigned_actors.contains(actor.id.as_str()) {
-            let name = actor.name.as_deref().unwrap_or(&actor.id);
-            lines.push(format!(
-                "  \"{}\" [label=\"{}\", shape=ellipse, style=filled, fillcolor=lightblue];",
-                actor.id, name
-            ));
-        }
+    for actor_id in &assigned_actors {
+        lines.push(format!(
+            "  \"{}\" [label=\"{}\", shape=ellipse, style=filled, fillcolor=lightblue];",
+            actor_id, actor_id
+        ));
     }
 
     // Print resources that are required by shown tasks
@@ -256,7 +253,6 @@ fn generate_dot(
 }
 
 fn generate_mermaid(
-    graph: &WorkGraph,
     tasks: &[&workgraph::graph::Task],
     task_ids: &HashSet<&str>,
     critical_path: &HashSet<String>,
@@ -318,11 +314,8 @@ fn generate_mermaid(
 
     if !assigned_actors.is_empty() {
         lines.push(String::new());
-        for actor in graph.actors() {
-            if assigned_actors.contains(actor.id.as_str()) {
-                let name = actor.name.as_deref().unwrap_or(&actor.id);
-                lines.push(format!("  {}(({}))", actor.id, name));
-            }
+        for actor_id in &assigned_actors {
+            lines.push(format!("  {}(({}))", actor_id, actor_id));
         }
 
         for task in tasks {
@@ -476,12 +469,17 @@ fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 }
 
 /// Generate an ASCII DAG visualization that shows the dependency graph
-/// using Unicode box-drawing characters, designed to fit in a terminal.
+/// as a proper tree with indentation and branching characters.
 ///
 /// Layout strategy:
-/// - Groups edges by target and renders merge brackets (┐├┘) for multi-source merges
-/// - After each target, continues the chain horizontally: source ──→ target ──→ next ──→ ...
-/// - Independent tasks are labeled (independent)
+/// - Find root nodes (no parents in active set) and DFS from each
+/// - Tree structure with ├─→, └─→, │ box-drawing chars
+/// - Status shown in parens after each task ID
+/// - Fan-out: siblings shown with ├/└ branching
+/// - Fan-in: when a node has multiple parents, show it under its first
+///   parent and annotate with "(also ← parent2, parent3)"
+/// - Connected components grouped together, separated by blank lines
+/// - Independent tasks listed at bottom
 /// - Color coding by status via ANSI escape codes
 fn generate_ascii(
     _graph: &WorkGraph,
@@ -493,6 +491,8 @@ fn generate_ascii(
     }
 
     // Build adjacency within the active set
+    // forward: parent → children (parent blocks children)
+    // reverse: child → parents (child is blocked by parents)
     let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
     for task in tasks {
@@ -546,202 +546,181 @@ fn generate_ascii(
     };
     let reset = if use_color { "\x1b[0m" } else { "" };
 
-    let colored_id = |id: &str| -> String {
+    let status_label = |status: &Status| -> &str {
+        match status {
+            Status::Done => "done",
+            Status::InProgress => "in-progress",
+            Status::Open => "open",
+            Status::Blocked => "blocked",
+            Status::Failed => "failed",
+            Status::Abandoned => "abandoned",
+            Status::PendingReview => "pending-review",
+        }
+    };
+
+    let format_node = |id: &str| -> String {
         let task = task_map.get(id);
         let color = task.map(|t| status_color(&t.status)).unwrap_or("");
-        format!("{}{}{}", color, id, reset)
+        let status = task.map(|t| status_label(&t.status)).unwrap_or("unknown");
+        format!("{}{}{}  ({})", color, id, reset, status)
     };
 
-    // Build target -> sorted sources mapping
-    let mut target_sources: HashMap<&str, Vec<&str>> = HashMap::new();
+    // Find connected components using union-find
+    let all_ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    let id_to_idx: HashMap<&str, usize> = all_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut parent_uf: Vec<usize> = (0..all_ids.len()).collect();
+
+    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
+        parent[i]
+    }
+    fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+
     for task in tasks {
+        let ti = id_to_idx[task.id.as_str()];
         for blocker in &task.blocked_by {
-            if task_ids.contains(blocker.as_str()) {
-                target_sources
-                    .entry(task.id.as_str())
-                    .or_default()
-                    .push(blocker.as_str());
-            }
-        }
-    }
-    for sources in target_sources.values_mut() {
-        sources.sort();
-    }
-
-    // Compute topological depth for ordering output
-    let mut depth: HashMap<&str, usize> = HashMap::new();
-    let mut queue = std::collections::VecDeque::new();
-    for task in tasks {
-        if task
-            .blocked_by
-            .iter()
-            .all(|b| !task_ids.contains(b.as_str()))
-        {
-            depth.insert(task.id.as_str(), 0);
-            queue.push_back(task.id.as_str());
-        }
-    }
-    for task in tasks {
-        if !depth.contains_key(task.id.as_str()) {
-            depth.insert(task.id.as_str(), 0);
-            queue.push_back(task.id.as_str());
-        }
-    }
-    while let Some(node) = queue.pop_front() {
-        let d = depth[node];
-        if let Some(children) = forward.get(node) {
-            for &child in children {
-                let new_depth = d + 1;
-                let entry = depth.entry(child).or_insert(0);
-                if new_depth > *entry {
-                    *entry = new_depth;
-                    queue.push_back(child);
-                }
+            if let Some(&bi) = id_to_idx.get(blocker.as_str()) {
+                union(&mut parent_uf, ti, bi);
             }
         }
     }
 
-    // Build a chain continuation from a node: greedily follow the
-    // single-child path as long as the child has exactly one parent.
-    // Returns a string like " ──→ child ──→ grandchild"
-    let build_chain_suffix = |start: &str, rendered: &HashSet<&str>| -> (String, String) {
-        let mut suffix_colored = String::new();
-        let mut suffix_plain = String::new();
-        let mut current = start;
-        loop {
-            let children = forward.get(current);
-            if children.is_none() {
-                break;
-            }
-            let children = children.unwrap();
-            // Find a child that:
-            // 1. Has exactly one parent (so the chain is clean, no merge)
-            // 2. Hasn't been rendered yet
-            let single_child = children.iter().find(|&&c| {
-                !rendered.contains(c)
-                    && reverse
-                        .get(c)
-                        .map(|p| p.len() == 1)
-                        .unwrap_or(true)
-            });
-            match single_child {
-                Some(&child) => {
-                    suffix_colored.push_str(&format!(" ──→ {}", colored_id(child)));
-                    suffix_plain.push_str(&format!(" ──→ {}", child));
-                    current = child;
-                }
-                None => break,
-            }
+    // Group tasks by component
+    let mut components: HashMap<usize, Vec<&str>> = HashMap::new();
+    for &id in &all_ids {
+        if is_independent(id) {
+            continue; // handle independently at the bottom
         }
-        (suffix_colored, suffix_plain)
-    };
+        let root = find(&mut parent_uf, id_to_idx[id]);
+        components.entry(root).or_default().push(id);
+    }
 
-    // Sort bundles by target depth then target name
-    let mut bundles: Vec<(&str, Vec<&str>)> = target_sources
-        .iter()
-        .map(|(&target, sources)| (target, sources.clone()))
-        .collect();
-    bundles.sort_by_key(|(target, _)| {
-        (
-            depth.get(target).copied().unwrap_or(0),
-            target.to_string(),
-        )
-    });
-
+    // For each component, find roots (tasks with no parents in active set)
+    // and perform DFS tree traversal
     let mut lines: Vec<String> = Vec::new();
     let mut rendered: HashSet<&str> = HashSet::new();
 
-    for (target, sources) in &bundles {
-        // Skip if this target was already rendered as part of a chain continuation
-        if rendered.contains(target) {
-            continue;
+    // Sort components deterministically by their first root's name
+    let mut component_list: Vec<Vec<&str>> = components.into_values().collect();
+    component_list.sort_by(|a, b| {
+        let a_min = a.iter().min().unwrap();
+        let b_min = b.iter().min().unwrap();
+        a_min.cmp(b_min)
+    });
+
+    for component in &component_list {
+        // Find roots in this component (no parents in active set)
+        let mut roots: Vec<&str> = component
+            .iter()
+            .filter(|&&id| {
+                reverse.get(id).map(|p| p.is_empty()).unwrap_or(true)
+            })
+            .copied()
+            .collect();
+        roots.sort();
+
+        // If no roots found (cycle), pick the alphabetically first
+        if roots.is_empty() {
+            let mut sorted = component.clone();
+            sorted.sort();
+            roots.push(sorted[0]);
         }
 
-        // Build chain continuation from the target
-        rendered.insert(target);
-        let (chain_suffix_colored, chain_suffix_plain) = build_chain_suffix(target, &rendered);
-        // Mark chain nodes as rendered
-        {
-            let mut current = *target;
-            loop {
-                let children = forward.get(current);
-                if children.is_none() {
-                    break;
-                }
-                let children = children.unwrap();
-                let single_child = children.iter().find(|&&c| {
-                    !rendered.contains(c)
-                        && reverse
-                            .get(c)
-                            .map(|p| p.len() == 1)
-                            .unwrap_or(true)
-                });
-                match single_child {
-                    Some(&child) => {
-                        rendered.insert(child);
-                        current = child;
-                    }
-                    None => break,
-                }
-            }
+        if !lines.is_empty() {
+            lines.push(String::new()); // blank line between components
         }
 
-        // Mark sources as rendered (they appear as labels in this bundle)
-        for source in sources {
-            rendered.insert(source);
-        }
-
-        if sources.len() == 1 {
-            // Simple edge: source ──→ target ──→ chain...
-            let source = sources[0];
-            lines.push(format!(
-                "{} ──→ {}{}",
-                colored_id(source),
-                colored_id(target),
-                chain_suffix_colored,
-            ));
-        } else {
-            // Merge bracket: multiple sources converge on one target
-            //
-            // source-a ───┐
-            // source-b ───┼──→ target ──→ chain...
-            // source-c ───┘
-            //
-            // All source names are right-padded to the same width so
-            // the bracket characters align vertically.
-
-            let max_src_len = sources.iter().map(|s| s.len()).max().unwrap_or(0);
-            let mid = sources.len() / 2;
-
-            for (i, source) in sources.iter().enumerate() {
-                let task = task_map.get(source);
-                let color = task.map(|t| status_color(&t.status)).unwrap_or("");
-                let pad = max_src_len - source.len();
-                let src_label =
-                    format!("{}{}{}{}", color, source, reset, " ".repeat(pad));
-
-                let bracket = if sources.len() == 2 {
-                    if i == 0 {
-                        "┐"
-                    } else {
-                        "┘"
-                    }
-                } else if i == 0 {
-                    "┐"
-                } else if i == sources.len() - 1 {
-                    "┘"
+        // DFS from each root
+        for root in &roots {
+            fn render_tree<'a>(
+                id: &'a str,
+                prefix: &str,
+                is_last: bool,
+                is_root: bool,
+                lines: &mut Vec<String>,
+                rendered: &mut HashSet<&'a str>,
+                forward: &HashMap<&str, Vec<&'a str>>,
+                reverse: &HashMap<&str, Vec<&'a str>>,
+                format_node: &dyn Fn(&str) -> String,
+            ) {
+                // Build the connector for this node
+                let connector = if is_root {
+                    String::new()
+                } else if is_last {
+                    "└─→ ".to_string()
                 } else {
-                    "┤"
+                    "├─→ ".to_string()
                 };
 
-                let suffix = if i == mid {
-                    format!("──→ {}{}", colored_id(target), chain_suffix_colored)
+                // Check if already rendered (fan-in case)
+                if rendered.contains(id) {
+                    // Show a back-reference
+                    lines.push(format!("{}{}{} ...", prefix, connector, format_node(id)));
+                    return;
+                }
+
+                rendered.insert(id);
+
+                // Check for additional parents (fan-in annotation)
+                let parents = reverse.get(id).map(|v| v.as_slice()).unwrap_or(&[]);
+                let fan_in_note = if parents.len() > 1 {
+                    // We're being shown under one parent; note the others
+                    let others: Vec<&str> = parents.iter().copied().collect();
+                    format!("  (← {})", others.join(", "))
                 } else {
                     String::new()
                 };
 
-                lines.push(format!("{} ──{}{}", src_label, bracket, suffix));
+                let node_str = format_node(id);
+                lines.push(format!("{}{}{}{}", prefix, connector, node_str, fan_in_note));
+
+                // Compute child prefix
+                let child_prefix = if is_root {
+                    prefix.to_string()
+                } else if is_last {
+                    format!("{}      ", prefix)
+                } else {
+                    format!("{}│     ", prefix)
+                };
+
+                // Get children and recurse
+                let children = forward.get(id).map(|v| v.as_slice()).unwrap_or(&[]);
+                let child_count = children.len();
+                for (i, &child) in children.iter().enumerate() {
+                    let child_is_last = i == child_count - 1;
+                    render_tree(
+                        child,
+                        &child_prefix,
+                        child_is_last,
+                        false,
+                        lines,
+                        rendered,
+                        forward,
+                        reverse,
+                        format_node,
+                    );
+                }
             }
+
+            render_tree(
+                root,
+                "",
+                true,
+                true,
+                &mut lines,
+                &mut rendered,
+                &forward,
+                &reverse,
+                &format_node,
+            );
         }
     }
 
@@ -753,8 +732,13 @@ fn generate_ascii(
         .collect();
     independents.sort();
 
-    for id in independents {
-        lines.push(format!("{} ── (independent)", colored_id(id)));
+    if !independents.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        for id in independents {
+            lines.push(format!("{}  (independent)", format_node(id)));
+        }
     }
 
     lines.join("\n")
@@ -911,7 +895,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 
-        let mermaid = generate_mermaid(&graph, &tasks, &task_ids, &critical_path);
+        let mermaid = generate_mermaid(&tasks, &task_ids, &critical_path);
         assert!(mermaid.contains("flowchart LR"));
         assert!(mermaid.contains("t1"));
     }
@@ -930,7 +914,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 
-        let mermaid = generate_mermaid(&graph, &tasks, &task_ids, &critical_path);
+        let mermaid = generate_mermaid(&tasks, &task_ids, &critical_path);
         assert!(mermaid.contains("t1 --> t2"));
     }
 
@@ -1023,13 +1007,39 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids);
 
+        // Tree output: src is root, tgt is child
         assert!(result.contains("src"));
         assert!(result.contains("tgt"));
-        assert!(result.contains("──→"));
+        assert!(result.contains("└─→"));
+        assert!(result.contains("(open)"));
     }
 
     #[test]
-    fn test_generate_ascii_merge() {
+    fn test_generate_ascii_fan_out() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("a", "Task A");
+        let mut t2 = make_task("b", "Task B");
+        t2.blocked_by = vec!["a".to_string()];
+        let mut t3 = make_task("c", "Task C");
+        t3.blocked_by = vec!["a".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(&graph, &tasks, &task_ids);
+
+        // a is root with two children
+        assert!(result.contains("├─→"));
+        assert!(result.contains("└─→"));
+        assert!(result.contains('a'));
+        assert!(result.contains('b'));
+        assert!(result.contains('c'));
+    }
+
+    #[test]
+    fn test_generate_ascii_fan_in() {
         let mut graph = WorkGraph::new();
         let t1 = make_task("a", "Task A");
         let t2 = make_task("b", "Task B");
@@ -1043,11 +1053,9 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids);
 
-        // Should have merge bracket characters
-        assert!(result.contains('┐'));
-        assert!(result.contains('┘'));
-        assert!(result.contains("──→"));
+        // c should appear under one parent with a fan-in annotation
         assert!(result.contains('c'));
+        assert!(result.contains("(←"));
     }
 
     #[test]
@@ -1065,25 +1073,49 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_ascii_three_way_merge() {
+    fn test_generate_ascii_status_labels() {
         let mut graph = WorkGraph::new();
-        let t1 = make_task("x", "Task X");
-        let t2 = make_task("y", "Task Y");
-        let t3 = make_task("z", "Task Z");
-        let mut t4 = make_task("m", "Merge");
-        t4.blocked_by = vec!["x".to_string(), "y".to_string(), "z".to_string()];
+        let mut t1 = make_task("root", "Root");
+        t1.status = Status::InProgress;
+        let mut t2 = make_task("child", "Child");
+        t2.status = Status::Blocked;
+        t2.blocked_by = vec!["root".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Task(t3));
-        graph.add_node(Node::Task(t4));
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids);
 
-        // Should have merge bracket with ┐ ┤ ┘
-        assert!(result.contains('┐'));
-        assert!(result.contains('┤'));
-        assert!(result.contains('┘'));
+        assert!(result.contains("(in-progress)"));
+        assert!(result.contains("(blocked)"));
+    }
+
+    #[test]
+    fn test_generate_ascii_chain() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("a", "Task A");
+        let mut t2 = make_task("b", "Task B");
+        t2.blocked_by = vec!["a".to_string()];
+        let mut t3 = make_task("c", "Task C");
+        t3.blocked_by = vec!["b".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(&graph, &tasks, &task_ids);
+
+        // Should show indented chain: a -> b -> c
+        assert!(result.contains("a"));
+        assert!(result.contains("b"));
+        assert!(result.contains("c"));
+        // b and c should be indented (have └─→ prefix)
+        let result_lines: Vec<&str> = result.lines().collect();
+        // First line is the root (a), no prefix
+        assert!(result_lines[0].contains("a"));
+        // Nested nodes should have tree characters
+        assert!(result.contains("└─→"));
     }
 }

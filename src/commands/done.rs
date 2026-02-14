@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::Status;
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query;
 
@@ -55,6 +55,12 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
 
     task.status = Status::Done;
     task.completed_at = Some(Utc::now().to_rfc3339());
+
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: task.assigned.clone(),
+        message: "Task marked as done".to_string(),
+    });
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);

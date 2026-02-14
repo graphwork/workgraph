@@ -3,20 +3,14 @@
 //! Provides agent registry and management for the workgraph agent service.
 //!
 //! This module includes:
-//! - Executor plugins for spawning agents (Claude, shell, custom)
+//! - Executor configuration for spawning agents
 //! - Agent registry for tracking running agents
-//! - Output routing and artifact management
-//! - Health monitoring and heartbeat tracking
 
-pub mod claude;
 pub mod executor;
 pub mod registry;
-pub mod shell;
 
-pub use claude::{ClaudeExecutor, ClaudeExecutorConfig, spawn_claude_agent, DEFAULT_CLAUDE_PROMPT};
 pub use executor::{
-    AgentHandle, DefaultExecutor, Executor, ExecutorConfig, ExecutorRegistry, ExecutorSettings,
+    ExecutorConfig, ExecutorRegistry, ExecutorSettings,
     PromptTemplate, TemplateVars,
 };
 pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
-pub use shell::{ShellExecutor, ShellExecutorConfig, spawn_shell_agent};

@@ -21,7 +21,7 @@ Tasks are the fundamental units of work. Each task has:
 - **title**: Human-readable description of the work
 - **status**: Current state (open, in-progress, done, failed, abandoned)
 - **blocked_by**: List of task IDs that must complete before this task can start
-- **assigned**: Actor currently working on the task
+- **assigned**: Agent currently working on the task
 - **estimate**: Optional hours and/or cost estimate
 - **skills**: Required capabilities to complete the task
 - **inputs**: Files or context needed to start work
@@ -54,17 +54,18 @@ Tasks are the fundamental units of work. Each task has:
 
 A task is **blocked** (derived state) when any of its `blocked_by` dependencies are not yet done. Only unblocked, open tasks appear in `wg ready`.
 
-### Actors
+### Agents
 
-Actors represent humans or AI agents who perform work:
+Agents represent humans or AIs who perform work. An agent is a unified identity that combines:
 
-- **id**: Unique identifier
 - **name**: Display name
-- **role**: Type of actor (engineer, pm, agent, etc.)
-- **capabilities**: Skills this actor has (matched against task requirements)
+- **role + motivation**: What the agent does and why (required for AI, optional for human)
+- **capabilities**: Skills for task matching
 - **trust_level**: verified, provisional, or unknown
-- **capacity**: Available work hours
+- **capacity**: Maximum concurrent task capacity
 - **rate**: Hourly cost rate
+- **contact**: Contact info (email, Matrix ID, etc.)
+- **executor**: How the agent receives work (claude, matrix, email, shell)
 
 ### Resources
 
@@ -187,7 +188,6 @@ Example content:
 ```jsonl
 {"kind":"task","id":"design-api","title":"Design API","status":"done","completed_at":"2026-01-15T10:00:00Z"}
 {"kind":"task","id":"impl-api","title":"Implement API","status":"open","blocked_by":["design-api"]}
-{"kind":"actor","id":"erik","name":"Erik","role":"engineer","capabilities":["rust","design"]}
 ```
 
 Configuration is stored in `.workgraph/config.toml`:

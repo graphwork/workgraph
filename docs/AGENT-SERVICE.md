@@ -195,9 +195,25 @@ spawned → working → [heartbeat...] → done|failed|dead
 
 ### Heartbeats
 
-Spawned agents send heartbeats via the wrapper script. The coordinator checks for stale agents (no heartbeat within `heartbeat_timeout` minutes, default: 5) on each tick and marks them dead.
+Spawned agents send heartbeats via the wrapper script. Heartbeats are recorded in the agent registry for monitoring purposes.
 
-### Dead agent cleanup
+### Dead agent detection
+
+The coordinator detects dead agents on each tick by checking whether the agent's process is still running (via PID liveness check). Dead agents are cleaned up automatically before spawning new agents.
+
+### Dead agent triage
+
+When `auto_triage` is enabled, dead agents are triaged using an LLM to assess how much progress was made before the agent died. The triage produces one of three verdicts:
+
+| Verdict | Behavior |
+|---------|----------|
+| `done` | Task is marked complete (or pending-review if it has verification criteria) |
+| `continue` | Task is unclaimed and reopened with a recovery context appended to the description, so the next agent can pick up where the previous one left off |
+| `restart` | Task is unclaimed and reopened for a fresh attempt |
+
+When `auto_triage` is disabled (the default), dead agents simply have their tasks unclaimed and reopened.
+
+### Manual dead agent commands
 
 ```bash
 wg dead-agents --check       # read-only check
@@ -206,7 +222,7 @@ wg dead-agents --remove      # remove dead entries from registry
 wg dead-agents --processes   # check if agent PIDs are still running
 ```
 
-The coordinator does this automatically on each tick, but these commands are useful for manual intervention.
+These commands are useful for manual intervention when the service is not running.
 
 ## Configuration
 
@@ -228,6 +244,10 @@ heartbeat_timeout = 5    # minutes before stale (default: 5)
 [agency]
 auto_evaluate = false    # auto-create evaluation tasks
 auto_assign = false      # auto-create assignment tasks
+auto_triage = false      # triage dead agents with LLM before respawning
+triage_model = "haiku"   # model for triage (default: haiku)
+triage_timeout = 30      # seconds before triage call times out (default: 30)
+triage_max_log_bytes = 50000  # max bytes of agent output to send to triage (default: 50000)
 assigner_model = "haiku" # model for assigner agents
 evaluator_model = "opus" # model for evaluator agents
 evolver_model = "opus"   # model for evolver agents

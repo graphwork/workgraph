@@ -106,6 +106,12 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
+        // Skip legacy Actor nodes (removed in actor-system cleanup)
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if v.get("kind").and_then(|k| k.as_str()) == Some("actor") {
+                continue;
+            }
+        }
         let node: Node = serde_json::from_str(trimmed).map_err(|e| ParseError::Json {
             line: line_num + 1,
             source: e,
@@ -198,10 +204,23 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#).unwrap();
         writeln!(file, r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"erik","kind":"actor","name":"Erik"}}"#).unwrap();
 
         let graph = load_graph(file.path()).unwrap();
-        assert_eq!(graph.len(), 3);
+        assert_eq!(graph.len(), 2);
+    }
+
+    #[test]
+    fn test_load_skips_legacy_actor_nodes() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#).unwrap();
+        writeln!(file, r#"{{"id":"erik","kind":"actor","name":"Erik"}}"#).unwrap();
+        writeln!(file, r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#).unwrap();
+
+        let graph = load_graph(file.path()).unwrap();
+        // Actor nodes should be silently skipped
+        assert_eq!(graph.len(), 2);
+        assert!(graph.get_task("t1").is_some());
+        assert!(graph.get_task("t2").is_some());
     }
 
     #[test]

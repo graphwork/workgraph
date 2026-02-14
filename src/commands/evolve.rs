@@ -131,8 +131,23 @@ pub fn run(
         .context("Failed to load roles")?;
     let motivations = agency::load_all_motivations(&motivations_dir)
         .context("Failed to load motivations")?;
-    let evaluations = agency::load_all_evaluations(&evals_dir)
+    let all_evaluations = agency::load_all_evaluations(&evals_dir)
         .context("Failed to load evaluations")?;
+
+    // Filter out evaluations from human agents — their work quality isn't a
+    // reflection of a role+motivation prompt, so including them would pollute
+    // the evolution signal.
+    let agents_dir = agency_dir.join("agents");
+    let agents = agency::load_all_agents(&agents_dir).unwrap_or_default();
+    let human_agent_ids: HashSet<&str> = agents
+        .iter()
+        .filter(|a| a.is_human())
+        .map(|a| a.id.as_str())
+        .collect();
+    let evaluations: Vec<Evaluation> = all_evaluations
+        .into_iter()
+        .filter(|e| e.agent_id.is_empty() || !human_agent_ids.contains(e.agent_id.as_str()))
+        .collect();
 
     if roles.is_empty() && motivations.is_empty() {
         bail!("No roles or motivations found. Run `wg agency init` to seed starters.");
@@ -353,30 +368,47 @@ pub fn run(
         }
     }
 
+    // Save evolution run report
+    let report = serde_json::json!({
+        "run_id": actual_run_id,
+        "timestamp": Utc::now().to_rfc3339(),
+        "strategy": strategy.label(),
+        "model": model,
+        "budget": budget,
+        "input": {
+            "roles": roles.len(),
+            "motivations": motivations.len(),
+            "evaluations": evaluations.len(),
+            "skill_documents": skill_docs.len(),
+        },
+        "operations_proposed": operations.len(),
+        "operations_applied": applied,
+        "operations_deferred": deferred,
+        "results": results,
+        "summary": evolver_output.summary,
+        "raw_output": raw_output.as_ref(),
+    });
+
+    let runs_dir = agency_dir.join("evolution_runs");
+    fs::create_dir_all(&runs_dir)?;
+    let report_path = runs_dir.join(format!("{}.json", actual_run_id));
+    fs::write(&report_path, serde_json::to_string_pretty(&report)?)?;
+
     if json {
-        let mut out = serde_json::json!({
-            "run_id": actual_run_id,
-            "strategy": strategy.label(),
-            "operations_proposed": operations.len(),
-            "operations_applied": applied,
-            "results": results,
-            "summary": evolver_output.summary,
-        });
-        if deferred > 0 {
-            out["operations_deferred"] = serde_json::json!(deferred);
-        }
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("\n=== Evolution Complete ===");
         println!("Run ID:     {}", actual_run_id);
         println!("Strategy:   {}", strategy.label());
+        println!("Model:      {}", model);
         println!("Applied:    {} of {} operations", applied, operations.len());
         if deferred > 0 {
             println!("Deferred:   {} (evolver self-mutations, require human approval)", deferred);
         }
         if let Some(ref summary) = evolver_output.summary {
-            println!("Summary:    {}", summary);
+            println!("\nSummary:\n  {}", summary);
         }
+        println!("\nReport saved: {}", report_path.display());
     }
 
     Ok(())

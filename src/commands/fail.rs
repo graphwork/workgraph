@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::Status;
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -35,6 +36,16 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     task.status = Status::Failed;
     task.retry_count += 1;
     task.failure_reason = reason.map(String::from);
+
+    let log_message = match reason {
+        Some(r) => format!("Task marked as failed: {}", r),
+        None => "Task marked as failed".to_string(),
+    };
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: task.assigned.clone(),
+        message: log_message,
+    });
 
     // Extract values we need for printing before saving
     let retry_count = task.retry_count;

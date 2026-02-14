@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
+use workgraph::graph::TrustLevel;
 
 /// Get the agency agents subdirectory (creates agency structure if needed).
 fn agents_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
@@ -9,40 +10,109 @@ fn agents_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
     Ok(agency_dir.join("agents"))
 }
 
-/// `wg agent create <name> --role <hash> --motivation <hash>`
+/// Parse a trust level string into a TrustLevel enum.
+fn parse_trust_level(s: &str) -> Result<TrustLevel> {
+    match s.to_lowercase().as_str() {
+        "verified" => Ok(TrustLevel::Verified),
+        "provisional" => Ok(TrustLevel::Provisional),
+        "unknown" => Ok(TrustLevel::Unknown),
+        _ => anyhow::bail!(
+            "Invalid trust level '{}'. Expected: verified, provisional, unknown",
+            s
+        ),
+    }
+}
+
+/// `wg agent create <name> [--role <hash>] [--motivation <hash>] [--capabilities ...] [--rate N] [--capacity N] [--trust-level L] [--contact C] [--executor E]`
 pub fn run_create(
     workgraph_dir: &Path,
     name: &str,
-    role_id: &str,
-    motivation_id: &str,
+    role_id: Option<&str>,
+    motivation_id: Option<&str>,
+    capabilities: &[String],
+    rate: Option<f64>,
+    capacity: Option<f64>,
+    trust_level: Option<&str>,
+    contact: Option<&str>,
+    executor: &str,
 ) -> Result<()> {
     let agency_dir = workgraph_dir.join("agency");
     agency::init(&agency_dir).context("Failed to initialise agency directory")?;
 
-    // Resolve role and motivation by prefix to validate they exist
     let roles_dir = agency_dir.join("roles");
     let motivations_dir = agency_dir.join("motivations");
 
-    let role = agency::find_role_by_prefix(&roles_dir, role_id)
-        .with_context(|| format!("Failed to find role '{}'", role_id))?;
-    let motivation = agency::find_motivation_by_prefix(&motivations_dir, motivation_id)
-        .with_context(|| format!("Failed to find motivation '{}'", motivation_id))?;
+    let is_human = agency::is_human_executor(executor);
 
-    let id = agency::content_hash_agent(&role.id, &motivation.id);
+    // Resolve role and motivation if provided
+    let resolved_role = match role_id {
+        Some(rid) => Some(
+            agency::find_role_by_prefix(&roles_dir, rid)
+                .with_context(|| format!("Failed to find role '{}'", rid))?,
+        ),
+        None => {
+            if !is_human {
+                anyhow::bail!("--role is required for AI agents (executor={})", executor);
+            }
+            None
+        }
+    };
+
+    let resolved_motivation = match motivation_id {
+        Some(mid) => Some(
+            agency::find_motivation_by_prefix(&motivations_dir, mid)
+                .with_context(|| format!("Failed to find motivation '{}'", mid))?,
+        ),
+        None => {
+            if !is_human {
+                anyhow::bail!(
+                    "--motivation is required for AI agents (executor={})",
+                    executor
+                );
+            }
+            None
+        }
+    };
+
+    // Compute agent ID based on available identity fields
+    let (agent_role_id, agent_motivation_id, id) = match (&resolved_role, &resolved_motivation) {
+        (Some(role), Some(mot)) => {
+            let id = agency::content_hash_agent(&role.id, &mot.id);
+            (role.id.clone(), mot.id.clone(), id)
+        }
+        _ => {
+            // For human agents without role/motivation, hash the name + executor
+            use sha2::{Digest, Sha256};
+            let input = format!("human-agent:{}:{}", name, executor);
+            let digest = Sha256::digest(input.as_bytes());
+            let id = format!("{:x}", digest);
+            let role_id = resolved_role.as_ref().map(|r| r.id.clone()).unwrap_or_default();
+            let mot_id = resolved_motivation
+                .as_ref()
+                .map(|m| m.id.clone())
+                .unwrap_or_default();
+            (role_id, mot_id, id)
+        }
+    };
 
     let agents_dir = agency_dir.join("agents");
     let agent_path = agents_dir.join(format!("{}.yaml", id));
     if agent_path.exists() {
         anyhow::bail!(
-            "Agent with identical role+motivation already exists ({})",
+            "Agent with identical identity already exists ({})",
             agency::short_hash(&id)
         );
     }
 
+    let trust = match trust_level {
+        Some(s) => parse_trust_level(s)?,
+        None => TrustLevel::default(),
+    };
+
     let agent = Agent {
         id,
-        role_id: role.id.clone(),
-        motivation_id: motivation.id.clone(),
+        role_id: agent_role_id,
+        motivation_id: agent_motivation_id,
         name: name.to_string(),
         performance: PerformanceRecord {
             task_count: 0,
@@ -50,10 +120,15 @@ pub fn run_create(
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: capabilities.to_vec(),
+        rate,
+        capacity,
+        trust_level: trust,
+        contact: contact.map(|s| s.to_string()),
+        executor: executor.to_string(),
     };
 
-    let path = agency::save_agent(&agent, &agents_dir)
-        .context("Failed to save agent")?;
+    let path = agency::save_agent(&agent, &agents_dir).context("Failed to save agent")?;
 
     println!(
         "Created agent '{}' ({}) at {}",
@@ -61,12 +136,35 @@ pub fn run_create(
         agency::short_hash(&agent.id),
         path.display()
     );
-    println!("  role:       {} ({})", role.name, agency::short_hash(&role.id));
-    println!(
-        "  motivation: {} ({})",
-        motivation.name,
-        agency::short_hash(&motivation.id)
-    );
+
+    if let Some(role) = &resolved_role {
+        println!(
+            "  role:       {} ({})",
+            role.name,
+            agency::short_hash(&role.id)
+        );
+    }
+    if let Some(mot) = &resolved_motivation {
+        println!(
+            "  motivation: {} ({})",
+            mot.name,
+            agency::short_hash(&mot.id)
+        );
+    }
+    println!("  executor:   {}", executor);
+    if !capabilities.is_empty() {
+        println!("  capabilities: {}", capabilities.join(", "));
+    }
+    if let Some(r) = rate {
+        println!("  rate:       {}", r);
+    }
+    if let Some(c) = capacity {
+        println!("  capacity:   {}", c);
+    }
+    if let Some(ct) = contact {
+        println!("  contact:    {}", ct);
+    }
+
     Ok(())
 }
 
@@ -85,6 +183,8 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
                     "name": a.name,
                     "role_id": a.role_id,
                     "motivation_id": a.motivation_id,
+                    "executor": a.executor,
+                    "capabilities": a.capabilities,
                     "avg_score": a.performance.avg_score,
                     "task_count": a.performance.task_count,
                 })
@@ -101,12 +201,23 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
                 .avg_score
                 .map(|s| format!("{:.2}", s))
                 .unwrap_or_else(|| "n/a".to_string());
+            let role_str = if a.role_id.is_empty() {
+                "-".to_string()
+            } else {
+                agency::short_hash(&a.role_id).to_string()
+            };
+            let mot_str = if a.motivation_id.is_empty() {
+                "-".to_string()
+            } else {
+                agency::short_hash(&a.motivation_id).to_string()
+            };
             println!(
-                "  {}  {:20} role:{} mot:{} score:{} tasks:{}",
+                "  {}  {:20} role:{} mot:{} exec:{} score:{} tasks:{}",
                 agency::short_hash(&a.id),
                 a.name,
-                agency::short_hash(&a.role_id),
-                agency::short_hash(&a.motivation_id),
+                role_str,
+                mot_str,
+                a.executor,
                 score_str,
                 a.performance.task_count,
             );
@@ -143,6 +254,12 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
             "role_name": role_name,
             "motivation_id": agent.motivation_id,
             "motivation_name": motivation_name,
+            "executor": agent.executor,
+            "capabilities": agent.capabilities,
+            "rate": agent.rate,
+            "capacity": agent.capacity,
+            "trust_level": agent.trust_level,
+            "contact": agent.contact,
             "performance": {
                 "task_count": agent.performance.task_count,
                 "avg_score": agent.performance.avg_score,
@@ -187,6 +304,24 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
                 "Motivation: {} (not found)",
                 agency::short_hash(&agent.motivation_id)
             ),
+        }
+
+        println!();
+        println!("Executor: {}", agent.executor);
+        if !agent.capabilities.is_empty() {
+            println!("Capabilities: {}", agent.capabilities.join(", "));
+        }
+        if let Some(rate) = agent.rate {
+            println!("Rate: {}", rate);
+        }
+        if let Some(capacity) = agent.capacity {
+            println!("Capacity: {}", capacity);
+        }
+        if agent.trust_level != TrustLevel::Provisional {
+            println!("Trust level: {:?}", agent.trust_level);
+        }
+        if let Some(contact) = &agent.contact {
+            println!("Contact: {}", contact);
         }
 
         println!();
@@ -526,13 +661,29 @@ mod tests {
         motivation.id
     }
 
+    /// Helper: create an agent with defaults for the new optional fields.
+    fn create_agent(dir: &Path, name: &str, role_id: &str, mot_id: &str) -> Result<()> {
+        run_create(
+            dir,
+            name,
+            Some(role_id),
+            Some(mot_id),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            "claude",
+        )
+    }
+
     #[test]
     fn test_create_and_list() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
         let mot_id = create_motivation(tmp.path());
 
-        run_create(tmp.path(), "Test Agent", &role_id, &mot_id).unwrap();
+        create_agent(tmp.path(), "Test Agent", &role_id, &mot_id).unwrap();
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
@@ -543,13 +694,93 @@ mod tests {
     }
 
     #[test]
+    fn test_create_with_operational_fields() {
+        let tmp = setup();
+        let role_id = create_role(tmp.path());
+        let mot_id = create_motivation(tmp.path());
+
+        run_create(
+            tmp.path(),
+            "Ops Agent",
+            Some(&role_id),
+            Some(&mot_id),
+            &["rust".to_string(), "python".to_string()],
+            Some(50.0),
+            Some(3.0),
+            Some("verified"),
+            Some("ops@example.com"),
+            "claude",
+        )
+        .unwrap();
+
+        let agents_dir = tmp.path().join("agency").join("agents");
+        let agents = agency::load_all_agents(&agents_dir).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].capabilities, vec!["rust", "python"]);
+        assert_eq!(agents[0].rate, Some(50.0));
+        assert_eq!(agents[0].capacity, Some(3.0));
+        assert_eq!(agents[0].trust_level, workgraph::graph::TrustLevel::Verified);
+        assert_eq!(agents[0].contact, Some("ops@example.com".to_string()));
+        assert_eq!(agents[0].executor, "claude");
+    }
+
+    #[test]
+    fn test_create_human_agent_without_role() {
+        let tmp = setup();
+
+        run_create(
+            tmp.path(),
+            "Human Operator",
+            None,
+            None,
+            &["project-management".to_string()],
+            None,
+            None,
+            None,
+            Some("@human:matrix.org"),
+            "matrix",
+        )
+        .unwrap();
+
+        let agents_dir = tmp.path().join("agency").join("agents");
+        let agents = agency::load_all_agents(&agents_dir).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "Human Operator");
+        assert_eq!(agents[0].executor, "matrix");
+        assert_eq!(agents[0].contact, Some("@human:matrix.org".to_string()));
+        assert!(agents[0].role_id.is_empty());
+        assert!(agents[0].motivation_id.is_empty());
+    }
+
+    #[test]
+    fn test_create_ai_agent_requires_role_and_motivation() {
+        let tmp = setup();
+
+        // AI agent (executor=claude) without role should fail
+        let result = run_create(
+            tmp.path(),
+            "Bad AI",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            "claude",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--role is required"));
+    }
+
+    #[test]
     fn test_create_duplicate_fails() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
         let mot_id = create_motivation(tmp.path());
 
-        run_create(tmp.path(), "Agent 1", &role_id, &mot_id).unwrap();
-        let result = run_create(tmp.path(), "Agent 2", &role_id, &mot_id);
+        create_agent(tmp.path(), "Agent 1", &role_id, &mot_id).unwrap();
+        let result = create_agent(tmp.path(), "Agent 2", &role_id, &mot_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
     }
@@ -558,7 +789,18 @@ mod tests {
     fn test_create_with_bad_role() {
         let tmp = setup();
         let mot_id = create_motivation(tmp.path());
-        let result = run_create(tmp.path(), "Bad Agent", "nonexistent", &mot_id);
+        let result = run_create(
+            tmp.path(),
+            "Bad Agent",
+            Some("nonexistent"),
+            Some(&mot_id),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            "claude",
+        );
         assert!(result.is_err());
     }
 
@@ -568,7 +810,7 @@ mod tests {
         let role_id = create_role(tmp.path());
         let mot_id = create_motivation(tmp.path());
 
-        run_create(tmp.path(), "Show Agent", &role_id, &mot_id).unwrap();
+        create_agent(tmp.path(), "Show Agent", &role_id, &mot_id).unwrap();
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
@@ -606,7 +848,7 @@ mod tests {
         let role_id = create_role(tmp.path());
         let mot_id = create_motivation(tmp.path());
 
-        run_create(tmp.path(), "Lineage Agent", &role_id, &mot_id).unwrap();
+        create_agent(tmp.path(), "Lineage Agent", &role_id, &mot_id).unwrap();
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
@@ -622,7 +864,7 @@ mod tests {
         let role_id = create_role(tmp.path());
         let mot_id = create_motivation(tmp.path());
 
-        run_create(tmp.path(), "Perf Agent", &role_id, &mot_id).unwrap();
+        create_agent(tmp.path(), "Perf Agent", &role_id, &mot_id).unwrap();
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();

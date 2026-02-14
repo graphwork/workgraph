@@ -192,6 +192,7 @@ fn output_table(agents: &[&AgentEntry]) -> Result<()> {
 }
 
 /// Get agent count summary
+#[cfg(test)]
 pub fn get_summary(dir: &Path) -> Result<AgentSummary> {
     let registry = AgentRegistry::load(dir)?;
     let agents = registry.list_agents();
@@ -218,6 +219,7 @@ pub fn get_summary(dir: &Path) -> Result<AgentSummary> {
 }
 
 /// Summary of agent counts
+#[cfg(test)]
 #[derive(Debug)]
 pub struct AgentSummary {
     pub total: usize,

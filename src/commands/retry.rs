@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::Status;
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -44,6 +45,12 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     task.failure_reason = None;
     // Clear assigned so the coordinator can re-spawn an agent
     task.assigned = None;
+
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: None,
+        message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
+    });
 
     // Extract values we need for printing before saving
     let retry_count = task.retry_count;

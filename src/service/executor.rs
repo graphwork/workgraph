@@ -1,15 +1,13 @@
-//! Executor plugin system for spawning and managing agents.
+//! Executor configuration system for spawning agents.
 //!
-//! Executors define how to run agents. Each executor can spawn processes
-//! that work on tasks, with configurable commands, arguments, and environment.
+//! Provides configuration loading and template variable substitution for
+//! executor configs stored in `.workgraph/executors/<name>.toml`.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::agency;
 use crate::graph::Task;
@@ -261,234 +259,17 @@ impl ExecutorConfig {
     }
 }
 
-/// Handle to a spawned agent process.
-pub struct AgentHandle {
-    /// Process ID of the agent.
-    pub pid: u32,
-
-    /// Handle to the child process.
-    child: Child,
-
-    /// Standard input handle (if piped).
-    stdin: Option<ChildStdin>,
-
-    /// Standard output handle (if piped).
-    stdout: Option<ChildStdout>,
-}
-
-impl AgentHandle {
-    /// Create a new agent handle from a child process.
-    fn new(mut child: Child) -> Self {
-        let pid = child.id();
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-
-        Self {
-            pid,
-            child,
-            stdin,
-            stdout,
-        }
-    }
-
-    /// Create an agent handle from a child process (public alias for new).
-    pub fn from_child(child: Child) -> Self {
-        Self::new(child)
-    }
-
-    /// Get mutable access to stdin for writing input to the agent.
-    pub fn stdin(&mut self) -> Option<&mut ChildStdin> {
-        self.stdin.as_mut()
-    }
-
-    /// Get mutable access to stdout for reading output from the agent.
-    pub fn stdout(&mut self) -> Option<&mut ChildStdout> {
-        self.stdout.as_mut()
-    }
-
-    /// Take ownership of stdin.
-    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.stdin.take()
-    }
-
-    /// Take ownership of stdout.
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.stdout.take()
-    }
-
-    /// Read a line from stdout (blocking).
-    pub fn read_line(&mut self) -> Result<Option<String>> {
-        if let Some(ref mut stdout) = self.stdout {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => Ok(None), // EOF
-                Ok(_) => Ok(Some(line)),
-                Err(e) => Err(anyhow!("Failed to read from agent: {}", e)),
-            }
-        } else {
-            Err(anyhow!("Stdout not available"))
-        }
-    }
-
-    /// Write to stdin.
-    pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        if let Some(ref mut stdin) = self.stdin {
-            stdin.write_all(data)?;
-            stdin.flush()?;
-            Ok(())
-        } else {
-            Err(anyhow!("Stdin not available"))
-        }
-    }
-
-    /// Check if the process is still running.
-    pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
-
-    /// Wait for the agent process to complete.
-    pub fn wait(&mut self) -> Result<ExitStatus> {
-        self.child
-            .wait()
-            .context("Failed to wait for agent process")
-    }
-
-    /// Try to wait for the process without blocking.
-    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        self.child
-            .try_wait()
-            .context("Failed to check agent process status")
-    }
-
-    /// Send SIGTERM to the process (graceful shutdown).
-    /// On Unix, this sends SIGTERM. On Windows, this falls back to kill.
-    #[cfg(unix)]
-    pub fn terminate(&mut self) -> Result<()> {
-        use std::process::Command;
-
-        // Use kill command to send SIGTERM
-        let status = Command::new("kill")
-            .args(["-TERM", &self.pid.to_string()])
-            .status()
-            .with_context(|| format!("Failed to send SIGTERM to process {}", self.pid))?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(anyhow!("Failed to send SIGTERM to process {}", self.pid))
-        }
-    }
-
-    /// Terminate the process (Windows version - just kills it).
-    #[cfg(not(unix))]
-    pub fn terminate(&mut self) -> Result<()> {
-        self.kill()
-    }
-
-    /// Forcefully kill the process.
-    pub fn kill(&mut self) -> Result<()> {
-        self.child
-            .kill()
-            .with_context(|| format!("Failed to kill agent process {}", self.pid))
-    }
-}
-
-/// Trait for executor plugins.
-pub trait Executor: Send + Sync {
-    /// Get the name of this executor.
-    fn name(&self) -> &str;
-
-    /// Spawn an agent to work on a task.
-    fn spawn(&self, task: &Task, config: &ExecutorConfig, vars: &TemplateVars) -> Result<AgentHandle>;
-}
-
-/// Default executor implementation that runs shell commands.
-pub struct DefaultExecutor;
-
-impl DefaultExecutor {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultExecutor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Executor for DefaultExecutor {
-    fn name(&self) -> &str {
-        "default"
-    }
-
-    fn spawn(&self, _task: &Task, config: &ExecutorConfig, vars: &TemplateVars) -> Result<AgentHandle> {
-        let settings = config.apply_templates(vars);
-
-        let mut cmd = Command::new(&settings.command);
-
-        // Add arguments
-        cmd.args(&settings.args);
-
-        // Set environment variables
-        for (key, value) in &settings.env {
-            cmd.env(key, value);
-        }
-
-        // Set working directory if specified
-        if let Some(ref wd) = settings.working_dir {
-            cmd.current_dir(wd);
-        }
-
-        // Configure stdio
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn executor command: {}", settings.command))?;
-
-        Ok(AgentHandle::new(child))
-    }
-}
-
-/// Registry of available executors.
+/// Registry for loading executor configurations.
 pub struct ExecutorRegistry {
-    executors: HashMap<String, Box<dyn Executor>>,
     config_dir: PathBuf,
-    workgraph_dir: PathBuf,
 }
 
 impl ExecutorRegistry {
     /// Create a new executor registry.
     pub fn new(workgraph_dir: &Path) -> Self {
-        let mut registry = Self {
-            executors: HashMap::new(),
+        Self {
             config_dir: workgraph_dir.join("executors"),
-            workgraph_dir: workgraph_dir.to_path_buf(),
-        };
-
-        // Register the default executor
-        registry.register(Box::new(DefaultExecutor::new()));
-
-        registry
-    }
-
-    /// Register an executor.
-    pub fn register(&mut self, executor: Box<dyn Executor>) {
-        self.executors.insert(executor.name().to_string(), executor);
-    }
-
-    /// Get an executor by name.
-    pub fn get(&self, name: &str) -> Option<&dyn Executor> {
-        self.executors.get(name).map(|e| e.as_ref())
-    }
-
-    /// List available executor names.
-    pub fn available(&self) -> Vec<&str> {
-        self.executors.keys().map(|s| s.as_str()).collect()
+        }
     }
 
     /// Load executor config by name.
@@ -607,30 +388,10 @@ Begin working on the task now."#.to_string(),
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: {:?}",
+                "Unknown executor '{}'. Available: claude, shell, default",
                 name,
-                self.available()
             )),
         }
-    }
-
-    /// Spawn an agent for a task using the specified executor.
-    pub fn spawn(
-        &self,
-        executor_name: &str,
-        task: &Task,
-        context: Option<&str>,
-    ) -> Result<AgentHandle> {
-        // Use default executor if the named one isn't registered
-        let executor = self
-            .get(executor_name)
-            .or_else(|| self.get("default"))
-            .ok_or_else(|| anyhow!("No executor available"))?;
-
-        let config = self.load_config(executor_name)?;
-        let vars = TemplateVars::from_task(task, context, Some(&self.workgraph_dir));
-
-        executor.spawn(task, &config, &vars)
     }
 
     /// Ensure the executors directory exists and has default configs.
@@ -777,16 +538,6 @@ template = "Work on {{task_id}}"
     }
 
     #[test]
-    fn test_executor_registry_new() {
-        let temp_dir = TempDir::new().unwrap();
-        let registry = ExecutorRegistry::new(temp_dir.path());
-
-        // Default executor should be registered
-        assert!(registry.get("default").is_some());
-        assert!(registry.available().contains(&"default"));
-    }
-
-    #[test]
     fn test_executor_registry_default_configs() {
         let temp_dir = TempDir::new().unwrap();
         let registry = ExecutorRegistry::new(temp_dir.path());
@@ -813,57 +564,6 @@ template = "Work on {{task_id}}"
         // Should create executor configs
         assert!(workgraph_dir.join("executors/claude.toml").exists());
         assert!(workgraph_dir.join("executors/shell.toml").exists());
-    }
-
-    #[test]
-    fn test_default_executor_spawn_echo() {
-        let temp_dir = TempDir::new().unwrap();
-        let registry = ExecutorRegistry::new(temp_dir.path());
-
-        let task = make_test_task("test-task", "Test");
-        let config = registry.load_config("default").unwrap();
-        let vars = TemplateVars::from_task(&task, None, None);
-
-        let executor = DefaultExecutor::new();
-        let mut handle = executor.spawn(&task, &config, &vars).unwrap();
-
-        // The echo command should complete quickly
-        let status = handle.wait().unwrap();
-        assert!(status.success());
-    }
-
-    #[test]
-    fn test_agent_handle_is_running() {
-        let temp_dir = TempDir::new().unwrap();
-        let registry = ExecutorRegistry::new(temp_dir.path());
-
-        let task = make_test_task("test-task", "Test");
-
-        // Use a command that runs briefly
-        let config = ExecutorConfig {
-            executor: ExecutorSettings {
-                executor_type: "test".to_string(),
-                command: "sleep".to_string(),
-                args: vec!["0.1".to_string()],
-                env: HashMap::new(),
-                prompt_template: None,
-                working_dir: None,
-                timeout: None,
-            },
-        };
-
-        let vars = TemplateVars::from_task(&task, None, None);
-        let executor = DefaultExecutor::new();
-        let mut handle = executor.spawn(&task, &config, &vars).unwrap();
-
-        // Should be running initially
-        assert!(handle.is_running());
-
-        // Wait for completion
-        handle.wait().unwrap();
-
-        // Should no longer be running
-        assert!(!handle.is_running());
     }
 
     #[test]
@@ -926,6 +626,12 @@ template = "Work on {{task_id}}"
                 evaluations: vec![],
             },
             lineage: agency::Lineage::default(),
+            capabilities: Vec::new(),
+            rate: None,
+            capacity: None,
+            trust_level: Default::default(),
+            contact: None,
+            executor: "claude".to_string(),
         };
         agency::save_agent(&agent, &agents_dir).unwrap();
 

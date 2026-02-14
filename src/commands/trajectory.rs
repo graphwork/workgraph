@@ -183,6 +183,9 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 }
 
 /// Suggest optimal trajectory for an actor based on their capabilities
+///
+/// Note: Actor nodes have been removed from the graph. This function now
+/// shows all trajectories starting from ready tasks without capability filtering.
 pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
     let path = graph_path(dir);
 
@@ -192,13 +195,7 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
 
     let graph = load_graph(&path).context("Failed to load graph")?;
 
-    let actor = graph
-        .get_actor(actor_id)
-        .ok_or_else(|| anyhow::anyhow!("Actor '{}' not found", actor_id))?;
-
-    let actor_skills: HashSet<&String> = actor.capabilities.iter().collect();
-
-    // Find ready tasks that match actor's skills
+    // Find ready tasks
     let ready_tasks: Vec<&Task> = graph
         .tasks()
         .filter(|t| {
@@ -215,38 +212,23 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
     for task in ready_tasks {
         let trajectory = find_trajectory(&graph, &task.id)?;
 
-        // Score based on:
-        // - Number of tasks actor can do (skill match)
-        // - Context efficiency (artifacts flowing between tasks)
-        // - Avoiding tasks already in progress or done
         let mut score = 0;
         let mut doable_count = 0;
 
         for step in &trajectory.steps {
             if step.status == Status::Done || step.status == Status::InProgress {
-                continue; // Skip already handled
+                continue;
             }
 
-            if let Some(t) = graph.get_task(&step.id) {
-                let task_skills: HashSet<&String> = t.skills.iter().collect();
-                let matched = actor_skills.intersection(&task_skills).count();
-                let missing = task_skills.difference(&actor_skills).count();
+            doable_count += 1;
+            score += 10;
 
-                if missing == 0 || task_skills.is_empty() {
-                    doable_count += 1;
-                    score += 10;
-                }
-                score += (matched as i32) * 5;
-                score -= (missing as i32) * 3;
-
-                // Bonus for context flow
-                if !step.receives.is_empty() {
-                    score += 5;
-                }
+            // Bonus for context flow
+            if !step.receives.is_empty() {
+                score += 5;
             }
         }
 
-        // Only include trajectories where actor can do at least the first task
         if doable_count > 0 {
             trajectory_scores.push((trajectory, score));
         }
@@ -302,7 +284,7 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, ActorType, Node, TrustLevel};
+    use workgraph::graph::Node;
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -333,23 +315,6 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-        }
-    }
-
-    fn make_actor(id: &str, capabilities: Vec<&str>) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: None,
-            role: None,
-            rate: None,
-            capacity: None,
-            capabilities: capabilities.into_iter().map(String::from).collect(),
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
         }
     }
 
@@ -430,10 +395,7 @@ mod tests {
         let mut t1 = make_task("t1", "Rust Task");
         t1.skills = vec!["rust".to_string()];
 
-        let actor = make_actor("rust-dev", vec!["rust"]);
-
         graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
         let result = suggest_for_actor(temp_dir.path(), "rust-dev", false);

@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use workgraph::graph::{Status, WorkGraph};
 use workgraph::parser::load_graph;
+use workgraph::query::build_reverse_index;
 
 use super::graph_path;
 use super::velocity::calculate_velocity;
@@ -297,22 +298,6 @@ fn find_key_blockers(graph: &WorkGraph) -> Vec<Blocker> {
 
     // Take top 5
     blockers.into_iter().take(5).collect()
-}
-
-/// Build a reverse index: for each task, find what tasks list it in their `blocked_by`
-fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-
-    for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
-            index
-                .entry(blocker_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
-
-    index
 }
 
 /// Recursively collect all transitive dependents

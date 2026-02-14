@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::Status;
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -29,6 +30,16 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
     task.status = Status::Abandoned;
     task.failure_reason = reason.map(String::from);
+
+    let log_message = match reason {
+        Some(r) => format!("Task abandoned: {}", r),
+        None => "Task abandoned".to_string(),
+    };
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: task.assigned.clone(),
+        message: log_message,
+    });
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);

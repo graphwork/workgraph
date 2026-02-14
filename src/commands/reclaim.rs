@@ -19,11 +19,6 @@ pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Resul
 
     let mut graph = load_graph(&path).context("Failed to load graph")?;
 
-    // Verify the target actor exists
-    if graph.get_actor(to_actor).is_none() {
-        anyhow::bail!("Target actor '{}' not found", to_actor);
-    }
-
     let task = graph
         .get_task_mut(task_id)
         .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", task_id))?;
@@ -89,7 +84,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Actor, ActorType, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -122,32 +117,12 @@ mod tests {
         }
     }
 
-    fn make_actor(id: &str) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: None,
-            role: Some("agent".to_string()),
-            rate: None,
-            capacity: None,
-            capabilities: vec![],
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
-        }
-    }
-
-    fn setup_workgraph(dir: &Path, tasks: Vec<Task>, actors: Vec<Actor>) -> std::path::PathBuf {
+    fn setup_workgraph(dir: &Path, tasks: Vec<Task>) -> std::path::PathBuf {
         fs::create_dir_all(dir).unwrap();
         let path = graph_path(dir);
         let mut graph = WorkGraph::new();
         for task in tasks {
             graph.add_node(Node::Task(task));
-        }
-        for actor in actors {
-            graph.add_node(Node::Actor(actor));
         }
         save_graph(&graph, &path).unwrap();
         path
@@ -164,7 +139,6 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![task],
-            vec![make_actor("agent-old"), make_actor("agent-new")],
         );
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
@@ -190,11 +164,6 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![task],
-            vec![
-                make_actor("agent-actual"),
-                make_actor("agent-old"),
-                make_actor("agent-new"),
-            ],
         );
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
@@ -211,7 +180,6 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![make_task("t1", "Test task", Status::Open)],
-            vec![make_actor("agent-old"), make_actor("agent-new")],
         );
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
@@ -228,7 +196,6 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![make_task("t1", "Test task", Status::InProgress)],
-            vec![make_actor("agent-old"), make_actor("agent-new")],
         );
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
@@ -245,29 +212,11 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![],
-            vec![make_actor("agent-old"), make_actor("agent-new")],
         );
 
         let result = run(dir_path, "nonexistent", "agent-old", "agent-new");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn test_reclaim_nonexistent_target_actor_fails() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Test task", Status::InProgress);
-        task.assigned = Some("agent-old".to_string());
-
-        setup_workgraph(dir_path, vec![task], vec![make_actor("agent-old")]);
-
-        let result = run(dir_path, "t1", "agent-old", "agent-nonexistent");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("Target actor"));
         assert!(err.to_string().contains("not found"));
     }
 
@@ -294,7 +243,6 @@ mod tests {
         setup_workgraph(
             dir_path,
             vec![task],
-            vec![make_actor("agent-old"), make_actor("agent-new")],
         );
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");

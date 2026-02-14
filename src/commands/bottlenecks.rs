@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{Status, WorkGraph};
+use workgraph::graph::Status;
 use workgraph::parser::load_graph;
+use workgraph::query::build_reverse_index;
 
 use super::graph_path;
 
@@ -152,22 +153,6 @@ fn generate_recommendation(status: &Status, transitive_blocks: usize, total_task
     }
 }
 
-/// Build a reverse index: for each task, find what tasks list it in their `blocked_by`
-fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-
-    for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
-            index
-                .entry(blocker_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
-
-    index
-}
-
 /// Recursively collect all transitive dependents
 fn collect_transitive_dependents(
     reverse_index: &HashMap<String, Vec<String>>,
@@ -186,7 +171,7 @@ fn collect_transitive_dependents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task};
+    use workgraph::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

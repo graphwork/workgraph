@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status, WorkGraph};
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::load_graph;
+use workgraph::query::build_reverse_index;
 
 use super::graph_path;
 
@@ -299,26 +299,10 @@ fn format_status(status: &Status) -> &'static str {
     }
 }
 
-/// Build a reverse index: for each task, find what tasks list it in their `blocked_by`
-fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-
-    for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
-            index
-                .entry(blocker_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
-
-    index
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task};
+    use workgraph::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

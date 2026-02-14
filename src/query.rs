@@ -1,7 +1,7 @@
 use crate::graph::{Status, Task, WorkGraph};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Check if a task is past its not_before timestamp (or has no timestamp)
 pub fn is_time_ready(task: &Task) -> bool {
@@ -219,6 +219,22 @@ where
         exceeds,
         remaining,
     }
+}
+
+/// Build a reverse dependency index: maps each task ID to the list of tasks that depend on it.
+pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+
+    for task in graph.tasks() {
+        for blocker_id in &task.blocked_by {
+            index
+                .entry(blocker_id.clone())
+                .or_default()
+                .push(task.id.clone());
+        }
+    }
+
+    index
 }
 
 /// Find all tasks that are ready to work on (no open blockers, past not_before)

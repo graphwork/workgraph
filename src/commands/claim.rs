@@ -1,15 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-#[cfg(feature = "matrix")]
-use workgraph::graph::ActorType;
-use workgraph::graph::Status;
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
 
 /// Claim a task for work: sets status to InProgress, optionally assigns an actor
-/// If assigned to a human actor with Matrix binding, sends a notification (requires matrix feature)
 pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     let path = graph_path(dir);
 
@@ -18,16 +15,6 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     }
 
     let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    // Check if the actor is a human with Matrix binding (before mutating)
-    #[cfg(feature = "matrix")]
-    let should_notify = if let Some(actor_id) = actor {
-        graph.get_actor(actor_id).map(|a| {
-            a.actor_type == ActorType::Human && a.matrix_user_id.is_some()
-        }).unwrap_or(false)
-    } else {
-        false
-    };
 
     let task = graph
         .get_task_mut(id)
@@ -62,20 +49,22 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         task.assigned = Some(actor_id.to_string());
     }
 
+    let log_message = match actor {
+        Some(actor_id) => format!("Task claimed by @{}", actor_id),
+        None => "Task claimed".to_string(),
+    };
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: actor.map(|a| a.to_string()),
+        message: log_message,
+    });
+
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     match actor {
         Some(actor_id) => println!("Claimed '{}' for '{}'", id, actor_id),
         None => println!("Claimed '{}'", id),
-    }
-
-    // Send Matrix notification to human actor (requires matrix feature)
-    #[cfg(feature = "matrix")]
-    if should_notify {
-        if let Err(e) = super::notify::run(dir, id, None, Some("Task assigned to you"), false) {
-            eprintln!("Warning: Failed to send Matrix notification: {}", e);
-        }
     }
 
     Ok(())
@@ -95,8 +84,31 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
         .get_task_mut(id)
         .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
 
+    // Only allow unclaiming tasks that are InProgress (or Open, as a no-op).
+    // Terminal states should not be reverted via unclaim.
+    match task.status {
+        Status::InProgress | Status::Open | Status::Blocked => {}
+        Status::Done => anyhow::bail!("Cannot unclaim task '{}': task is Done", id),
+        Status::Failed => anyhow::bail!("Cannot unclaim task '{}': task is Failed", id),
+        Status::Abandoned => anyhow::bail!("Cannot unclaim task '{}': task is Abandoned", id),
+        Status::PendingReview => {
+            anyhow::bail!("Cannot unclaim task '{}': task is PendingReview", id)
+        }
+    }
+
+    let prev_assigned = task.assigned.clone();
     task.status = Status::Open;
     task.assigned = None;
+
+    let log_message = match &prev_assigned {
+        Some(actor_id) => format!("Task unclaimed (was assigned to @{})", actor_id),
+        None => "Task unclaimed".to_string(),
+    };
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: prev_assigned,
+        message: log_message,
+    });
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
@@ -293,6 +305,57 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));
+    }
+
+    #[test]
+    fn test_unclaim_done_task_fails() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
+
+        let result = unclaim(dir_path, "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Done"));
+    }
+
+    #[test]
+    fn test_unclaim_failed_task_fails() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Failed)]);
+
+        let result = unclaim(dir_path, "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Failed"));
+    }
+
+    #[test]
+    fn test_unclaim_abandoned_task_fails() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Abandoned)]);
+
+        let result = unclaim(dir_path, "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Abandoned"));
+    }
+
+    #[test]
+    fn test_unclaim_pending_review_task_fails() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::PendingReview)],
+        );
+
+        let result = unclaim(dir_path, "t1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("PendingReview"));
     }
 
     #[test]

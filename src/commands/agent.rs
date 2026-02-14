@@ -11,14 +11,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status, TrustLevel};
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 
@@ -187,6 +186,7 @@ enum IterationResult {
     /// No work available
     Idle,
     /// Agent should stop
+    #[allow(dead_code)]
     Stop(String),
 }
 
@@ -210,14 +210,6 @@ pub fn run(
     let config = Config::load(dir).unwrap_or_default();
     let interval_secs = interval_secs.unwrap_or(config.agent.interval);
     let max_tasks = max_tasks.or(config.agent.max_tasks);
-
-    // Verify actor exists
-    {
-        let graph = load_graph(&path).context("Failed to load graph")?;
-        graph
-            .get_actor(actor_id)
-            .ok_or_else(|| anyhow::anyhow!("Actor '{}' not found. Register with 'wg actor add'", actor_id))?;
-    }
 
     // Handle state reset if requested
     if reset_state {
@@ -352,12 +344,6 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
     let path = graph_path(dir);
     let graph = load_graph(&path).context("Failed to load graph")?;
 
-    let actor = graph
-        .get_actor(actor_id)
-        .ok_or_else(|| anyhow::anyhow!("Actor '{}' not found", actor_id))?;
-
-    let actor_skills: HashSet<&String> = actor.capabilities.iter().collect();
-
     // Find ready tasks
     let ready = ready_tasks(&graph);
 
@@ -365,35 +351,18 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
         return Ok(IterationResult::Idle);
     }
 
-    // Score and select best task (same logic as wg next)
+    // Select best task: prefer tasks with exec commands
     let mut best_task: Option<(&workgraph::graph::Task, i32)> = None;
 
     for task in &ready {
-        let task_skills: HashSet<&String> = task.skills.iter().collect();
-        let matched = actor_skills.intersection(&task_skills).count();
-        let missing = task_skills.difference(&actor_skills).count();
-
-        // Skip if missing required skills (unless task has no skill requirements)
-        if !task_skills.is_empty() && missing > 0 && matched == 0 {
-            continue;
-        }
-
-        let mut score: i32 = (matched as i32) * 10;
-        score -= (missing as i32) * 5;
-
-        if !task.skills.is_empty() && missing == 0 {
-            score += 20;
-        }
-        if task.skills.is_empty() {
-            score += 5;
-        }
-        if actor.trust_level == TrustLevel::Verified {
-            score += 5;
-        }
+        let mut score: i32 = 0;
 
         // Prefer tasks with exec commands (can be automated)
         if task.exec.is_some() {
             score += 15;
+        }
+        if task.skills.is_empty() {
+            score += 5;
         }
 
         if best_task.is_none() || score > best_task.unwrap().1 {
@@ -470,16 +439,8 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
     }
 }
 
-/// Record heartbeat for actor
-fn record_heartbeat(dir: &Path, actor_id: &str) -> Result<()> {
-    let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    if let Some(actor) = graph.get_actor_mut(actor_id) {
-        actor.last_seen = Some(Utc::now().to_rfc3339());
-        save_graph(&graph, &path).context("Failed to save graph")?;
-    }
-
+/// Record heartbeat (no-op since Actor nodes were removed from the graph)
+fn record_heartbeat(_dir: &Path, _actor_id: &str) -> Result<()> {
     Ok(())
 }
 
@@ -552,7 +513,7 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, ActorType, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::graph::{Node, Task, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -586,23 +547,6 @@ mod tests {
         }
     }
 
-    fn make_actor(id: &str, capabilities: Vec<&str>) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: None,
-            role: None,
-            rate: None,
-            capacity: None,
-            capabilities: capabilities.into_iter().map(String::from).collect(),
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
-        }
-    }
-
     fn setup_graph() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
@@ -612,10 +556,7 @@ mod tests {
         let mut task = make_task("t1", "Test Task");
         task.exec = Some("echo hello".to_string());
 
-        let actor = make_actor("test-agent", vec![]);
-
         graph.add_node(Node::Task(task));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
         temp_dir
@@ -640,9 +581,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
 
-        let mut graph = WorkGraph::new();
-        let actor = make_actor("test-agent", vec![]);
-        graph.add_node(Node::Actor(actor));
+        let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
@@ -661,11 +600,8 @@ mod tests {
         let mut t2 = make_task("t2", "Task 2");
         t2.exec = Some("echo 2".to_string());
 
-        let actor = make_actor("test-agent", vec![]);
-
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
         // Run with max_tasks=1, reset_state=true
@@ -688,10 +624,7 @@ mod tests {
         let mut task = make_task("t1", "Failing Task");
         task.exec = Some("exit 1".to_string());
 
-        let actor = make_actor("test-agent", vec![]);
-
         graph.add_node(Node::Task(task));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
@@ -700,29 +633,6 @@ mod tests {
         let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
-    }
-
-    #[test]
-    fn test_agent_records_heartbeat() {
-        let temp_dir = setup_graph();
-
-        run(temp_dir.path(), "test-agent", true, Some(1), None, true, false).unwrap();
-
-        let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
-        let actor = graph.get_actor("test-agent").unwrap();
-        assert!(actor.last_seen.is_some());
-    }
-
-    #[test]
-    fn test_agent_unknown_actor() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let graph = WorkGraph::new();
-        save_graph(&graph, &path).unwrap();
-
-        let result = run(temp_dir.path(), "unknown-agent", true, Some(1), None, true, false);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -862,10 +772,8 @@ mod tests {
         t1.exec = Some("echo 1".to_string());
         let mut t2 = make_task("t2", "Task 2");
         t2.exec = Some("echo 2".to_string());
-        let actor = make_actor("test-agent", vec![]);
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
         // First run: complete one task, don't reset state

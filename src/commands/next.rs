@@ -2,13 +2,14 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::graph::{Status, TrustLevel};
+use workgraph::agency;
+use workgraph::graph::TrustLevel;
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
 
 use super::graph_path;
 
-/// Candidate task for an actor
+/// Candidate task for an agent
 #[derive(Debug, Serialize)]
 struct TaskCandidate {
     id: String,
@@ -23,14 +24,15 @@ struct TaskCandidate {
 /// Result of next task query
 #[derive(Debug, Serialize)]
 struct NextTaskResult {
-    actor_id: String,
-    actor_capabilities: Vec<String>,
+    agent_id: String,
+    agent_name: String,
+    agent_capabilities: Vec<String>,
     recommended: Option<TaskCandidate>,
     alternatives: Vec<TaskCandidate>,
 }
 
-/// Find the best next task for an actor based on capabilities and readiness
-pub fn run(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
+/// Find the best next task for an agent based on capabilities and readiness
+pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -39,29 +41,29 @@ pub fn run(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
 
     let graph = load_graph(&path).context("Failed to load graph")?;
 
-    // Get actor
-    let actor = graph
-        .get_actor(actor_id)
-        .ok_or_else(|| anyhow::anyhow!("Actor '{}' not found", actor_id))?;
+    // Load agent from .workgraph/agency/agents/
+    let agents_dir = dir.join("agency").join("agents");
+    let agent = agency::find_agent_by_prefix(&agents_dir, agent_id)
+        .map_err(|e| anyhow::anyhow!("Agent '{}' not found: {}", agent_id, e))?;
 
-    let actor_skills: HashSet<&String> = actor.capabilities.iter().collect();
+    let agent_skills: HashSet<&String> = agent.capabilities.iter().collect();
 
     // Get ready tasks
     let ready = ready_tasks(&graph);
 
-    // Score each task for this actor
+    // Score each task for this agent
     let mut candidates: Vec<TaskCandidate> = ready
         .iter()
         .map(|task| {
             let task_skills: HashSet<&String> = task.skills.iter().collect();
 
-            let matched: Vec<String> = actor_skills
+            let matched: Vec<String> = agent_skills
                 .intersection(&task_skills)
                 .map(|s| (*s).clone())
                 .collect();
 
             let missing: Vec<String> = task_skills
-                .difference(&actor_skills)
+                .difference(&agent_skills)
                 .map(|s| (*s).clone())
                 .collect();
 
@@ -95,7 +97,7 @@ pub fn run(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
             if inputs_available || task.inputs.is_empty() {
                 score += 10; // Ready to execute
             }
-            if actor.trust_level == TrustLevel::Verified {
+            if agent.trust_level == TrustLevel::Verified {
                 score += 5;
             }
 
@@ -129,8 +131,9 @@ pub fn run(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
     };
 
     let result = NextTaskResult {
-        actor_id: actor_id.to_string(),
-        actor_capabilities: actor.capabilities.clone(),
+        agent_id: agent.id.clone(),
+        agent_name: agent.name.clone(),
+        agent_capabilities: agent.capabilities.clone(),
         recommended,
         alternatives,
     };
@@ -138,9 +141,9 @@ pub fn run(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("Next task for: {} ", actor_id);
-        if !result.actor_capabilities.is_empty() {
-            println!("Capabilities: {}", result.actor_capabilities.join(", "));
+        println!("Next task for: {} ({})", agent.name, agency::short_hash(&agent.id));
+        if !result.agent_capabilities.is_empty() {
+            println!("Capabilities: {}", result.agent_capabilities.join(", "));
         }
         println!();
 
@@ -187,7 +190,8 @@ fn print_candidate(task: &TaskCandidate) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Actor, ActorType, Node, Task, TrustLevel, WorkGraph};
+    use workgraph::agency::{Agent, Lineage, PerformanceRecord};
+    use workgraph::graph::{Node, Status, Task, TrustLevel, WorkGraph};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -221,20 +225,36 @@ mod tests {
         }
     }
 
-    fn make_actor(id: &str, capabilities: Vec<&str>) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: None,
-            role: None,
+    fn make_agent(name: &str, capabilities: Vec<&str>) -> Agent {
+        let role_id = format!("{}-role", name);
+        let mot_id = format!("{}-mot", name);
+        let id = agency::content_hash_agent(&role_id, &mot_id);
+        Agent {
+            id,
+            role_id,
+            motivation_id: mot_id,
+            name: name.to_string(),
+            performance: PerformanceRecord {
+                task_count: 0,
+                avg_score: None,
+                evaluations: vec![],
+            },
+            lineage: Lineage::default(),
+            capabilities: capabilities.into_iter().map(String::from).collect(),
             rate: None,
             capacity: None,
-            capabilities: capabilities.into_iter().map(String::from).collect(),
-            context_limit: None,
             trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
+            contact: None,
+            executor: "claude".to_string(),
+        }
+    }
+
+    fn setup_agents(dir: &Path, agents: &[Agent]) {
+        let agency_dir = dir.join("agency");
+        agency::init(&agency_dir).unwrap();
+        let agents_dir = agency_dir.join("agents");
+        for agent in agents {
+            agency::save_agent(agent, &agents_dir).unwrap();
         }
     }
 
@@ -248,13 +268,14 @@ mod tests {
         let mut task = make_task("t1", "Rust Task");
         task.skills = vec!["rust".to_string()];
 
-        let actor = make_actor("rust-dev", vec!["rust", "testing"]);
-
         graph.add_node(Node::Task(task));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "rust-dev", false);
+        let agent = make_agent("rust-dev", vec!["rust", "testing"]);
+        let agent_id = agent.id.clone();
+        setup_agents(temp_dir.path(), &[agent]);
+
+        let result = run(temp_dir.path(), &agent_id, false);
         assert!(result.is_ok());
     }
 
@@ -268,13 +289,14 @@ mod tests {
         let mut task = make_task("t1", "Python Task");
         task.skills = vec!["python".to_string()];
 
-        let actor = make_actor("rust-dev", vec!["rust"]);
-
         graph.add_node(Node::Task(task));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "rust-dev", false);
+        let agent = make_agent("rust-dev", vec!["rust"]);
+        let agent_id = agent.id.clone();
+        setup_agents(temp_dir.path(), &[agent]);
+
+        let result = run(temp_dir.path(), &agent_id, false);
         assert!(result.is_ok()); // Should work but recommend nothing
     }
 
@@ -291,14 +313,15 @@ mod tests {
         let mut t2 = make_task("t2", "Full Match");
         t2.skills = vec!["rust".to_string()];
 
-        let actor = make_actor("rust-dev", vec!["rust"]);
-
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "rust-dev", true);
+        let agent = make_agent("rust-dev", vec!["rust"]);
+        let agent_id = agent.id.clone();
+        setup_agents(temp_dir.path(), &[agent]);
+
+        let result = run(temp_dir.path(), &agent_id, true);
         assert!(result.is_ok());
     }
 
@@ -309,13 +332,15 @@ mod tests {
 
         let mut graph = WorkGraph::new();
         let task = make_task("t1", "Test Task");
-        let actor = make_actor("agent", vec![]);
 
         graph.add_node(Node::Task(task));
-        graph.add_node(Node::Actor(actor));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "agent", true);
+        let agent = make_agent("generic-agent", vec![]);
+        let agent_id = agent.id.clone();
+        setup_agents(temp_dir.path(), &[agent]);
+
+        let result = run(temp_dir.path(), &agent_id, true);
         assert!(result.is_ok());
     }
 }

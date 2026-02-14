@@ -245,18 +245,23 @@ wg agent run --actor claude-main --interval 30 --max-tasks 10
    SLEEP ──────────────────────────────────>┘
 ```
 
-### Actor registration
+### Agent registration
 
-Each agent needs an actor record:
+Each autonomous agent session needs an agent identity:
 
 ```bash
-wg actor add agent-1 \
-  --name "Claude Agent 1" \
-  --role agent \
-  --trust-level provisional \
-  -c coding \
-  -c documentation \
-  -c testing
+# AI agent with role + motivation
+wg agent create "Claude Coder" \
+  --role <role-hash> \
+  --motivation <motivation-hash> \
+  --capabilities coding,documentation,testing \
+  --trust-level provisional
+
+# Or a minimal agent for simple autonomous loops
+wg agent create "General Worker" \
+  --role <role-hash> \
+  --motivation <motivation-hash> \
+  --capabilities coding,testing
 ```
 
 ### Tasks with exec commands
@@ -316,8 +321,8 @@ Claims are atomic — if two agents try to claim the same task, only one succeed
 Agents send heartbeats while working. If an agent's process exits or its heartbeat goes stale (default: 5 minutes), the coordinator marks it dead and unclaims its task so another agent can pick it up.
 
 ```bash
-wg dead-agents --check      # check without modifying
-wg dead-agents --cleanup    # mark dead and unclaim tasks
+wg dead-agents --check       # check without modifying
+wg dead-agents --cleanup     # mark dead and unclaim tasks
 ```
 
 ---

@@ -54,6 +54,7 @@ pub struct AgentInfo {
     pub uptime: String,
     pub status: AgentStatus,
     /// Whether the OS process is actually running
+    #[allow(dead_code)]
     pub process_alive: bool,
     /// Path to the agent's output log file
     pub output_file: String,

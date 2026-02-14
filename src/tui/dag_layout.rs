@@ -28,6 +28,7 @@ pub struct LayoutNode {
     pub task_id: String,
     pub title: String,
     pub status: Status,
+    #[allow(dead_code)]
     pub assigned: Option<String>,
     pub critical: bool,
     pub active_agent_count: usize,
@@ -35,6 +36,7 @@ pub struct LayoutNode {
     /// Layer index (0 = top/sources)
     pub layer: usize,
     /// Position within layer (0-based, left to right)
+    #[allow(dead_code)]
     pub order: usize,
     /// Character column of the left edge of the box
     pub x: usize,
@@ -49,7 +51,9 @@ pub struct LayoutNode {
 /// An edge between two nodes.
 #[derive(Debug, Clone)]
 pub struct LayoutEdge {
+    #[allow(dead_code)]
     pub from_id: String,
+    #[allow(dead_code)]
     pub to_id: String,
     /// Segments to draw: list of (x, y) points forming a polyline
     pub segments: Vec<(usize, usize)>,
@@ -448,6 +452,7 @@ impl DagLayout {
     }
 
     /// Find a node by task_id
+    #[cfg(test)]
     pub fn find_node(&self, task_id: &str) -> Option<&LayoutNode> {
         self.id_to_idx
             .get(task_id)

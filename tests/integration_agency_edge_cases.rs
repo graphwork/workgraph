@@ -40,6 +40,12 @@ fn test_create_agent_with_nonexistent_role_and_motivation() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
 
     // Save succeeds even though the role/motivation don't exist
@@ -200,6 +206,12 @@ fn test_delete_role_referenced_by_agent() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -275,6 +287,12 @@ fn test_delete_motivation_referenced_by_agent() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -648,6 +666,12 @@ fn test_prefix_lookup_zero_matches() {
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        capabilities: Vec::new(),
+        rate: None,
+        capacity: None,
+        trust_level: Default::default(),
+        contact: None,
+        executor: "claude".to_string(),
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 

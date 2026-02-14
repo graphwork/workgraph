@@ -270,12 +270,12 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
 }
 
 /// Check if a process is running
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 pub fn is_process_running(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), test))]
 pub fn is_process_running(_pid: u32) -> bool {
     true // Assume running on non-Unix
 }

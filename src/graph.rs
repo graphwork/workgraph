@@ -228,84 +228,17 @@ fn is_zero(val: &u32) -> bool {
     *val == 0
 }
 
-/// Trust level for an actor
+/// Trust level for an agent
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrustLevel {
-    /// Fully verified actor (human admin, proven agent)
+    /// Fully verified (human admin, proven agent)
     Verified,
     /// Provisionally trusted (new agent, limited permissions)
     #[default]
     Provisional,
     /// Unknown trust (external agent, needs verification)
     Unknown,
-}
-
-/// Actor type: human or agent
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActorType {
-    /// AI agent that executes tasks autonomously
-    #[default]
-    Agent,
-    /// Human actor that receives notifications and responds
-    Human,
-}
-
-fn is_default_actor_type(t: &ActorType) -> bool {
-    *t == ActorType::Agent
-}
-
-/// Response time record for forecasting human response patterns
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResponseTime {
-    /// Task ID
-    pub task_id: String,
-    /// Timestamp when task was assigned/notified (ISO 8601)
-    pub assigned_at: String,
-    /// Timestamp when human responded (ISO 8601)
-    pub responded_at: String,
-    /// Response duration in seconds
-    pub duration_secs: u64,
-}
-
-/// An actor (human or agent)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Actor {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capacity: Option<f64>,
-    /// Skills/capabilities this actor has (for task matching)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-    /// Maximum context size this actor can handle (in tokens)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_limit: Option<u64>,
-    /// Trust level for this actor
-    #[serde(default, skip_serializing_if = "is_default_trust")]
-    pub trust_level: TrustLevel,
-    /// Last heartbeat timestamp (ISO 8601)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_seen: Option<String>,
-    /// Actor type: human or agent
-    #[serde(default, skip_serializing_if = "is_default_actor_type")]
-    pub actor_type: ActorType,
-    /// Matrix user ID binding for human actors (@user:server)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matrix_user_id: Option<String>,
-    /// Response time history for forecasting (human actors only)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub response_times: Vec<ResponseTime>,
-}
-
-fn is_default_trust(level: &TrustLevel) -> bool {
-    *level == TrustLevel::Provisional
 }
 
 /// A resource (budget, compute, etc.)
@@ -327,16 +260,14 @@ pub struct Resource {
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
     Task,
-    Actor,
     Resource,
 }
 
-/// A node in the work graph (task, actor, or resource)
+/// A node in the work graph (task or resource)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Node {
     Task(Task),
-    Actor(Actor),
     Resource(Resource),
 }
 
@@ -344,7 +275,6 @@ impl Node {
     pub fn id(&self) -> &str {
         match self {
             Node::Task(t) => &t.id,
-            Node::Actor(a) => &a.id,
             Node::Resource(r) => &r.id,
         }
     }
@@ -352,7 +282,6 @@ impl Node {
     pub fn kind(&self) -> NodeKind {
         match self {
             Node::Task(_) => NodeKind::Task,
-            Node::Actor(_) => NodeKind::Actor,
             Node::Resource(_) => NodeKind::Resource,
         }
     }
@@ -393,30 +322,6 @@ impl WorkGraph {
         }
     }
 
-    pub fn get_actor(&self, id: &str) -> Option<&Actor> {
-        match self.nodes.get(id) {
-            Some(Node::Actor(a)) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn get_actor_mut(&mut self, id: &str) -> Option<&mut Actor> {
-        match self.nodes.get_mut(id) {
-            Some(Node::Actor(a)) => Some(a),
-            _ => None,
-        }
-    }
-
-    /// Find an actor by their Matrix user ID (@user:server)
-    pub fn get_actor_by_matrix_id(&self, matrix_id: &str) -> Option<&Actor> {
-        self.actors().find(|a| {
-            a.matrix_user_id
-                .as_ref()
-                .map(|m| m == matrix_id)
-                .unwrap_or(false)
-        })
-    }
-
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
         match self.nodes.get(id) {
             Some(Node::Resource(r)) => Some(r),
@@ -431,13 +336,6 @@ impl WorkGraph {
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.nodes.values().filter_map(|n| match n {
             Node::Task(t) => Some(t),
-            _ => None,
-        })
-    }
-
-    pub fn actors(&self) -> impl Iterator<Item = &Actor> {
-        self.nodes.values().filter_map(|n| match n {
-            Node::Actor(a) => Some(a),
             _ => None,
         })
     }
@@ -497,23 +395,6 @@ mod tests {
         }
     }
 
-    fn make_actor(id: &str, name: &str) -> Actor {
-        Actor {
-            id: id.to_string(),
-            name: Some(name.to_string()),
-            role: None,
-            rate: None,
-            capacity: None,
-            capabilities: vec![],
-            context_limit: None,
-            trust_level: TrustLevel::Provisional,
-            last_seen: None,
-            actor_type: ActorType::Agent,
-            matrix_user_id: None,
-            response_times: vec![],
-        }
-    }
-
     #[test]
     fn test_workgraph_new_is_empty() {
         let graph = WorkGraph::new();
@@ -530,16 +411,6 @@ mod tests {
         assert_eq!(graph.len(), 1);
         let retrieved = graph.get_task("api-design").unwrap();
         assert_eq!(retrieved.title, "Design API");
-    }
-
-    #[test]
-    fn test_add_and_get_actor() {
-        let mut graph = WorkGraph::new();
-        let actor = make_actor("erik", "Erik");
-        graph.add_node(Node::Actor(actor));
-
-        let retrieved = graph.get_actor("erik").unwrap();
-        assert_eq!(retrieved.name, Some("Erik".to_string()));
     }
 
     #[test]
@@ -565,7 +436,6 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         graph.add_node(Node::Task(make_task("t2", "Task 2")));
-        graph.add_node(Node::Actor(make_actor("a1", "Actor 1")));
 
         let tasks: Vec<_> = graph.tasks().collect();
         assert_eq!(tasks.len(), 2);

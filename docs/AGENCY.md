@@ -2,6 +2,8 @@
 
 The agency system gives workgraph agents composable identities. Instead of every agent being a generic assistant, you define **roles** (what an agent does), **motivations** (why it acts that way), and pair them into **agents** that are assigned to tasks, evaluated, and evolved over time.
 
+Agents can be **human or AI**. The difference is the executor: AI agents use `claude` (or similar), human agents use `matrix`, `email`, or `shell`. Both share the same identity model — roles, motivations, capabilities, trust levels, and performance tracking all work uniformly regardless of who (or what) is doing the work.
+
 ## Core Concepts
 
 ### Role
@@ -32,17 +34,25 @@ A motivation defines **why** an agent acts the way it does.
 
 ### Agent
 
-An agent is a **named pairing** of exactly one role and one motivation. It is the unit that gets assigned to tasks and tracked over time.
+An agent is the **unified identity** in workgraph — it can represent a human or an AI. For AI agents, it is a named pairing of a role and a motivation. For human agents, role and motivation are optional.
 
 | Field | Description |
 |-------|-------------|
 | `name` | Human-readable label |
-| `role_id` | Content-hash ID of the role |
-| `motivation_id` | Content-hash ID of the motivation |
+| `role_id` | Content-hash ID of the role (required for AI, optional for human) |
+| `motivation_id` | Content-hash ID of the motivation (required for AI, optional for human) |
+| `capabilities` | Skills/capabilities for task matching (e.g., `rust`, `testing`) |
+| `rate` | Hourly rate for cost forecasting |
+| `capacity` | Maximum concurrent task capacity |
+| `trust_level` | `Verified`, `Provisional` (default), or `Unknown` |
+| `contact` | Contact info — email, Matrix ID, etc. (primarily for human agents) |
+| `executor` | How this agent receives work: `claude` (default), `matrix`, `email`, `shell` |
 | `performance` | Agent-level aggregated evaluation scores |
 | `lineage` | Evolutionary history |
 
 The same role paired with different motivations produces different agents. A "Programmer" role with a "Careful" motivation produces a different agent than with a "Fast" motivation.
+
+Human agents are distinguished by their executor. Agents with a human executor (`matrix`, `email`, `shell`) don't need a role or motivation — they're real people who bring their own judgment. AI agents (executor `claude`) require both, because the role and motivation are injected into the prompt to shape behavior.
 
 ## Content-Hash IDs
 
@@ -140,7 +150,22 @@ This creates four starter roles (Programmer, Reviewer, Documenter, Architect) an
 ### 2. Pair into agents
 
 ```bash
+# AI agent (role + motivation required)
 wg agent create "Careful Programmer" --role <role-hash> --motivation <motivation-hash>
+
+# AI agent with operational fields
+wg agent create "Careful Programmer" \
+  --role <role-hash> \
+  --motivation <motivation-hash> \
+  --capabilities rust,testing \
+  --rate 50.0
+
+# Human agent (role + motivation optional)
+wg agent create "Erik" \
+  --executor matrix \
+  --contact "@erik:server" \
+  --capabilities rust,python,architecture \
+  --trust-level verified
 ```
 
 ### 3. Assign to tasks
@@ -261,12 +286,25 @@ Also aliased as `wg mot`.
 
 | Command | Description |
 |---------|-------------|
-| `wg agent create <name> --role <id> --motivation <id>` | Create agent pairing |
+| `wg agent create <name> [OPTIONS]` | Create an agent (see options below) |
 | `wg agent list` | List all agents |
 | `wg agent show <id>` | Show details with resolved role/motivation |
 | `wg agent rm <id>` | Remove an agent |
 | `wg agent lineage <id>` | Show agent + role + motivation ancestry |
 | `wg agent performance <id>` | Show evaluation history |
+
+**`wg agent create` options:**
+
+| Option | Description |
+|--------|-------------|
+| `--role <ID>` | Role ID or prefix (required for AI agents) |
+| `--motivation <ID>` | Motivation ID or prefix (required for AI agents) |
+| `--capabilities <SKILLS>` | Comma-separated skills for task matching |
+| `--rate <FLOAT>` | Hourly rate for cost tracking |
+| `--capacity <FLOAT>` | Maximum concurrent task capacity |
+| `--trust-level <LEVEL>` | `verified`, `provisional`, or `unknown` |
+| `--contact <STRING>` | Contact info (email, Matrix ID, etc.) |
+| `--executor <NAME>` | Executor backend: `claude` (default), `matrix`, `email`, `shell` |
 
 ### `wg assign`
 

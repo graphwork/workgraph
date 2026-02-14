@@ -73,6 +73,12 @@ impl TestFixture {
                     evaluations: vec![],
                 },
                 lineage: Lineage::default(),
+                capabilities: Vec::new(),
+                rate: None,
+                capacity: None,
+                trust_level: Default::default(),
+                contact: None,
+                executor: "claude".to_string(),
             };
             agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
         }

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::agency::{self, Role, SkillRef};
+use workgraph::agency::{self, SkillRef};
 
 /// JSON output for role listing
 #[derive(Debug, Serialize)]
