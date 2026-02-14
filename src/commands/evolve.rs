@@ -310,43 +310,42 @@ pub fn run(
         // Self-mutation safety: operations targeting the evolver's own
         // role or motivation are deferred to a verified workgraph task
         // that requires human approval.
-        if !evolver_entity_ids.is_empty() {
-            if let Some(ref target) = op.target_id {
-                let target_ids: Vec<&str> = target.split(',').map(|s| s.trim()).collect();
-                if target_ids
-                    .iter()
-                    .any(|tid| evolver_entity_ids.contains(*tid))
-                {
-                    match defer_self_mutation(op, dir, actual_run_id) {
-                        Ok(task_id) => {
-                            deferred += 1;
-                            let result = serde_json::json!({
-                                "op": op.op,
-                                "target_id": op.target_id,
-                                "status": "deferred_for_review",
-                                "review_task": task_id,
-                                "reason": "Operation targets evolver's own identity — requires human approval",
-                            });
-                            if !json {
-                                eprintln!(
-                                    "  [deferred] {} on {:?} → review task '{}' (evolver self-mutation)",
-                                    op.op, op.target_id, task_id,
-                                );
-                            }
-                            results.push(result);
+        if !evolver_entity_ids.is_empty()
+            && let Some(ref target) = op.target_id
+        {
+            let target_ids: Vec<&str> = target.split(',').map(|s| s.trim()).collect();
+            if target_ids
+                .iter()
+                .any(|tid| evolver_entity_ids.contains(*tid))
+            {
+                match defer_self_mutation(op, dir, actual_run_id) {
+                    Ok(task_id) => {
+                        deferred += 1;
+                        let result = serde_json::json!({
+                            "op": op.op,
+                            "target_id": op.target_id,
+                            "status": "deferred_for_review",
+                            "review_task": task_id,
+                            "reason": "Operation targets evolver's own identity — requires human approval",
+                        });
+                        if !json {
+                            eprintln!(
+                                "  [deferred] {} on {:?} → review task '{}' (evolver self-mutation)",
+                                op.op, op.target_id, task_id,
+                            );
                         }
-                        Err(e) => {
-                            let err_msg =
-                                format!("Failed to defer self-mutation {:?}: {}", op.op, e);
-                            eprintln!("{}", err_msg);
-                            results.push(serde_json::json!({
-                                "op": op.op,
-                                "error": err_msg,
-                            }));
-                        }
+                        results.push(result);
                     }
-                    continue;
+                    Err(e) => {
+                        let err_msg = format!("Failed to defer self-mutation {:?}: {}", op.op, e);
+                        eprintln!("{}", err_msg);
+                        results.push(serde_json::json!({
+                            "op": op.op,
+                            "error": err_msg,
+                        }));
+                    }
                 }
+                continue;
             }
         }
 
@@ -874,12 +873,12 @@ fn extract_json(raw: &str) -> Option<String> {
     };
 
     // Find the first { and last } and try to parse
-    if let Some(start) = stripped.find('{') {
-        if let Some(end) = stripped.rfind('}') {
-            let candidate = &stripped[start..=end];
-            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
-                return Some(candidate.to_string());
-            }
+    if let Some(start) = stripped.find('{')
+        && let Some(end) = stripped.rfind('}')
+    {
+        let candidate = &stripped[start..=end];
+        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+            return Some(candidate.to_string());
         }
     }
 

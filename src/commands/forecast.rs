@@ -188,11 +188,11 @@ fn find_blocked_task_ids(graph: &WorkGraph) -> HashSet<String> {
 
         // Check if any blocker is not done
         for blocker_id in &task.blocked_by {
-            if let Some(blocker) = graph.get_task(blocker_id) {
-                if blocker.status != Status::Done {
-                    blocked_ids.insert(task.id.clone());
-                    break;
-                }
+            if let Some(blocker) = graph.get_task(blocker_id)
+                && blocker.status != Status::Done
+            {
+                blocked_ids.insert(task.id.clone());
+                break;
             }
         }
     }
@@ -474,21 +474,21 @@ fn print_human_output(forecast: &ForecastOutput) {
     }
 
     // Critical path
-    if let Some(ref critical) = forecast.critical_path {
-        if critical.path.len() > 1 {
-            let path_str = if critical.path.len() <= 5 {
-                critical.path.join(" -> ")
-            } else {
-                // Truncate long paths
-                let first_three: Vec<_> = critical.path.iter().take(3).cloned().collect();
-                let last = critical.path.last().unwrap();
-                format!("{} -> ... -> {}", first_three.join(" -> "), last)
-            };
-            println!(
-                "Critical path ({:.0}h): {}\n",
-                critical.total_hours, path_str
-            );
-        }
+    if let Some(ref critical) = forecast.critical_path
+        && critical.path.len() > 1
+    {
+        let path_str = if critical.path.len() <= 5 {
+            critical.path.join(" -> ")
+        } else {
+            // Truncate long paths
+            let first_three: Vec<_> = critical.path.iter().take(3).cloned().collect();
+            let last = critical.path.last().unwrap();
+            format!("{} -> ... -> {}", first_three.join(" -> "), last)
+        };
+        println!(
+            "Critical path ({:.0}h): {}\n",
+            critical.total_hours, path_str
+        );
     }
 
     // Blockers

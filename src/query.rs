@@ -8,24 +8,22 @@ pub fn is_time_ready(task: &Task) -> bool {
     let now = Utc::now();
 
     // Check not_before
-    if let Some(timestamp) = &task.not_before {
-        if let Ok(not_before) = timestamp.parse::<DateTime<Utc>>() {
-            if now < not_before {
-                return false;
-            }
-        }
-        // Invalid timestamp = treat as ready (don't block)
+    if let Some(timestamp) = &task.not_before
+        && let Ok(not_before) = timestamp.parse::<DateTime<Utc>>()
+        && now < not_before
+    {
+        return false;
     }
+    // Invalid timestamp = treat as ready (don't block)
 
     // Check ready_after (set by loop edges with delays)
-    if let Some(timestamp) = &task.ready_after {
-        if let Ok(ready_after) = timestamp.parse::<DateTime<Utc>>() {
-            if now < ready_after {
-                return false;
-            }
-        }
-        // Invalid timestamp = treat as ready (don't block)
+    if let Some(timestamp) = &task.ready_after
+        && let Ok(ready_after) = timestamp.parse::<DateTime<Utc>>()
+        && now < ready_after
+    {
+        return false;
     }
+    // Invalid timestamp = treat as ready (don't block)
 
     true
 }

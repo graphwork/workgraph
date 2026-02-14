@@ -91,10 +91,10 @@ pub fn calculate_velocity(graph: &WorkGraph, num_weeks: usize) -> VelocitySummar
         weeks[week_index].tasks_completed += 1;
         weeks[week_index].task_ids.push(task.id.clone());
 
-        if let Some(ref estimate) = task.estimate {
-            if let Some(hours) = estimate.hours {
-                weeks[week_index].hours_completed += hours;
-            }
+        if let Some(ref estimate) = task.estimate
+            && let Some(hours) = estimate.hours
+        {
+            weeks[week_index].hours_completed += hours;
         }
     }
 
@@ -121,10 +121,10 @@ pub fn calculate_velocity(graph: &WorkGraph, num_weeks: usize) -> VelocitySummar
     for task in graph.tasks() {
         if task.status == Status::Open || task.status == Status::InProgress {
             open_tasks += 1;
-            if let Some(ref estimate) = task.estimate {
-                if let Some(hours) = estimate.hours {
-                    open_hours += hours;
-                }
+            if let Some(ref estimate) = task.estimate
+                && let Some(hours) = estimate.hours
+            {
+                open_hours += hours;
             }
         }
     }

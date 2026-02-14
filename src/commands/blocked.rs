@@ -32,17 +32,15 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if blockers.is_empty() {
+        println!("Task '{}' has no blockers", id);
     } else {
-        if blockers.is_empty() {
-            println!("Task '{}' has no blockers", id);
-        } else {
-            println!("Task '{}' is blocked by:", id);
-            for blocker in blockers {
-                println!(
-                    "  {} - {} [{:?}]",
-                    blocker.id, blocker.title, blocker.status
-                );
-            }
+        println!("Task '{}' is blocked by:", id);
+        for blocker in blockers {
+            println!(
+                "  {} - {} [{:?}]",
+                blocker.id, blocker.title, blocker.status
+            );
         }
     }
 

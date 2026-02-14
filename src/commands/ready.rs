@@ -25,7 +25,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 return false;
             }
             // Must have a future ready_after
-            let has_future_ready_after = task.ready_after.as_ref().map_or(false, |ra| {
+            let has_future_ready_after = task.ready_after.as_ref().is_some_and(|ra| {
                 ra.parse::<DateTime<Utc>>()
                     .map(|ts| ts > Utc::now())
                     .unwrap_or(false)
@@ -67,30 +67,28 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             }));
         }
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if ready.is_empty() && waiting.is_empty() {
+        println!("No tasks ready");
     } else {
-        if ready.is_empty() && waiting.is_empty() {
-            println!("No tasks ready");
-        } else {
-            if !ready.is_empty() {
-                println!("Ready tasks:");
-                for task in &ready {
-                    let assigned = task
-                        .assigned
-                        .as_ref()
-                        .map(|a| format!(" ({})", a))
-                        .unwrap_or_default();
-                    println!("  {} - {}{}", task.id, task.title, assigned);
-                }
+        if !ready.is_empty() {
+            println!("Ready tasks:");
+            for task in &ready {
+                let assigned = task
+                    .assigned
+                    .as_ref()
+                    .map(|a| format!(" ({})", a))
+                    .unwrap_or_default();
+                println!("  {} - {}{}", task.id, task.title, assigned);
             }
-            if !waiting.is_empty() {
-                if !ready.is_empty() {
-                    println!();
-                }
-                println!("Waiting on delay:");
-                for task in &waiting {
-                    let countdown = format_countdown(task.ready_after.as_deref().unwrap_or(""));
-                    println!("  {} - {} {}", task.id, task.title, countdown);
-                }
+        }
+        if !waiting.is_empty() {
+            if !ready.is_empty() {
+                println!();
+            }
+            println!("Waiting on delay:");
+            for task in &waiting {
+                let countdown = format_countdown(task.ready_after.as_deref().unwrap_or(""));
+                println!("  {} - {} {}", task.id, task.title, countdown);
             }
         }
     }

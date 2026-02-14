@@ -55,7 +55,7 @@ impl Default for HelpConfig {
 }
 
 /// Agency (evolutionary identity system) configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgencyConfig {
     /// Automatically trigger evaluation when a task completes
     #[serde(default)]
@@ -112,26 +112,6 @@ pub struct AgencyConfig {
     /// Maximum bytes to read from agent output log for triage (default: 50000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
-}
-
-impl Default for AgencyConfig {
-    fn default() -> Self {
-        Self {
-            auto_evaluate: false,
-            auto_assign: false,
-            assigner_agent: None,
-            assigner_model: None,
-            evaluator_agent: None,
-            evaluator_model: None,
-            evolver_model: None,
-            evolver_agent: None,
-            retention_heuristics: None,
-            auto_triage: false,
-            triage_model: None,
-            triage_timeout: None,
-            triage_max_log_bytes: None,
-        }
-    }
 }
 
 /// Agent-specific configuration

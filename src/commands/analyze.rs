@@ -567,38 +567,36 @@ fn compute_aging(graph: &WorkGraph, now: &DateTime<Utc>) -> AgingSection {
 
     for task in graph.tasks() {
         // Check for old open tasks (> 90 days)
-        if task.status == Status::Open {
-            if let Some(ref created_at) = task.created_at {
-                if let Ok(created) = DateTime::parse_from_rfc3339(created_at) {
-                    let age = *now - created.with_timezone(&Utc);
-                    if age > Duration::days(90) {
-                        old_open_count += 1;
-                        issues.push(AgingIssue {
-                            task_id: task.id.clone(),
-                            days: age.num_days(),
-                            issue_type: "old_open".to_string(),
-                            assigned: task.assigned.clone(),
-                        });
-                    }
-                }
+        if task.status == Status::Open
+            && let Some(ref created_at) = task.created_at
+            && let Ok(created) = DateTime::parse_from_rfc3339(created_at)
+        {
+            let age = *now - created.with_timezone(&Utc);
+            if age > Duration::days(90) {
+                old_open_count += 1;
+                issues.push(AgingIssue {
+                    task_id: task.id.clone(),
+                    days: age.num_days(),
+                    issue_type: "old_open".to_string(),
+                    assigned: task.assigned.clone(),
+                });
             }
         }
 
         // Check for stale in-progress tasks (> 14 days)
-        if task.status == Status::InProgress {
-            if let Some(ref started_at) = task.started_at {
-                if let Ok(started) = DateTime::parse_from_rfc3339(started_at) {
-                    let age = *now - started.with_timezone(&Utc);
-                    if age > Duration::days(14) {
-                        stale_in_progress_count += 1;
-                        issues.push(AgingIssue {
-                            task_id: task.id.clone(),
-                            days: age.num_days(),
-                            issue_type: "stale_in_progress".to_string(),
-                            assigned: task.assigned.clone(),
-                        });
-                    }
-                }
+        if task.status == Status::InProgress
+            && let Some(ref started_at) = task.started_at
+            && let Ok(started) = DateTime::parse_from_rfc3339(started_at)
+        {
+            let age = *now - started.with_timezone(&Utc);
+            if age > Duration::days(14) {
+                stale_in_progress_count += 1;
+                issues.push(AgingIssue {
+                    task_id: task.id.clone(),
+                    days: age.num_days(),
+                    issue_type: "stale_in_progress".to_string(),
+                    assigned: task.assigned.clone(),
+                });
             }
         }
     }
@@ -647,16 +645,16 @@ fn generate_recommendations(
 
     // Stale in-progress tasks
     for bottleneck in bottlenecks {
-        if let Some(days) = bottleneck.days_in_progress {
-            if days > 14 {
-                recommendations.push(Recommendation {
-                    priority,
-                    action: "check_on".to_string(),
-                    task: Some(bottleneck.id.clone()),
-                    reason: format!("in-progress for {} days (stalled)", days),
-                });
-                priority += 1;
-            }
+        if let Some(days) = bottleneck.days_in_progress
+            && days > 14
+        {
+            recommendations.push(Recommendation {
+                priority,
+                action: "check_on".to_string(),
+                task: Some(bottleneck.id.clone()),
+                reason: format!("in-progress for {} days (stalled)", days),
+            });
+            priority += 1;
         }
     }
 
@@ -678,16 +676,16 @@ fn generate_recommendations(
 
     // Overloaded actors
     for actor in &workload.overloaded {
-        if let Some(load) = actor.load_percent {
-            if load > 100.0 {
-                recommendations.push(Recommendation {
-                    priority,
-                    action: "redistribute".to_string(),
-                    task: None,
-                    reason: format!("@{} at {:.0}% capacity", actor.id, load),
-                });
-                priority += 1;
-            }
+        if let Some(load) = actor.load_percent
+            && load > 100.0
+        {
+            recommendations.push(Recommendation {
+                priority,
+                action: "redistribute".to_string(),
+                task: None,
+                reason: format!("@{} at {:.0}% capacity", actor.id, load),
+            });
+            priority += 1;
         }
     }
 

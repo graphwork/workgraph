@@ -183,10 +183,10 @@ fn print_human_readable(details: &TaskDetails) {
     }
 
     // Failure info
-    if details.status == Status::Failed || details.status == Status::Abandoned {
-        if let Some(ref reason) = details.failure_reason {
-            println!("Failure reason: {}", reason);
-        }
+    if (details.status == Status::Failed || details.status == Status::Abandoned)
+        && let Some(ref reason) = details.failure_reason
+    {
+        println!("Failure reason: {}", reason);
     }
     if details.retry_count > 0 {
         let retry_info = match details.max_retries {

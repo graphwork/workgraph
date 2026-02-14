@@ -53,10 +53,10 @@ impl MatrixListener {
         }
 
         // If no specific rooms configured but default_room is set, use that
-        if allowed_rooms.is_empty() {
-            if let Some(default_room) = &matrix_config.default_room {
-                allowed_rooms.insert(default_room.clone());
-            }
+        if allowed_rooms.is_empty()
+            && let Some(default_room) = &matrix_config.default_room
+        {
+            allowed_rooms.insert(default_room.clone());
         }
 
         Ok(Self {

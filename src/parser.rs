@@ -42,6 +42,7 @@ impl FileLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
 
         // Acquire exclusive lock (LOCK_EX) - blocks until available
@@ -107,10 +108,10 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
             continue;
         }
         // Skip legacy Actor nodes (removed in actor-system cleanup)
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if v.get("kind").and_then(|k| k.as_str()) == Some("actor") {
-                continue;
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+            && v.get("kind").and_then(|k| k.as_str()) == Some("actor")
+        {
+            continue;
         }
         let node: Node = serde_json::from_str(trimmed).map_err(|e| ParseError::Json {
             line: line_num + 1,

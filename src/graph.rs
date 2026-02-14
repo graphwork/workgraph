@@ -333,6 +333,7 @@ pub enum NodeKind {
 /// A node in the work graph (task or resource)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[allow(clippy::large_enum_variant)]
 pub enum Node {
     Task(Task),
     Resource(Resource),
@@ -530,24 +531,24 @@ pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String
             if mid_id == source_id {
                 continue; // Source is re-opened separately below
             }
-            if let Some(mid_task) = graph.get_task_mut(mid_id) {
-                if mid_task.status == Status::Done {
-                    mid_task.status = Status::Open;
-                    mid_task.assigned = None;
-                    mid_task.started_at = None;
-                    mid_task.completed_at = None;
+            if let Some(mid_task) = graph.get_task_mut(mid_id)
+                && mid_task.status == Status::Done
+            {
+                mid_task.status = Status::Open;
+                mid_task.assigned = None;
+                mid_task.started_at = None;
+                mid_task.completed_at = None;
 
-                    mid_task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: None,
-                        message: format!(
-                            "Re-opened: blocker '{}' was re-activated by loop from {}",
-                            edge.target, source_id
-                        ),
-                    });
+                mid_task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: None,
+                    message: format!(
+                        "Re-opened: blocker '{}' was re-activated by loop from {}",
+                        edge.target, source_id
+                    ),
+                });
 
-                    reactivated.push(mid_id.clone());
-                }
+                reactivated.push(mid_id.clone());
             }
         }
 

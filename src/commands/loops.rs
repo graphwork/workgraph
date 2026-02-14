@@ -236,11 +236,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     // Section 2: blocked_by cycles (existing behavior)
     if cycles.is_empty() {
-        if loop_edges.is_empty() {
-            println!("No blocked_by cycles detected.");
-        } else {
-            println!("No blocked_by cycles detected.");
-        }
+        println!("No blocked_by cycles detected.");
         return Ok(());
     }
 

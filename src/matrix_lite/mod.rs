@@ -52,10 +52,10 @@ pub struct MatrixClient {
 
 /// Login response from Matrix API
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct LoginResponse {
     access_token: String,
     user_id: String,
-    #[allow(dead_code)]
     device_id: String,
 }
 
@@ -173,6 +173,7 @@ impl MatrixClient {
         let _ = std::fs::write(path, token);
     }
 
+    #[allow(dead_code)]
     fn save_access_token(&self) {
         Self::save_access_token_static(&self.state_dir(), &self.access_token);
     }
@@ -433,31 +434,31 @@ impl MatrixClient {
         let sync_resp: SyncResponse = resp.json().await.context("Failed to parse sync response")?;
 
         // Process room events
-        if let Some(rooms) = sync_resp.rooms {
-            if let Some(join) = rooms.join {
-                for (room_id, room_data) in join {
-                    if let Some(timeline) = room_data.timeline {
-                        for event in timeline.events {
-                            if event.event_type == "m.room.message" {
-                                if let Some(content) = event.content {
-                                    let body = content.body.unwrap_or_default();
-                                    let is_own = event.sender == filter.own_user_id;
+        if let Some(rooms) = sync_resp.rooms
+            && let Some(join) = rooms.join
+        {
+            for (room_id, room_data) in join {
+                if let Some(timeline) = room_data.timeline {
+                    for event in timeline.events {
+                        if event.event_type == "m.room.message"
+                            && let Some(content) = event.content
+                        {
+                            let body = content.body.unwrap_or_default();
+                            let is_own = event.sender == filter.own_user_id;
 
-                                    if filter.filter_own && is_own {
-                                        continue;
-                                    }
-
-                                    let msg = IncomingMessage {
-                                        room_id: room_id.clone(),
-                                        sender: event.sender,
-                                        body,
-                                        event_id: event.event_id.unwrap_or_default(),
-                                        is_own,
-                                    };
-
-                                    let _ = filter.tx.send(msg).await;
-                                }
+                            if filter.filter_own && is_own {
+                                continue;
                             }
+
+                            let msg = IncomingMessage {
+                                room_id: room_id.clone(),
+                                sender: event.sender,
+                                body,
+                                event_id: event.event_id.unwrap_or_default(),
+                                is_own,
+                            };
+
+                            let _ = filter.tx.send(msg).await;
                         }
                     }
                 }

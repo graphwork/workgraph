@@ -108,7 +108,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
 /// Handle a key press in the graph explorer
 fn handle_graph_key(app: &mut App, code: KeyCode) {
     // Check if detail overlay is shown
-    let showing_detail = app.graph_explorer.as_ref().map_or(false, |e| e.show_detail);
+    let showing_detail = app.graph_explorer.as_ref().is_some_and(|e| e.show_detail);
 
     if showing_detail {
         match code {
@@ -741,7 +741,7 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
             };
 
             // Check if this cell is part of the selected node's box
-            let is_selected = selected_node.map_or(false, |n| {
+            let is_selected = selected_node.is_some_and(|n| {
                 buf_x >= n.x && buf_x < n.x + n.w && buf_y >= n.y && buf_y < n.y + n.h
             });
 
@@ -774,10 +774,10 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
         }
 
         // Flush remaining text
-        if let Some(s) = current_style {
-            if !current_text.is_empty() {
-                spans.push(Span::styled(current_text, s));
-            }
+        if let Some(s) = current_style
+            && !current_text.is_empty()
+        {
+            spans.push(Span::styled(current_text, s));
         }
 
         lines.push(Line::from(spans));

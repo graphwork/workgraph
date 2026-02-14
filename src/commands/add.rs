@@ -166,12 +166,8 @@ pub fn run(
     super::notify_graph_changed(dir);
 
     println!("Added task: {} ({})", title, task_id);
-    if loops_to.is_some() {
-        println!(
-            "  Loop edge: → {} (max {} iterations)",
-            loops_to.unwrap(),
-            loop_max.unwrap()
-        );
+    if let (Some(target), Some(max)) = (&loops_to, &loop_max) {
+        println!("  Loop edge: → {} (max {} iterations)", target, max);
     }
     super::print_service_hint(dir);
     Ok(())

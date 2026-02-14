@@ -546,10 +546,10 @@ pub fn coordinator_tick(
             graph.add_node(Node::Task(assign_task));
 
             // Add the assignment task as a blocker on the original task
-            if let Some(t) = graph.get_task_mut(&task_id) {
-                if !t.blocked_by.contains(&assign_task_id) {
-                    t.blocked_by.push(assign_task_id.clone());
-                }
+            if let Some(t) = graph.get_task_mut(&task_id)
+                && !t.blocked_by.contains(&assign_task_id)
+            {
+                t.blocked_by.push(assign_task_id.clone());
             }
 
             eprintln!(
@@ -601,10 +601,10 @@ pub fn coordinator_tick(
                     return false;
                 }
                 // Skip tasks assigned to human agents
-                if let Some(ref agent_id) = t.agent {
-                    if human_agent_ids.contains(agent_id.as_str()) {
-                        return false;
-                    }
+                if let Some(ref agent_id) = t.agent
+                    && human_agent_ids.contains(agent_id.as_str())
+                {
+                    return false;
                 }
                 // Only create for tasks that are active (Open, InProgress, Blocked)
                 // or already completed (Done, PendingReview, Failed) without an eval task
@@ -681,10 +681,10 @@ pub fn coordinator_tick(
                 // The eval task blocks on a single task: the original
                 if t.blocked_by.len() == 1 {
                     let source_id = &t.blocked_by[0];
-                    if let Some(source) = graph.get_task(source_id) {
-                        if source.status == Status::Failed {
-                            return Some((t.id.clone(), source_id.clone()));
-                        }
+                    if let Some(source) = graph.get_task(source_id)
+                        && source.status == Status::Failed
+                    {
+                        return Some((t.id.clone(), source_id.clone()));
                     }
                 }
                 None
@@ -704,13 +704,11 @@ pub fn coordinator_tick(
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate
-    if graph_modified {
-        if let Err(e) = save_graph(&graph, &graph_path) {
-            eprintln!(
-                "[coordinator] Failed to save graph after auto-assign/auto-evaluate: {}",
-                e
-            );
-        }
+    if graph_modified && let Err(e) = save_graph(&graph, &graph_path) {
+        eprintln!(
+            "[coordinator] Failed to save graph after auto-assign/auto-evaluate: {}",
+            e
+        );
     }
 
     // Get final ready tasks (recalculated if graph was modified)
@@ -901,24 +899,24 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     // best-effort safety net.
     let graph = load_graph(graph_path).context("Failed to reload graph for output capture")?;
     for (_agent_id, task_id, _pid, _output_file, _reason) in &dead {
-        if let Some(task) = graph.get_task(task_id) {
-            if matches!(
+        if let Some(task) = graph.get_task(task_id)
+            && matches!(
                 task.status,
                 Status::Done | Status::PendingReview | Status::Failed
-            ) {
-                let output_dir = dir.join("output").join(task_id);
-                if !output_dir.exists() {
-                    if let Err(e) = agency::capture_task_output(dir, task) {
-                        eprintln!(
-                            "[coordinator] Warning: output capture failed for '{}': {}",
-                            task_id, e
-                        );
-                    } else {
-                        eprintln!(
-                            "[coordinator] Captured output for completed task '{}'",
-                            task_id
-                        );
-                    }
+            )
+        {
+            let output_dir = dir.join("output").join(task_id);
+            if !output_dir.exists() {
+                if let Err(e) = agency::capture_task_output(dir, task) {
+                    eprintln!(
+                        "[coordinator] Warning: output capture failed for '{}': {}",
+                        task_id, e
+                    );
+                } else {
+                    eprintln!(
+                        "[coordinator] Captured output for completed task '{}'",
+                        task_id
+                    );
                 }
             }
         }
@@ -1100,12 +1098,12 @@ fn extract_triage_json(raw: &str) -> Option<String> {
     }
 
     // Find first { to last }
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            let candidate = &trimmed[start..=end];
-            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
-                return Some(candidate.to_string());
-            }
+    if let Some(start) = trimmed.find('{')
+        && let Some(end) = trimmed.rfind('}')
+    {
+        let candidate = &trimmed[start..=end];
+        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+            return Some(candidate.to_string());
         }
     }
 
@@ -1451,7 +1449,7 @@ pub fn run_start(
     }
     // Redirect daemon stderr to the log file so early startup crashes and
     // unexpected panics that bypass the DaemonLogger are captured.
-    let log_path = log_file_path(&dir);
+    let log_path = log_file_path(dir);
     let service_dir = dir.join("service");
     if !service_dir.exists() {
         fs::create_dir_all(&service_dir)
@@ -1593,10 +1591,10 @@ pub fn run_daemon(
     ));
 
     // Ensure socket directory exists
-    if let Some(parent) = socket.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = socket.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     // Remove existing socket
@@ -2192,15 +2190,15 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
 
     // Try to send shutdown command via socket
     let socket = PathBuf::from(&state.socket_path);
-    if socket.exists() {
-        if let Ok(mut stream) = UnixStream::connect(&socket) {
-            let request = IpcRequest::Shutdown { force, kill_agents };
-            let json_req = serde_json::to_string(&request)?;
-            let _ = writeln!(stream, "{}", json_req);
-            let _ = stream.flush();
-            // Give it a moment to process
-            std::thread::sleep(Duration::from_millis(200));
-        }
+    if socket.exists()
+        && let Ok(mut stream) = UnixStream::connect(&socket)
+    {
+        let request = IpcRequest::Shutdown { force, kill_agents };
+        let json_req = serde_json::to_string(&request)?;
+        let _ = writeln!(stream, "{}", json_req);
+        let _ = stream.flush();
+        // Give it a moment to process
+        std::thread::sleep(Duration::from_millis(200));
     }
 
     // If process is still running, kill it
@@ -2226,15 +2224,13 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
             "kill_agents": kill_agents,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if kill_agents {
+        println!("Service stopped (PID {}), agents killed", state.pid);
     } else {
-        if kill_agents {
-            println!("Service stopped (PID {}), agents killed", state.pid);
-        } else {
-            println!(
-                "Service stopped (PID {}), agents continue running",
-                state.pid
-            );
-        }
+        println!(
+            "Service stopped (PID {}), agents continue running",
+            state.pid
+        );
     }
 
     Ok(())
@@ -2433,23 +2429,23 @@ pub fn run_reload(
         } else {
             println!("Configuration reloaded from config.toml");
         }
-        if let Some(data) = &response.data {
-            if let Some(cfg) = data.get("config") {
-                let ma = cfg.get("max_agents").and_then(|v| v.as_u64()).unwrap_or(0);
-                let ex = cfg.get("executor").and_then(|v| v.as_str()).unwrap_or("?");
-                let pi = cfg
-                    .get("poll_interval")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let mdl = cfg
-                    .get("model")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default");
-                println!(
-                    "Effective config: max_agents={}, executor={}, poll_interval={}s, model={}",
-                    ma, ex, pi, mdl
-                );
-            }
+        if let Some(data) = &response.data
+            && let Some(cfg) = data.get("config")
+        {
+            let ma = cfg.get("max_agents").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ex = cfg.get("executor").and_then(|v| v.as_str()).unwrap_or("?");
+            let pi = cfg
+                .get("poll_interval")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mdl = cfg
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default");
+            println!(
+                "Effective config: max_agents={}, executor={}, poll_interval={}s, model={}",
+                ma, ex, pi, mdl
+            );
         }
     }
 
@@ -2571,7 +2567,7 @@ pub fn is_service_alive(pid: u32) -> bool {
 
 /// Check if the coordinator is currently paused
 pub fn is_service_paused(dir: &Path) -> bool {
-    CoordinatorState::load(dir).map_or(false, |c| c.paused)
+    CoordinatorState::load(dir).is_some_and(|c| c.paused)
 }
 
 /// Send SIGTERM, wait, then SIGKILL

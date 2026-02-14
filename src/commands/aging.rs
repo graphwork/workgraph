@@ -234,15 +234,15 @@ fn find_stale_in_progress<'a>(
             continue;
         }
 
-        if let Some(ref started_at_str) = task.started_at {
-            if let Ok(started_at) = DateTime::parse_from_rfc3339(started_at_str) {
-                let age = *now - started_at.with_timezone(&Utc);
-                if age > threshold {
-                    stale.push(StaleInProgressInfo {
-                        task,
-                        started_days_ago: age.num_days(),
-                    });
-                }
+        if let Some(ref started_at_str) = task.started_at
+            && let Ok(started_at) = DateTime::parse_from_rfc3339(started_at_str)
+        {
+            let age = *now - started_at.with_timezone(&Utc);
+            if age > threshold {
+                stale.push(StaleInProgressInfo {
+                    task,
+                    started_days_ago: age.num_days(),
+                });
             }
         }
     }

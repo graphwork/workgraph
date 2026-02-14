@@ -71,10 +71,10 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     // Calculate total hours at risk
     let mut total_hours = 0.0;
     for dep_id in &all_dependents {
-        if let Some(dep_task) = graph.get_task(dep_id) {
-            if let Some(ref estimate) = dep_task.estimate {
-                total_hours += estimate.hours.unwrap_or(0.0);
-            }
+        if let Some(dep_task) = graph.get_task(dep_id)
+            && let Some(ref estimate) = dep_task.estimate
+        {
+            total_hours += estimate.hours.unwrap_or(0.0);
         }
     }
 
@@ -124,10 +124,10 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         // Human-readable output
         println!("Task: {}", task.id);
         println!("Status: {:?}", task.status);
-        if let Some(ref est) = task.estimate {
-            if let Some(hours) = est.hours {
-                println!("Estimated: {}h", hours);
-            }
+        if let Some(ref est) = task.estimate
+            && let Some(hours) = est.hours
+        {
+            println!("Estimated: {}h", hours);
         }
         println!();
 

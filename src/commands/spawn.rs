@@ -90,14 +90,14 @@ fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Tas
     let mut context_parts = Vec::new();
 
     for dep_id in &task.blocked_by {
-        if let Some(dep_task) = graph.get_task(dep_id) {
-            if !dep_task.artifacts.is_empty() {
-                context_parts.push(format!(
-                    "From {}: artifacts: {}",
-                    dep_id,
-                    dep_task.artifacts.join(", ")
-                ));
-            }
+        if let Some(dep_task) = graph.get_task(dep_id)
+            && !dep_task.artifacts.is_empty()
+        {
+            context_parts.push(format!(
+                "From {}: artifacts: {}",
+                dep_id,
+                dep_task.artifacts.join(", ")
+            ));
         }
     }
 
@@ -247,9 +247,9 @@ fn spawn_agent_inner(
     // Create a wrapper script that runs the command and handles completion
     // This ensures tasks get marked done/failed even if the agent doesn't do it
     let complete_cmd = if task_verified {
-        format!("wg submit \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+        "wg submit \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true".to_string()
     } else {
-        format!("wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true")
+        "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || true".to_string()
     };
     let complete_msg = if task_verified {
         "[wrapper] Agent exited successfully, submitting for review"

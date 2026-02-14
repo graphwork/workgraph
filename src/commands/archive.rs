@@ -19,12 +19,12 @@ fn parse_duration(s: &str) -> Result<Duration> {
         anyhow::bail!("Empty duration string");
     }
 
-    let (num_str, unit) = if s.ends_with('d') {
-        (&s[..s.len() - 1], 'd')
-    } else if s.ends_with('w') {
-        (&s[..s.len() - 1], 'w')
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], 'h')
+    let (num_str, unit) = if let Some(n) = s.strip_suffix('d') {
+        (n, 'd')
+    } else if let Some(n) = s.strip_suffix('w') {
+        (n, 'w')
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 'h')
     } else {
         // Default to days if no unit specified
         (s, 'd')
@@ -49,11 +49,11 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
     }
 
     if let Some(min_age) = older_than {
-        if let Some(completed_at) = &task.completed_at {
-            if let Ok(completed) = DateTime::parse_from_rfc3339(completed_at) {
-                let age = Utc::now().signed_duration_since(completed);
-                return age > *min_age;
-            }
+        if let Some(completed_at) = &task.completed_at
+            && let Ok(completed) = DateTime::parse_from_rfc3339(completed_at)
+        {
+            let age = Utc::now().signed_duration_since(completed);
+            return age > *min_age;
         }
         // If no completion timestamp or can't parse, don't archive with --older filter
         return false;

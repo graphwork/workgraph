@@ -130,14 +130,13 @@ pub fn check_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeIssue> {
             if let Some(LoopGuard::TaskStatus {
                 task: guard_task, ..
             }) = &edge.guard
+                && graph.get_task(guard_task).is_none()
             {
-                if graph.get_task(guard_task).is_none() {
-                    issues.push(LoopEdgeIssue {
-                        from: task.id.clone(),
-                        target: edge.target.clone(),
-                        kind: LoopEdgeIssueKind::GuardTaskNotFound(guard_task.clone()),
-                    });
-                }
+                issues.push(LoopEdgeIssue {
+                    from: task.id.clone(),
+                    target: edge.target.clone(),
+                    kind: LoopEdgeIssueKind::GuardTaskNotFound(guard_task.clone()),
+                });
             }
         }
     }

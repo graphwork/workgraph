@@ -104,25 +104,23 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if roles.is_empty() {
+        println!("No roles defined. Use 'wg role add' to create one.");
     } else {
-        if roles.is_empty() {
-            println!("No roles defined. Use 'wg role add' to create one.");
-        } else {
-            println!("Roles:\n");
-            for role in &roles {
-                let score_str = role
-                    .performance
-                    .avg_score
-                    .map(|s| format!("{:.2}", s))
-                    .unwrap_or_else(|| "-".to_string());
-                println!(
-                    "  {}  {:20} skills: {}  avg_score: {}",
-                    agency::short_hash(&role.id),
-                    role.name,
-                    role.skills.len(),
-                    score_str,
-                );
-            }
+        println!("Roles:\n");
+        for role in &roles {
+            let score_str = role
+                .performance
+                .avg_score
+                .map(|s| format!("{:.2}", s))
+                .unwrap_or_else(|| "-".to_string());
+            println!(
+                "  {}  {:20} skills: {}  avg_score: {}",
+                agency::short_hash(&role.id),
+                role.name,
+                role.skills.len(),
+                score_str,
+            );
         }
     }
 

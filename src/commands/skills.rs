@@ -57,14 +57,12 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if skill_map.is_empty() {
+        println!("No skills defined in any tasks");
     } else {
-        if skill_map.is_empty() {
-            println!("No skills defined in any tasks");
-        } else {
-            println!("Skills used across tasks:\n");
-            for (skill, tasks) in &skill_map {
-                println!("  {} ({} tasks)", skill, tasks.len());
-            }
+        println!("Skills used across tasks:\n");
+        for (skill, tasks) in &skill_map {
+            println!("  {} ({} tasks)", skill, tasks.len());
         }
     }
 
@@ -129,14 +127,12 @@ pub fn run_find(dir: &Path, skill: &str, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if matching_tasks.is_empty() {
+        println!("No tasks require skill '{}'", skill);
     } else {
-        if matching_tasks.is_empty() {
-            println!("No tasks require skill '{}'", skill);
-        } else {
-            println!("Tasks requiring skill '{}':\n", skill);
-            for task in matching_tasks {
-                println!("  {} - {}", task.id, task.title);
-            }
+        println!("Tasks requiring skill '{}':\n", skill);
+        for task in matching_tasks {
+            println!("  {} - {}", task.id, task.title);
         }
     }
 

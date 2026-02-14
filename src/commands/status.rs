@@ -241,7 +241,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
             Status::Open => {
                 if !ready_ids.contains(task.id.as_str()) {
                     // Distinguish delayed (waiting on ready_after) from blocked (waiting on deps)
-                    let has_future_ready_after = task.ready_after.as_ref().map_or(false, |ra| {
+                    let has_future_ready_after = task.ready_after.as_ref().is_some_and(|ra| {
                         ra.parse::<DateTime<Utc>>()
                             .map(|ts| ts > now)
                             .unwrap_or(false)
@@ -265,12 +265,11 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
             Status::Done => {
                 done_total += 1;
                 // Check if completed today
-                if let Some(ref completed_at) = task.completed_at {
-                    if let Ok(completed) = completed_at.parse::<DateTime<Utc>>() {
-                        if completed >= today_start {
-                            done_today += 1;
-                        }
-                    }
+                if let Some(ref completed_at) = task.completed_at
+                    && let Ok(completed) = completed_at.parse::<DateTime<Utc>>()
+                    && completed >= today_start
+                {
+                    done_today += 1;
                 }
             }
             Status::Blocked => {

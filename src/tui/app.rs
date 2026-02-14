@@ -105,6 +105,7 @@ fn is_process_alive(_pid: u32) -> bool {
 
 /// Which view is currently active
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum View {
     /// Main dashboard with task and agent panels
     Dashboard,
@@ -166,7 +167,7 @@ impl LogViewer {
         };
 
         let mut reader = BufReader::new(file);
-        if let Err(_) = reader.seek(SeekFrom::Start(self.file_pos)) {
+        if reader.seek(SeekFrom::Start(self.file_pos)).is_err() {
             return;
         }
 
@@ -367,14 +368,13 @@ impl GraphExplorer {
         // Preserve selection by task ID
         let prev_id = self.rows.get(self.selected).map(|r| r.task_id.clone());
         self.rows = rows;
-        if let Some(ref id) = prev_id {
-            if let Some(pos) = self
+        if let Some(ref id) = prev_id
+            && let Some(pos) = self
                 .rows
                 .iter()
                 .position(|r| r.task_id == *id && r.back_ref.is_none())
-            {
-                self.selected = pos;
-            }
+        {
+            self.selected = pos;
         }
         if !self.rows.is_empty() {
             self.selected = self.selected.min(self.rows.len() - 1);
@@ -402,10 +402,10 @@ impl GraphExplorer {
             .dag_layout
             .as_ref()
             .and_then(|l| l.nodes.get(self.dag_selected).map(|n| n.task_id.clone()));
-        if let Some(ref id) = prev_dag_id {
-            if let Some(&idx) = dag.id_to_idx.get(id) {
-                self.dag_selected = idx;
-            }
+        if let Some(ref id) = prev_dag_id
+            && let Some(&idx) = dag.id_to_idx.get(id)
+        {
+            self.dag_selected = idx;
         }
         if !dag.nodes.is_empty() {
             self.dag_selected = self.dag_selected.min(dag.nodes.len() - 1);
@@ -453,12 +453,12 @@ impl GraphExplorer {
         }
         if let Some(row) = self.rows.get(self.selected) {
             let graph_path = workgraph_dir.join("graph.jsonl");
-            if let Ok(graph) = load_graph(&graph_path) {
-                if let Some(task) = graph.get_task(&row.task_id) {
-                    self.detail_task = Some(task.clone());
-                    self.show_detail = true;
-                    self.detail_scroll = 0;
-                }
+            if let Ok(graph) = load_graph(&graph_path)
+                && let Some(task) = graph.get_task(&row.task_id)
+            {
+                self.detail_task = Some(task.clone());
+                self.show_detail = true;
+                self.detail_scroll = 0;
             }
         }
     }
@@ -520,10 +520,10 @@ impl GraphExplorer {
 
     /// DAG mode: move selection to the next node
     pub fn dag_select_next(&mut self) {
-        if let Some(ref layout) = self.dag_layout {
-            if !layout.nodes.is_empty() {
-                self.dag_selected = (self.dag_selected + 1).min(layout.nodes.len() - 1);
-            }
+        if let Some(ref layout) = self.dag_layout
+            && !layout.nodes.is_empty()
+        {
+            self.dag_selected = (self.dag_selected + 1).min(layout.nodes.len() - 1);
         }
     }
 
@@ -560,36 +560,36 @@ impl GraphExplorer {
         }
         if let Some(task_id) = self.dag_selected_task_id().map(|s| s.to_string()) {
             let graph_path = workgraph_dir.join("graph.jsonl");
-            if let Ok(graph) = load_graph(&graph_path) {
-                if let Some(task) = graph.get_task(&task_id) {
-                    self.detail_task = Some(task.clone());
-                    self.show_detail = true;
-                    self.detail_scroll = 0;
-                }
+            if let Ok(graph) = load_graph(&graph_path)
+                && let Some(task) = graph.get_task(&task_id)
+            {
+                self.detail_task = Some(task.clone());
+                self.show_detail = true;
+                self.detail_scroll = 0;
             }
         }
     }
 
     /// DAG mode: ensure the selected node is visible in the viewport
     pub fn dag_ensure_visible(&mut self, viewport_width: u16, viewport_height: u16) {
-        if let Some(ref layout) = self.dag_layout {
-            if let Some(node) = layout.nodes.get(self.dag_selected) {
-                let vw = viewport_width as usize;
-                let vh = viewport_height as usize;
+        if let Some(ref layout) = self.dag_layout
+            && let Some(node) = layout.nodes.get(self.dag_selected)
+        {
+            let vw = viewport_width as usize;
+            let vh = viewport_height as usize;
 
-                // Horizontal: ensure node is visible
-                if node.x < self.dag_scroll_x {
-                    self.dag_scroll_x = node.x.saturating_sub(2);
-                } else if node.x + node.w > self.dag_scroll_x + vw {
-                    self.dag_scroll_x = (node.x + node.w).saturating_sub(vw) + 2;
-                }
+            // Horizontal: ensure node is visible
+            if node.x < self.dag_scroll_x {
+                self.dag_scroll_x = node.x.saturating_sub(2);
+            } else if node.x + node.w > self.dag_scroll_x + vw {
+                self.dag_scroll_x = (node.x + node.w).saturating_sub(vw) + 2;
+            }
 
-                // Vertical: ensure node is visible
-                if node.y < self.dag_scroll_y {
-                    self.dag_scroll_y = node.y.saturating_sub(1);
-                } else if node.y + node.h > self.dag_scroll_y + vh {
-                    self.dag_scroll_y = (node.y + node.h).saturating_sub(vh) + 1;
-                }
+            // Vertical: ensure node is visible
+            if node.y < self.dag_scroll_y {
+                self.dag_scroll_y = node.y.saturating_sub(1);
+            } else if node.y + node.h > self.dag_scroll_y + vh {
+                self.dag_scroll_y = (node.y + node.h).saturating_sub(vh) + 1;
             }
         }
     }
@@ -701,6 +701,7 @@ fn build_graph_tree(
     rows
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flatten_subtree(
     task_id: &str,
     tasks: &HashMap<String, &Task>,
@@ -884,10 +885,10 @@ fn compute_critical_path(graph: &WorkGraph) -> HashSet<String> {
     if let Some(start) = best_root {
         let mut current = start;
         loop {
-            if let Some(task) = tasks.get(&current) {
-                if !matches!(task.status, Status::Done | Status::Abandoned) {
-                    critical.insert(current.clone());
-                }
+            if let Some(task) = tasks.get(&current)
+                && !matches!(task.status, Status::Done | Status::Abandoned)
+            {
+                critical.insert(current.clone());
             }
             match path_next.get(&current) {
                 Some(next) => current = next.clone(),
@@ -1045,15 +1046,15 @@ impl App {
         self.load_agents();
 
         // Restore selection position by ID
-        if let Some(ref id) = prev_task_id {
-            if let Some(pos) = self.tasks.iter().position(|t| t.id == *id) {
-                self.task_selected = pos;
-            }
+        if let Some(ref id) = prev_task_id
+            && let Some(pos) = self.tasks.iter().position(|t| t.id == *id)
+        {
+            self.task_selected = pos;
         }
-        if let Some(ref id) = prev_agent_id {
-            if let Some(pos) = self.agents.iter().position(|a| a.id == *id) {
-                self.agent_selected = pos;
-            }
+        if let Some(ref id) = prev_agent_id
+            && let Some(pos) = self.agents.iter().position(|a| a.id == *id)
+        {
+            self.agent_selected = pos;
         }
 
         // Clamp selections
@@ -1111,8 +1112,10 @@ impl App {
         entries.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()).then(a.title.cmp(&b.title)));
 
         // Compute counts
-        let mut counts = TaskCounts::default();
-        counts.total = entries.len();
+        let mut counts = TaskCounts {
+            total: entries.len(),
+            ..TaskCounts::default()
+        };
         for entry in &entries {
             match entry.status {
                 Status::Done => counts.done += 1,
@@ -1140,10 +1143,10 @@ impl App {
                     status: format!("{:?}", t.status),
                     assigned: t.assigned.clone(),
                 };
-                if let Some(prev) = self.prev_task_snapshots.get(&t.id) {
-                    if *prev != snap {
-                        self.highlighted_tasks.insert(t.id.clone(), Instant::now());
-                    }
+                if let Some(prev) = self.prev_task_snapshots.get(&t.id)
+                    && *prev != snap
+                {
+                    self.highlighted_tasks.insert(t.id.clone(), Instant::now());
                 }
             }
         }
@@ -1218,10 +1221,10 @@ impl App {
                     status: format!("{:?}", a.status),
                     task_id: a.task_id.clone(),
                 };
-                if let Some(prev) = self.prev_agent_snapshots.get(&a.id) {
-                    if *prev != snap {
-                        self.highlighted_agents.insert(a.id.clone(), Instant::now());
-                    }
+                if let Some(prev) = self.prev_agent_snapshots.get(&a.id)
+                    && *prev != snap
+                {
+                    self.highlighted_agents.insert(a.id.clone(), Instant::now());
                 }
             }
         }

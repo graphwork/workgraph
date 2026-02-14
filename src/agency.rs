@@ -221,10 +221,10 @@ pub struct Evaluation {
 
 /// Expand `~` at the start of a path to the user's home directory.
 fn expand_tilde(path: &Path) -> PathBuf {
-    if let Ok(rest) = path.strip_prefix("~") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Ok(rest) = path.strip_prefix("~")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
     path.to_path_buf()
 }
@@ -981,17 +981,17 @@ pub fn record_evaluation(
     fs::write(&eval_path, json)?;
 
     // 2. Update agent performance (if agent_id is present)
-    if !evaluation.agent_id.is_empty() {
-        if let Ok(mut agent) = find_agent_by_prefix(&agents_dir, &evaluation.agent_id) {
-            let agent_eval_ref = EvaluationRef {
-                score: evaluation.score,
-                task_id: evaluation.task_id.clone(),
-                timestamp: evaluation.timestamp.clone(),
-                context_id: evaluation.task_id.clone(),
-            };
-            update_performance(&mut agent.performance, agent_eval_ref);
-            save_agent(&agent, &agents_dir)?;
-        }
+    if !evaluation.agent_id.is_empty()
+        && let Ok(mut agent) = find_agent_by_prefix(&agents_dir, &evaluation.agent_id)
+    {
+        let agent_eval_ref = EvaluationRef {
+            score: evaluation.score,
+            task_id: evaluation.task_id.clone(),
+            timestamp: evaluation.timestamp.clone(),
+            context_id: evaluation.task_id.clone(),
+        };
+        update_performance(&mut agent.performance, agent_eval_ref);
+        save_agent(&agent, &agents_dir)?;
     }
 
     // 3. Update role performance (look up by prefix to support both full and short IDs)
@@ -1285,7 +1285,7 @@ pub fn roles_below_threshold(roles: &[Role], threshold: f64, min_evals: u32) -> 
         .iter()
         .filter(|r| {
             r.performance.task_count >= min_evals
-                && r.performance.avg_score.map_or(false, |s| s < threshold)
+                && r.performance.avg_score.is_some_and(|s| s < threshold)
         })
         .collect()
 }

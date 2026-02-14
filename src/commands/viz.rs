@@ -128,12 +128,12 @@ fn generate_dot(
     task_ids: &HashSet<&str>,
     critical_path: &HashSet<String>,
 ) -> String {
-    let mut lines = Vec::new();
-
-    lines.push("digraph workgraph {".to_string());
-    lines.push("  rankdir=LR;".to_string());
-    lines.push("  node [shape=box];".to_string());
-    lines.push(String::new());
+    let mut lines = vec![
+        "digraph workgraph {".to_string(),
+        "  rankdir=LR;".to_string(),
+        "  node [shape=box];".to_string(),
+        String::new(),
+    ];
 
     // Print task nodes
     for task in tasks {
@@ -698,6 +698,7 @@ fn generate_ascii(
 
         // DFS from each root
         for root in &roots {
+            #[allow(clippy::too_many_arguments)]
             fn render_tree<'a>(
                 id: &'a str,
                 prefix: &str,
@@ -734,7 +735,7 @@ fn generate_ascii(
                 let parents = reverse.get(id).map(|v| v.as_slice()).unwrap_or(&[]);
                 let fan_in_note = if parents.len() > 1 {
                     // We're being shown under one parent; note the others
-                    let others: Vec<&str> = parents.iter().copied().collect();
+                    let others: Vec<&str> = parents.to_vec();
                     format!("  (← {})", others.join(", "))
                 } else {
                     String::new()
@@ -809,7 +810,7 @@ fn generate_ascii(
                 &reverse,
                 &format_node,
                 &task_map,
-                &graph,
+                graph,
                 use_color,
             );
         }

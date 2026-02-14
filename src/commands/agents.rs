@@ -125,8 +125,7 @@ fn output_table(agents: &[&AgentEntry]) -> Result<()> {
         .map(|a| a.task_id.len())
         .max()
         .unwrap_or(20)
-        .max(20)
-        .min(40);
+        .clamp(20, 40);
     let executor_width = agents
         .iter()
         .map(|a| a.executor.len())
@@ -136,13 +135,12 @@ fn output_table(agents: &[&AgentEntry]) -> Result<()> {
 
     // Print header
     println!(
-        "{:<id_width$}  {:<task_width$}  {:<executor_width$}  {:>6}  {:>6}  {}",
+        "{:<id_width$}  {:<task_width$}  {:<executor_width$}  {:>6}  {:>6}  STATUS",
         "ID",
         "TASK",
         "EXECUTOR",
         "PID",
         "UPTIME",
-        "STATUS",
         id_width = id_width,
         task_width = task_width,
         executor_width = executor_width,

@@ -28,15 +28,15 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     }
 
     // Check if max retries exceeded
-    if let Some(max) = task.max_retries {
-        if task.retry_count >= max {
-            anyhow::bail!(
-                "Task '{}' has reached max retries ({}/{}). Consider abandoning or increasing max_retries.",
-                id,
-                task.retry_count,
-                max
-            );
-        }
+    if let Some(max) = task.max_retries
+        && task.retry_count >= max
+    {
+        anyhow::bail!(
+            "Task '{}' has reached max retries ({}/{}). Consider abandoning or increasing max_retries.",
+            id,
+            task.retry_count,
+            max
+        );
     }
 
     task.status = Status::Open;

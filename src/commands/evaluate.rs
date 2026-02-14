@@ -317,12 +317,12 @@ fn extract_json(raw: &str) -> Option<String> {
     };
 
     // Find the first { and last } and try to parse
-    if let Some(start) = stripped.find('{') {
-        if let Some(end) = stripped.rfind('}') {
-            let candidate = &stripped[start..=end];
-            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
-                return Some(candidate.to_string());
-            }
+    if let Some(start) = stripped.find('{')
+        && let Some(end) = stripped.rfind('}')
+    {
+        let candidate = &stripped[start..=end];
+        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+            return Some(candidate.to_string());
         }
     }
 

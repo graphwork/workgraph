@@ -1122,13 +1122,14 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
         }
 
         // Draw arrow at the target (last segment end)
-        if let Some(&(tx, ty)) = segs.last() {
-            if ty < height && tx < width {
-                buf[ty][tx] = Cell {
-                    ch: '◀',
-                    style: CellStyle::LoopEdgeArrow,
-                };
-            }
+        if let Some(&(tx, ty)) = segs.last()
+            && ty < height
+            && tx < width
+        {
+            buf[ty][tx] = Cell {
+                ch: '◀',
+                style: CellStyle::LoopEdgeArrow,
+            };
         }
 
         // Draw iteration label on the vertical segment (if there's room)

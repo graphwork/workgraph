@@ -26,7 +26,7 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
 
     let tasks: Vec<_> = graph
         .tasks()
-        .filter(|t| status_filter.as_ref().map_or(true, |s| &t.status == s))
+        .filter(|t| status_filter.as_ref().is_none_or(|s| &t.status == s))
         .collect();
 
     if json {
@@ -47,23 +47,21 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if tasks.is_empty() {
+        println!("No tasks found");
     } else {
-        if tasks.is_empty() {
-            println!("No tasks found");
-        } else {
-            for task in tasks {
-                let status = match task.status {
-                    Status::Open => "[ ]",
-                    Status::InProgress => "[~]",
-                    Status::Done => "[x]",
-                    Status::Blocked => "[!]",
-                    Status::Failed => "[F]",
-                    Status::Abandoned => "[A]",
-                    Status::PendingReview => "[R]",
-                };
-                let delay_str = format_ready_after_hint(task.ready_after.as_deref());
-                println!("{} {} - {}{}", status, task.id, task.title, delay_str);
-            }
+        for task in tasks {
+            let status = match task.status {
+                Status::Open => "[ ]",
+                Status::InProgress => "[~]",
+                Status::Done => "[x]",
+                Status::Blocked => "[!]",
+                Status::Failed => "[F]",
+                Status::Abandoned => "[A]",
+                Status::PendingReview => "[R]",
+            };
+            let delay_str = format_ready_after_hint(task.ready_after.as_deref());
+            println!("{} {} - {}{}", status, task.id, task.title, delay_str);
         }
     }
 

@@ -96,10 +96,10 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 workload.assigned_count += 1;
 
                 // Add estimated hours
-                if let Some(ref estimate) = task.estimate {
-                    if let Some(hours) = estimate.hours {
-                        workload.assigned_hours += hours;
-                    }
+                if let Some(ref estimate) = task.estimate
+                    && let Some(hours) = estimate.hours
+                {
+                    workload.assigned_hours += hours;
                 }
 
                 // Count in-progress tasks
@@ -118,12 +118,12 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     // Calculate load percentages
     for workload in agent_workloads.values_mut() {
-        if let Some(capacity) = workload.capacity {
-            if capacity > 0.0 {
-                let load = (workload.assigned_hours / capacity) * 100.0;
-                workload.load_percent = Some(load);
-                workload.is_overloaded = load > 100.0;
-            }
+        if let Some(capacity) = workload.capacity
+            && capacity > 0.0
+        {
+            let load = (workload.assigned_hours / capacity) * 100.0;
+            workload.load_percent = Some(load);
+            workload.is_overloaded = load > 100.0;
         }
     }
 

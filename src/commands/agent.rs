@@ -290,13 +290,13 @@ pub fn run(
         }
 
         // Check if we've hit max tasks
-        if let Some(max) = max_tasks {
-            if stats.tasks_completed + stats.tasks_failed >= max {
-                if !json {
-                    println!("Reached max tasks limit ({})", max);
-                }
-                break;
+        if let Some(max) = max_tasks
+            && stats.tasks_completed + stats.tasks_failed >= max
+        {
+            if !json {
+                println!("Reached max tasks limit ({})", max);
             }
+            break;
         }
 
         // SLEEP: Wait before next iteration (unless --once)
@@ -430,12 +430,12 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
 
         if success {
             complete_task(dir, &task_id, actor_id)?;
-            return Ok(IterationResult::Completed(task_id));
+            Ok(IterationResult::Completed(task_id))
         } else {
             let exit_code = output.status.code().unwrap_or(-1);
             let reason = format!("Exit code {}", exit_code);
             fail_task(dir, &task_id, actor_id, &reason)?;
-            return Ok(IterationResult::Failed(task_id, reason));
+            Ok(IterationResult::Failed(task_id, reason))
         }
     } else {
         // No exec command - just claim and report
@@ -445,7 +445,7 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
             println!("  Complete with: wg done {}", task_id);
         }
         // Don't auto-complete, let external process handle it
-        return Ok(IterationResult::Idle);
+        Ok(IterationResult::Idle)
     }
 }
 

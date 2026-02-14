@@ -1,3 +1,12 @@
+#![allow(
+    clippy::too_many_arguments,
+    clippy::needless_range_loop,
+    clippy::ptr_arg,
+    clippy::manual_clamp,
+    clippy::vec_init_then_push,
+    clippy::if_same_then_else
+)]
+
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;

@@ -78,20 +78,18 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if resources.is_empty() {
+        println!("No resources found");
     } else {
-        if resources.is_empty() {
-            println!("No resources found");
-        } else {
-            for r in resources {
-                let name_str = r.name.as_deref().unwrap_or(&r.id);
-                let type_str = r.resource_type.as_deref().unwrap_or("unknown");
-                let avail_str = match (&r.available, &r.unit) {
-                    (Some(avail), Some(unit)) => format!("{} {}", avail, unit),
-                    (Some(avail), None) => format!("{}", avail),
-                    _ => "N/A".to_string(),
-                };
-                println!("[{}] {} - {} ({})", type_str, r.id, name_str, avail_str);
-            }
+        for r in resources {
+            let name_str = r.name.as_deref().unwrap_or(&r.id);
+            let type_str = r.resource_type.as_deref().unwrap_or("unknown");
+            let avail_str = match (&r.available, &r.unit) {
+                (Some(avail), Some(unit)) => format!("{} {}", avail, unit),
+                (Some(avail), None) => format!("{}", avail),
+                _ => "N/A".to_string(),
+            };
+            println!("[{}] {} - {} ({})", type_str, r.id, name_str, avail_str);
         }
     }
 

@@ -87,13 +87,11 @@ pub fn aggregate_usage_stats(dir: &Path) -> anyhow::Result<usize> {
         let file = File::open(&log)?;
         let reader = BufReader::new(file);
 
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                // Format: "{timestamp} {command}"
-                if let Some(cmd) = line.split_whitespace().nth(1) {
-                    *usage.counts.entry(cmd.to_string()).or_insert(0) += 1;
-                    entries_processed += 1;
-                }
+        for line in reader.lines().map_while(Result::ok) {
+            // Format: "{timestamp} {command}"
+            if let Some(cmd) = line.split_whitespace().nth(1) {
+                *usage.counts.entry(cmd.to_string()).or_insert(0) += 1;
+                entries_processed += 1;
             }
         }
     }

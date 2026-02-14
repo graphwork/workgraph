@@ -250,14 +250,12 @@ pub fn run_remove_dead(dir: &Path, json: bool) -> Result<Vec<String>> {
             "removed": dead_ids,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if dead_ids.is_empty() {
+        println!("No dead agents to remove.");
     } else {
-        if dead_ids.is_empty() {
-            println!("No dead agents to remove.");
-        } else {
-            println!("Removed {} dead agent(s) from registry:", dead_ids.len());
-            for id in &dead_ids {
-                println!("  {}", id);
-            }
+        println!("Removed {} dead agent(s) from registry:", dead_ids.len());
+        for id in &dead_ids {
+            println!("  {}", id);
         }
     }
 
