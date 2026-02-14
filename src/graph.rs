@@ -462,13 +462,10 @@ impl WorkGraph {
 /// Evaluate a loop guard condition against the current graph state.
 fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
     match guard {
-        None => true, // No guard = always loop
-        Some(LoopGuard::Always) => true,
-        Some(LoopGuard::IterationLessThan(_)) => {
-            // Deferred: requires target task context not available here.
-            // Checked in evaluate_loop_edges() against the target's loop_iteration.
-            true
-        }
+        None | Some(LoopGuard::Always) => true,
+        // IterationLessThan is checked in evaluate_loop_edges() where the
+        // target task's loop_iteration is available.
+        Some(LoopGuard::IterationLessThan(_)) => true,
         Some(LoopGuard::TaskStatus { task, status }) => graph
             .get_task(task)
             .map(|t| t.status == *status)

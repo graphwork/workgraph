@@ -12,9 +12,8 @@ pub mod query;
 pub mod service;
 pub mod usage;
 
-pub use check::{CheckResult, check_cycles, check_orphans};
-pub use config::{AgencyConfig, Config, HelpConfig, MatrixConfig};
-pub use graph::{Estimate, Node, Resource, Task, TrustLevel, WorkGraph, evaluate_loop_edges};
+pub use config::MatrixConfig;
+pub use graph::WorkGraph;
 #[cfg(feature = "matrix")]
 pub use matrix::commands::{MatrixCommand, help_text as matrix_help_text};
 #[cfg(feature = "matrix")]
@@ -36,8 +35,4 @@ pub use matrix_lite::{
     send_notification_to_room,
 };
 pub use parser::{load_graph, save_graph};
-pub use query::{blocked_by, build_reverse_index, cost_of, ready_tasks};
-pub use service::{
-    AgentEntry, AgentRegistry, AgentStatus, ExecutorConfig, ExecutorRegistry, ExecutorSettings,
-    LockedRegistry, PromptTemplate, TemplateVars,
-};
+pub use service::{AgentEntry, AgentRegistry, AgentStatus};

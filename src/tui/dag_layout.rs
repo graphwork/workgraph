@@ -302,7 +302,7 @@ impl DagLayout {
                     status_indicator_str(&task.map(|t| t.status.clone()).unwrap_or(Status::Open));
                 // Box content: " indicator title " + 2 for borders
                 let content_width = indicator.len() + 1 + title.len() + 2;
-                let w = (content_width + 2).max(MIN_NODE_WIDTH).min(MAX_NODE_WIDTH);
+                let w = (content_width + 2).clamp(MIN_NODE_WIDTH, MAX_NODE_WIDTH);
                 (num_id, w)
             })
             .collect();
@@ -631,11 +631,12 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
             let to_y = to_node.y;
 
             // Route: right from source -> up along margin -> left to target
-            let mut segments = Vec::new();
-            segments.push((from_x, from_y)); // Start at source
-            segments.push((route_x, from_y)); // Go right to margin
-            segments.push((route_x, to_y)); // Go up along margin
-            segments.push((to_x, to_y)); // Go left to target
+            let segments = vec![
+                (from_x, from_y),  // Start at source
+                (route_x, from_y), // Go right to margin
+                (route_x, to_y),   // Go up along margin
+                (to_x, to_y),      // Go left to target
+            ];
 
             new_back_edges.push(BackEdge {
                 from_id: back_edge.from_id.clone(),
@@ -673,11 +674,12 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
             let to_x = to_node.x + to_node.w - 1;
             let to_y = to_node.y;
 
-            let mut segments = Vec::new();
-            segments.push((from_x, from_y));
-            segments.push((route_x, from_y));
-            segments.push((route_x, to_y));
-            segments.push((to_x, to_y));
+            let segments = vec![
+                (from_x, from_y),
+                (route_x, from_y),
+                (route_x, to_y),
+                (to_x, to_y),
+            ];
 
             new_loop_edges.push(LoopLayoutEdge {
                 from_id: loop_edge.from_id.clone(),
@@ -746,6 +748,7 @@ impl Default for Cell {
 /// Strategy: use a connectivity grid. For each cell in the inter-layer gap,
 /// track which directions (up/down/left/right) have edge connections. Then
 /// resolve the correct box-drawing character from the connectivity.
+#[allow(clippy::needless_range_loop)] // 2D grid indexing is clearer with range loops
 pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
     if layout.width == 0 || layout.height == 0 {
         return Vec::new();

@@ -1368,6 +1368,7 @@ impl IpcResponse {
 
 /// Start the service daemon
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 pub fn run_start(
     dir: &Path,
     socket_path: Option<&str>,

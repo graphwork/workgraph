@@ -645,6 +645,7 @@ fn load_evolver_skills(skills_dir: &Path, strategy: Strategy) -> Result<Vec<(Str
 // Evolver prompt builder
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn build_evolver_prompt(
     perf_summary: &str,
     skill_docs: &[(String, String)],

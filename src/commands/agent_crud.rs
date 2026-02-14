@@ -24,6 +24,7 @@ fn parse_trust_level(s: &str) -> Result<TrustLevel> {
 }
 
 /// `wg agent create <name> [--role <hash>] [--motivation <hash>] [--capabilities ...] [--rate N] [--capacity N] [--trust-level L] [--contact C] [--executor E]`
+#[allow(clippy::too_many_arguments)]
 pub fn run_create(
     workgraph_dir: &Path,
     name: &str,

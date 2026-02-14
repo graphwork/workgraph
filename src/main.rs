@@ -1,14 +1,6 @@
-#![allow(
-    clippy::too_many_arguments,
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::manual_clamp,
-    clippy::vec_init_then_push
-)]
-
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod commands;
 mod tui;
@@ -1236,7 +1228,7 @@ enum MatrixCommands {
 }
 
 /// Print custom help output with usage-based ordering
-fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
+fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     use workgraph::config::Config;
     use workgraph::usage::{self, MAX_HELP_COMMANDS};
 

@@ -646,3 +646,182 @@ fn test_blocked_shows_blockers_of_task() {
     let output = wg_ok(&wg_dir, &["blocked", "child"]);
     assert!(output.contains("parent"));
 }
+
+// ===========================================================================
+// wg retry lifecycle (fail → retry → claim → done)
+// ===========================================================================
+
+#[test]
+fn test_retry_lifecycle_fail_retry_claim_done() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![make_task("t1", "Retry test", Status::Open)]);
+
+    // Claim the task
+    wg_ok(&wg_dir, &["claim", "t1"]);
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(graph.get_task("t1").unwrap().status, Status::InProgress);
+
+    // Fail the task
+    wg_ok(&wg_dir, &["fail", "t1", "--reason", "timeout"]);
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(graph.get_task("t1").unwrap().status, Status::Failed);
+
+    // Retry the task
+    wg_ok(&wg_dir, &["retry", "t1"]);
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("t1").unwrap();
+    assert_eq!(task.status, Status::Open);
+    assert_eq!(task.retry_count, 1);
+
+    // Claim again and complete
+    wg_ok(&wg_dir, &["claim", "t1"]);
+    wg_ok(&wg_dir, &["done", "t1"]);
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(graph.get_task("t1").unwrap().status, Status::Done);
+}
+
+#[test]
+fn test_retry_respects_max_retries() {
+    let tmp = TempDir::new().unwrap();
+    let mut task = make_task("t1", "Max retry test", Status::Failed);
+    task.retry_count = 3;
+    task.max_retries = Some(3);
+    task.failure_reason = Some("error".to_string());
+    let wg_dir = setup_workgraph(&tmp, vec![task]);
+
+    let output = wg_cmd(&wg_dir, &["retry", "t1"]);
+    assert!(
+        !output.status.success(),
+        "retry should fail when max_retries exceeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("maximum") || stderr.contains("retries"),
+        "stderr should mention max retries: {}",
+        stderr
+    );
+}
+
+// ===========================================================================
+// wg status
+// ===========================================================================
+
+#[test]
+fn test_status_empty_graph_cli() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    let output = wg_ok(&wg_dir, &["status"]);
+    // Should not panic on empty graph
+    assert!(output.contains("0") || output.contains("empty") || output.contains("No tasks"));
+}
+
+#[test]
+fn test_status_json_output() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(
+        &tmp,
+        vec![
+            make_task("t1", "Task A", Status::Open),
+            make_task("t2", "Task B", Status::Done),
+        ],
+    );
+
+    let output = wg_ok(&wg_dir, &["status", "--json"]);
+    // JSON output should be valid
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "status --json should produce valid JSON: {}\nOutput: {}",
+            e, output
+        )
+    });
+    assert!(parsed.is_object());
+}
+
+// ===========================================================================
+// wg show edge cases
+// ===========================================================================
+
+#[test]
+fn test_show_task_with_all_fields_populated() {
+    let tmp = TempDir::new().unwrap();
+    let mut task = make_task("t1", "Full task", Status::InProgress);
+    task.description = Some("A detailed description".to_string());
+    task.assigned = Some("agent-1".to_string());
+    task.tags = vec!["urgent".to_string(), "backend".to_string()];
+    task.skills = vec!["rust".to_string()];
+    task.blocked_by = vec!["t0".to_string()];
+    let wg_dir = setup_workgraph(
+        &tmp,
+        vec![make_task("t0", "Prerequisite", Status::Done), task],
+    );
+
+    let output = wg_ok(&wg_dir, &["show", "t1"]);
+    assert!(output.contains("Full task"));
+    assert!(output.contains("agent-1"));
+}
+
+#[test]
+fn test_show_json_output_with_id() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![make_task("t1", "JSON test", Status::Open)]);
+
+    let output = wg_ok(&wg_dir, &["show", "t1", "--json"]);
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "show --json should produce valid JSON: {}\nOutput: {}",
+            e, output
+        )
+    });
+    assert!(parsed.is_object());
+    assert_eq!(parsed["id"], "t1");
+}
+
+// ===========================================================================
+// wg check
+// ===========================================================================
+
+#[test]
+fn test_check_clean_graph_no_errors() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(
+        &tmp,
+        vec![
+            make_task("t1", "Task A", Status::Open),
+            make_task("t2", "Task B", Status::Done),
+        ],
+    );
+
+    let output = wg_ok(&wg_dir, &["check"]);
+    // Clean graph should not report errors
+    assert!(
+        !output.contains("ERROR") && !output.contains("error"),
+        "clean graph should not show errors: {}",
+        output
+    );
+}
+
+// ===========================================================================
+// wg ready
+// ===========================================================================
+
+#[test]
+fn test_ready_excludes_blocked_tasks() {
+    let tmp = TempDir::new().unwrap();
+    let mut blocked = make_task("blocked", "Blocked task", Status::Open);
+    blocked.blocked_by.push("blocker".to_string());
+    let wg_dir = setup_workgraph(
+        &tmp,
+        vec![make_task("blocker", "Blocker", Status::Open), blocked],
+    );
+
+    let output = wg_ok(&wg_dir, &["ready"]);
+    assert!(
+        output.contains("blocker"),
+        "ready should show unblocked task"
+    );
+    assert!(
+        !output.contains("Blocked task"),
+        "ready should not show blocked task"
+    );
+}

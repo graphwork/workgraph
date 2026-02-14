@@ -90,6 +90,7 @@ pub fn init(dir: &Path) -> Result<()> {
 }
 
 /// Update configuration values
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     dir: &Path,
     executor: Option<&str>,
