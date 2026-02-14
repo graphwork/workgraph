@@ -248,9 +248,6 @@ pub fn run(
         stats.iterations += 1;
         state.total_iterations += 1;
 
-        // WAKE: Record heartbeat
-        record_heartbeat(dir, actor_id)?;
-
         // CHECK & WORK: Find and execute task
         let result = run_iteration(dir, actor_id, json)?;
 
@@ -438,11 +435,6 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
         // Don't auto-complete, let external process handle it
         Ok(IterationResult::Idle)
     }
-}
-
-/// Record heartbeat (no-op since Actor nodes were removed from the graph)
-fn record_heartbeat(_dir: &Path, _actor_id: &str) -> Result<()> {
-    Ok(())
 }
 
 /// Claim a task for the actor

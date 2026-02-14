@@ -564,8 +564,8 @@ pub fn coordinator_tick(
     //
     // Per the agency design (§4.3), when auto_evaluate is enabled the coordinator
     // creates an evaluation task `evaluate-{task-id}` that is blocked by the
-    // original task.  When the original task completes (done, submitted, or
-    // failed), the evaluation task becomes ready and the coordinator spawns an
+    // original task.  When the original task completes (done or failed),
+    // the evaluation task becomes ready and the coordinator spawns an
     // evaluator agent on it.
     //
     // Tasks tagged "evaluation", "assignment", or "evolution" are NOT
@@ -893,7 +893,7 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     }
 
     // Capture output for completed/failed tasks whose agents just died.
-    // done.rs and submit.rs already capture output, but fail.rs does not,
+    // done.rs already captures output, but fail.rs does not,
     // and the agent may have completed without triggering capture (e.g. wrapper
     // script marked it done but output capture wasn't invoked). This is a
     // best-effort safety net.

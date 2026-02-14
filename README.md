@@ -122,15 +122,14 @@ Tasks created with `--verify` require human approval before completion:
 # Create a task that needs review
 wg add "Security audit" --verify "All findings documented with severity ratings"
 
-# Agent works on it, then submits for review (wg done will refuse)
-wg submit security-audit
+# Agent works on it, then marks it done
+wg done security-audit
 
-# Human reviews and approves or rejects
-wg approve security-audit
-wg reject security-audit --reason "Missing OWASP top 10 coverage"
+# The verify field is recorded for human reviewers to check
+wg show security-audit
 ```
 
-Rejected tasks return to `open` for rework. Approved tasks transition to `done` and unblock dependents.
+The verify criteria are stored on the task for auditing and review purposes.
 
 ## Using with AI Coding Assistants
 
@@ -591,7 +590,7 @@ Some workflows repeat: write → review → revise → write again. Loop edges l
 
 ### How it works
 
-When the source task completes (via `wg done` or `wg approve`), each of its loop edges is evaluated:
+When the source task completes (via `wg done`), each of its loop edges is evaluated:
 
 1. **Guard check** — if a guard condition is set, it must be true for the loop to fire.
 2. **Iteration check** — the target's `loop_iteration` must be below `max_iterations`.
@@ -655,7 +654,7 @@ wg viz                 # Loop edges appear as dashed lines in graph output
 
 ## Key concepts
 
-**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `pending-review`) and can block other tasks. Tasks can carry a per-task `model` override and an `agent` identity assignment.
+**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`) and can block other tasks. Tasks can carry a per-task `model` override and an `agent` identity assignment.
 
 **Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 

@@ -925,12 +925,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                 // Vertical segment (going up or down)
                 let min_y = y1.min(y2);
                 let max_y = y1.max(y2);
-                let going_up = y2 < y1;
-
                 for cy in min_y..=max_y {
                     if cy < height && x1 < width {
                         // Use dashed vertical line for back-edges
-                        let ch = if going_up { '╎' } else { '╎' };
+                        let ch = '╎';
                         // Don't overwrite node content
                         let existing = &buf[cy][x1];
                         if existing.style == CellStyle::Empty

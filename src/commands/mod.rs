@@ -88,6 +88,79 @@ pub fn collect_transitive_dependents(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_transitive_dependents_empty_index() {
+        let index = HashMap::new();
+        let mut visited = HashSet::new();
+        collect_transitive_dependents(&index, "a", &mut visited);
+        assert!(visited.is_empty());
+    }
+
+    #[test]
+    fn collect_transitive_dependents_direct() {
+        let mut index = HashMap::new();
+        index.insert("a".into(), vec!["b".into(), "c".into()]);
+        let mut visited = HashSet::new();
+        collect_transitive_dependents(&index, "a", &mut visited);
+        assert_eq!(visited.len(), 2);
+        assert!(visited.contains("b"));
+        assert!(visited.contains("c"));
+    }
+
+    #[test]
+    fn collect_transitive_dependents_chain() {
+        let mut index = HashMap::new();
+        index.insert("a".into(), vec!["b".into()]);
+        index.insert("b".into(), vec!["c".into()]);
+        index.insert("c".into(), vec!["d".into()]);
+        let mut visited = HashSet::new();
+        collect_transitive_dependents(&index, "a", &mut visited);
+        assert_eq!(visited.len(), 3);
+        assert!(visited.contains("b"));
+        assert!(visited.contains("c"));
+        assert!(visited.contains("d"));
+    }
+
+    #[test]
+    fn collect_transitive_dependents_handles_cycles() {
+        let mut index = HashMap::new();
+        index.insert("a".into(), vec!["b".into()]);
+        index.insert("b".into(), vec!["a".into()]); // cycle
+        let mut visited = HashSet::new();
+        collect_transitive_dependents(&index, "a", &mut visited);
+        assert_eq!(visited.len(), 2);
+        assert!(visited.contains("a"));
+        assert!(visited.contains("b"));
+    }
+
+    #[test]
+    fn collect_transitive_dependents_diamond() {
+        let mut index = HashMap::new();
+        index.insert("a".into(), vec!["b".into(), "c".into()]);
+        index.insert("b".into(), vec!["d".into()]);
+        index.insert("c".into(), vec!["d".into()]);
+        let mut visited = HashSet::new();
+        collect_transitive_dependents(&index, "a", &mut visited);
+        assert_eq!(visited.len(), 3);
+        assert!(visited.contains("b"));
+        assert!(visited.contains("c"));
+        assert!(visited.contains("d"));
+    }
+
+    #[test]
+    fn graph_path_joins_correctly() {
+        let dir = Path::new("/tmp/test-wg");
+        assert_eq!(
+            graph_path(dir),
+            std::path::PathBuf::from("/tmp/test-wg/graph.jsonl")
+        );
+    }
+}
+
 /// Best-effort notification to the service daemon that the graph has changed.
 /// Silently ignores all errors (daemon not running, socket unavailable, etc.)
 pub fn notify_graph_changed(dir: &Path) {

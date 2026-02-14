@@ -3,8 +3,7 @@
     clippy::needless_range_loop,
     clippy::ptr_arg,
     clippy::manual_clamp,
-    clippy::vec_init_then_push,
-    clippy::if_same_then_else
+    clippy::vec_init_then_push
 )]
 
 use anyhow::{Context, Result};
@@ -1280,50 +1279,7 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
             );
         }
     } else if config.help.ordering == "curated" {
-        // Use curated default ordering
-        let mut shown = std::collections::HashSet::new();
-        let to_show = if show_all {
-            subcommands.len()
-        } else {
-            MAX_HELP_COMMANDS.min(subcommands.len())
-        };
-
-        println!("Commands:");
-        let mut count = 0;
-
-        // First show commands in curated order
-        for &default_cmd in usage::DEFAULT_ORDER {
-            if count >= to_show {
-                break;
-            }
-            if let Some((name, about)) = subcommands.iter().find(|(n, _)| n == default_cmd) {
-                println!("  {:15} {}", name, about);
-                shown.insert(name.clone());
-                count += 1;
-            }
-        }
-
-        // Then show remaining alphabetically
-        let mut remaining: Vec<_> = subcommands
-            .iter()
-            .filter(|(n, _)| !shown.contains(n))
-            .collect();
-        remaining.sort_by(|a, b| a.0.cmp(&b.0));
-
-        for (name, about) in remaining {
-            if count >= to_show {
-                break;
-            }
-            println!("  {:15} {}", name, about);
-            count += 1;
-        }
-
-        if !show_all && subcommands.len() > MAX_HELP_COMMANDS {
-            println!(
-                "  ... and {} more (--help-all)",
-                subcommands.len() - MAX_HELP_COMMANDS
-            );
-        }
+        print_curated_help(&subcommands, show_all);
     } else if let Some(usage_data) = usage::load_command_order(dir) {
         // Use personalized usage-based ordering with tiers
         let (frequent, occasional, rare) = usage::group_by_tier(&usage_data);
@@ -1391,47 +1347,7 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         }
     } else {
         // No usage data and not curated — fall back to curated ordering
-        let mut shown = std::collections::HashSet::new();
-        let to_show = if show_all {
-            subcommands.len()
-        } else {
-            MAX_HELP_COMMANDS.min(subcommands.len())
-        };
-
-        println!("Commands:");
-        let mut count = 0;
-
-        for &default_cmd in usage::DEFAULT_ORDER {
-            if count >= to_show {
-                break;
-            }
-            if let Some((name, about)) = subcommands.iter().find(|(n, _)| n == default_cmd) {
-                println!("  {:15} {}", name, about);
-                shown.insert(name.clone());
-                count += 1;
-            }
-        }
-
-        let mut remaining: Vec<_> = subcommands
-            .iter()
-            .filter(|(n, _)| !shown.contains(n))
-            .collect();
-        remaining.sort_by(|a, b| a.0.cmp(&b.0));
-
-        for (name, about) in remaining {
-            if count >= to_show {
-                break;
-            }
-            println!("  {:15} {}", name, about);
-            count += 1;
-        }
-
-        if !show_all && subcommands.len() > MAX_HELP_COMMANDS {
-            println!(
-                "  ... and {} more (--help-all)",
-                subcommands.len() - MAX_HELP_COMMANDS
-            );
-        }
+        print_curated_help(&subcommands, show_all);
     }
 
     println!("\nOptions:");
@@ -1440,6 +1356,55 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
     println!("      --alphabetical  Sort commands alphabetically");
     println!("      --json          Output as JSON");
     println!("  -V, --version       Print version");
+}
+
+/// Print commands using the curated default ordering, with remaining commands shown alphabetically.
+fn print_curated_help(subcommands: &[(String, String)], show_all: bool) {
+    use workgraph::usage::{self, MAX_HELP_COMMANDS};
+
+    let mut shown = std::collections::HashSet::new();
+    let to_show = if show_all {
+        subcommands.len()
+    } else {
+        MAX_HELP_COMMANDS.min(subcommands.len())
+    };
+
+    println!("Commands:");
+    let mut count = 0;
+
+    // First show commands in curated order
+    for &default_cmd in usage::DEFAULT_ORDER {
+        if count >= to_show {
+            break;
+        }
+        if let Some((name, about)) = subcommands.iter().find(|(n, _)| n == default_cmd) {
+            println!("  {:15} {}", name, about);
+            shown.insert(name.clone());
+            count += 1;
+        }
+    }
+
+    // Then show remaining alphabetically
+    let mut remaining: Vec<_> = subcommands
+        .iter()
+        .filter(|(n, _)| !shown.contains(n))
+        .collect();
+    remaining.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, about) in remaining {
+        if count >= to_show {
+            break;
+        }
+        println!("  {:15} {}", name, about);
+        count += 1;
+    }
+
+    if !show_all && subcommands.len() > MAX_HELP_COMMANDS {
+        println!(
+            "  ... and {} more (--help-all)",
+            subcommands.len() - MAX_HELP_COMMANDS
+        );
+    }
 }
 
 /// Get the command name from a Commands enum variant for usage tracking
