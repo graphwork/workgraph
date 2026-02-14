@@ -924,6 +924,9 @@ fn defer_self_mutation(
         model: None,
         verify: Some("Human must approve evolver self-mutation before applying.".to_string()),
         agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
     };
 
     graph.add_node(Node::Task(task));

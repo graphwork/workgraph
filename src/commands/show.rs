@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
+use workgraph::graph::{LogEntry, LoopEdge, LoopGuard, Status};
 use workgraph::parser::load_graph;
 use workgraph::query::build_reverse_index;
 
@@ -68,6 +69,12 @@ struct TaskDetails {
     verify: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    loops_to: Vec<LoopEdge>,
+    #[serde(skip_serializing_if = "is_zero")]
+    loop_iteration: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready_after: Option<String>,
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -149,6 +156,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         model: task.model.clone(),
         verify: task.verify.clone(),
         agent: task.agent.clone(),
+        loops_to: task.loops_to.clone(),
+        loop_iteration: task.loop_iteration,
+        ready_after: task.ready_after.clone(),
     };
 
     if json {
@@ -256,6 +266,35 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
+    // Loop edges
+    if !details.loops_to.is_empty() || details.loop_iteration > 0 {
+        println!();
+        println!("Loops:");
+        for edge in &details.loops_to {
+            let guard_str = match &edge.guard {
+                Some(LoopGuard::TaskStatus { task, status }) => {
+                    format!(", guard: task:{}={}", task, format_status(status))
+                }
+                Some(LoopGuard::IterationLessThan(n)) => {
+                    format!(", guard: iteration<{}", n)
+                }
+                Some(LoopGuard::Always) => ", guard: always".to_string(),
+                None => String::new(),
+            };
+            let delay_str = match &edge.delay {
+                Some(d) => format!(", delay: {}", d),
+                None => String::new(),
+            };
+            println!(
+                "  → {} (max: {}{}{})",
+                edge.target, edge.max_iterations, guard_str, delay_str,
+            );
+        }
+        if details.loop_iteration > 0 {
+            println!("  Current iteration: {}", details.loop_iteration);
+        }
+    }
+
     println!();
 
     // Timestamps
@@ -271,6 +310,9 @@ fn print_human_readable(details: &TaskDetails) {
     if let Some(ref not_before) = details.not_before {
         println!("Not before: {}", not_before);
     }
+    if let Some(ref ready_after) = details.ready_after {
+        println!("Ready after: {}{}", ready_after, format_countdown(ready_after));
+    }
 
     // Log entries
     if !details.log.is_empty() {
@@ -284,6 +326,31 @@ fn print_human_readable(details: &TaskDetails) {
                 .unwrap_or_default();
             println!("  {} {}{}", entry.timestamp, entry.message, actor_str);
         }
+    }
+}
+
+/// Format a timestamp as a countdown string if it's in the future, or "(elapsed)" if in the past.
+fn format_countdown(timestamp: &str) -> String {
+    let Ok(ts) = timestamp.parse::<DateTime<Utc>>() else {
+        return String::new();
+    };
+    let now = Utc::now();
+    if ts <= now {
+        return " (elapsed)".to_string();
+    }
+    let secs = (ts - now).num_seconds();
+    if secs < 60 {
+        format!(" (in {}s)", secs)
+    } else if secs < 3600 {
+        format!(" (in {}m {}s)", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!(" (in {}h {}m)", h, m)
+    } else {
+        let d = secs / 86400;
+        let h = (secs % 86400) / 3600;
+        format!(" (in {}d {}h)", d, h)
     }
 }
 
@@ -332,6 +399,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -396,6 +466,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

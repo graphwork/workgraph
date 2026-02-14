@@ -1,4 +1,4 @@
-/// DAG layout engine using the ascii-dag crate.
+/// Graph layout engine using the ascii-dag crate.
 ///
 /// This module uses ascii-dag for the Sugiyama layout algorithm and produces
 /// a layout suitable for rendering with Unicode box-drawing characters in a
@@ -71,6 +71,21 @@ pub struct BackEdge {
     pub segments: Vec<(usize, usize)>,
 }
 
+/// A loop edge representing a conditional re-activation edge (loops_to).
+/// Distinct from back-edges: loop edges are explicit user-defined re-activation
+/// paths, rendered in magenta dashed style with iteration count labels.
+#[derive(Debug, Clone)]
+pub struct LoopLayoutEdge {
+    pub from_id: String,
+    pub to_id: String,
+    /// Current iteration count on the target task
+    pub iteration: u32,
+    /// Maximum iterations allowed
+    pub max_iterations: u32,
+    /// Segments to draw: list of (x, y) points forming a polyline
+    pub segments: Vec<(usize, usize)>,
+}
+
 /// The complete layout result.
 #[derive(Debug)]
 pub struct DagLayout {
@@ -78,6 +93,8 @@ pub struct DagLayout {
     pub edges: Vec<LayoutEdge>,
     /// Back-edges representing cycles in the graph
     pub back_edges: Vec<BackEdge>,
+    /// Loop edges (loops_to) — distinct from back-edges
+    pub loop_edges: Vec<LoopLayoutEdge>,
     /// Total width of the layout canvas in characters
     pub width: usize,
     /// Total height of the layout canvas in characters
@@ -215,6 +232,7 @@ impl DagLayout {
                 nodes: Vec::new(),
                 edges: Vec::new(),
                 back_edges: Vec::new(),
+                loop_edges: Vec::new(),
                 width: 0,
                 height: 0,
                 id_to_idx: HashMap::new(),
@@ -440,10 +458,30 @@ impl DagLayout {
             })
             .collect();
 
+        // Build loop edges from tasks' loops_to fields
+        let mut layout_loop_edges: Vec<LoopLayoutEdge> = Vec::new();
+        for task in tasks.values() {
+            for loop_edge in &task.loops_to {
+                if tasks.contains_key(&loop_edge.target) {
+                    let target_task = &tasks[&loop_edge.target];
+                    layout_loop_edges.push(LoopLayoutEdge {
+                        from_id: task.id.clone(),
+                        to_id: loop_edge.target.clone(),
+                        iteration: target_task.loop_iteration,
+                        max_iterations: loop_edge.max_iterations,
+                        segments: Vec::new(), // Will be routed in reroute_edges
+                    });
+                }
+            }
+        }
+        // Sort for deterministic ordering
+        layout_loop_edges.sort_by(|a, b| (&a.from_id, &a.to_id).cmp(&(&b.from_id, &b.to_id)));
+
         Self {
             nodes: layout_nodes,
             edges: layout_edges,
             back_edges: layout_back_edges,
+            loop_edges: layout_loop_edges,
             width: max_width + LEFT_MARGIN,
             height: total_height,
             id_to_idx,
@@ -499,8 +537,9 @@ pub fn center_layers(layout: &mut DagLayout) {
         node.x = node.x - min_x + offset + LEFT_MARGIN;
     }
 
-    // Recompute total width, adding extra margin for back-edge routing if cycles exist
-    let extra_margin = if layout.has_cycles { BACK_EDGE_MARGIN } else { 0 };
+    // Recompute total width, adding extra margin for back-edge/loop-edge routing
+    let has_side_edges = layout.has_cycles || !layout.loop_edges.is_empty();
+    let extra_margin = if has_side_edges { BACK_EDGE_MARGIN } else { 0 };
     layout.width = layout
         .nodes
         .iter()
@@ -638,6 +677,55 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
 
         layout.back_edges = new_back_edges;
     }
+
+    // Route loop edges (loops_to) — these go along the right side, offset from back-edges
+    if !layout.loop_edges.is_empty() {
+        let max_x = layout
+            .nodes
+            .iter()
+            .map(|n| n.x + n.w)
+            .max()
+            .unwrap_or(0);
+
+        // Offset loop edges after any back-edges to avoid overlap
+        let back_edge_count = layout.back_edges.len();
+
+        let mut new_loop_edges: Vec<LoopLayoutEdge> = Vec::new();
+        for (i, loop_edge) in layout.loop_edges.iter().enumerate() {
+            let from_idx = layout.id_to_idx.get(&loop_edge.from_id);
+            let to_idx = layout.id_to_idx.get(&loop_edge.to_id);
+
+            let (from_node, to_node) = match (from_idx, to_idx) {
+                (Some(&fi), Some(&ti)) => (&layout.nodes[fi], &layout.nodes[ti]),
+                _ => continue,
+            };
+
+            // Route along the right side, offset from back-edges
+            let route_x = max_x + 1 + back_edge_count + i;
+
+            // Determine routing direction: source → right margin → target
+            let from_x = from_node.x + from_node.w - 1;
+            let from_y = from_node.y + from_node.h - 1;
+            let to_x = to_node.x + to_node.w - 1;
+            let to_y = to_node.y;
+
+            let mut segments = Vec::new();
+            segments.push((from_x, from_y));
+            segments.push((route_x, from_y));
+            segments.push((route_x, to_y));
+            segments.push((to_x, to_y));
+
+            new_loop_edges.push(LoopLayoutEdge {
+                from_id: loop_edge.from_id.clone(),
+                to_id: loop_edge.to_id.clone(),
+                iteration: loop_edge.iteration,
+                max_iterations: loop_edge.max_iterations,
+                segments,
+            });
+        }
+
+        layout.loop_edges = new_loop_edges;
+    }
 }
 
 // ── Rendering to a character buffer ─────────────────────────────────────
@@ -672,6 +760,12 @@ pub enum CellStyle {
     BackEdge,
     /// Back-edge arrow (upward pointing)
     BackEdgeArrow,
+    /// Loop edge line (loops_to - magenta dashed)
+    LoopEdge,
+    /// Loop edge arrow
+    LoopEdgeArrow,
+    /// Loop edge label (iteration count)
+    LoopEdgeLabel,
 }
 
 impl Default for Cell {
@@ -929,6 +1023,111 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
         }
     }
 
+    // Draw loop edges (loops_to) with distinct magenta dashed styling
+    for loop_edge in &layout.loop_edges {
+        let segs = &loop_edge.segments;
+        if segs.len() < 2 {
+            continue;
+        }
+
+        // Draw each segment of the loop edge
+        for i in 0..segs.len() - 1 {
+            let (x1, y1) = segs[i];
+            let (x2, y2) = segs[i + 1];
+
+            if x1 == x2 {
+                // Vertical segment
+                let min_y = y1.min(y2);
+                let max_y = y1.max(y2);
+                for cy in min_y..=max_y {
+                    if cy < height && x1 < width {
+                        let existing = &buf[cy][x1];
+                        if existing.style == CellStyle::Empty
+                            || existing.style == CellStyle::Edge
+                            || existing.style == CellStyle::LoopEdge
+                        {
+                            buf[cy][x1] = Cell { ch: '┆', style: CellStyle::LoopEdge };
+                        }
+                    }
+                }
+            } else if y1 == y2 {
+                // Horizontal segment
+                let min_x = x1.min(x2);
+                let max_x = x1.max(x2);
+                for cx in min_x..=max_x {
+                    if y1 < height && cx < width {
+                        let existing = &buf[y1][cx];
+                        if existing.style == CellStyle::Empty
+                            || existing.style == CellStyle::Edge
+                            || existing.style == CellStyle::LoopEdge
+                        {
+                            buf[y1][cx] = Cell { ch: '┄', style: CellStyle::LoopEdge };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw corners at segment joints
+        for i in 1..segs.len() - 1 {
+            let (x, y) = segs[i];
+            if y < height && x < width {
+                let (px, py) = segs[i - 1];
+                let (nx, ny) = segs[i + 1];
+
+                let from_left = px < x;
+                let from_right = px > x;
+                let from_above = py < y;
+                let from_below = py > y;
+                let to_left = nx < x;
+                let to_right = nx > x;
+                let to_above = ny < y;
+                let to_below = ny > y;
+
+                let corner_ch = if (from_left || to_left) && (from_above || to_above) {
+                    '┘'
+                } else if (from_right || to_right) && (from_above || to_above) {
+                    '└'
+                } else if (from_left || to_left) && (from_below || to_below) {
+                    '┐'
+                } else if (from_right || to_right) && (from_below || to_below) {
+                    '┌'
+                } else {
+                    '+'
+                };
+
+                buf[y][x] = Cell { ch: corner_ch, style: CellStyle::LoopEdge };
+            }
+        }
+
+        // Draw arrow at the target (last segment end)
+        if let Some(&(tx, ty)) = segs.last() {
+            if ty < height && tx < width {
+                buf[ty][tx] = Cell { ch: '◀', style: CellStyle::LoopEdgeArrow };
+            }
+        }
+
+        // Draw iteration label on the vertical segment (if there's room)
+        // Format: "N/M" where N is current iteration and M is max
+        let label = format!("{}/{}", loop_edge.iteration, loop_edge.max_iterations);
+        if segs.len() >= 3 {
+            // The vertical segment is between segs[1] and segs[2]
+            let (vx, vy1) = segs[1];
+            let (_, vy2) = segs[2];
+            let min_vy = vy1.min(vy2);
+            let max_vy = vy1.max(vy2);
+            let mid_y = (min_vy + max_vy) / 2;
+
+            // Place label characters starting at mid_y on the vertical segment column
+            for (ci, ch) in label.chars().enumerate() {
+                let ly = mid_y + ci;
+                if ly < height && ly <= max_vy && vx < width {
+                    buf[ly][vx] = Cell { ch, style: CellStyle::LoopEdgeLabel };
+                }
+            }
+        }
+    }
+
     buf
 }
 
@@ -1115,6 +1314,9 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            loops_to: Vec::new(),
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

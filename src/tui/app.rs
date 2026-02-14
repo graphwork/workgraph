@@ -110,7 +110,7 @@ pub enum View {
     Dashboard,
     /// Log viewer for a specific agent
     LogView,
-    /// Graph explorer showing dependency DAG
+    /// Graph explorer showing dependency graph
     GraphExplorer,
 }
 
@@ -265,7 +265,7 @@ pub struct TaskAgentInfo {
 pub enum GraphViewMode {
     /// Indented tree list (original)
     Tree,
-    /// Visual DAG layout with boxes and edges
+    /// Visual graph layout with boxes and edges
     Dag,
 }
 
@@ -287,15 +287,15 @@ pub struct GraphExplorer {
     pub agent_map: HashMap<String, TaskAgentInfo>,
     /// Indices of rows that have active agents (for 'a' cycling)
     pub agent_active_indices: Vec<usize>,
-    /// Current view mode (tree or DAG)
+    /// Current view mode (tree or graph)
     pub view_mode: GraphViewMode,
-    /// Cached DAG layout (computed on rebuild when in DAG mode)
+    /// Cached graph layout (computed on rebuild when in graph mode)
     pub dag_layout: Option<DagLayout>,
-    /// Selected node index in DAG mode
+    /// Selected node index in graph mode
     pub dag_selected: usize,
-    /// Horizontal scroll offset for DAG view
+    /// Horizontal scroll offset for graph view
     pub dag_scroll_x: usize,
-    /// Vertical scroll offset for DAG view
+    /// Vertical scroll offset for graph view
     pub dag_scroll_y: usize,
 }
 
@@ -495,7 +495,7 @@ impl GraphExplorer {
         }
     }
 
-    /// Toggle between tree and DAG view modes
+    /// Toggle between tree and graph view modes
     pub fn toggle_view_mode(&mut self) {
         self.view_mode = match self.view_mode {
             GraphViewMode::Tree => GraphViewMode::Dag,
@@ -580,9 +580,9 @@ impl GraphExplorer {
     }
 }
 
-/// Build the flattened tree representation of the task DAG.
+/// Build the flattened tree representation of the task dependency graph.
 ///
-/// Strategy: topological sort, then render tasks as an indented tree.
+/// Strategy: DFS from root nodes, then render tasks as an indented tree.
 /// Root nodes are tasks with no `blocked_by`. Each task is shown indented
 /// under its last blocker. Tasks with multiple blockers get a back-reference
 /// marker under earlier blockers.

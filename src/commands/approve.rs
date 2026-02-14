@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
+use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query;
 
@@ -62,10 +62,18 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>) -> Result<()> {
         message: "Work approved and marked done".to_string(),
     });
 
+    // Evaluate loop edges: re-activate upstream tasks if conditions are met
+    let id_owned = task_id.to_string();
+    let reactivated = evaluate_loop_edges(&mut graph, &id_owned);
+
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     println!("Approved task '{}' - now done", task_id);
+
+    for tid in &reactivated {
+        println!("  Loop: re-activated '{}'", tid);
+    }
 
     Ok(())
 }

@@ -64,6 +64,7 @@ struct TaskSummaryInfo {
     in_progress: usize,
     ready: usize,
     blocked: usize,
+    delayed: usize,
     done_today: usize,
     done_total: usize,
 }
@@ -211,6 +212,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
             in_progress: 0,
             ready: 0,
             blocked: 0,
+            delayed: 0,
             done_today: 0,
             done_total: 0,
         });
@@ -221,12 +223,14 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
     let ready_ids: std::collections::HashSet<&str> =
         ready_tasks_list.iter().map(|t| t.id.as_str()).collect();
 
+    let now = Utc::now();
     let mut in_progress = 0;
     let mut blocked = 0;
+    let mut delayed = 0;
     let mut done_today = 0;
     let mut done_total = 0;
 
-    let today_start = Utc::now()
+    let today_start = now
         .date_naive()
         .and_hms_opt(0, 0, 0)
         .unwrap()
@@ -236,7 +240,23 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
         match task.status {
             Status::Open => {
                 if !ready_ids.contains(task.id.as_str()) {
-                    blocked += 1;
+                    // Distinguish delayed (waiting on ready_after) from blocked (waiting on deps)
+                    let has_future_ready_after = task.ready_after.as_ref().map_or(false, |ra| {
+                        ra.parse::<DateTime<Utc>>()
+                            .map(|ts| ts > now)
+                            .unwrap_or(false)
+                    });
+                    let all_blockers_done = task.blocked_by.iter().all(|bid| {
+                        graph
+                            .get_task(bid)
+                            .map(|t| t.status == Status::Done)
+                            .unwrap_or(true)
+                    });
+                    if has_future_ready_after && all_blockers_done {
+                        delayed += 1;
+                    } else {
+                        blocked += 1;
+                    }
                 }
             }
             Status::InProgress | Status::PendingReview => {
@@ -266,6 +286,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
         in_progress,
         ready: ready_tasks_list.len(),
         blocked,
+        delayed,
         done_today,
         done_total,
     })
@@ -359,11 +380,17 @@ fn print_status(status: &StatusOutput) {
 
     // Line: Task summary
     println!();
+    let delayed_str = if status.tasks.delayed > 0 {
+        format!(", {} delayed", status.tasks.delayed)
+    } else {
+        String::new()
+    };
     println!(
-        "Tasks: {} in-progress, {} ready, {} blocked, {} done (today: {})",
+        "Tasks: {} in-progress, {} ready, {} blocked{}, {} done (today: {})",
         status.tasks.in_progress,
         status.tasks.ready,
         status.tasks.blocked,
+        delayed_str,
         status.tasks.done_total,
         status.tasks.done_today
     );
@@ -455,6 +482,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

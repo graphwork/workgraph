@@ -54,6 +54,9 @@ fn make_task(id: &str, title: &str) -> Task {
         model: None,
         verify: None,
         agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
     }
 }
 
@@ -263,6 +266,9 @@ fn build_assign_subgraph(dir: &Path) {
             model: None,
             verify: None,
             agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));
@@ -1132,6 +1138,9 @@ Begin working on the task now.
             model: None,
             verify: None,
             agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
         };
 
         // Wire up: assign-rust-feature blocks rust-feature

@@ -1,4 +1,4 @@
-use crate::graph::WorkGraph;
+use crate::graph::{LoopGuard, WorkGraph};
 use std::collections::HashSet;
 
 /// Result of checking the graph for issues
@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub struct CheckResult {
     pub cycles: Vec<Vec<String>>,
     pub orphan_refs: Vec<OrphanRef>,
+    pub loop_edge_issues: Vec<LoopEdgeIssue>,
     pub ok: bool,
 }
 
@@ -15,6 +16,27 @@ pub struct OrphanRef {
     pub from: String,
     pub to: String,
     pub relation: String,
+}
+
+/// An issue with a loop edge
+#[derive(Debug, Clone)]
+pub struct LoopEdgeIssue {
+    pub from: String,
+    pub target: String,
+    pub kind: LoopEdgeIssueKind,
+}
+
+/// Types of loop edge issues
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoopEdgeIssueKind {
+    /// Target task does not exist
+    TargetNotFound,
+    /// max_iterations is 0 (loop will never fire)
+    ZeroMaxIterations,
+    /// Guard references a task that does not exist
+    GuardTaskNotFound(String),
+    /// Self-loop: a task loops_to itself (immediate re-open on done)
+    SelfLoop,
 }
 
 /// Check for cycles in task dependencies
@@ -71,6 +93,55 @@ fn find_cycles(
     rec_stack.remove(node_id);
 }
 
+/// Check loop edges for validity and safety issues
+pub fn check_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeIssue> {
+    let mut issues = Vec::new();
+
+    for task in graph.tasks() {
+        for edge in &task.loops_to {
+            // Self-loop: a task cannot loops_to itself
+            if edge.target == task.id {
+                issues.push(LoopEdgeIssue {
+                    from: task.id.clone(),
+                    target: edge.target.clone(),
+                    kind: LoopEdgeIssueKind::SelfLoop,
+                });
+            }
+
+            // Target must exist
+            if graph.get_task(&edge.target).is_none() {
+                issues.push(LoopEdgeIssue {
+                    from: task.id.clone(),
+                    target: edge.target.clone(),
+                    kind: LoopEdgeIssueKind::TargetNotFound,
+                });
+            }
+
+            // max_iterations must be > 0
+            if edge.max_iterations == 0 {
+                issues.push(LoopEdgeIssue {
+                    from: task.id.clone(),
+                    target: edge.target.clone(),
+                    kind: LoopEdgeIssueKind::ZeroMaxIterations,
+                });
+            }
+
+            // Guard task references must exist
+            if let Some(LoopGuard::TaskStatus { task: guard_task, .. }) = &edge.guard {
+                if graph.get_task(guard_task).is_none() {
+                    issues.push(LoopEdgeIssue {
+                        from: task.id.clone(),
+                        target: edge.target.clone(),
+                        kind: LoopEdgeIssueKind::GuardTaskNotFound(guard_task.clone()),
+                    });
+                }
+            }
+        }
+    }
+
+    issues
+}
+
 /// Check for references to non-existent nodes
 pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
     let mut orphans = Vec::new();
@@ -114,11 +185,16 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
 pub fn check_all(graph: &WorkGraph) -> CheckResult {
     let cycles = check_cycles(graph);
     let orphan_refs = check_orphans(graph);
-    let ok = cycles.is_empty() && orphan_refs.is_empty();
+    let loop_edge_issues = check_loop_edges(graph);
+
+    // loops_to cycles are INTENTIONAL — only blocked_by cycles and orphan refs
+    // and loop edge issues make the graph invalid
+    let ok = cycles.is_empty() && orphan_refs.is_empty() && loop_edge_issues.is_empty();
 
     CheckResult {
         cycles,
         orphan_refs,
+        loop_edge_issues,
         ok,
     }
 }
@@ -156,6 +232,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -286,5 +365,193 @@ mod tests {
         let result = check_all(&graph);
         assert!(!result.ok);
         assert!(!result.cycles.is_empty());
+    }
+
+    // --- Loop edge validation tests ---
+
+    use crate::graph::LoopEdge;
+
+    #[test]
+    fn test_no_loop_issues_for_valid_edges() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: None,
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let issues = check_loop_edges(&graph);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_loop_target_not_found() {
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.loops_to = vec![LoopEdge {
+            target: "nonexistent".to_string(),
+            guard: None,
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+
+        let issues = check_loop_edges(&graph);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, LoopEdgeIssueKind::TargetNotFound);
+    }
+
+    #[test]
+    fn test_loop_zero_max_iterations() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: None,
+            max_iterations: 0,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let issues = check_loop_edges(&graph);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, LoopEdgeIssueKind::ZeroMaxIterations);
+    }
+
+    #[test]
+    fn test_loop_guard_task_not_found() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: Some(crate::graph::LoopGuard::TaskStatus {
+                task: "nonexistent".to_string(),
+                status: Status::Done,
+            }),
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let issues = check_loop_edges(&graph);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0].kind,
+            LoopEdgeIssueKind::GuardTaskNotFound("nonexistent".to_string())
+        );
+    }
+
+    #[test]
+    fn test_loop_self_loop() {
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: None,
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+
+        let issues = check_loop_edges(&graph);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, LoopEdgeIssueKind::SelfLoop);
+    }
+
+    #[test]
+    fn test_loop_multiple_issues_same_edge() {
+        let mut graph = WorkGraph::new();
+        // Self-loop with zero max_iterations — should report both issues
+        let mut t1 = make_task("t1", "Task 1");
+        t1.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: None,
+            max_iterations: 0,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+
+        let issues = check_loop_edges(&graph);
+        assert_eq!(issues.len(), 2);
+        let kinds: Vec<&LoopEdgeIssueKind> = issues.iter().map(|i| &i.kind).collect();
+        assert!(kinds.contains(&&LoopEdgeIssueKind::SelfLoop));
+        assert!(kinds.contains(&&LoopEdgeIssueKind::ZeroMaxIterations));
+    }
+
+    #[test]
+    fn test_check_all_ok_with_valid_loop_edges() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: None,
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let result = check_all(&graph);
+        assert!(result.ok);
+        assert!(result.loop_edge_issues.is_empty());
+    }
+
+    #[test]
+    fn test_check_all_not_ok_with_loop_edge_issues() {
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.loops_to = vec![LoopEdge {
+            target: "nonexistent".to_string(),
+            guard: None,
+            max_iterations: 3,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+
+        let result = check_all(&graph);
+        assert!(!result.ok);
+        assert!(!result.loop_edge_issues.is_empty());
+    }
+
+    #[test]
+    fn test_valid_guard_task_reference() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let t2 = make_task("t2", "Task 2");
+        let mut t3 = make_task("t3", "Task 3");
+        t3.loops_to = vec![LoopEdge {
+            target: "t1".to_string(),
+            guard: Some(crate::graph::LoopGuard::TaskStatus {
+                task: "t2".to_string(),
+                status: Status::Done,
+            }),
+            max_iterations: 5,
+            delay: None,
+        }];
+
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let issues = check_loop_edges(&graph);
+        assert!(issues.is_empty());
     }
 }

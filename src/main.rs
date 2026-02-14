@@ -97,6 +97,22 @@ enum Commands {
         /// Verification criteria - task requires review before done
         #[arg(long)]
         verify: Option<String>,
+
+        /// Create a loop edge back to target task (re-activates on completion)
+        #[arg(long = "loops-to")]
+        loops_to: Option<String>,
+
+        /// Maximum loop iterations (required with --loops-to)
+        #[arg(long = "loop-max")]
+        loop_max: Option<u32>,
+
+        /// Guard condition for loop: 'task:<id>=<status>' or 'always'
+        #[arg(long = "loop-guard")]
+        loop_guard: Option<String>,
+
+        /// Delay between loop iterations (e.g., 30s, 5m, 1h, 24h, 7d)
+        #[arg(long = "loop-delay")]
+        loop_delay: Option<String>,
     },
 
     /// Edit an existing task
@@ -139,6 +155,30 @@ enum Commands {
         /// Remove a required skill
         #[arg(long = "remove-skill")]
         remove_skill: Vec<String>,
+
+        /// Add a loop edge back to target task (re-activates on completion)
+        #[arg(long = "add-loops-to")]
+        add_loops_to: Option<String>,
+
+        /// Maximum loop iterations (used with --add-loops-to)
+        #[arg(long = "loop-max")]
+        loop_max: Option<u32>,
+
+        /// Guard condition for loop: 'task:<id>=<status>' or 'always'
+        #[arg(long = "loop-guard")]
+        loop_guard: Option<String>,
+
+        /// Delay between loop iterations (e.g., 30s, 5m, 1h, 24h, 7d)
+        #[arg(long = "loop-delay")]
+        loop_delay: Option<String>,
+
+        /// Remove a loop edge to target task
+        #[arg(long = "remove-loops-to")]
+        remove_loops_to: Option<String>,
+
+        /// Manually override the loop iteration counter on this task
+        #[arg(long = "loop-iteration")]
+        loop_iteration: Option<u32>,
     },
 
     /// Mark a task as done (fails for verified tasks - use submit instead)
@@ -416,7 +456,7 @@ enum Commands {
         output: Option<String>,
     },
 
-    /// Show ASCII DAG of the dependency graph
+    /// Show ASCII dependency graph
     Dag {
         /// Include done tasks (default: only open tasks)
         #[arg(long)]
@@ -1482,6 +1522,10 @@ fn main() -> Result<()> {
             max_retries,
             model,
             verify,
+            loops_to,
+            loop_max,
+            loop_guard,
+            loop_delay,
         } => commands::add::run(
             &workgraph_dir,
             &title,
@@ -1498,6 +1542,10 @@ fn main() -> Result<()> {
             max_retries,
             model.as_deref(),
             verify.as_deref(),
+            loops_to.as_deref(),
+            loop_max,
+            loop_guard.as_deref(),
+            loop_delay.as_deref(),
         ),
         Commands::Edit {
             id,
@@ -1510,6 +1558,12 @@ fn main() -> Result<()> {
             model,
             add_skill,
             remove_skill,
+            add_loops_to,
+            loop_max,
+            loop_guard,
+            loop_delay,
+            remove_loops_to,
+            loop_iteration,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -1522,6 +1576,12 @@ fn main() -> Result<()> {
             model.as_deref(),
             &add_skill,
             &remove_skill,
+            add_loops_to.as_deref(),
+            loop_max,
+            loop_guard.as_deref(),
+            loop_delay.as_deref(),
+            remove_loops_to.as_deref(),
+            loop_iteration,
         ),
         Commands::Done { id } => commands::done::run(&workgraph_dir, &id),
         Commands::Submit { id, actor } => commands::submit::run(&workgraph_dir, &id, actor.as_deref()),

@@ -336,6 +336,63 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
         });
     }
 
+    // Loop edge validation
+    if !check_result.loop_edge_issues.is_empty() {
+        let details: Vec<String> = check_result
+            .loop_edge_issues
+            .iter()
+            .map(|issue| {
+                use workgraph::check::LoopEdgeIssueKind;
+                match &issue.kind {
+                    LoopEdgeIssueKind::TargetNotFound => {
+                        format!("{} -> {} (target not found)", issue.from, issue.target)
+                    }
+                    LoopEdgeIssueKind::ZeroMaxIterations => {
+                        format!("{} -> {} (max_iterations=0)", issue.from, issue.target)
+                    }
+                    LoopEdgeIssueKind::GuardTaskNotFound(guard_task) => {
+                        format!("{} -> {} (guard task '{}' not found)", issue.from, issue.target, guard_task)
+                    }
+                    LoopEdgeIssueKind::SelfLoop => {
+                        format!("{} -> {} (self-loop)", issue.from, issue.target)
+                    }
+                }
+            })
+            .collect();
+        issues.push(StructuralIssue {
+            severity: Severity::Critical,
+            message: format!("{} loop edge issue(s) found", check_result.loop_edge_issues.len()),
+            details: Some(details),
+        });
+    }
+
+    // Loop edge summary (informational)
+    let total_loop_edges: usize = graph.tasks().map(|t| t.loops_to.len()).sum();
+    if total_loop_edges > 0 {
+        let active_count = graph
+            .tasks()
+            .flat_map(|t| t.loops_to.iter().map(move |e| (t, e)))
+            .filter(|(_t, e)| {
+                graph
+                    .get_task(&e.target)
+                    .map(|target| target.loop_iteration < e.max_iterations)
+                    .unwrap_or(false)
+            })
+            .count();
+        let exhausted_count = total_loop_edges - active_count;
+
+        if check_result.loop_edge_issues.is_empty() {
+            issues.push(StructuralIssue {
+                severity: Severity::Ok,
+                message: format!(
+                    "{} loop edge(s) ({} active, {} exhausted)",
+                    total_loop_edges, active_count, exhausted_count
+                ),
+                details: None,
+            });
+        }
+    }
+
     StructuralHealth { issues }
 }
 
@@ -819,6 +876,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

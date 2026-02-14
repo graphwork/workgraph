@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::check::check_cycles;
-use workgraph::graph::WorkGraph;
+use workgraph::graph::{LoopGuard, WorkGraph};
 use workgraph::parser::load_graph;
 
 use super::graph_path;
@@ -89,6 +89,57 @@ fn format_cycle_path(cycle: &[String]) -> String {
     path
 }
 
+/// Information about a loop edge for display
+#[derive(Debug, Clone)]
+pub struct LoopEdgeInfo {
+    pub source: String,
+    pub target: String,
+    pub guard: String,
+    pub max_iterations: u32,
+    pub current_iteration: u32,
+    pub active: bool,
+    pub delay: Option<String>,
+}
+
+/// Format a LoopGuard as a human-readable string
+fn format_guard(guard: &Option<LoopGuard>) -> String {
+    match guard {
+        None => "none (always)".to_string(),
+        Some(LoopGuard::Always) => "always".to_string(),
+        Some(LoopGuard::IterationLessThan(n)) => format!("iteration < {}", n),
+        Some(LoopGuard::TaskStatus { task, status }) => {
+            format!("task:{}={:?}", task, status)
+        }
+    }
+}
+
+/// Collect all loop edge info from the graph
+fn collect_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeInfo> {
+    let mut edges = Vec::new();
+
+    for task in graph.tasks() {
+        for edge in &task.loops_to {
+            let current_iteration = graph
+                .get_task(&edge.target)
+                .map(|t| t.loop_iteration)
+                .unwrap_or(0);
+            let active = current_iteration < edge.max_iterations;
+
+            edges.push(LoopEdgeInfo {
+                source: task.id.clone(),
+                target: edge.target.clone(),
+                guard: format_guard(&edge.guard),
+                max_iterations: edge.max_iterations,
+                current_iteration,
+                active,
+                delay: edge.delay.clone(),
+            });
+        }
+    }
+
+    edges
+}
+
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let path = graph_path(dir);
 
@@ -98,27 +149,16 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     let graph = load_graph(&path).context("Failed to load graph")?;
     let cycles = check_cycles(&graph);
-
-    if cycles.is_empty() {
-        if json {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "cycles_detected": 0,
-                "cycles": []
-            }))?);
-        } else {
-            println!("No cycles detected.");
-        }
-        return Ok(());
-    }
-
-    // Classify all cycles
-    let classified: Vec<ClassifiedCycle> = cycles
-        .iter()
-        .map(|cycle| classify_cycle(cycle, &graph))
-        .collect();
+    let loop_edges = collect_loop_edges(&graph);
 
     if json {
-        let output: Vec<_> = classified
+        // Classify cycles
+        let classified: Vec<ClassifiedCycle> = cycles
+            .iter()
+            .map(|cycle| classify_cycle(cycle, &graph))
+            .collect();
+
+        let cycles_output: Vec<_> = classified
             .iter()
             .map(|c| {
                 serde_json::json!({
@@ -135,54 +175,122 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
 
+        let loop_edges_output: Vec<_> = loop_edges
+            .iter()
+            .map(|e| {
+                let mut obj = serde_json::json!({
+                    "source": e.source,
+                    "target": e.target,
+                    "guard": e.guard,
+                    "max_iterations": e.max_iterations,
+                    "current_iteration": e.current_iteration,
+                    "status": if e.active { "active" } else { "exhausted" },
+                });
+                if let Some(ref delay) = e.delay {
+                    obj["delay"] = serde_json::json!(delay);
+                }
+                obj
+            })
+            .collect();
+
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "cycles_detected": classified.len(),
-                "cycles": output
+                "cycles": cycles_output,
+                "loop_edges": loop_edges_output,
             }))?
         );
+        return Ok(());
+    }
+
+    // Human-readable output
+    // Section 1: Loop edges
+    if loop_edges.is_empty() {
+        println!("No loop edges defined.");
     } else {
-        println!("Cycles detected: {}\n", classified.len());
-
-        for (i, cycle) in classified.iter().enumerate() {
+        println!("Loop edges: {}\n", loop_edges.len());
+        for edge in &loop_edges {
+            let status = if edge.active { "ACTIVE" } else { "EXHAUSTED" };
             println!(
-                "{}. {} ({} nodes)",
-                i + 1,
-                cycle.classification.as_str(),
-                cycle.nodes.len()
+                "  {} --[loops_to]--> {}  [{}]",
+                edge.source, edge.target, status
             );
-            println!("   {}", format_cycle_path(&cycle.nodes));
-
-            // Only show reason for non-intentional cycles or if intentional (to show which tag)
-            match cycle.classification {
-                CycleClassification::Intentional => {
-                    println!("   ({})", cycle.reason);
-                }
-                _ => {
-                    println!("   Reason: {}", cycle.reason);
-                }
+            println!(
+                "    iterations: {}/{}  guard: {}",
+                edge.current_iteration, edge.max_iterations, edge.guard
+            );
+            if let Some(ref delay) = edge.delay {
+                println!("    delay: {}", delay);
             }
             println!();
         }
 
-        // Summary
-        let warnings = classified
-            .iter()
-            .filter(|c| c.classification == CycleClassification::Warning)
-            .count();
-        let infos = classified
-            .iter()
-            .filter(|c| c.classification == CycleClassification::Info)
-            .count();
-        let intentional = classified
-            .iter()
-            .filter(|c| c.classification == CycleClassification::Intentional)
-            .count();
+        let active_count = loop_edges.iter().filter(|e| e.active).count();
+        let exhausted_count = loop_edges.len() - active_count;
+        println!(
+            "Loop summary: {} active, {} exhausted\n",
+            active_count, exhausted_count
+        );
+    }
 
-        if warnings > 0 || infos > 0 {
-            println!("Summary: {} warning(s), {} info(s), {} intentional", warnings, infos, intentional);
+    // Section 2: blocked_by cycles (existing behavior)
+    if cycles.is_empty() {
+        if loop_edges.is_empty() {
+            println!("No blocked_by cycles detected.");
+        } else {
+            println!("No blocked_by cycles detected.");
         }
+        return Ok(());
+    }
+
+    // Classify all cycles
+    let classified: Vec<ClassifiedCycle> = cycles
+        .iter()
+        .map(|cycle| classify_cycle(cycle, &graph))
+        .collect();
+
+    println!("Blocked-by cycles detected: {}\n", classified.len());
+
+    for (i, cycle) in classified.iter().enumerate() {
+        println!(
+            "{}. {} ({} nodes)",
+            i + 1,
+            cycle.classification.as_str(),
+            cycle.nodes.len()
+        );
+        println!("   {}", format_cycle_path(&cycle.nodes));
+
+        match cycle.classification {
+            CycleClassification::Intentional => {
+                println!("   ({})", cycle.reason);
+            }
+            _ => {
+                println!("   Reason: {}", cycle.reason);
+            }
+        }
+        println!();
+    }
+
+    // Summary
+    let warnings = classified
+        .iter()
+        .filter(|c| c.classification == CycleClassification::Warning)
+        .count();
+    let infos = classified
+        .iter()
+        .filter(|c| c.classification == CycleClassification::Info)
+        .count();
+    let intentional = classified
+        .iter()
+        .filter(|c| c.classification == CycleClassification::Intentional)
+        .count();
+
+    if warnings > 0 || infos > 0 {
+        println!(
+            "Summary: {} warning(s), {} info(s), {} intentional",
+            warnings, infos, intentional
+        );
     }
 
     Ok(())
@@ -221,6 +329,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -252,6 +363,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

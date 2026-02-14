@@ -17,7 +17,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
+use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 
@@ -483,6 +483,9 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
         message: "Completed by autonomous agent".to_string(),
     });
 
+    // Evaluate loop edges: re-activate upstream tasks if conditions are met
+    evaluate_loop_edges(&mut graph, task_id);
+
     save_graph(&graph, &path).context("Failed to save graph")?;
     Ok(())
 }
@@ -544,6 +547,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

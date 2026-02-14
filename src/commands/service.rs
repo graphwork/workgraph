@@ -32,7 +32,7 @@ use chrono::Utc;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Node, Status, Task};
+use workgraph::graph::{evaluate_loop_edges, LogEntry, Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
@@ -429,6 +429,9 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 model: config.agency.assigner_model.clone(),
                 verify: None,
                 agent: config.agency.assigner_agent.clone(),
+                loops_to: vec![],
+                loop_iteration: 0,
+                ready_after: None,
             };
 
             graph.add_node(Node::Task(assign_task));
@@ -541,6 +544,9 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 model: config.agency.evaluator_model.clone(),
                 verify: None,
                 agent: config.agency.evaluator_agent.clone(),
+                loops_to: vec![],
+                loop_iteration: 0,
+                ready_after: None,
             };
 
             graph.add_node(Node::Task(eval_task));
@@ -689,6 +695,7 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
+    let mut tasks_completed_by_triage: Vec<String> = Vec::new();
 
     for (agent_id, task_id, pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
@@ -698,11 +705,15 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
                     // Run synchronous triage to assess progress
                     match run_triage(&config, task, output_file) {
                         Ok(verdict) => {
+                            let is_done = verdict.verdict == "done";
                             apply_triage_verdict(task, &verdict, agent_id, *pid);
                             eprintln!(
                                 "[coordinator] Triage for '{}': verdict={}, reason={}",
                                 task_id, verdict.verdict, verdict.reason
                             );
+                            if is_done && task.status == Status::Done {
+                                tasks_completed_by_triage.push(task_id.clone());
+                            }
                         }
                         Err(e) => {
                             // Triage failed, fall back to restart behavior
@@ -741,6 +752,11 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
                 tasks_modified = true;
             }
         }
+    }
+
+    // Evaluate loop edges for tasks that were triaged as done
+    for task_id in &tasks_completed_by_triage {
+        evaluate_loop_edges(&mut graph, task_id);
     }
 
     if tasks_modified {
@@ -2662,6 +2678,9 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
         let prompt = build_triage_prompt(&task, "some log output");
         assert!(prompt.contains("test-task"));
@@ -2730,6 +2749,9 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -2771,6 +2793,9 @@ poll_interval = 120
             model: None,
             verify: Some("Check tests pass".to_string()),
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -2810,6 +2835,9 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
         let verdict = TriageVerdict {
             verdict: "continue".to_string(),
@@ -2853,6 +2881,9 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
         let verdict = TriageVerdict {
             verdict: "restart".to_string(),

@@ -42,6 +42,9 @@ fn make_task(id: &str, title: &str, description: Option<&str>, tags: Vec<&str>, 
         model: None,
         verify: verify.map(|s| s.to_string()),
         agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
     }
 }
 

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
@@ -31,13 +32,19 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
     if json {
         let output: Vec<_> = tasks
             .iter()
-            .map(|t| serde_json::json!({
-                "id": t.id,
-                "title": t.title,
-                "status": t.status,
-                "assigned": t.assigned,
-                "blocked_by": t.blocked_by,
-            }))
+            .map(|t| {
+                let mut obj = serde_json::json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                    "assigned": t.assigned,
+                    "blocked_by": t.blocked_by,
+                });
+                if let Some(ref ra) = t.ready_after {
+                    obj["ready_after"] = serde_json::json!(ra);
+                }
+                obj
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -54,10 +61,36 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
                     Status::Abandoned => "[A]",
                     Status::PendingReview => "[R]",
                 };
-                println!("{} {} - {}", status, task.id, task.title);
+                let delay_str = format_ready_after_hint(task.ready_after.as_deref());
+                println!("{} {} - {}{}", status, task.id, task.title, delay_str);
             }
         }
     }
 
     Ok(())
+}
+
+/// If ready_after is set and in the future, return a hint string like " [ready in 5m 30s]".
+fn format_ready_after_hint(ready_after: Option<&str>) -> String {
+    let Some(ra) = ready_after else {
+        return String::new();
+    };
+    let Ok(ts) = ra.parse::<DateTime<Utc>>() else {
+        return String::new();
+    };
+    let now = Utc::now();
+    if ts <= now {
+        return String::new(); // Already elapsed
+    }
+    let secs = (ts - now).num_seconds();
+    let countdown = if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    };
+    format!(" [ready in {}]", countdown)
 }

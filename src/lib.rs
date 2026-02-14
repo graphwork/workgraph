@@ -13,7 +13,7 @@ pub mod service;
 pub mod agency;
 pub mod usage;
 
-pub use graph::{WorkGraph, Node, NodeKind, Task, Resource, Estimate, TrustLevel};
+pub use graph::{WorkGraph, Node, NodeKind, Task, Resource, Estimate, TrustLevel, evaluate_loop_edges};
 pub use parser::{load_graph, save_graph};
 pub use query::{build_reverse_index, ready_tasks, blocked_by, cost_of};
 pub use check::{check_cycles, check_orphans, CheckResult};

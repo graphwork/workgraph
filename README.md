@@ -424,7 +424,7 @@ The TUI has three views:
 
 **Dashboard** — split-pane showing tasks (left) and agents (right) with status bars.
 
-**Graph Explorer** — tree view of the dependency DAG with task status and active agent indicators.
+**Graph Explorer** — tree view of the dependency graph with task status and active agent indicators.
 
 **Log Viewer** — real-time tailing of agent output with auto-scroll.
 
@@ -454,7 +454,7 @@ The TUI has three views:
 |-----|--------|
 | `j` / `k` or `↑` / `↓` | Navigate up / down |
 | `h` / `l` or `←` / `→` | Collapse / expand subtree |
-| `d` | Toggle between tree and DAG view |
+| `d` | Toggle between tree and graph view |
 | `Enter` | View task details or jump to agent log |
 | `a` | Cycle to next task with active agents |
 | `r` | Refresh graph |

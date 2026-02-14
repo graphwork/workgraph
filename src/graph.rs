@@ -1,5 +1,53 @@
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+/// A loop edge: a conditional back-edge that can re-activate upstream tasks on completion.
+/// Loop edges are NOT blocking edges — they are separate from `blocked_by` and don't affect
+/// `ready_tasks()` or scheduling. They only fire when the source task completes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopEdge {
+    /// Task ID to re-activate when this task completes
+    pub target: String,
+    /// Condition that must be true to loop (None = always loop, up to max_iterations)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<LoopGuard>,
+    /// Hard cap on iterations (required — no unbounded loops)
+    pub max_iterations: u32,
+    /// How long to wait before re-activating the target (e.g. "30s", "5m", "1h", "24h").
+    /// When set, loop firing sets target.ready_after = now + delay instead of making it immediately ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<String>,
+}
+
+/// Guard condition for a loop edge
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LoopGuard {
+    /// Loop if a specific task has this status
+    TaskStatus { task: String, status: Status },
+    /// Loop if iteration count < N (redundant with max_iterations but explicit)
+    IterationLessThan(u32),
+    /// Always loop (up to max_iterations)
+    Always,
+}
+
+/// Parse a human-readable duration string like "30s", "5m", "1h", "24h" into seconds.
+/// Returns None if the string is not a valid duration.
+pub fn parse_delay(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num_part, unit) = s.split_at(s.len().saturating_sub(1));
+    let num: u64 = num_part.parse().ok()?;
+    match unit {
+        "s" => Some(num),
+        "m" => Some(num * 60),
+        "h" => Some(num * 3600),
+        "d" => Some(num * 86400),
+        _ => None,
+    }
+}
 
 /// A log entry for tracking progress/notes on a task
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +156,16 @@ pub struct Task {
     /// Agent assigned to this task (content-hash of an Agent in the agency)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Back-edges that can re-activate upstream tasks on completion
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops_to: Vec<LoopEdge>,
+    /// Current loop iteration (0 = first run, incremented on each re-activation)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub loop_iteration: u32,
+    /// Task is not ready until this timestamp (ISO 8601 / RFC 3339).
+    /// Set by loop edges with a delay — prevents immediate dispatch after re-activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready_after: Option<String>,
 }
 
 /// Legacy identity format: `{"role_id": "...", "motivation_id": "..."}`.
@@ -171,6 +229,12 @@ struct TaskHelper {
     verify: Option<String>,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    loops_to: Vec<LoopEdge>,
+    #[serde(default)]
+    loop_iteration: u32,
+    #[serde(default)]
+    ready_after: Option<String>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -220,6 +284,9 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             verify: helper.verify,
             agent,
+            loops_to: helper.loops_to,
+            loop_iteration: helper.loop_iteration,
+            ready_after: helper.ready_after,
         })
     }
 }
@@ -360,6 +427,192 @@ impl WorkGraph {
     }
 }
 
+/// Evaluate a loop guard condition against the current graph state.
+fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
+    match guard {
+        None => true, // No guard = always loop
+        Some(LoopGuard::Always) => true,
+        Some(LoopGuard::IterationLessThan(_n)) => {
+            // This is checked separately against the target's loop_iteration
+            true
+        }
+        Some(LoopGuard::TaskStatus { task, status }) => {
+            graph
+                .get_task(task)
+                .map(|t| t.status == *status)
+                .unwrap_or(false)
+        }
+    }
+}
+
+/// Evaluate loop edges after a task transitions to Done.
+///
+/// For each `LoopEdge` on the completed task:
+/// 1. Check guard condition against current graph state.
+/// 2. Check `target.loop_iteration < max_iterations`.
+/// 3. If both true: re-open the target task (set status to Open, clear
+///    assigned/started_at/completed_at, increment loop_iteration, optionally
+///    set ready_after if the edge has a delay).
+/// 4. Also re-open any intermediate tasks between source and target whose
+///    blockers are no longer all Done (since the target was just re-opened).
+///
+/// Returns the list of task IDs that were re-activated.
+pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String> {
+    // Collect loop edges from the source task (clone to avoid borrow issues)
+    let loop_edges: Vec<LoopEdge> = match graph.get_task(source_id) {
+        Some(task) => task.loops_to.clone(),
+        None => return vec![],
+    };
+
+    let mut reactivated = Vec::new();
+
+    for edge in &loop_edges {
+        // 1. Check guard condition
+        if !evaluate_guard(&edge.guard, graph) {
+            continue;
+        }
+
+        // Also check IterationLessThan guard specifically
+        if let Some(LoopGuard::IterationLessThan(n)) = &edge.guard {
+            let current_iter = graph
+                .get_task(&edge.target)
+                .map(|t| t.loop_iteration)
+                .unwrap_or(0);
+            if current_iter >= *n {
+                continue;
+            }
+        }
+
+        // 2. Check iteration limit
+        let current_iter = match graph.get_task(&edge.target) {
+            Some(target) => target.loop_iteration,
+            None => continue, // Target doesn't exist
+        };
+        if current_iter >= edge.max_iterations {
+            continue;
+        }
+
+        // 3. Re-activate the target task
+        let new_iteration = current_iter + 1;
+        let ready_after = edge.delay.as_ref().and_then(|d| {
+            parse_delay(d).map(|secs| {
+                (Utc::now() + Duration::seconds(secs as i64)).to_rfc3339()
+            })
+        });
+
+        if let Some(target) = graph.get_task_mut(&edge.target) {
+            target.status = Status::Open;
+            target.assigned = None;
+            target.started_at = None;
+            target.completed_at = None;
+            target.loop_iteration = new_iteration;
+            target.ready_after = ready_after;
+
+            target.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: None,
+                message: format!(
+                    "Re-activated by loop from {} (iteration {}/{})",
+                    source_id, new_iteration, edge.max_iterations
+                ),
+            });
+
+            reactivated.push(edge.target.clone());
+        }
+
+        // 4. Re-open intermediate tasks between target and source whose
+        //    blockers are no longer all Done.
+        //
+        //    We find tasks that transitively depend on the target (via blocked_by)
+        //    and are between the target and source in the dependency chain.
+        //    Per the design doc (section 2): intermediate tasks don't strictly
+        //    need explicit re-opening because ready_tasks() won't mark them
+        //    ready when their blocker is Open. However, if they were marked Done
+        //    from a previous iteration, we should re-open them so they run again.
+        let intermediates = find_intermediate_tasks(graph, &edge.target, source_id);
+        for mid_id in &intermediates {
+            if mid_id == source_id {
+                continue; // Don't re-open the source (it just completed)
+            }
+            if let Some(mid_task) = graph.get_task_mut(mid_id) {
+                if mid_task.status == Status::Done {
+                    mid_task.status = Status::Open;
+                    mid_task.assigned = None;
+                    mid_task.started_at = None;
+                    mid_task.completed_at = None;
+
+                    mid_task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: None,
+                        message: format!(
+                            "Re-opened: blocker '{}' was re-activated by loop from {}",
+                            edge.target, source_id
+                        ),
+                    });
+
+                    reactivated.push(mid_id.clone());
+                }
+            }
+        }
+    }
+
+    reactivated
+}
+
+/// Find tasks that are on the dependency path between `from` (the loop target)
+/// and `to` (the loop source). These are tasks that have `from` as a transitive
+/// blocker and are themselves transitive blockers of `to`.
+///
+/// Uses BFS forward from `from` along the reverse dependency graph (tasks blocked
+/// by `from`, tasks blocked by those, etc.) and stops at `to`.
+fn find_intermediate_tasks(graph: &WorkGraph, from: &str, to: &str) -> Vec<String> {
+    use std::collections::{HashSet, VecDeque};
+
+    // Build reverse index: task_id -> list of tasks that are blocked_by it
+    let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+    for task in graph.tasks() {
+        for blocker_id in &task.blocked_by {
+            dependents
+                .entry(blocker_id.clone())
+                .or_default()
+                .push(task.id.clone());
+        }
+    }
+
+    // BFS from `from` following dependents, collecting tasks until we reach `to`
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut result = Vec::new();
+
+    // Start with direct dependents of `from`
+    if let Some(deps) = dependents.get(from) {
+        for dep in deps {
+            if !visited.contains(dep.as_str()) {
+                visited.insert(dep.clone());
+                queue.push_back(dep.clone());
+            }
+        }
+    }
+
+    while let Some(current) = queue.pop_front() {
+        if current == to {
+            continue; // Don't include the source itself, and don't traverse past it
+        }
+        result.push(current.clone());
+
+        if let Some(deps) = dependents.get(&current) {
+            for dep in deps {
+                if !visited.contains(dep.as_str()) {
+                    visited.insert(dep.clone());
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +645,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

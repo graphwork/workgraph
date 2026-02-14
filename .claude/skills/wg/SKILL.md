@@ -44,7 +44,7 @@ wg agents --alive        # Only alive agents
 wg agents --working      # Only working agents
 wg service status        # Service health
 wg status                # Quick one-screen overview
-wg dag                   # ASCII DAG of dependencies
+wg dag                   # ASCII dependency graph
 wg tui                   # Interactive TUI dashboard
 ```
 
@@ -154,7 +154,7 @@ open → [claim] → in-progress → [done] → done
 
 | Command | Purpose |
 |---------|---------|
-| `wg dag` | ASCII DAG of open tasks |
+| `wg dag` | ASCII dependency graph of open tasks |
 | `wg dag --all` | Include done tasks |
 | `wg dag --status done` | Filter by status |
 | `wg viz --format dot` | Graphviz DOT output |

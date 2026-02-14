@@ -350,7 +350,8 @@ fn find_critical_path(graph: &WorkGraph) -> Option<CriticalPath> {
     let mut longest_hours: f64 = 0.0;
 
     for entry_id in entry_points {
-        let (path, hours) = find_longest_path_from(graph, &reverse_index, entry_id);
+        let mut visited = HashSet::new();
+        let (path, hours) = find_longest_path_from(graph, &reverse_index, entry_id, &mut visited);
         if hours > longest_hours || (hours == longest_hours && path.len() > longest_path.len()) {
             longest_path = path;
             longest_hours = hours;
@@ -372,11 +373,17 @@ fn find_longest_path_from(
     graph: &WorkGraph,
     reverse_index: &HashMap<String, Vec<String>>,
     start_id: &str,
+    visited: &mut HashSet<String>,
 ) -> (Vec<String>, f64) {
     let task = match graph.get_task(start_id) {
         Some(t) if t.status != Status::Done => t,
         _ => return (vec![], 0.0),
     };
+
+    // Cycle protection: skip nodes we've already visited in this path
+    if !visited.insert(start_id.to_string()) {
+        return (vec![], 0.0);
+    }
 
     let my_hours = task.estimate.as_ref().and_then(|e| e.hours).unwrap_or(0.0);
 
@@ -385,6 +392,7 @@ fn find_longest_path_from(
 
     if dependents.is_none() || dependents.unwrap().is_empty() {
         // No dependents, this is the end of the path
+        visited.remove(start_id);
         return (vec![start_id.to_string()], my_hours);
     }
 
@@ -393,12 +401,15 @@ fn find_longest_path_from(
     let mut best_hours: f64 = 0.0;
 
     for dep_id in dependents.unwrap() {
-        let (path, hours) = find_longest_path_from(graph, reverse_index, dep_id);
+        let (path, hours) = find_longest_path_from(graph, reverse_index, dep_id, visited);
         if hours > best_hours || (hours == best_hours && path.len() > best_path.len()) {
             best_path = path;
             best_hours = hours;
         }
     }
+
+    // Remove from visited so other paths can explore this node
+    visited.remove(start_id);
 
     // Prepend current task to the best path
     let mut full_path = vec![start_id.to_string()];
@@ -534,6 +545,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -794,5 +808,30 @@ mod tests {
 
         // Root blocks only 1 task, threshold is 2
         assert!(forecast.blockers.is_empty());
+    }
+
+    #[test]
+    fn test_critical_path_with_cycle() {
+        let mut graph = WorkGraph::new();
+
+        // Cycle: t1 -> t2 -> t3 -> t1
+        let mut t1 = make_task_with_hours("t1", "Task 1", 4.0);
+        t1.blocked_by = vec!["t3".to_string()];
+        graph.add_node(Node::Task(t1));
+
+        let mut t2 = make_task_with_hours("t2", "Task 2", 8.0);
+        t2.blocked_by = vec!["t1".to_string()];
+        graph.add_node(Node::Task(t2));
+
+        let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
+        t3.blocked_by = vec!["t2".to_string()];
+        graph.add_node(Node::Task(t3));
+
+        // Should not stack overflow - just completes without crashing
+        let forecast = calculate_forecast(&graph);
+
+        // All tasks form a cycle so none are entry points (all have incomplete blockers)
+        // The critical path may be None or may contain a subset, but must not crash
+        assert!(forecast.remaining_work.open_tasks + forecast.remaining_work.blocked_tasks > 0);
     }
 }

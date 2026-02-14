@@ -3,18 +3,31 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-/// Check if a task is past its not_before timestamp (or has no timestamp)
+/// Check if a task is past its not_before and ready_after timestamps (or has no timestamps)
 pub fn is_time_ready(task: &Task) -> bool {
-    match &task.not_before {
-        None => true,
-        Some(timestamp) => {
-            // Parse the timestamp - if invalid, treat as ready
-            match timestamp.parse::<DateTime<Utc>>() {
-                Ok(not_before) => Utc::now() >= not_before,
-                Err(_) => true, // Invalid timestamp = ready
+    let now = Utc::now();
+
+    // Check not_before
+    if let Some(timestamp) = &task.not_before {
+        if let Ok(not_before) = timestamp.parse::<DateTime<Utc>>() {
+            if now < not_before {
+                return false;
             }
         }
+        // Invalid timestamp = treat as ready (don't block)
     }
+
+    // Check ready_after (set by loop edges with delays)
+    if let Some(timestamp) = &task.ready_after {
+        if let Ok(ready_after) = timestamp.parse::<DateTime<Utc>>() {
+            if now < ready_after {
+                return false;
+            }
+        }
+        // Invalid timestamp = treat as ready (don't block)
+    }
+
+    true
 }
 
 /// Summary of project status
@@ -342,6 +355,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 

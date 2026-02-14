@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use workgraph::graph::{LoopEdge, parse_delay};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -20,6 +21,12 @@ pub fn run(
     model: Option<&str>,
     add_skill: &[String],
     remove_skill: &[String],
+    add_loops_to: Option<&str>,
+    loop_max: Option<u32>,
+    loop_guard: Option<&str>,
+    loop_delay: Option<&str>,
+    remove_loops_to: Option<&str>,
+    loop_iteration: Option<u32>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -124,6 +131,57 @@ pub fn run(
         }
     }
 
+    // Add loops_to edge
+    if let Some(target) = add_loops_to {
+        let max_iterations = loop_max
+            .ok_or_else(|| anyhow::anyhow!("--loop-max is required when using --add-loops-to"))?;
+        let guard = match loop_guard {
+            Some(expr) => Some(crate::commands::add::parse_guard_expr(expr)?),
+            None => None,
+        };
+        let delay = match loop_delay {
+            Some(d) => {
+                parse_delay(d)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d))?;
+                Some(d.to_string())
+            }
+            None => None,
+        };
+        // Check for duplicate target
+        if task.loops_to.iter().any(|e| e.target == target) {
+            println!("Already has loops_to edge targeting: {}", target);
+        } else {
+            task.loops_to.push(LoopEdge {
+                target: target.to_string(),
+                guard,
+                max_iterations,
+                delay,
+            });
+            println!("Added loops_to: {} (max_iterations: {})", target, max_iterations);
+            changed = true;
+        }
+    } else if loop_max.is_some() || loop_guard.is_some() || loop_delay.is_some() {
+        anyhow::bail!("--loop-max, --loop-guard, and --loop-delay require --add-loops-to");
+    }
+
+    // Remove loops_to edge
+    if let Some(target) = remove_loops_to {
+        if let Some(pos) = task.loops_to.iter().position(|e| e.target == target) {
+            task.loops_to.remove(pos);
+            println!("Removed loops_to: {}", target);
+            changed = true;
+        } else {
+            println!("No loops_to edge targeting: {}", target);
+        }
+    }
+
+    // Set loop_iteration directly
+    if let Some(iter) = loop_iteration {
+        task.loop_iteration = iter;
+        println!("Set loop_iteration: {}", iter);
+        changed = true;
+    }
+
     // Save if changes were made
     if changed {
         save_graph(&graph, &path).context("Failed to save graph")?;
@@ -167,6 +225,7 @@ mod tests {
             None,
             Some("sonnet"),
             None,
+            None, None, None, None,
         )?;
 
         Ok(())
@@ -189,6 +248,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -215,6 +275,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -241,6 +302,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -268,6 +330,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -294,6 +357,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -321,6 +385,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -347,6 +412,7 @@ mod tests {
             Some("opus"),
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -373,6 +439,7 @@ mod tests {
             None,
             &["skill2".to_string()],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -400,6 +467,7 @@ mod tests {
             None,
             &[],
             &["skill1".to_string()],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
 
@@ -426,6 +494,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -448,6 +517,7 @@ mod tests {
             None,
             &[],
             &[],
+            None, None, None, None, None, None,
         );
         assert!(result.is_ok());
     }

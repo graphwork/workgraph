@@ -103,7 +103,7 @@ pub fn run(dir: &Path, options: VizOptions) -> Result<()> {
     let output = match options.format {
         OutputFormat::Dot => generate_dot(&graph, &tasks_to_show, &task_ids, &critical_path_set),
         OutputFormat::Mermaid => {
-            generate_mermaid(&tasks_to_show, &task_ids, &critical_path_set)
+            generate_mermaid(&graph, &tasks_to_show, &task_ids, &critical_path_set)
         }
         OutputFormat::Ascii => {
             generate_ascii(&graph, &tasks_to_show, &task_ids)
@@ -245,6 +245,22 @@ fn generate_dot(
                 ));
             }
         }
+
+        // Loop edges (loops_to) — dashed magenta with iteration info
+        for loop_edge in &task.loops_to {
+            if task_ids.contains(loop_edge.target.as_str()) {
+                let label = format!("loop {}/{}",
+                    graph.get_task(&loop_edge.target)
+                        .map(|t| t.loop_iteration)
+                        .unwrap_or(0),
+                    loop_edge.max_iterations
+                );
+                lines.push(format!(
+                    "  \"{}\" -> \"{}\" [style=dashed, color=magenta, fontcolor=magenta, label=\"{}\"];",
+                    task.id, loop_edge.target, label
+                ));
+            }
+        }
     }
 
     lines.push("}".to_string());
@@ -253,6 +269,7 @@ fn generate_dot(
 }
 
 fn generate_mermaid(
+    graph: &WorkGraph,
     tasks: &[&workgraph::graph::Task],
     task_ids: &HashSet<&str>,
     critical_path: &HashSet<String>,
@@ -306,6 +323,27 @@ fn generate_mermaid(
         }
     }
 
+    // Print loop edges (loops_to) — dashed magenta
+    let mut has_loops = false;
+    for task in tasks {
+        for loop_edge in &task.loops_to {
+            if task_ids.contains(loop_edge.target.as_str()) {
+                if !has_loops {
+                    lines.push(String::new());
+                    lines.push("  %% Loop edges".to_string());
+                    has_loops = true;
+                }
+                let iter_count = graph.get_task(&loop_edge.target)
+                    .map(|t| t.loop_iteration)
+                    .unwrap_or(0);
+                lines.push(format!(
+                    "  {} -. \"loop {}/{}\" .-> {}",
+                    task.id, iter_count, loop_edge.max_iterations, loop_edge.target
+                ));
+            }
+        }
+    }
+
     // Print actor assignments
     let assigned_actors: HashSet<&str> = tasks
         .iter()
@@ -334,6 +372,13 @@ fn generate_mermaid(
             "  style {} stroke:#f00,stroke-width:3px",
             critical_nodes.join(",")
         ));
+    }
+
+    // Add loop edge styling
+    if has_loops {
+        lines.push(String::new());
+        lines.push("  %% Loop edge styling".to_string());
+        lines.push("  linkStyle default stroke:#ff00ff,stroke-dasharray: 5 5".to_string());
     }
 
     lines.join("\n")
@@ -468,7 +513,7 @@ fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Generate an ASCII DAG visualization that shows the dependency graph
+/// Generate an ASCII visualization that shows the dependency graph
 /// as a proper tree with indentation and branching characters.
 ///
 /// Layout strategy:
@@ -482,7 +527,7 @@ fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 /// - Independent tasks listed at bottom
 /// - Color coding by status via ANSI escape codes
 fn generate_ascii(
-    _graph: &WorkGraph,
+    graph: &WorkGraph,
     tasks: &[&workgraph::graph::Task],
     task_ids: &HashSet<&str>,
 ) -> String {
@@ -562,7 +607,23 @@ fn generate_ascii(
         let task = task_map.get(id);
         let color = task.map(|t| status_color(&t.status)).unwrap_or("");
         let status = task.map(|t| status_label(&t.status)).unwrap_or("unknown");
-        format!("{}{}{}  ({})", color, id, reset, status)
+        let loop_info = task
+            .filter(|t| !t.loops_to.is_empty() || t.loop_iteration > 0)
+            .map(|t| {
+                let mut parts = Vec::new();
+                for edge in &t.loops_to {
+                    let iter = graph.get_task(&edge.target)
+                        .map(|tgt| tgt.loop_iteration)
+                        .unwrap_or(0);
+                    parts.push(format!("↻{}:{}/{}", edge.target, iter, edge.max_iterations));
+                }
+                if t.loop_iteration > 0 {
+                    parts.push(format!("iter={}", t.loop_iteration));
+                }
+                format!("  [{}]", parts.join(", "))
+            })
+            .unwrap_or_default();
+        format!("{}{}{}  ({}){}", color, id, reset, status, loop_info)
     };
 
     // Find connected components using union-find
@@ -786,6 +847,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -820,6 +884,9 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         }
     }
 
@@ -895,7 +962,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 
-        let mermaid = generate_mermaid(&tasks, &task_ids, &critical_path);
+        let mermaid = generate_mermaid(&graph, &tasks, &task_ids, &critical_path);
         assert!(mermaid.contains("flowchart LR"));
         assert!(mermaid.contains("t1"));
     }
@@ -914,7 +981,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 
-        let mermaid = generate_mermaid(&tasks, &task_ids, &critical_path);
+        let mermaid = generate_mermaid(&graph, &tasks, &task_ids, &critical_path);
         assert!(mermaid.contains("t1 --> t2"));
     }
 

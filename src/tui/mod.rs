@@ -146,7 +146,7 @@ fn handle_graph_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Esc => app.close_graph_explorer(),
         KeyCode::Char('d') => {
-            // Toggle between tree and DAG view modes
+            // Toggle between tree and graph view modes
             if let Some(ref mut explorer) = app.graph_explorer {
                 explorer.toggle_view_mode();
             }
@@ -608,7 +608,7 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
             Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" q=quit ?=help Esc=back d=DAG j/k=nav h/l=fold Enter=details r=refresh{} ", agent_hint),
+            format!(" q=quit ?=help Esc=back d=graph j/k=nav h/l=fold Enter=details r=refresh{} ", agent_hint),
             Style::default().fg(Color::DarkGray),
         ),
     ]));
@@ -620,7 +620,7 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// Draw the DAG view of the graph explorer with box-drawing characters
+/// Draw the graph view of the graph explorer with box-drawing characters
 fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
     // Ensure viewport scrolling is up to date
     let size = frame.area();
@@ -633,7 +633,7 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
         .split(size);
 
     let block = Block::default()
-        .title(" Graph Explorer [DAG] ")
+        .title(" Graph Explorer [Graph] ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
 
@@ -762,7 +762,7 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// Draw the help bar for the DAG view
+/// Draw the help bar for the graph view
 fn draw_dag_help_bar(frame: &mut Frame, explorer: &app::GraphExplorer, area: Rect) {
     let has_active = explorer.agent_active_indices.len();
     let agent_hint = if has_active > 0 {
@@ -791,9 +791,15 @@ fn draw_dag_help_bar(frame: &mut Frame, explorer: &app::GraphExplorer, area: Rec
         .map(|l| l.back_edges.len())
         .unwrap_or(0);
 
+    let loop_count = explorer
+        .dag_layout
+        .as_ref()
+        .map(|l| l.loop_edges.len())
+        .unwrap_or(0);
+
     let mut spans = vec![
         Span::styled(
-            " DAG View ",
+            " Graph View ",
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -807,6 +813,16 @@ fn draw_dag_help_bar(frame: &mut Frame, explorer: &app::GraphExplorer, area: Rec
             format!(" ⟳{} ", cycle_count),
             Style::default()
                 .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Show loop edge indicator if loop edges exist
+    if loop_count > 0 {
+        spans.push(Span::styled(
+            format!(" ↻{} ", loop_count),
+            Style::default()
+                .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -848,6 +864,14 @@ fn cell_style_to_ratatui(cell_style: CellStyle) -> Style {
             .fg(Color::Magenta),
         CellStyle::BackEdgeArrow => Style::default()
             .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+        CellStyle::LoopEdge => Style::default()
+            .fg(Color::LightMagenta),
+        CellStyle::LoopEdgeArrow => Style::default()
+            .fg(Color::LightMagenta)
+            .add_modifier(Modifier::BOLD),
+        CellStyle::LoopEdgeLabel => Style::default()
+            .fg(Color::LightMagenta)
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -999,6 +1023,43 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
             lines.push(Line::from(Span::styled(
                 format!("  - {}", d),
                 Style::default().fg(Color::White),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Loop info
+    if !task.loops_to.is_empty() || task.loop_iteration > 0 {
+        lines.push(Line::from(Span::styled(
+            "Loops:",
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for edge in &task.loops_to {
+            let guard_str = match &edge.guard {
+                Some(workgraph::graph::LoopGuard::TaskStatus { task: t, status: s }) => {
+                    format!(", guard: {}={:?}", t, s)
+                }
+                Some(workgraph::graph::LoopGuard::IterationLessThan(n)) => {
+                    format!(", guard: iter<{}", n)
+                }
+                Some(workgraph::graph::LoopGuard::Always) => ", guard: always".to_string(),
+                None => String::new(),
+            };
+            let delay_str = match &edge.delay {
+                Some(d) => format!(", delay: {}", d),
+                None => String::new(),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  -> {} (max: {}{}{})", edge.target, edge.max_iterations, guard_str, delay_str),
+                Style::default().fg(Color::LightMagenta),
+            )));
+        }
+        if task.loop_iteration > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("  Current iteration: {}", task.loop_iteration),
+                Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
             )));
         }
         lines.push(Line::from(""));
@@ -1382,9 +1443,9 @@ fn draw_help_overlay(frame: &mut Frame, current_view: &View) {
         binding("r", "Refresh data"),
         blank(),
         heading("Graph Explorer"),
-        binding("d", "Toggle Tree / DAG view"),
+        binding("d", "Toggle Tree / Graph view"),
         binding("j / k", "Navigate up / down"),
-        binding("h / l", "Collapse/expand (tree) or scroll (DAG)"),
+        binding("h / l", "Collapse/expand (tree) or scroll (graph)"),
         binding("Enter", "View details or agent log"),
         binding("a", "Cycle to next active agent"),
         binding("r", "Refresh graph"),
