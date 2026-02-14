@@ -6,9 +6,9 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
+use workgraph::MatrixConfig;
 use workgraph::graph::{Status, Task};
 use workgraph::parser::load_graph;
-use workgraph::MatrixConfig;
 
 // Use the appropriate Matrix client based on the enabled feature
 #[cfg(feature = "matrix")]
@@ -55,23 +55,44 @@ pub fn run(
     let path = graph_path(dir);
 
     if !path.exists() {
-        return output_error(json, task_id, None, "Workgraph not initialized. Run 'wg init' first.");
+        return output_error(
+            json,
+            task_id,
+            None,
+            "Workgraph not initialized. Run 'wg init' first.",
+        );
     }
 
     // Load task
     let graph = match load_graph(&path) {
         Ok(g) => g,
-        Err(e) => return output_error(json, task_id, None, &format!("Failed to load graph: {}", e)),
+        Err(e) => {
+            return output_error(json, task_id, None, &format!("Failed to load graph: {}", e));
+        }
     };
     let task = match graph.get_task(task_id) {
         Some(t) => t,
-        None => return output_error(json, task_id, None, &format!("Task '{}' not found", task_id)),
+        None => {
+            return output_error(
+                json,
+                task_id,
+                None,
+                &format!("Task '{}' not found", task_id),
+            );
+        }
     };
 
     // Load Matrix config
     let matrix_config = match MatrixConfig::load() {
         Ok(c) => c,
-        Err(e) => return output_error(json, task_id, None, &format!("Failed to load Matrix config: {}", e)),
+        Err(e) => {
+            return output_error(
+                json,
+                task_id,
+                None,
+                &format!("Failed to load Matrix config: {}", e),
+            );
+        }
     };
 
     if !matrix_config.has_credentials() {
@@ -85,7 +106,9 @@ pub fn run(
     }
 
     // Determine room to send to
-    let target_room = room.map(|r| r.to_string()).or(matrix_config.default_room.clone());
+    let target_room = room
+        .map(|r| r.to_string())
+        .or(matrix_config.default_room.clone());
     let target_room = match target_room {
         Some(r) => r,
         None => {
@@ -94,7 +117,7 @@ pub fn run(
                 task_id,
                 None,
                 "No room specified. Use --room or configure a default room with 'wg config --room <room>'",
-            )
+            );
         }
     };
 
@@ -190,7 +213,10 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
         plain.push_str("\n\n");
     }
 
-    plain.push_str(&format!("{} Task: {} ({})\n", status_emoji, task.title, task.id));
+    plain.push_str(&format!(
+        "{} Task: {} ({})\n",
+        status_emoji, task.title, task.id
+    ));
     plain.push_str(&format!("Status: {}\n", status_str));
 
     if let Some(ref desc) = task.description {
@@ -229,10 +255,7 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
         escape_html(&task.id)
     ));
 
-    html.push_str(&format!(
-        "<p><strong>Status:</strong> {}</p>",
-        status_str
-    ));
+    html.push_str(&format!("<p><strong>Status:</strong> {}</p>", status_str));
 
     if let Some(ref desc) = task.description {
         html.push_str(&format!(

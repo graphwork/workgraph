@@ -18,8 +18,7 @@ use std::time::{Duration, Instant};
 /// Get the path to the compiled `wg` binary (from target/debug or target/release).
 fn wg_binary() -> PathBuf {
     // Use the binary built by `cargo test` in the same target directory
-    let mut path = std::env::current_exe()
-        .expect("could not get current exe path");
+    let mut path = std::env::current_exe().expect("could not get current exe path");
     // current_exe is something like target/debug/deps/integration_service-<hash>
     // Go up to target/debug/
     path.pop(); // remove the binary name
@@ -506,12 +505,7 @@ executor = "shell"
     );
 
     // Add a long-running task
-    add_shell_task(
-        &wg_dir,
-        "long-task",
-        "Long Running Task",
-        "sleep 300",
-    );
+    add_shell_task(&wg_dir, "long-task", "Long Running Task", "sleep 300");
     notify_graph_changed(&wg_dir);
 
     // Wait for the task to be picked up
@@ -633,13 +627,11 @@ executor = "shell"
     );
 
     // Find the new alive agent for long-task
-    let new_agent = agents
-        .values()
-        .find(|a| {
-            a["task_id"].as_str() == Some("long-task")
-                && a["id"].as_str() != Some(&agent_id)
-                && a["status"].as_str() != Some("dead")
-        });
+    let new_agent = agents.values().find(|a| {
+        a["task_id"].as_str() == Some("long-task")
+            && a["id"].as_str() != Some(&agent_id)
+            && a["status"].as_str() != Some("dead")
+    });
     assert!(
         new_agent.is_some(),
         "Should have a new agent working on long-task"

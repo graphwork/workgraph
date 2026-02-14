@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::check::{check_all, LoopEdgeIssueKind};
+use workgraph::check::{LoopEdgeIssueKind, check_all};
 use workgraph::parser::load_graph;
 
 use super::graph_path;
@@ -31,7 +31,10 @@ pub fn run(dir: &Path) -> Result<()> {
     if !result.orphan_refs.is_empty() {
         println!("Error: Orphan references:");
         for orphan in &result.orphan_refs {
-            println!("  {} --[{}]--> {} (not found)", orphan.from, orphan.relation, orphan.to);
+            println!(
+                "  {} --[{}]--> {} (not found)",
+                orphan.from, orphan.relation, orphan.to
+            );
             errors += 1;
         }
     }
@@ -42,16 +45,28 @@ pub fn run(dir: &Path) -> Result<()> {
         for issue in &result.loop_edge_issues {
             let desc = match &issue.kind {
                 LoopEdgeIssueKind::TargetNotFound => {
-                    format!("{} --[loops_to]--> {} (target not found)", issue.from, issue.target)
+                    format!(
+                        "{} --[loops_to]--> {} (target not found)",
+                        issue.from, issue.target
+                    )
                 }
                 LoopEdgeIssueKind::ZeroMaxIterations => {
-                    format!("{} --[loops_to]--> {} (max_iterations is 0, loop will never fire)", issue.from, issue.target)
+                    format!(
+                        "{} --[loops_to]--> {} (max_iterations is 0, loop will never fire)",
+                        issue.from, issue.target
+                    )
                 }
                 LoopEdgeIssueKind::GuardTaskNotFound(guard_task) => {
-                    format!("{} --[loops_to]--> {} (guard references non-existent task '{}')", issue.from, issue.target, guard_task)
+                    format!(
+                        "{} --[loops_to]--> {} (guard references non-existent task '{}')",
+                        issue.from, issue.target, guard_task
+                    )
                 }
                 LoopEdgeIssueKind::SelfLoop => {
-                    format!("{} --[loops_to]--> {} (self-loop: task would immediately re-open on completion)", issue.from, issue.target)
+                    format!(
+                        "{} --[loops_to]--> {} (self-loop: task would immediately re-open on completion)",
+                        issue.from, issue.target
+                    )
                 }
             };
             println!("  {}", desc);
@@ -173,7 +188,10 @@ mod tests {
         // Cycles are warnings, not errors — run should succeed
         // (the command only bails on errors > 0, not warnings)
         let result = run(&dir);
-        assert!(result.is_ok(), "cycles alone should not cause check failure (they are warnings)");
+        assert!(
+            result.is_ok(),
+            "cycles alone should not cause check failure (they are warnings)"
+        );
     }
 
     #[test]

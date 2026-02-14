@@ -32,7 +32,7 @@ use chrono::Utc;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{evaluate_loop_edges, LogEntry, Node, Status, Task};
+use workgraph::graph::{LogEntry, Node, Status, Task, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
@@ -158,11 +158,22 @@ pub fn tail_log(dir: &Path, n: usize, level_filter: Option<&str>) -> Vec<String>
     let lines: Vec<&str> = content.lines().collect();
     let filtered: Vec<String> = if let Some(level) = level_filter {
         let tag = format!("[{}]", level);
-        lines.iter().filter(|l| l.contains(&tag)).map(|l| l.to_string()).collect()
+        lines
+            .iter()
+            .filter(|l| l.contains(&tag))
+            .map(|l| l.to_string())
+            .collect()
     } else {
         lines.iter().map(|l| l.to_string()).collect()
     };
-    filtered.into_iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+    filtered
+        .into_iter()
+        .rev()
+        .take(n)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 /// Default socket path (project-specific, inside .workgraph dir)
@@ -199,12 +210,13 @@ impl ServiceState {
     pub fn save(&self, dir: &Path) -> Result<()> {
         let service_dir = dir.join("service");
         if !service_dir.exists() {
-            fs::create_dir_all(&service_dir)
-                .with_context(|| format!("Failed to create service directory at {:?}", service_dir))?;
+            fs::create_dir_all(&service_dir).with_context(|| {
+                format!("Failed to create service directory at {:?}", service_dir)
+            })?;
         }
         let path = state_file_path(dir);
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize service state")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize service state")?;
         fs::write(&path, content)
             .with_context(|| format!("Failed to write service state to {:?}", path))?;
         Ok(())
@@ -290,7 +302,12 @@ pub struct TickResult {
 }
 
 /// Single coordinator tick: spawn agents on ready tasks
-pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Option<&str>) -> Result<TickResult> {
+pub fn coordinator_tick(
+    dir: &Path,
+    max_agents: usize,
+    executor: &str,
+    model: Option<&str>,
+) -> Result<TickResult> {
     let graph_path = graph_path(dir);
 
     // Load config for agency settings
@@ -299,18 +316,31 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
     // Clean up dead agents: process exited
     let finished_agents = cleanup_dead_agents(dir, &graph_path)?;
     if !finished_agents.is_empty() {
-        eprintln!("[coordinator] Cleaned up {} dead agent(s): {:?}", finished_agents.len(), finished_agents);
+        eprintln!(
+            "[coordinator] Cleaned up {} dead agent(s): {:?}",
+            finished_agents.len(),
+            finished_agents
+        );
     }
 
     // Now count truly alive agents (process still running)
     let registry = AgentRegistry::load(dir)?;
-    let alive_count = registry.agents.values()
+    let alive_count = registry
+        .agents
+        .values()
         .filter(|a| a.is_alive() && is_process_alive(a.pid))
         .count();
 
     if alive_count >= max_agents {
-        eprintln!("[coordinator] Max agents ({}) running, waiting...", max_agents);
-        return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
+        eprintln!(
+            "[coordinator] Max agents ({}) running, waiting...",
+            max_agents
+        );
+        return Ok(TickResult {
+            agents_alive: alive_count,
+            tasks_ready: 0,
+            agents_spawned: 0,
+        });
     }
 
     // Load graph once at the start
@@ -327,7 +357,11 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
             } else {
                 eprintln!("[coordinator] No ready tasks (done: {}/{})", done, total);
             }
-            return Ok(TickResult { agents_alive: alive_count, tasks_ready: 0, agents_spawned: 0 });
+            return Ok(TickResult {
+                agents_alive: alive_count,
+                tasks_ready: 0,
+                agents_spawned: 0,
+            });
         }
     }
 
@@ -347,13 +381,25 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         // Collect task data to avoid holding references while mutating graph
         let ready_task_data: Vec<_> = {
             let ready = ready_tasks(&graph);
-            ready.iter()
-                .map(|t| (t.id.clone(), t.title.clone(), t.description.clone(),
-                          t.skills.clone(), t.agent.clone(), t.assigned.clone(), t.tags.clone()))
+            ready
+                .iter()
+                .map(|t| {
+                    (
+                        t.id.clone(),
+                        t.title.clone(),
+                        t.description.clone(),
+                        t.skills.clone(),
+                        t.agent.clone(),
+                        t.assigned.clone(),
+                        t.tags.clone(),
+                    )
+                })
                 .collect()
         };
 
-        for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags) in ready_task_data {
+        for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags) in
+            ready_task_data
+        {
             // Skip tasks that already have an agent or are already claimed
             if task_agent.is_some() || task_assigned.is_some() {
                 continue;
@@ -362,7 +408,10 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
             // Skip tasks tagged with assignment/evaluation/evolution to prevent
             // infinite regress (assign-assign-assign-...)
             let dominated_tags = ["assignment", "evaluation", "evolution"];
-            if task_tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if task_tags
+                .iter()
+                .any(|tag| dominated_tags.contains(&tag.as_str()))
+            {
                 continue;
             }
 
@@ -545,7 +594,10 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
                 }
                 // Skip tasks tagged with evaluation/assignment/evolution
                 let dominated_tags = ["evaluation", "assignment", "evolution"];
-                if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+                if t.tags
+                    .iter()
+                    .any(|tag| dominated_tags.contains(&tag.as_str()))
+                {
                     return false;
                 }
                 // Skip tasks assigned to human agents
@@ -654,7 +706,10 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
     // Save graph once if it was modified during auto-assign or auto-evaluate
     if graph_modified {
         if let Err(e) = save_graph(&graph, &graph_path) {
-            eprintln!("[coordinator] Failed to save graph after auto-assign/auto-evaluate: {}", e);
+            eprintln!(
+                "[coordinator] Failed to save graph after auto-assign/auto-evaluate: {}",
+                e
+            );
         }
     }
 
@@ -672,16 +727,19 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         }
 
         // Resolve executor: agent.executor > config.coordinator.executor
-        let effective_executor = task.agent.as_ref()
-            .and_then(|agent_hash| {
-                agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()
-            })
+        let effective_executor = task
+            .agent
+            .as_ref()
+            .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok())
             .map(|agent| agent.executor)
             .unwrap_or_else(|| executor.to_string());
 
         // Task-level model takes priority over service-level model
         let effective_model = task.model.as_deref().or(model);
-        eprintln!("[coordinator] Spawning agent for: {} - {} (executor: {})", task.id, task.title, effective_executor);
+        eprintln!(
+            "[coordinator] Spawning agent for: {} - {} (executor: {})",
+            task.id, task.title, effective_executor
+        );
         match spawn::spawn_agent(dir, &task.id, &effective_executor, None, effective_model) {
             Ok((agent_id, pid)) => {
                 eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
@@ -693,7 +751,11 @@ pub fn coordinator_tick(dir: &Path, max_agents: usize, executor: &str, model: Op
         }
     }
 
-    Ok(TickResult { agents_alive: alive_count + spawned, tasks_ready: final_ready.len(), agents_spawned: spawned })
+    Ok(TickResult {
+        agents_alive: alive_count + spawned,
+        tasks_ready: final_ready.len(),
+        agents_spawned: spawned,
+    })
 }
 
 /// Reason an agent was detected as dead
@@ -722,10 +784,19 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
 
     // Find agents that are dead: process gone
-    let dead: Vec<_> = locked_registry.agents.values()
+    let dead: Vec<_> = locked_registry
+        .agents
+        .values()
         .filter_map(|a| {
-            detect_dead_reason(a)
-                .map(|reason| (a.id.clone(), a.task_id.clone(), a.pid, a.output_file.clone(), reason))
+            detect_dead_reason(a).map(|reason| {
+                (
+                    a.id.clone(),
+                    a.task_id.clone(),
+                    a.pid,
+                    a.output_file.clone(),
+                    reason,
+                )
+            })
         })
         .collect();
 
@@ -831,7 +902,10 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     let graph = load_graph(graph_path).context("Failed to reload graph for output capture")?;
     for (_agent_id, task_id, _pid, _output_file, _reason) in &dead {
         if let Some(task) = graph.get_task(task_id) {
-            if matches!(task.status, Status::Done | Status::PendingReview | Status::Failed) {
+            if matches!(
+                task.status,
+                Status::Done | Status::PendingReview | Status::Failed
+            ) {
                 let output_dir = dir.join("output").join(task_id);
                 if !output_dir.exists() {
                     if let Err(e) = agency::capture_task_output(dir, task) {
@@ -840,7 +914,10 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
                             task_id, e
                         );
                     } else {
-                        eprintln!("[coordinator] Captured output for completed task '{}'", task_id);
+                        eprintln!(
+                            "[coordinator] Captured output for completed task '{}'",
+                            task_id
+                        );
                     }
                 }
             }
@@ -902,7 +979,11 @@ fn read_truncated_log(path: &str, max_bytes: usize) -> String {
     match file.read_exact(&mut buf) {
         Ok(_) => {
             // Find the first newline after the seek point to avoid partial lines
-            let start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+            let start = buf
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
             let text = String::from_utf8_lossy(&buf[start..]).to_string();
             format!("[... {} bytes truncated ...]\n{}", skip + start, text)
         }
@@ -973,7 +1054,11 @@ fn run_triage(config: &Config, task: &Task, output_file: &str) -> Result<TriageV
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Triage claude call failed (exit {:?}): {}", output.status.code(), stderr.chars().take(200).collect::<String>());
+        anyhow::bail!(
+            "Triage claude call failed (exit {:?}): {}",
+            output.status.code(),
+            stderr.chars().take(200).collect::<String>()
+        );
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -988,7 +1073,10 @@ fn run_triage(config: &Config, task: &Task, output_file: &str) -> Result<TriageV
     // Validate verdict value
     match verdict.verdict.as_str() {
         "done" | "continue" | "restart" => Ok(verdict),
-        other => anyhow::bail!("Invalid triage verdict '{}', expected done/continue/restart", other),
+        other => anyhow::bail!(
+            "Invalid triage verdict '{}', expected done/continue/restart",
+            other
+        ),
     }
 }
 
@@ -1093,21 +1181,29 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
 /// Generate systemd user service file
 /// Uses `wg service start` as ExecStart; settings come from config.toml
 pub fn generate_systemd_service(dir: &Path) -> Result<()> {
-    let workdir = dir.canonicalize()
-        .unwrap_or_else(|_| dir.to_path_buf());
+    let workdir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
 
     // Derive a project identifier from the directory basename for unique service naming
-    let project_name = workdir.file_name()
+    let project_name = workdir
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("default");
     // Sanitize for systemd unit naming: keep alphanumerics, hyphens, underscores
-    let project_name: String = project_name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+    let project_name: String = project_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let unit_name = format!("wg-{project_name}");
 
     // ExecStart uses `wg service start` - the service daemon includes the coordinator
-    let service_content = format!(r#"[Unit]
+    let service_content = format!(
+        r#"[Unit]
 Description=Workgraph Service ({project_name})
 After=network.target
 
@@ -1125,7 +1221,10 @@ WantedBy=default.target
         project_name = project_name,
         workdir = workdir.display(),
         wg = std::env::current_exe()?.display(),
-        wg_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display(),
+        wg_dir = dir
+            .canonicalize()
+            .unwrap_or_else(|_| dir.to_path_buf())
+            .display(),
     );
 
     // Write to ~/.config/systemd/user/wg-{project_name}.service
@@ -1158,7 +1257,12 @@ WantedBy=default.target
 }
 
 /// Run a single coordinator tick (debug/testing command)
-pub fn run_tick(dir: &Path, max_agents: Option<usize>, executor: Option<&str>, model: Option<&str>) -> Result<()> {
+pub fn run_tick(
+    dir: &Path,
+    max_agents: Option<usize>,
+    executor: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
     let config = Config::load(dir)?;
     let max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let executor = executor
@@ -1170,13 +1274,21 @@ pub fn run_tick(dir: &Path, max_agents: Option<usize>, executor: Option<&str>, m
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    let model = model.map(|s| s.to_string()).or_else(|| config.coordinator.model.clone());
-    println!("Running single coordinator tick (max_agents={}, executor={}, model={})...",
-             max_agents, &executor, model.as_deref().unwrap_or("default"));
+    let model = model
+        .map(|s| s.to_string())
+        .or_else(|| config.coordinator.model.clone());
+    println!(
+        "Running single coordinator tick (max_agents={}, executor={}, model={})...",
+        max_agents,
+        &executor,
+        model.as_deref().unwrap_or("default")
+    );
     match coordinator_tick(dir, max_agents, &executor, model.as_deref()) {
         Ok(result) => {
-            println!("Tick complete: {} alive, {} ready, {} spawned",
-                     result.agents_alive, result.tasks_ready, result.agents_spawned);
+            println!(
+                "Tick complete: {} alive, {} ready, {} spawned",
+                result.agents_alive, result.tasks_ready, result.agents_spawned
+            );
         }
         Err(e) => eprintln!("Coordinator tick error: {}", e),
     }
@@ -1266,7 +1378,16 @@ impl IpcResponse {
 
 /// Start the service daemon
 #[cfg(unix)]
-pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_agents: Option<usize>, executor: Option<&str>, interval: Option<u64>, model: Option<&str>, json: bool) -> Result<()> {
+pub fn run_start(
+    dir: &Path,
+    socket_path: Option<&str>,
+    _port: Option<u16>,
+    max_agents: Option<usize>,
+    executor: Option<&str>,
+    interval: Option<u64>,
+    model: Option<&str>,
+    json: bool,
+) -> Result<()> {
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
         if is_process_running(state.pid) {
@@ -1298,14 +1419,20 @@ pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_
     }
 
     // Fork the daemon process
-    let current_exe = std::env::current_exe()
-        .context("Failed to get current executable path")?;
+    let current_exe = std::env::current_exe().context("Failed to get current executable path")?;
 
     let dir_str = dir.to_string_lossy().to_string();
     let socket_str = socket.to_string_lossy().to_string();
 
     // Start daemon in background
-    let mut args = vec!["--dir".to_string(), dir_str.clone(), "service".to_string(), "daemon".to_string(), "--socket".to_string(), socket_str.clone()];
+    let mut args = vec![
+        "--dir".to_string(),
+        dir_str.clone(),
+        "service".to_string(),
+        "daemon".to_string(),
+        "--socket".to_string(),
+        socket_str.clone(),
+    ];
     if let Some(n) = max_agents {
         args.push("--max-agents".to_string());
         args.push(n.to_string());
@@ -1395,15 +1522,26 @@ pub fn run_start(dir: &Path, socket_path: Option<&str>, _port: Option<u16>, max_
         println!("Socket: {}", socket_str);
         println!("Log: {}", log_path_str);
         let model_str = eff_model.as_deref().unwrap_or("default");
-        println!("Coordinator: max_agents={}, poll_interval={}s, executor={}, model={}",
-                 eff_max_agents, eff_poll_interval, eff_executor, model_str);
+        println!(
+            "Coordinator: max_agents={}, poll_interval={}s, executor={}, model={}",
+            eff_max_agents, eff_poll_interval, eff_executor, model_str
+        );
     }
 
     Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn run_start(_dir: &Path, _socket_path: Option<&str>, _port: Option<u16>, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>, _json: bool) -> Result<()> {
+pub fn run_start(
+    _dir: &Path,
+    _socket_path: Option<&str>,
+    _port: Option<u16>,
+    _max_agents: Option<usize>,
+    _executor: Option<&str>,
+    _interval: Option<u64>,
+    _model: Option<&str>,
+    _json: bool,
+) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -1434,12 +1572,18 @@ struct DaemonConfig {
 
 /// Run the actual daemon loop (called by forked process)
 #[cfg(unix)]
-pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, cli_executor: Option<&str>, cli_interval: Option<u64>, cli_model: Option<&str>) -> Result<()> {
+pub fn run_daemon(
+    dir: &Path,
+    socket_path: &str,
+    cli_max_agents: Option<usize>,
+    cli_executor: Option<&str>,
+    cli_interval: Option<u64>,
+    cli_model: Option<&str>,
+) -> Result<()> {
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---
-    let logger = DaemonLogger::open(dir)
-        .context("Failed to initialise daemon logger")?;
+    let logger = DaemonLogger::open(dir).context("Failed to initialise daemon logger")?;
     logger.install_panic_hook();
 
     logger.info(&format!(
@@ -1482,24 +1626,35 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
     let config = Config::load(&dir).unwrap_or_default();
     let mut daemon_cfg = DaemonConfig {
         max_agents: cli_max_agents.unwrap_or(config.coordinator.max_agents),
-        executor: cli_executor.map(|s| s.to_string()).unwrap_or_else(|| config.coordinator.executor.clone()),
+        executor: cli_executor
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| config.coordinator.executor.clone()),
         // The poll_interval is the slow background safety-net timer.
         // CLI --interval overrides it; otherwise use config.coordinator.poll_interval.
-        poll_interval: Duration::from_secs(cli_interval.unwrap_or(config.coordinator.poll_interval)),
-        model: cli_model.map(|s| s.to_string()).or_else(|| config.coordinator.model.clone()),
+        poll_interval: Duration::from_secs(
+            cli_interval.unwrap_or(config.coordinator.poll_interval),
+        ),
+        model: cli_model
+            .map(|s| s.to_string())
+            .or_else(|| config.coordinator.model.clone()),
         paused: false,
     };
 
     logger.info(&format!(
         "Coordinator config: poll_interval={}s, max_agents={}, executor={}, model={}",
-        daemon_cfg.poll_interval.as_secs(), daemon_cfg.max_agents, &daemon_cfg.executor,
+        daemon_cfg.poll_interval.as_secs(),
+        daemon_cfg.max_agents,
+        &daemon_cfg.executor,
         daemon_cfg.model.as_deref().unwrap_or("default"),
     ));
 
     // Aggregate usage stats on startup
     match workgraph::usage::aggregate_usage_stats(&dir) {
         Ok(count) if count > 0 => {
-            logger.info(&format!("Aggregated {} usage log entries on startup", count));
+            logger.info(&format!(
+                "Aggregated {} usage log entries on startup",
+                count
+            ));
         }
         Ok(_) => {} // No entries to aggregate
         Err(e) => {
@@ -1537,7 +1692,14 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
         match listener.accept() {
             Ok((stream, _)) => {
                 let mut wake_coordinator = false;
-                if let Err(e) = handle_connection(&dir, stream, &mut running, &mut wake_coordinator, &mut daemon_cfg, &logger) {
+                if let Err(e) = handle_connection(
+                    &dir,
+                    stream,
+                    &mut running,
+                    &mut wake_coordinator,
+                    &mut daemon_cfg,
+                    &logger,
+                ) {
                     logger.error(&format!("Error handling connection: {}", e));
                 }
                 if wake_coordinator {
@@ -1573,7 +1735,9 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
 
             logger.info(&format!(
                 "Coordinator tick #{} starting (max_agents={}, executor={})",
-                coord_state.ticks + 1, daemon_cfg.max_agents, &daemon_cfg.executor
+                coord_state.ticks + 1,
+                daemon_cfg.max_agents,
+                &daemon_cfg.executor
             ));
             match coordinator_tick(
                 &dir,
@@ -1619,18 +1783,33 @@ pub fn run_daemon(dir: &Path, socket_path: &str, cli_max_agents: Option<usize>, 
 }
 
 #[cfg(not(unix))]
-pub fn run_daemon(_dir: &Path, _socket_path: &str, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>) -> Result<()> {
+pub fn run_daemon(
+    _dir: &Path,
+    _socket_path: &str,
+    _max_agents: Option<usize>,
+    _executor: Option<&str>,
+    _interval: Option<u64>,
+    _model: Option<&str>,
+) -> Result<()> {
     anyhow::bail!("Daemon is only supported on Unix systems")
 }
 
 /// Handle a single IPC connection
 #[cfg(unix)]
-fn handle_connection(dir: &Path, stream: UnixStream, running: &mut bool, wake_coordinator: &mut bool, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> Result<()> {
+fn handle_connection(
+    dir: &Path,
+    stream: UnixStream,
+    running: &mut bool,
+    wake_coordinator: &mut bool,
+    daemon_cfg: &mut DaemonConfig,
+    logger: &DaemonLogger,
+) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     // Clone stream for writing
-    let mut write_stream = stream.try_clone()
+    let mut write_stream = stream
+        .try_clone()
         .context("Failed to clone stream for writing")?;
     let reader = BufReader::new(stream);
 
@@ -1679,13 +1858,38 @@ fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> Result<()>
 }
 
 /// Handle an IPC request
-fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coordinator: &mut bool, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
+fn handle_request(
+    dir: &Path,
+    request: IpcRequest,
+    running: &mut bool,
+    wake_coordinator: &mut bool,
+    daemon_cfg: &mut DaemonConfig,
+    logger: &DaemonLogger,
+) -> IpcResponse {
     match request {
-        IpcRequest::Spawn { task_id, executor, timeout, model } => {
-            logger.info(&format!("IPC Spawn: task_id={}, executor={}, timeout={:?}, model={:?}", task_id, executor, timeout, model));
-            let resp = handle_spawn(dir, &task_id, &executor, timeout.as_deref(), model.as_deref());
+        IpcRequest::Spawn {
+            task_id,
+            executor,
+            timeout,
+            model,
+        } => {
+            logger.info(&format!(
+                "IPC Spawn: task_id={}, executor={}, timeout={:?}, model={:?}",
+                task_id, executor, timeout, model
+            ));
+            let resp = handle_spawn(
+                dir,
+                &task_id,
+                &executor,
+                timeout.as_deref(),
+                model.as_deref(),
+            );
             if !resp.ok {
-                logger.error(&format!("Spawn failed for task {}: {}", task_id, resp.error.as_deref().unwrap_or("unknown")));
+                logger.error(&format!(
+                    "Spawn failed for task {}: {}",
+                    task_id,
+                    resp.error.as_deref().unwrap_or("unknown")
+                ));
             }
             resp
         }
@@ -1697,7 +1901,10 @@ fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coor
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),
         IpcRequest::Status => handle_status(dir),
         IpcRequest::Shutdown { force, kill_agents } => {
-            logger.info(&format!("IPC Shutdown: force={}, kill_agents={}", force, kill_agents));
+            logger.info(&format!(
+                "IPC Shutdown: force={}, kill_agents={}",
+                force, kill_agents
+            ));
             *running = false;
             handle_shutdown(dir, kill_agents, logger)
         }
@@ -1731,15 +1938,37 @@ fn handle_request(dir: &Path, request: IpcRequest, running: &mut bool, wake_coor
                 "status": "resumed",
             }))
         }
-        IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
-            logger.info(&format!("IPC Reconfigure: max_agents={:?}, executor={:?}, poll_interval={:?}, model={:?}", max_agents, executor, poll_interval, model));
-            handle_reconfigure(dir, daemon_cfg, max_agents, executor, poll_interval, model, logger)
+        IpcRequest::Reconfigure {
+            max_agents,
+            executor,
+            poll_interval,
+            model,
+        } => {
+            logger.info(&format!(
+                "IPC Reconfigure: max_agents={:?}, executor={:?}, poll_interval={:?}, model={:?}",
+                max_agents, executor, poll_interval, model
+            ));
+            handle_reconfigure(
+                dir,
+                daemon_cfg,
+                max_agents,
+                executor,
+                poll_interval,
+                model,
+                logger,
+            )
         }
     }
 }
 
 /// Handle spawn request
-fn handle_spawn(dir: &Path, task_id: &str, executor: &str, timeout: Option<&str>, model: Option<&str>) -> IpcResponse {
+fn handle_spawn(
+    dir: &Path,
+    task_id: &str,
+    executor: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+) -> IpcResponse {
     // Use the spawn command implementation
     match crate::commands::spawn::spawn_agent(dir, task_id, executor, timeout, model) {
         Ok((agent_id, pid)) => IpcResponse::success(serde_json::json!({
@@ -1757,18 +1986,22 @@ fn handle_spawn(dir: &Path, task_id: &str, executor: &str, timeout: Option<&str>
 fn handle_agents(dir: &Path) -> IpcResponse {
     match AgentRegistry::load(dir) {
         Ok(registry) => {
-            let agents: Vec<_> = registry.list_agents().iter().map(|a| {
-                serde_json::json!({
-                    "id": a.id,
-                    "task_id": a.task_id,
-                    "executor": a.executor,
-                    "pid": a.pid,
-                    "status": format!("{:?}", a.status).to_lowercase(),
-                    "uptime": a.uptime_human(),
-                    "started_at": a.started_at,
-                    "last_heartbeat": a.last_heartbeat,
+            let agents: Vec<_> = registry
+                .list_agents()
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "id": a.id,
+                        "task_id": a.task_id,
+                        "executor": a.executor,
+                        "pid": a.pid,
+                        "status": format!("{:?}", a.status).to_lowercase(),
+                        "uptime": a.uptime_human(),
+                        "started_at": a.started_at,
+                        "last_heartbeat": a.last_heartbeat,
+                    })
                 })
-            }).collect();
+                .collect();
             IpcResponse::success(serde_json::json!({ "agents": agents }))
         }
         Err(e) => IpcResponse::error(&e.to_string()),
@@ -1874,7 +2107,8 @@ fn handle_reconfigure(
     model: Option<String>,
     logger: &DaemonLogger,
 ) -> IpcResponse {
-    let has_overrides = max_agents.is_some() || executor.is_some() || poll_interval.is_some() || model.is_some();
+    let has_overrides =
+        max_agents.is_some() || executor.is_some() || poll_interval.is_some() || model.is_some();
 
     if has_overrides {
         // Apply individual overrides
@@ -1921,7 +2155,11 @@ fn handle_reconfigure(
         daemon_cfg.executor,
         daemon_cfg.poll_interval.as_secs(),
         daemon_cfg.model.as_deref().unwrap_or("default"),
-        if has_overrides { "" } else { " (from config.toml)" },
+        if has_overrides {
+            ""
+        } else {
+            " (from config.toml)"
+        },
     ));
 
     IpcResponse::success(serde_json::json!({
@@ -1992,7 +2230,10 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
         if kill_agents {
             println!("Service stopped (PID {}), agents killed", state.pid);
         } else {
-            println!("Service stopped (PID {}), agents continue running", state.pid);
+            println!(
+                "Service stopped (PID {}), agents continue running",
+                state.pid
+            );
         }
     }
 
@@ -2103,15 +2344,28 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
-        println!("Agents: {} alive, {} idle, {} total", alive_count, idle_count, registry.agents.len());
+        println!(
+            "Agents: {} alive, {} idle, {} total",
+            alive_count,
+            idle_count,
+            registry.agents.len()
+        );
         let model_str = coord.model.as_deref().unwrap_or("default");
         let pause_str = if coord.paused { ", PAUSED" } else { "" };
-        println!("Coordinator: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
-                 pause_str, coord.max_agents, coord.poll_interval, coord.executor, model_str);
+        println!(
+            "Coordinator: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
+            pause_str, coord.max_agents, coord.poll_interval, coord.executor, model_str
+        );
         if let Some(ref last) = coord.last_tick {
-            println!("  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={})",
-                     last, coord.ticks, coord.agents_alive, coord.max_agents,
-                     coord.tasks_ready, coord.agents_spawned);
+            println!(
+                "  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={})",
+                last,
+                coord.ticks,
+                coord.agents_alive,
+                coord.max_agents,
+                coord.tasks_ready,
+                coord.agents_spawned
+            );
         } else {
             println!("  No ticks yet");
         }
@@ -2137,7 +2391,14 @@ pub fn run_status(_dir: &Path, _json: bool) -> Result<()> {
 
 /// Reload service daemon configuration at runtime
 #[cfg(unix)]
-pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>, interval: Option<u64>, model: Option<&str>, json: bool) -> Result<()> {
+pub fn run_reload(
+    dir: &Path,
+    max_agents: Option<usize>,
+    executor: Option<&str>,
+    interval: Option<u64>,
+    model: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let request = IpcRequest::Reconfigure {
         max_agents,
         executor: executor.map(|s| s.to_string()),
@@ -2148,7 +2409,9 @@ pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>,
     let response = send_request(dir, request)?;
 
     if !response.ok {
-        let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         if json {
             let output = serde_json::json!({ "error": msg });
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -2163,7 +2426,8 @@ pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>,
             println!("{}", serde_json::to_string_pretty(data)?);
         }
     } else {
-        let has_flags = max_agents.is_some() || executor.is_some() || interval.is_some() || model.is_some();
+        let has_flags =
+            max_agents.is_some() || executor.is_some() || interval.is_some() || model.is_some();
         if has_flags {
             println!("Configuration updated");
         } else {
@@ -2173,9 +2437,18 @@ pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>,
             if let Some(cfg) = data.get("config") {
                 let ma = cfg.get("max_agents").and_then(|v| v.as_u64()).unwrap_or(0);
                 let ex = cfg.get("executor").and_then(|v| v.as_str()).unwrap_or("?");
-                let pi = cfg.get("poll_interval").and_then(|v| v.as_u64()).unwrap_or(0);
-                let mdl = cfg.get("model").and_then(|v| v.as_str()).unwrap_or("default");
-                println!("Effective config: max_agents={}, executor={}, poll_interval={}s, model={}", ma, ex, pi, mdl);
+                let pi = cfg
+                    .get("poll_interval")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let mdl = cfg
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                println!(
+                    "Effective config: max_agents={}, executor={}, poll_interval={}s, model={}",
+                    ma, ex, pi, mdl
+                );
             }
         }
     }
@@ -2184,7 +2457,14 @@ pub fn run_reload(dir: &Path, max_agents: Option<usize>, executor: Option<&str>,
 }
 
 #[cfg(not(unix))]
-pub fn run_reload(_dir: &Path, _max_agents: Option<usize>, _executor: Option<&str>, _interval: Option<u64>, _model: Option<&str>, _json: bool) -> Result<()> {
+pub fn run_reload(
+    _dir: &Path,
+    _max_agents: Option<usize>,
+    _executor: Option<&str>,
+    _interval: Option<u64>,
+    _model: Option<&str>,
+    _json: bool,
+) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -2194,7 +2474,9 @@ pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
     let response = send_request(dir, IpcRequest::Pause)?;
 
     if !response.ok {
-        let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         if json {
             let output = serde_json::json!({ "error": msg });
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -2226,7 +2508,9 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
     let response = send_request(dir, IpcRequest::Resume)?;
 
     if !response.ok {
-        let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         if json {
             let output = serde_json::json!({ "error": msg });
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -2358,8 +2642,7 @@ fn kill_process_force(_pid: u32) -> Result<()> {
 /// Send an IPC request to the running service
 #[cfg(unix)]
 pub fn send_request(dir: &Path, request: IpcRequest) -> Result<IpcResponse> {
-    let state = ServiceState::load(dir)?
-        .ok_or_else(|| anyhow::anyhow!("Service not running"))?;
+    let state = ServiceState::load(dir)?.ok_or_else(|| anyhow::anyhow!("Service not running"))?;
 
     let socket = PathBuf::from(&state.socket_path);
     let mut stream = UnixStream::connect(&socket)
@@ -2376,8 +2659,8 @@ pub fn send_request(dir: &Path, request: IpcRequest) -> Result<IpcResponse> {
     for line in reader.lines() {
         let line = line.context("Failed to read response")?;
         if !line.is_empty() {
-            let response: IpcResponse = serde_json::from_str(&line)
-                .context("Failed to parse response")?;
+            let response: IpcResponse =
+                serde_json::from_str(&line).context("Failed to parse response")?;
             return Ok(response);
         }
     }
@@ -2437,7 +2720,12 @@ mod tests {
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::Spawn { task_id, executor, timeout, model } => {
+            IpcRequest::Spawn {
+                task_id,
+                executor,
+                timeout,
+                model,
+            } => {
                 assert_eq!(task_id, "task-1");
                 assert_eq!(executor, "claude");
                 assert_eq!(timeout, Some("30m".to_string()));
@@ -2525,7 +2813,12 @@ mod tests {
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
+            IpcRequest::Reconfigure {
+                max_agents,
+                executor,
+                poll_interval,
+                model,
+            } => {
                 assert_eq!(max_agents, Some(8));
                 assert_eq!(executor, Some("opencode".to_string()));
                 assert_eq!(poll_interval, Some(120));
@@ -2549,7 +2842,12 @@ mod tests {
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::Reconfigure { max_agents, executor, poll_interval, model } => {
+            IpcRequest::Reconfigure {
+                max_agents,
+                executor,
+                poll_interval,
+                model,
+            } => {
                 assert!(max_agents.is_none());
                 assert!(executor.is_none());
                 assert!(poll_interval.is_none());
@@ -2584,7 +2882,15 @@ mod tests {
         };
 
         let logger = DaemonLogger::open(dir).unwrap();
-        let resp = handle_reconfigure(dir, &mut cfg, Some(8), Some("opencode".to_string()), None, Some("haiku".to_string()), &logger);
+        let resp = handle_reconfigure(
+            dir,
+            &mut cfg,
+            Some(8),
+            Some("opencode".to_string()),
+            None,
+            Some("haiku".to_string()),
+            &logger,
+        );
         assert!(resp.ok);
         assert_eq!(cfg.max_agents, 8);
         assert_eq!(cfg.executor, "opencode");
@@ -2918,8 +3224,18 @@ poll_interval = 120
         assert_eq!(task.status, Status::Open);
         assert!(task.assigned.is_none());
         assert_eq!(task.retry_count, 1);
-        assert!(task.description.as_ref().unwrap().contains("Previous Attempt Recovery"));
-        assert!(task.description.as_ref().unwrap().contains("Created foo.rs and bar.rs"));
+        assert!(
+            task.description
+                .as_ref()
+                .unwrap()
+                .contains("Previous Attempt Recovery")
+        );
+        assert!(
+            task.description
+                .as_ref()
+                .unwrap()
+                .contains("Created foo.rs and bar.rs")
+        );
     }
 
     #[test]

@@ -172,7 +172,10 @@ pub struct Agent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<String>,
     /// Executor backend to use (default: "claude")
-    #[serde(default = "default_executor", skip_serializing_if = "is_default_executor")]
+    #[serde(
+        default = "default_executor",
+        skip_serializing_if = "is_default_executor"
+    )]
     pub executor: String,
 }
 
@@ -247,9 +250,8 @@ pub fn resolve_skill(skill: &SkillRef, workgraph_root: &Path) -> Result<Resolved
             } else {
                 workgraph_root.join(&expanded)
             };
-            let content = fs::read_to_string(&resolved).map_err(|e| {
-                format!("Failed to read skill file {}: {}", resolved.display(), e)
-            })?;
+            let content = fs::read_to_string(&resolved)
+                .map_err(|e| format!("Failed to read skill file {}: {}", resolved.display(), e))?;
             let name = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -418,7 +420,10 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     if let Some(role) = input.role {
         out.push_str(&format!("**Role:** {} ({})\n", role.name, role.id));
         out.push_str(&format!("{}\n\n", role.description));
-        out.push_str(&format!("**Desired Outcome:** {}\n\n", role.desired_outcome));
+        out.push_str(&format!(
+            "**Desired Outcome:** {}\n\n",
+            role.desired_outcome
+        ));
     } else {
         out.push_str("*No role was assigned.*\n\n");
     }
@@ -611,7 +616,10 @@ pub fn find_role_by_prefix(roles_dir: &Path, prefix: &str) -> Result<Role, Agenc
     let all = load_all_roles(roles_dir)?;
     let matches: Vec<&Role> = all.iter().filter(|r| r.id.starts_with(prefix)).collect();
     match matches.len() {
-        0 => Err(AgencyError::NotFound(format!("No role matching '{}'", prefix))),
+        0 => Err(AgencyError::NotFound(format!(
+            "No role matching '{}'",
+            prefix
+        ))),
         1 => Ok(matches[0].clone()),
         n => {
             let ids: Vec<&str> = matches.iter().map(|r| r.id.as_str()).collect();
@@ -1239,10 +1247,7 @@ pub fn crossover_motivations(
     }
 
     let id = content_hash_motivation(&acceptable, &unacceptable, description);
-    let max_gen = parent_a
-        .lineage
-        .generation
-        .max(parent_b.lineage.generation);
+    let max_gen = parent_a.lineage.generation.max(parent_b.lineage.generation);
 
     Motivation {
         id,
@@ -1358,18 +1363,13 @@ fn capture_git_diff(output_dir: &Path, task: &crate::graph::Task) {
     let patch_path = output_dir.join("changes.patch");
 
     // Find the project root by walking up from the .workgraph dir
-    let project_root = output_dir
-        .ancestors()
-        .find(|p| p.join(".git").exists());
+    let project_root = output_dir.ancestors().find(|p| p.join(".git").exists());
 
     let project_root = match project_root {
         Some(root) => root.to_path_buf(),
         None => {
             // Not a git repo — write an empty patch with explanation
-            let _ = fs::write(
-                &patch_path,
-                "# Not a git repository — no diff captured\n",
-            );
+            let _ = fs::write(&patch_path, "# Not a git repository — no diff captured\n");
             return;
         }
     };
@@ -1380,7 +1380,12 @@ fn capture_git_diff(output_dir: &Path, task: &crate::graph::Task) {
     let output = if let Some(ref started_at) = task.started_at {
         // Find the last commit before the task was claimed
         let rev_result = std::process::Command::new("git")
-            .args(["rev-list", "-1", &format!("--before={}", started_at), "HEAD"])
+            .args([
+                "rev-list",
+                "-1",
+                &format!("--before={}", started_at),
+                "HEAD",
+            ])
             .current_dir(&project_root)
             .output();
 
@@ -1424,10 +1429,7 @@ fn capture_git_diff(output_dir: &Path, task: &crate::graph::Task) {
         Ok(out) if out.status.success() => {
             let diff = String::from_utf8_lossy(&out.stdout);
             if diff.is_empty() {
-                let _ = fs::write(
-                    &patch_path,
-                    "# No changes detected in git diff\n",
-                );
+                let _ = fs::write(&patch_path, "# No changes detected in git diff\n");
             } else {
                 let _ = fs::write(&patch_path, diff.as_bytes());
             }
@@ -1440,10 +1442,7 @@ fn capture_git_diff(output_dir: &Path, task: &crate::graph::Task) {
             );
         }
         Err(e) => {
-            let _ = fs::write(
-                &patch_path,
-                format!("# git diff failed: {}\n", e),
-            );
+            let _ = fs::write(&patch_path, format!("# git diff failed: {}\n", e));
         }
     }
 }
@@ -1621,7 +1620,10 @@ mod tests {
         build_role(
             "Implementer",
             "Writes code to fulfil task requirements.",
-            vec![SkillRef::Name("rust".into()), SkillRef::Inline("fn main() {}".into())],
+            vec![
+                SkillRef::Name("rust".into()),
+                SkillRef::Inline("fn main() {}".into()),
+            ],
             "Working, tested code merged to main.",
         )
     }
@@ -1707,13 +1709,20 @@ mod tests {
             path.file_name().unwrap().to_str().unwrap(),
             format!("{}.yaml", motivation.id)
         );
-        assert_eq!(motivation.id.len(), 64, "Motivation ID should be a SHA-256 hex hash");
+        assert_eq!(
+            motivation.id.len(),
+            64,
+            "Motivation ID should be a SHA-256 hex hash"
+        );
 
         let loaded = load_motivation(&path).unwrap();
         assert_eq!(loaded.id, motivation.id);
         assert_eq!(loaded.name, motivation.name);
         assert_eq!(loaded.acceptable_tradeoffs, motivation.acceptable_tradeoffs);
-        assert_eq!(loaded.unacceptable_tradeoffs, motivation.unacceptable_tradeoffs);
+        assert_eq!(
+            loaded.unacceptable_tradeoffs,
+            motivation.unacceptable_tradeoffs
+        );
     }
 
     #[test]
@@ -1776,8 +1785,14 @@ mod tests {
         init(&base).unwrap();
 
         let dir = base.join("evaluations");
-        let e1 = Evaluation { id: "eval-a".into(), ..sample_evaluation() };
-        let e2 = Evaluation { id: "eval-b".into(), ..sample_evaluation() };
+        let e1 = Evaluation {
+            id: "eval-a".into(),
+            ..sample_evaluation()
+        };
+        let e2 = Evaluation {
+            id: "eval-b".into(),
+            ..sample_evaluation()
+        };
         save_evaluation(&e1, &dir).unwrap();
         save_evaluation(&e2, &dir).unwrap();
 
@@ -1935,7 +1950,12 @@ performance:
         let p2 = build_role("Parent 2", "Second parent", vec![], "Outcome P2");
         let p2_id = p2.id.clone();
 
-        let mut child = build_role("Crossover Child", "Child from crossover", vec![], "Outcome XC");
+        let mut child = build_role(
+            "Crossover Child",
+            "Child from crossover",
+            vec![],
+            "Outcome XC",
+        );
         child.lineage = Lineage::crossover(&[&p1_id, &p2_id], 0, "run-x");
         let child_id = child.id.clone();
 
@@ -1983,10 +2003,7 @@ performance:
                 "Slower delivery for higher quality".into(),
                 "More verbose code for clarity".into(),
             ],
-            vec![
-                "Skipping tests".into(),
-                "Ignoring error handling".into(),
-            ],
+            vec!["Skipping tests".into(), "Ignoring error handling".into()],
         );
         let skills = vec![
             ResolvedSkill {
@@ -2050,18 +2067,8 @@ performance:
 
     #[test]
     fn test_render_identity_prompt_empty_tradeoffs() {
-        let role = build_role(
-            "Minimal",
-            "A minimal role.",
-            vec![],
-            "Done.",
-        );
-        let motivation = build_motivation(
-            "Minimal Motivation",
-            "Minimal.",
-            vec![],
-            vec![],
-        );
+        let role = build_role("Minimal", "A minimal role.", vec![], "Done.");
+        let motivation = build_motivation("Minimal Motivation", "Minimal.", vec![], vec![]);
 
         let output = render_identity_prompt(&role, &motivation, &[]);
 
@@ -2158,7 +2165,10 @@ performance:
         assert!(output.contains("## Agent Identity"));
         assert!(output.contains(&format!("**Role:** Implementer ({})", role.id)));
         assert!(output.contains("**Desired Outcome:** Working, tested code merged to main."));
-        assert!(output.contains(&format!("**Motivation:** Quality First ({})", motivation.id)));
+        assert!(output.contains(&format!(
+            "**Motivation:** Quality First ({})",
+            motivation.id
+        )));
         assert!(output.contains("**Acceptable Trade-offs:**"));
         assert!(output.contains("- Slower delivery for higher quality"));
         assert!(output.contains("**Non-negotiable Constraints:**"));
@@ -2269,7 +2279,6 @@ performance:
         assert!(timing_pos < criteria_pos);
         assert!(criteria_pos < required_pos);
     }
-
 
     // -- Evaluation recording tests ------------------------------------------
 
@@ -2403,12 +2412,12 @@ performance:
         );
 
         // 3. Motivation performance was updated
-        let motivation_path = agency_dir.join("motivations").join(format!("{}.yaml", motivation_id));
+        let motivation_path = agency_dir
+            .join("motivations")
+            .join(format!("{}.yaml", motivation_id));
         let updated_motivation = load_motivation(&motivation_path).unwrap();
         assert_eq!(updated_motivation.performance.task_count, 1);
-        assert!(
-            (updated_motivation.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON
-        );
+        assert!((updated_motivation.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON);
         assert_eq!(updated_motivation.performance.evaluations.len(), 1);
         assert_eq!(
             updated_motivation.performance.evaluations[0].context_id,
@@ -2464,12 +2473,12 @@ performance:
         assert!((updated_role.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
         assert_eq!(updated_role.performance.evaluations.len(), 2);
 
-        let motivation_path = agency_dir.join("motivations").join(format!("{}.yaml", motivation_id));
+        let motivation_path = agency_dir
+            .join("motivations")
+            .join(format!("{}.yaml", motivation_id));
         let updated_motivation = load_motivation(&motivation_path).unwrap();
         assert_eq!(updated_motivation.performance.task_count, 2);
-        assert!(
-            (updated_motivation.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON
-        );
+        assert!((updated_motivation.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2498,7 +2507,9 @@ performance:
         let result = record_evaluation(&eval, &agency_dir);
         assert!(result.is_ok());
 
-        let motivation_path = agency_dir.join("motivations").join(format!("{}.yaml", motivation_id));
+        let motivation_path = agency_dir
+            .join("motivations")
+            .join(format!("{}.yaml", motivation_id));
         let updated = load_motivation(&motivation_path).unwrap();
         assert_eq!(updated.performance.task_count, 1);
     }
@@ -2632,21 +2643,29 @@ performance:
         assert_eq!(child.acceptable_tradeoffs.len(), 3);
         assert!(child.acceptable_tradeoffs.contains(&"Slow".to_string()));
         assert!(child.acceptable_tradeoffs.contains(&"Verbose".to_string()));
-        assert!(child
-            .acceptable_tradeoffs
-            .contains(&"Less documentation".to_string()));
+        assert!(
+            child
+                .acceptable_tradeoffs
+                .contains(&"Less documentation".to_string())
+        );
 
         // Unacceptable: union, deduplicated — Unreliable, Untested, Broken code
         assert_eq!(child.unacceptable_tradeoffs.len(), 3);
-        assert!(child
-            .unacceptable_tradeoffs
-            .contains(&"Unreliable".to_string()));
-        assert!(child
-            .unacceptable_tradeoffs
-            .contains(&"Untested".to_string()));
-        assert!(child
-            .unacceptable_tradeoffs
-            .contains(&"Broken code".to_string()));
+        assert!(
+            child
+                .unacceptable_tradeoffs
+                .contains(&"Unreliable".to_string())
+        );
+        assert!(
+            child
+                .unacceptable_tradeoffs
+                .contains(&"Untested".to_string())
+        );
+        assert!(
+            child
+                .unacceptable_tradeoffs
+                .contains(&"Broken code".to_string())
+        );
 
         // Lineage is crossover of both parents
         assert_eq!(child.lineage.parent_ids.len(), 2);
@@ -2673,8 +2692,7 @@ performance:
         parent_b.lineage = Lineage::mutation("ancestor2", 1, "r2");
         assert_eq!(parent_b.lineage.generation, 2);
 
-        let child =
-            crossover_motivations(&parent_a, &parent_b, "xr", "Hybrid", "Hybrid desc");
+        let child = crossover_motivations(&parent_a, &parent_b, "xr", "Hybrid", "Hybrid desc");
         // max(5, 2) + 1 = 6
         assert_eq!(child.lineage.generation, 6);
     }
@@ -3011,8 +3029,18 @@ performance:
 
     #[test]
     fn test_build_role_content_hash_deterministic() {
-        let r1 = build_role("Name A", "Desc", vec![SkillRef::Name("s".into())], "Outcome");
-        let r2 = build_role("Name B", "Desc", vec![SkillRef::Name("s".into())], "Outcome");
+        let r1 = build_role(
+            "Name A",
+            "Desc",
+            vec![SkillRef::Name("s".into())],
+            "Outcome",
+        );
+        let r2 = build_role(
+            "Name B",
+            "Desc",
+            vec![SkillRef::Name("s".into())],
+            "Outcome",
+        );
         // Same immutable content (skills, desired_outcome, description) => same ID
         assert_eq!(r1.id, r2.id);
         assert_eq!(r1.id.len(), 64);
@@ -3239,10 +3267,12 @@ performance:
 
         let result = find_motivation_by_prefix(dir, "zzzznotfound");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No motivation matching"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No motivation matching")
+        );
     }
 
     #[test]
@@ -3303,10 +3333,12 @@ performance:
 
         let result = find_agent_by_prefix(dir, "zzzznotfound");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No agent matching"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No agent matching")
+        );
     }
 
     #[test]
@@ -3386,10 +3418,12 @@ performance:
 
         let result = find_motivation_by_prefix(dir, "^$\\{|}");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No motivation matching"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No motivation matching")
+        );
     }
 
     #[test]
@@ -3401,10 +3435,12 @@ performance:
 
         let result = find_agent_by_prefix(dir, "!@#$%");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No agent matching"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No agent matching")
+        );
     }
 
     // -- is_human_executor / Agent.is_human tests ----------------------------
@@ -3489,5 +3525,4 @@ performance:
         // default_executor() returns "claude" which is not human
         assert!(!agent.is_human());
     }
-
 }

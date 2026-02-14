@@ -77,8 +77,7 @@ pub fn run_add(
         );
     }
 
-    let path = agency::save_role(&role, &roles_dir)
-        .context("Failed to save role")?;
+    let path = agency::save_role(&role, &roles_dir).context("Failed to save role")?;
 
     println!(
         "Created role '{}' ({}) at {}",
@@ -92,8 +91,7 @@ pub fn run_add(
 /// wg role list [--json]
 pub fn run_list(dir: &Path, json: bool) -> Result<()> {
     let roles_dir = dir.join("agency").join("roles");
-    let roles = agency::load_all_roles(&roles_dir)
-        .context("Failed to load roles")?;
+    let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
 
     if json {
         let output: Vec<RoleSummary> = roles
@@ -252,8 +250,11 @@ pub fn run_lineage(dir: &Path, id: &str, json: bool) -> Result<()> {
         let parents = if node.parent_ids.is_empty() {
             String::new()
         } else {
-            let short_parents: Vec<&str> =
-                node.parent_ids.iter().map(|p| agency::short_hash(p)).collect();
+            let short_parents: Vec<&str> = node
+                .parent_ids
+                .iter()
+                .map(|p| agency::short_hash(p))
+                .collect();
             format!(" <- [{}]", short_parents.join(", "))
         };
 
@@ -301,15 +302,15 @@ pub fn run_edit(dir: &Path, id: &str) -> Result<()> {
     }
 
     // Validate and re-hash
-    let mut edited = agency::load_role(&role_path)
-        .with_context(|| {
-            format!(
-                "Edited file is not valid role YAML. File saved at: {}",
-                role_path.display()
-            )
-        })?;
+    let mut edited = agency::load_role(&role_path).with_context(|| {
+        format!(
+            "Edited file is not valid role YAML. File saved at: {}",
+            role_path.display()
+        )
+    })?;
 
-    let new_id = agency::content_hash_role(&edited.skills, &edited.desired_outcome, &edited.description);
+    let new_id =
+        agency::content_hash_role(&edited.skills, &edited.desired_outcome, &edited.description);
     if new_id != edited.id {
         // Content changed — rename to new hash
         let old_path = role_path;

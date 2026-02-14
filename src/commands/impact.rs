@@ -136,10 +136,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         } else {
             println!("Direct dependents ({}):", direct_dependents.len());
             for dep in &direct_dependents {
-                let hours_str = dep
-                    .hours
-                    .map(|h| format!(" ({}h)", h))
-                    .unwrap_or_default();
+                let hours_str = dep.hours.map(|h| format!(" ({}h)", h)).unwrap_or_default();
                 println!("  - {}{}", dep.id, hours_str);
             }
         }

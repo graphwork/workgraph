@@ -59,7 +59,11 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
-    println!("Reset '{}' to open for retry (attempt #{})", id, retry_count + 1);
+    println!(
+        "Reset '{}' to open for retry (attempt #{})",
+        id,
+        retry_count + 1
+    );
 
     if let Some(max) = max_retries {
         println!("  Retries remaining after this: {}", max - retry_count);
@@ -148,14 +152,21 @@ mod tests {
         let result = run(dir_path, "t1");
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not failed"), "Expected 'not failed' error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("not failed"),
+            "Expected 'not failed' error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
     fn test_retry_non_failed_task_errors_in_progress() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::InProgress)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::InProgress)],
+        );
 
         let result = run(dir_path, "t1");
         assert!(result.is_err());
@@ -186,7 +197,10 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.retry_count, 3, "retry_count should be preserved, not reset");
+        assert_eq!(
+            task.retry_count, 3,
+            "retry_count should be preserved, not reset"
+        );
     }
 
     #[test]
@@ -235,7 +249,11 @@ mod tests {
         let result = run(dir_path, "t1");
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("max retries"), "Expected 'max retries' error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("max retries"),
+            "Expected 'max retries' error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -271,8 +289,16 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
         assert!(!task.log.is_empty());
         let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("retry"), "Log message should mention retry, got: {}", last_log.message);
-        assert!(last_log.message.contains("3"), "Log message should contain attempt number 3, got: {}", last_log.message);
+        assert!(
+            last_log.message.contains("retry"),
+            "Log message should mention retry, got: {}",
+            last_log.message
+        );
+        assert!(
+            last_log.message.contains("3"),
+            "Log message should contain attempt number 3, got: {}",
+            last_log.message
+        );
     }
 
     #[test]

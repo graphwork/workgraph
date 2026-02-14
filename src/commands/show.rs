@@ -311,7 +311,11 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Not before: {}", not_before);
     }
     if let Some(ref ready_after) = details.ready_after {
-        println!("Ready after: {}{}", ready_after, format_countdown(ready_after));
+        println!(
+            "Ready after: {}{}",
+            ready_after,
+            format_countdown(ready_after)
+        );
     }
 
     // Log entries

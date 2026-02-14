@@ -18,18 +18,18 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use matrix_sdk::{
+    Client, SessionMeta, SessionTokens,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     encryption::verification::Verification,
     room::Room,
     ruma::{
+        OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomId, UserId,
         api::client::room::create_room::v3::Request as CreateRoomRequest,
         events::room::message::{
             MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
         },
-        OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomAliasId, RoomId, UserId,
     },
-    Client, SessionMeta, SessionTokens,
 };
 use tokio::sync::mpsc;
 

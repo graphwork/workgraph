@@ -223,7 +223,10 @@ pub fn run(dir: &Path, json: bool, weeks: Option<usize>) -> Result<()> {
 }
 
 fn print_human_output(summary: &VelocitySummary) {
-    println!("Completion Velocity (last {} days):\n", summary.weeks.len() * 7);
+    println!(
+        "Completion Velocity (last {} days):\n",
+        summary.weeks.len() * 7
+    );
 
     // Find max for scaling bars
     let max_tasks = summary
@@ -610,7 +613,12 @@ mod tests {
         graph.add_node(Node::Task(make_done_task("t1", "Old Task", 30, Some(8.0))));
 
         // Task completed 3 days ago (inside window)
-        graph.add_node(Node::Task(make_done_task("t2", "Recent Task", 3, Some(4.0))));
+        graph.add_node(Node::Task(make_done_task(
+            "t2",
+            "Recent Task",
+            3,
+            Some(4.0),
+        )));
 
         let summary = calculate_velocity(&graph, 4);
 

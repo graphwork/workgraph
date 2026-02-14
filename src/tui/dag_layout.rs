@@ -12,7 +12,6 @@
 ///
 /// We consume ascii-dag's LayoutIR and transform it into our own structs
 /// that integrate with the TUI's styling and selection logic.
-
 use std::collections::{HashMap, HashSet};
 
 use ascii_dag::DAG;
@@ -147,9 +146,7 @@ fn detect_back_edges(node_count: usize, edges: &[(usize, usize)]) -> HashSet<(us
     }
 
     // Find roots (nodes with no incoming edges)
-    let roots: Vec<usize> = (0..node_count)
-        .filter(|&n| in_degree[n] == 0)
-        .collect();
+    let roots: Vec<usize> = (0..node_count).filter(|&n| in_degree[n] == 0).collect();
 
     // DFS state
     #[derive(Clone, Copy, PartialEq)]
@@ -294,10 +291,8 @@ impl DagLayout {
         // and compute our own widths based on title length.
 
         // First pass: compute node widths and map numeric IDs back to task IDs
-        let num_to_id: HashMap<usize, &str> = id_to_num
-            .iter()
-            .map(|(&id, &num)| (num, id))
-            .collect();
+        let num_to_id: HashMap<usize, &str> =
+            id_to_num.iter().map(|(&id, &num)| (num, id)).collect();
 
         // Collect node info from ascii-dag IR
         let mut node_infos: Vec<(usize, &str, usize, usize, usize)> = Vec::new(); // (num_id, task_id, level, x, width)
@@ -312,9 +307,8 @@ impl DagLayout {
             .map(|&(num_id, task_id, _, _, _)| {
                 let task = tasks.get(task_id);
                 let title = task.map(|t| t.title.as_str()).unwrap_or("");
-                let indicator = status_indicator_str(
-                    &task.map(|t| t.status.clone()).unwrap_or(Status::Open),
-                );
+                let indicator =
+                    status_indicator_str(&task.map(|t| t.status.clone()).unwrap_or(Status::Open));
                 // Box content: " indicator title " + 2 for borders
                 let content_width = indicator.len() + 1 + title.len() + 2;
                 let w = (content_width + 2).max(MIN_NODE_WIDTH).min(MAX_NODE_WIDTH);
@@ -362,7 +356,12 @@ impl DagLayout {
         let mut layout_nodes: Vec<LayoutNode> = Vec::new();
         for (level_idx, level) in level_nodes.iter().enumerate() {
             for (order, &(num_id, task_id)) in level.iter().enumerate() {
-                let (x, y, w, h) = node_positions.get(&num_id).copied().unwrap_or((0, 0, MIN_NODE_WIDTH, NODE_HEIGHT));
+                let (x, y, w, h) = node_positions.get(&num_id).copied().unwrap_or((
+                    0,
+                    0,
+                    MIN_NODE_WIDTH,
+                    NODE_HEIGHT,
+                ));
                 let task = tasks.get(task_id);
                 let (agent_count, agent_ids) = agent_map
                     .get(task_id)
@@ -540,14 +539,8 @@ pub fn center_layers(layout: &mut DagLayout) {
     // Recompute total width, adding extra margin for back-edge/loop-edge routing
     let has_side_edges = layout.has_cycles || !layout.loop_edges.is_empty();
     let extra_margin = if has_side_edges { BACK_EDGE_MARGIN } else { 0 };
-    layout.width = layout
-        .nodes
-        .iter()
-        .map(|n| n.x + n.w)
-        .max()
-        .unwrap_or(0)
-        + LEFT_MARGIN
-        + extra_margin;
+    layout.width =
+        layout.nodes.iter().map(|n| n.x + n.w).max().unwrap_or(0) + LEFT_MARGIN + extra_margin;
 
     // Rebuild id_to_idx after potential reordering
     layout.id_to_idx = layout
@@ -631,12 +624,7 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
 
     // Route back-edges (cycles) - these go upward along the right side
     if !layout.back_edges.is_empty() {
-        let max_x = layout
-            .nodes
-            .iter()
-            .map(|n| n.x + n.w)
-            .max()
-            .unwrap_or(0);
+        let max_x = layout.nodes.iter().map(|n| n.x + n.w).max().unwrap_or(0);
 
         // Route each back-edge along the right margin going upward
         let mut new_back_edges: Vec<BackEdge> = Vec::new();
@@ -663,10 +651,10 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
 
             // Route: right from source -> up along margin -> left to target
             let mut segments = Vec::new();
-            segments.push((from_x, from_y));           // Start at source
-            segments.push((route_x, from_y));           // Go right to margin
-            segments.push((route_x, to_y));             // Go up along margin
-            segments.push((to_x, to_y));                // Go left to target
+            segments.push((from_x, from_y)); // Start at source
+            segments.push((route_x, from_y)); // Go right to margin
+            segments.push((route_x, to_y)); // Go up along margin
+            segments.push((to_x, to_y)); // Go left to target
 
             new_back_edges.push(BackEdge {
                 from_id: back_edge.from_id.clone(),
@@ -680,12 +668,7 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
 
     // Route loop edges (loops_to) — these go along the right side, offset from back-edges
     if !layout.loop_edges.is_empty() {
-        let max_x = layout
-            .nodes
-            .iter()
-            .map(|n| n.x + n.w)
-            .max()
-            .unwrap_or(0);
+        let max_x = layout.nodes.iter().map(|n| n.x + n.w).max().unwrap_or(0);
 
         // Offset loop edges after any back-edges to avoid overlap
         let back_edge_count = layout.back_edges.len();
@@ -820,8 +803,12 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                 let max_y = y1.max(y2);
                 for cy in min_y..=max_y {
                     if cy < height && x1 < width {
-                        if cy > min_y { conn[cy][x1] |= UP; }
-                        if cy < max_y { conn[cy][x1] |= DOWN; }
+                        if cy > min_y {
+                            conn[cy][x1] |= UP;
+                        }
+                        if cy < max_y {
+                            conn[cy][x1] |= DOWN;
+                        }
                     }
                 }
             } else if y1 == y2 {
@@ -830,8 +817,12 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                 let max_x = x1.max(x2);
                 for cx in min_x..=max_x {
                     if y1 < height && cx < width {
-                        if cx > min_x { conn[y1][cx] |= LEFT; }
-                        if cx < max_x { conn[y1][cx] |= RIGHT; }
+                        if cx > min_x {
+                            conn[y1][cx] |= LEFT;
+                        }
+                        if cx < max_x {
+                            conn[y1][cx] |= RIGHT;
+                        }
                     }
                 }
             }
@@ -898,7 +889,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
             // Handle arrow cells
             if arrow_cells.contains(&(x, y)) {
                 if existing.style == CellStyle::Empty || existing.style == CellStyle::Edge {
-                    buf[y][x] = Cell { ch: '▼', style: CellStyle::Arrow };
+                    buf[y][x] = Cell {
+                        ch: '▼',
+                        style: CellStyle::Arrow,
+                    };
                 }
                 continue;
             }
@@ -906,7 +900,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
             // If this cell is on a node border, merge edge connectivity into the border char
             if existing.style == CellStyle::Border {
                 let new_ch = merge_border_with_edge(existing.ch, c);
-                buf[y][x] = Cell { ch: new_ch, style: CellStyle::Border };
+                buf[y][x] = Cell {
+                    ch: new_ch,
+                    style: CellStyle::Border,
+                };
                 continue;
             }
 
@@ -922,7 +919,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
             // Empty/edge cell: resolve box-drawing char from connectivity
             let ch = connectivity_to_char(c);
             if ch != ' ' {
-                buf[y][x] = Cell { ch, style: CellStyle::Edge };
+                buf[y][x] = Cell {
+                    ch,
+                    style: CellStyle::Edge,
+                };
             }
         }
     }
@@ -956,7 +956,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                             || existing.style == CellStyle::Edge
                             || existing.style == CellStyle::BackEdge
                         {
-                            buf[cy][x1] = Cell { ch, style: CellStyle::BackEdge };
+                            buf[cy][x1] = Cell {
+                                ch,
+                                style: CellStyle::BackEdge,
+                            };
                         }
                     }
                 }
@@ -973,7 +976,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                             || existing.style == CellStyle::Edge
                             || existing.style == CellStyle::BackEdge
                         {
-                            buf[y1][cx] = Cell { ch: '╌', style: CellStyle::BackEdge };
+                            buf[y1][cx] = Cell {
+                                ch: '╌',
+                                style: CellStyle::BackEdge,
+                            };
                         }
                     }
                 }
@@ -1009,7 +1015,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                     '+'
                 };
 
-                buf[y][x] = Cell { ch: corner_ch, style: CellStyle::BackEdge };
+                buf[y][x] = Cell {
+                    ch: corner_ch,
+                    style: CellStyle::BackEdge,
+                };
             }
         }
 
@@ -1018,7 +1027,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
             // Place arrow just to the right of the target node's top border
             if ty < height && tx < width {
                 // The arrow should point to the left (toward the node)
-                buf[ty][tx] = Cell { ch: '◀', style: CellStyle::BackEdgeArrow };
+                buf[ty][tx] = Cell {
+                    ch: '◀',
+                    style: CellStyle::BackEdgeArrow,
+                };
             }
         }
     }
@@ -1046,7 +1058,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                             || existing.style == CellStyle::Edge
                             || existing.style == CellStyle::LoopEdge
                         {
-                            buf[cy][x1] = Cell { ch: '┆', style: CellStyle::LoopEdge };
+                            buf[cy][x1] = Cell {
+                                ch: '┆',
+                                style: CellStyle::LoopEdge,
+                            };
                         }
                     }
                 }
@@ -1061,7 +1076,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                             || existing.style == CellStyle::Edge
                             || existing.style == CellStyle::LoopEdge
                         {
-                            buf[y1][cx] = Cell { ch: '┄', style: CellStyle::LoopEdge };
+                            buf[y1][cx] = Cell {
+                                ch: '┄',
+                                style: CellStyle::LoopEdge,
+                            };
                         }
                     }
                 }
@@ -1096,14 +1114,20 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
                     '+'
                 };
 
-                buf[y][x] = Cell { ch: corner_ch, style: CellStyle::LoopEdge };
+                buf[y][x] = Cell {
+                    ch: corner_ch,
+                    style: CellStyle::LoopEdge,
+                };
             }
         }
 
         // Draw arrow at the target (last segment end)
         if let Some(&(tx, ty)) = segs.last() {
             if ty < height && tx < width {
-                buf[ty][tx] = Cell { ch: '◀', style: CellStyle::LoopEdgeArrow };
+                buf[ty][tx] = Cell {
+                    ch: '◀',
+                    style: CellStyle::LoopEdgeArrow,
+                };
             }
         }
 
@@ -1122,7 +1146,10 @@ pub fn render_to_buffer(layout: &DagLayout) -> Vec<Vec<Cell>> {
             for (ci, ch) in label.chars().enumerate() {
                 let ly = mid_y + ci;
                 if ly < height && ly <= max_vy && vx < width {
-                    buf[ly][vx] = Cell { ch, style: CellStyle::LoopEdgeLabel };
+                    buf[ly][vx] = Cell {
+                        ch,
+                        style: CellStyle::LoopEdgeLabel,
+                    };
                 }
             }
         }
@@ -1139,34 +1166,57 @@ fn merge_border_with_edge(border_ch: char, edge_conn: u8) -> char {
 
     match border_ch {
         '─' => {
-            if edge_conn & DOWN != 0 && edge_conn & UP != 0 { '┼' }
-            else if edge_conn & DOWN != 0 { '┬' }
-            else if edge_conn & UP != 0 { '┴' }
-            else { '─' }
+            if edge_conn & DOWN != 0 && edge_conn & UP != 0 {
+                '┼'
+            } else if edge_conn & DOWN != 0 {
+                '┬'
+            } else if edge_conn & UP != 0 {
+                '┴'
+            } else {
+                '─'
+            }
         }
         '┌' => {
-            if edge_conn & UP != 0 { '├' }
-            else { '┌' }
+            if edge_conn & UP != 0 {
+                '├'
+            } else {
+                '┌'
+            }
         }
         '┐' => {
-            if edge_conn & UP != 0 { '┤' }
-            else { '┐' }
+            if edge_conn & UP != 0 {
+                '┤'
+            } else {
+                '┐'
+            }
         }
         '└' => {
-            if edge_conn & DOWN != 0 { '├' }
-            else { '└' }
+            if edge_conn & DOWN != 0 {
+                '├'
+            } else {
+                '└'
+            }
         }
         '┘' => {
-            if edge_conn & DOWN != 0 { '┤' }
-            else { '┘' }
+            if edge_conn & DOWN != 0 {
+                '┤'
+            } else {
+                '┘'
+            }
         }
         '┬' => {
-            if edge_conn & UP != 0 { '┼' }
-            else { '┬' }
+            if edge_conn & UP != 0 {
+                '┼'
+            } else {
+                '┬'
+            }
         }
         '┴' => {
-            if edge_conn & DOWN != 0 { '┼' }
-            else { '┴' }
+            if edge_conn & DOWN != 0 {
+                '┼'
+            } else {
+                '┴'
+            }
         }
         other => other,
     }
@@ -1379,7 +1429,10 @@ mod tests {
         add_task(&mut graph, make_task("root", "Root", vec![]));
         add_task(&mut graph, make_task("left", "Left", vec!["root"]));
         add_task(&mut graph, make_task("right", "Right", vec!["root"]));
-        add_task(&mut graph, make_task("merge", "Merge", vec!["left", "right"]));
+        add_task(
+            &mut graph,
+            make_task("merge", "Merge", vec!["left", "right"]),
+        );
 
         let critical = HashSet::new();
         let agents = HashMap::new();
@@ -1475,7 +1528,10 @@ mod tests {
         add_task(&mut graph, make_task("c2", "Child 2", vec!["top"]));
         add_task(&mut graph, make_task("c3", "Child 3", vec!["top"]));
         add_task(&mut graph, make_task("c4", "Child 4", vec!["top"]));
-        add_task(&mut graph, make_task("bottom", "Bottom", vec!["c1", "c2", "c3", "c4"]));
+        add_task(
+            &mut graph,
+            make_task("bottom", "Bottom", vec!["c1", "c2", "c3", "c4"]),
+        );
 
         let critical = HashSet::new();
         let agents = HashMap::new();
@@ -1510,13 +1566,32 @@ mod tests {
         // graph-exp -> keybinding
         // agent-stream -> keybinding
         let mut graph = WorkGraph::new();
-        add_task(&mut graph, make_task("scaffold", "scaffold-ratatui", vec![]));
+        add_task(
+            &mut graph,
+            make_task("scaffold", "scaffold-ratatui", vec![]),
+        );
         add_task(&mut graph, make_task("panel", "panel", vec!["scaffold"]));
         add_task(&mut graph, make_task("agent", "agent", vec!["scaffold"]));
-        add_task(&mut graph, make_task("live-data", "live-data", vec!["scaffold"]));
-        add_task(&mut graph, make_task("graph-exp", "graph-exp", vec!["panel", "agent"]));
-        add_task(&mut graph, make_task("agent-stream", "agent-stream", vec!["live-data"]));
-        add_task(&mut graph, make_task("keybinding", "tui-keybinding", vec!["graph-exp", "agent", "agent-stream"]));
+        add_task(
+            &mut graph,
+            make_task("live-data", "live-data", vec!["scaffold"]),
+        );
+        add_task(
+            &mut graph,
+            make_task("graph-exp", "graph-exp", vec!["panel", "agent"]),
+        );
+        add_task(
+            &mut graph,
+            make_task("agent-stream", "agent-stream", vec!["live-data"]),
+        );
+        add_task(
+            &mut graph,
+            make_task(
+                "keybinding",
+                "tui-keybinding",
+                vec!["graph-exp", "agent", "agent-stream"],
+            ),
+        );
 
         let critical = HashSet::new();
         let agents = HashMap::new();
@@ -1582,8 +1657,15 @@ mod tests {
         reroute_edges(&mut layout, &graph);
 
         // Should detect the cycle
-        assert!(layout.has_cycles, "Should detect cycle in review <-> revise");
-        assert_eq!(layout.back_edges.len(), 1, "Should have exactly one back-edge");
+        assert!(
+            layout.has_cycles,
+            "Should detect cycle in review <-> revise"
+        );
+        assert_eq!(
+            layout.back_edges.len(),
+            1,
+            "Should have exactly one back-edge"
+        );
 
         // Both nodes should still be laid out
         assert_eq!(layout.nodes.len(), 2);
@@ -1620,7 +1702,11 @@ mod tests {
 
         // Should detect the cycle
         assert!(layout.has_cycles, "Should detect cycle in a -> b -> c -> a");
-        assert_eq!(layout.back_edges.len(), 1, "Should have exactly one back-edge");
+        assert_eq!(
+            layout.back_edges.len(),
+            1,
+            "Should have exactly one back-edge"
+        );
 
         // All nodes should be laid out
         assert_eq!(layout.nodes.len(), 3);
@@ -1637,7 +1723,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        eprintln!("--- Chain with back-edge (a -> b -> c -> a) ---\n{}\n---", text);
+        eprintln!(
+            "--- Chain with back-edge (a -> b -> c -> a) ---\n{}\n---",
+            text
+        );
     }
 
     #[test]
@@ -1684,7 +1773,10 @@ mod tests {
         add_task(&mut graph, make_task("root", "Root", vec![]));
         add_task(&mut graph, make_task("left", "Left", vec!["root"]));
         add_task(&mut graph, make_task("right", "Right", vec!["root"]));
-        add_task(&mut graph, make_task("merge", "Merge", vec!["left", "right"]));
+        add_task(
+            &mut graph,
+            make_task("merge", "Merge", vec!["left", "right"]),
+        );
 
         let critical = HashSet::new();
         let agents = HashMap::new();
@@ -1708,17 +1800,29 @@ mod tests {
         // Simple cycle: 0 -> 1 -> 0
         let edges = vec![(0, 1), (1, 0)];
         let back_edges = detect_back_edges(2, &edges);
-        assert_eq!(back_edges.len(), 1, "Should detect one back-edge in simple cycle");
+        assert_eq!(
+            back_edges.len(),
+            1,
+            "Should detect one back-edge in simple cycle"
+        );
 
         // Chain with back-edge: 0 -> 1 -> 2 -> 0
         let edges = vec![(0, 1), (1, 2), (2, 0)];
         let back_edges = detect_back_edges(3, &edges);
-        assert_eq!(back_edges.len(), 1, "Should detect one back-edge in chain cycle");
+        assert_eq!(
+            back_edges.len(),
+            1,
+            "Should detect one back-edge in chain cycle"
+        );
 
         // Acyclic diamond: 0 -> 1, 0 -> 2, 1 -> 3, 2 -> 3
         let edges = vec![(0, 1), (0, 2), (1, 3), (2, 3)];
         let back_edges = detect_back_edges(4, &edges);
-        assert_eq!(back_edges.len(), 0, "Should detect no back-edges in acyclic graph");
+        assert_eq!(
+            back_edges.len(),
+            0,
+            "Should detect no back-edges in acyclic graph"
+        );
 
         // Self-loop: 0 -> 0
         let edges = vec![(0, 0)];
@@ -1748,17 +1852,15 @@ mod tests {
             center_layers(&mut layout);
             reroute_edges(&mut layout, &graph);
 
-            let node_order: Vec<String> = layout.nodes.iter()
-                .map(|n| n.task_id.clone())
-                .collect();
-            let node_positions: Vec<(usize, usize)> = layout.nodes.iter()
-                .map(|n| (n.x, n.y))
-                .collect();
+            let node_order: Vec<String> = layout.nodes.iter().map(|n| n.task_id.clone()).collect();
+            let node_positions: Vec<(usize, usize)> =
+                layout.nodes.iter().map(|n| (n.x, n.y)).collect();
 
             if let Some(ref first) = first_node_order {
                 assert_eq!(
                     &node_order, first,
-                    "Node order changed on iteration {}", iteration
+                    "Node order changed on iteration {}",
+                    iteration
                 );
             } else {
                 first_node_order = Some(node_order);
@@ -1767,7 +1869,8 @@ mod tests {
             if let Some(ref first) = first_node_positions {
                 assert_eq!(
                     &node_positions, first,
-                    "Node positions changed on iteration {}", iteration
+                    "Node positions changed on iteration {}",
+                    iteration
                 );
             } else {
                 first_node_positions = Some(node_positions);

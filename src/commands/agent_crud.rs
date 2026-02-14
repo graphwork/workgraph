@@ -86,7 +86,10 @@ pub fn run_create(
             let input = format!("human-agent:{}:{}", name, executor);
             let digest = Sha256::digest(input.as_bytes());
             let id = format!("{:x}", digest);
-            let role_id = resolved_role.as_ref().map(|r| r.id.clone()).unwrap_or_default();
+            let role_id = resolved_role
+                .as_ref()
+                .map(|r| r.id.clone())
+                .unwrap_or_default();
             let mot_id = resolved_motivation
                 .as_ref()
                 .map(|m| m.id.clone())
@@ -171,8 +174,7 @@ pub fn run_create(
 /// `wg agent list [--json]`
 pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     let dir = agents_dir(workgraph_dir)?;
-    let agents = agency::load_all_agents(&dir)
-        .context("Failed to load agents")?;
+    let agents = agency::load_all_agents(&dir).context("Failed to load agents")?;
 
     if json {
         let output: Vec<serde_json::Value> = agents
@@ -283,15 +285,8 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         let motivations_dir = agency_dir.join("motivations");
 
         match agency::find_role_by_prefix(&roles_dir, &agent.role_id) {
-            Ok(role) => println!(
-                "Role: {} ({})",
-                role.name,
-                agency::short_hash(&role.id)
-            ),
-            Err(_) => println!(
-                "Role: {} (not found)",
-                agency::short_hash(&agent.role_id)
-            ),
+            Ok(role) => println!("Role: {} ({})", role.name, agency::short_hash(&role.id)),
+            Err(_) => println!("Role: {} (not found)", agency::short_hash(&agent.role_id)),
         }
 
         match agency::find_motivation_by_prefix(&motivations_dir, &agent.motivation_id) {
@@ -385,11 +380,9 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
     let agent = agency::find_agent_by_prefix(&agents_dir, id)
         .with_context(|| format!("Failed to find agent '{}'", id))?;
 
-    let role_ancestry = agency::role_ancestry(&agent.role_id, &roles_dir)
-        .unwrap_or_default();
+    let role_ancestry = agency::role_ancestry(&agent.role_id, &roles_dir).unwrap_or_default();
     let motivation_ancestry =
-        agency::motivation_ancestry(&agent.motivation_id, &motivations_dir)
-            .unwrap_or_default();
+        agency::motivation_ancestry(&agent.motivation_id, &motivations_dir).unwrap_or_default();
 
     if json {
         let output = serde_json::json!({
@@ -458,8 +451,11 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
             let parents = if node.parent_ids.is_empty() {
                 String::new()
             } else {
-                let short_parents: Vec<&str> =
-                    node.parent_ids.iter().map(|p| agency::short_hash(p)).collect();
+                let short_parents: Vec<&str> = node
+                    .parent_ids
+                    .iter()
+                    .map(|p| agency::short_hash(p))
+                    .collect();
                 format!(" <- [{}]", short_parents.join(", "))
             };
             println!(
@@ -492,8 +488,11 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
             let parents = if node.parent_ids.is_empty() {
                 String::new()
             } else {
-                let short_parents: Vec<&str> =
-                    node.parent_ids.iter().map(|p| agency::short_hash(p)).collect();
+                let short_parents: Vec<&str> = node
+                    .parent_ids
+                    .iter()
+                    .map(|p| agency::short_hash(p))
+                    .collect();
                 format!(" <- [{}]", short_parents.join(", "))
             };
             println!(
@@ -523,8 +522,7 @@ pub fn run_performance(workgraph_dir: &Path, id: &str, json: bool) -> Result<()>
 
     // Load all evaluations and filter to this agent's role+motivation pair
     let evals_dir = agency_dir.join("evaluations");
-    let all_evals = agency::load_all_evaluations(&evals_dir)
-        .unwrap_or_default();
+    let all_evals = agency::load_all_evaluations(&evals_dir).unwrap_or_default();
 
     let agent_evals: Vec<_> = all_evals
         .iter()
@@ -577,7 +575,10 @@ pub fn run_performance(workgraph_dir: &Path, id: &str, json: bool) -> Result<()>
     // Show inline evaluation refs from the agent's performance record
     if !agent.performance.evaluations.is_empty() {
         println!();
-        println!("Evaluation history ({} entries):", agent.performance.evaluations.len());
+        println!(
+            "Evaluation history ({} entries):",
+            agent.performance.evaluations.len()
+        );
         for eval in &agent.performance.evaluations {
             println!(
                 "  task:{} score:{:.2} context:{} at:{}",
@@ -719,7 +720,10 @@ mod tests {
         assert_eq!(agents[0].capabilities, vec!["rust", "python"]);
         assert_eq!(agents[0].rate, Some(50.0));
         assert_eq!(agents[0].capacity, Some(3.0));
-        assert_eq!(agents[0].trust_level, workgraph::graph::TrustLevel::Verified);
+        assert_eq!(
+            agents[0].trust_level,
+            workgraph::graph::TrustLevel::Verified
+        );
         assert_eq!(agents[0].contact, Some("ops@example.com".to_string()));
         assert_eq!(agents[0].executor, "claude");
     }
@@ -770,7 +774,12 @@ mod tests {
             "claude",
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("--role is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--role is required")
+        );
     }
 
     #[test]

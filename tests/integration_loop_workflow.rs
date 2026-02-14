@@ -144,7 +144,11 @@ fn test_add_with_loops_to_creates_loop_edge() {
     let graph = load_graph(&graph_path(&wg_dir)).unwrap();
     let looper = graph.get_task("looper").unwrap();
 
-    assert_eq!(looper.loops_to.len(), 1, "Should have exactly one loop edge");
+    assert_eq!(
+        looper.loops_to.len(),
+        1,
+        "Should have exactly one loop edge"
+    );
     assert_eq!(looper.loops_to[0].target, "target");
     assert_eq!(looper.loops_to[0].max_iterations, 5);
     assert!(looper.loops_to[0].guard.is_none());
@@ -161,19 +165,9 @@ fn test_add_loops_to_requires_loop_max() {
     // --loops-to without --loop-max should fail
     let output = wg_cmd(
         &wg_dir,
-        &[
-            "add",
-            "Bad Looper",
-            "--id",
-            "bad",
-            "--loops-to",
-            "target",
-        ],
+        &["add", "Bad Looper", "--id", "bad", "--loops-to", "target"],
     );
-    assert!(
-        !output.status.success(),
-        "Should fail without --loop-max"
-    );
+    assert!(!output.status.success(), "Should fail without --loop-max");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("loop-max"),
@@ -237,7 +231,10 @@ fn test_show_displays_loop_iteration() {
     let output = wg_ok(&wg_dir, &["--json", "show", "iter-task"]);
     let json: serde_json::Value = serde_json::from_str(&output).expect("Should be valid JSON");
 
-    assert_eq!(json["loop_iteration"], 3, "JSON should show loop_iteration=3");
+    assert_eq!(
+        json["loop_iteration"], 3,
+        "JSON should show loop_iteration=3"
+    );
     assert!(
         json["loops_to"].is_array(),
         "JSON should include loops_to array"
@@ -310,15 +307,26 @@ fn test_done_reactivates_loop_target() {
     // Verify graph state: target should be re-opened with iteration incremented
     let graph = load_graph(&graph_path(&wg_dir)).unwrap();
     let target = graph.get_task("target").unwrap();
-    assert_eq!(target.status, Status::Open, "Target should be re-opened by loop");
+    assert_eq!(
+        target.status,
+        Status::Open,
+        "Target should be re-opened by loop"
+    );
     assert_eq!(
         target.loop_iteration, 1,
         "Target loop_iteration should be incremented to 1"
     );
 
     let looper = graph.get_task("looper").unwrap();
-    assert_eq!(looper.status, Status::Open, "Looper (source) should be re-opened by loop");
-    assert_eq!(looper.loop_iteration, 1, "Looper loop_iteration should be incremented to 1");
+    assert_eq!(
+        looper.status,
+        Status::Open,
+        "Looper (source) should be re-opened by loop"
+    );
+    assert_eq!(
+        looper.loop_iteration, 1,
+        "Looper loop_iteration should be incremented to 1"
+    );
 }
 
 // ===========================================================================
@@ -377,9 +385,10 @@ fn test_loops_displays_active_loops() {
 
     // JSON output
     let json_output = wg_ok(&wg_dir, &["--json", "loops"]);
-    let json: serde_json::Value =
-        serde_json::from_str(&json_output).expect("Should be valid JSON");
-    let edges = json["loop_edges"].as_array().expect("Should have loop_edges array");
+    let json: serde_json::Value = serde_json::from_str(&json_output).expect("Should be valid JSON");
+    let edges = json["loop_edges"]
+        .as_array()
+        .expect("Should have loop_edges array");
     assert_eq!(edges.len(), 2, "Should have 2 loop edges");
 
     // Verify one edge has delay
@@ -461,7 +470,11 @@ fn test_multiple_iterations_until_max() {
     // After this done, evaluate_loop_edges checks if iteration < max_iterations
     // iteration was 2, 2 < 3 → fires, sets to 3
     assert_eq!(task.loop_iteration, 3, "Iter 3: loop_iteration should be 3");
-    assert_eq!(task.status, Status::Open, "Iter 3: should still re-open (2 < 3)");
+    assert_eq!(
+        task.status,
+        Status::Open,
+        "Iter 3: should still re-open (2 < 3)"
+    );
 
     // Iteration 4: complete -> stays Done (3 >= 3, loop exhausted)
     wg_ok(&wg_dir, &["done", "repeater"]);
@@ -606,11 +619,19 @@ fn test_chain_loop_via_cli() {
 
     // B should also be re-opened (intermediate task between A and C)
     let b = graph.get_task("b").unwrap();
-    assert_eq!(b.status, Status::Open, "B should be re-opened as intermediate");
+    assert_eq!(
+        b.status,
+        Status::Open,
+        "B should be re-opened as intermediate"
+    );
 
     // C should be re-opened (it's the loop source but is part of the cycle)
     let c = graph.get_task("c").unwrap();
-    assert_eq!(c.status, Status::Open, "C (source) should be re-opened by loop");
+    assert_eq!(
+        c.status,
+        Status::Open,
+        "C (source) should be re-opened by loop"
+    );
     assert_eq!(c.loop_iteration, 1);
 }
 
@@ -676,7 +697,10 @@ fn test_full_loop_lifecycle_cli_only() {
     let json: serde_json::Value = serde_json::from_str(&json_output).unwrap();
     assert_eq!(json["status"], "open");
     // loop_iteration is 0 and gets skipped in serialization when zero
-    let iter = json.get("loop_iteration").and_then(|v| v.as_u64()).unwrap_or(0);
+    let iter = json
+        .get("loop_iteration")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     assert_eq!(iter, 0);
 
     // First done: should loop (0 < 2)

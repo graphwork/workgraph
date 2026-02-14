@@ -105,9 +105,7 @@ pub fn run(dir: &Path, options: VizOptions) -> Result<()> {
         OutputFormat::Mermaid => {
             generate_mermaid(&graph, &tasks_to_show, &task_ids, &critical_path_set)
         }
-        OutputFormat::Ascii => {
-            generate_ascii(&graph, &tasks_to_show, &task_ids)
-        }
+        OutputFormat::Ascii => generate_ascii(&graph, &tasks_to_show, &task_ids),
     };
 
     // If output file is specified, render with dot
@@ -173,10 +171,8 @@ fn generate_dot(
     }
 
     // Print assigned actors as ellipse nodes
-    let assigned_actors: HashSet<&str> = tasks
-        .iter()
-        .filter_map(|t| t.assigned.as_deref())
-        .collect();
+    let assigned_actors: HashSet<&str> =
+        tasks.iter().filter_map(|t| t.assigned.as_deref()).collect();
 
     for actor_id in &assigned_actors {
         lines.push(format!(
@@ -249,8 +245,10 @@ fn generate_dot(
         // Loop edges (loops_to) — dashed magenta with iteration info
         for loop_edge in &task.loops_to {
             if task_ids.contains(loop_edge.target.as_str()) {
-                let label = format!("loop {}/{}",
-                    graph.get_task(&loop_edge.target)
+                let label = format!(
+                    "loop {}/{}",
+                    graph
+                        .get_task(&loop_edge.target)
                         .map(|t| t.loop_iteration)
                         .unwrap_or(0),
                     loop_edge.max_iterations
@@ -333,7 +331,8 @@ fn generate_mermaid(
                     lines.push("  %% Loop edges".to_string());
                     has_loops = true;
                 }
-                let iter_count = graph.get_task(&loop_edge.target)
+                let iter_count = graph
+                    .get_task(&loop_edge.target)
                     .map(|t| t.loop_iteration)
                     .unwrap_or(0);
                 lines.push(format!(
@@ -345,10 +344,8 @@ fn generate_mermaid(
     }
 
     // Print actor assignments
-    let assigned_actors: HashSet<&str> = tasks
-        .iter()
-        .filter_map(|t| t.assigned.as_deref())
-        .collect();
+    let assigned_actors: HashSet<&str> =
+        tasks.iter().filter_map(|t| t.assigned.as_deref()).collect();
 
     if !assigned_actors.is_empty() {
         lines.push(String::new());
@@ -612,7 +609,8 @@ fn generate_ascii(
             .map(|t| {
                 let mut parts = Vec::new();
                 for edge in &t.loops_to {
-                    let iter = graph.get_task(&edge.target)
+                    let iter = graph
+                        .get_task(&edge.target)
                         .map(|tgt| tgt.loop_iteration)
                         .unwrap_or(0);
                     parts.push(format!("↻{}:{}/{}", edge.target, iter, edge.max_iterations));
@@ -628,7 +626,8 @@ fn generate_ascii(
 
     // Find connected components using union-find
     let all_ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-    let id_to_idx: HashMap<&str, usize> = all_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let id_to_idx: HashMap<&str, usize> =
+        all_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut parent_uf: Vec<usize> = (0..all_ids.len()).collect();
 
     fn find(parent: &mut Vec<usize>, i: usize) -> usize {
@@ -681,9 +680,7 @@ fn generate_ascii(
         // Find roots in this component (no parents in active set)
         let mut roots: Vec<&str> = component
             .iter()
-            .filter(|&&id| {
-                reverse.get(id).map(|p| p.is_empty()).unwrap_or(true)
-            })
+            .filter(|&&id| reverse.get(id).map(|p| p.is_empty()).unwrap_or(true))
             .copied()
             .collect();
         roots.sort();
@@ -744,7 +741,10 @@ fn generate_ascii(
                 };
 
                 let node_str = format_node(id);
-                lines.push(format!("{}{}{}{}", prefix, connector, node_str, fan_in_note));
+                lines.push(format!(
+                    "{}{}{}{}",
+                    prefix, connector, node_str, fan_in_note
+                ));
 
                 // Compute child prefix
                 let child_prefix = if is_root {
@@ -760,13 +760,13 @@ fn generate_ascii(
                     let magenta = if use_color { "\x1b[35m" } else { "" };
                     let reset = if use_color { "\x1b[0m" } else { "" };
                     for loop_edge in &task.loops_to {
-                        let iter = graph.get_task(&loop_edge.target)
+                        let iter = graph
+                            .get_task(&loop_edge.target)
                             .map(|t| t.loop_iteration)
                             .unwrap_or(0);
                         lines.push(format!(
                             "{}{}↑ loops to {} ({}/{})",
-                            child_prefix, magenta, loop_edge.target,
-                            iter, loop_edge.max_iterations
+                            child_prefix, magenta, loop_edge.target, iter, loop_edge.max_iterations
                         ));
                         if use_color {
                             // Append reset to the last line
@@ -1072,10 +1072,7 @@ mod tests {
             "ascii".parse::<OutputFormat>().unwrap(),
             OutputFormat::Ascii
         );
-        assert_eq!(
-            "dag".parse::<OutputFormat>().unwrap(),
-            OutputFormat::Ascii
-        );
+        assert_eq!("dag".parse::<OutputFormat>().unwrap(), OutputFormat::Ascii);
         assert_eq!(
             "ASCII".parse::<OutputFormat>().unwrap(),
             OutputFormat::Ascii

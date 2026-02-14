@@ -251,11 +251,7 @@ fn test_motivation_crossover_two_parents() {
     agency::save_motivation(&parent_b, &motivations_dir).unwrap();
 
     let mut crossover = agency::build_motivation("MC", "merged", vec![], vec![]);
-    crossover.lineage = Lineage::crossover(
-        &[&parent_a.id, &parent_b.id],
-        0,
-        "cross-mot-1",
-    );
+    crossover.lineage = Lineage::crossover(&[&parent_a.id, &parent_b.id], 0, "cross-mot-1");
     agency::save_motivation(&crossover, &motivations_dir).unwrap();
 
     let ancestry = agency::motivation_ancestry(&crossover.id, &motivations_dir).unwrap();
@@ -466,7 +462,10 @@ fn test_role_ancestry_target_does_not_exist() {
 
     // Query ancestry for an ID that doesn't exist
     let ancestry = agency::role_ancestry("nonexistent-id", &roles_dir).unwrap();
-    assert!(ancestry.is_empty(), "Ancestry of nonexistent role should be empty");
+    assert!(
+        ancestry.is_empty(),
+        "Ancestry of nonexistent role should be empty"
+    );
 }
 
 #[test]
@@ -606,7 +605,11 @@ fn test_ancestry_no_duplicate_visits() {
 
     let ancestry = agency::role_ancestry(&a.id, &roles_dir).unwrap();
     // A, B, C, D — D should appear exactly once even though both B and C reference it
-    assert_eq!(ancestry.len(), 4, "Diamond ancestry should have 4 unique nodes");
+    assert_eq!(
+        ancestry.len(),
+        4,
+        "Diamond ancestry should have 4 unique nodes"
+    );
 
     let ids: Vec<&str> = ancestry.iter().map(|n| n.id.as_str()).collect();
     assert_eq!(

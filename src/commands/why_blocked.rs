@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
+use workgraph::WorkGraph;
 use workgraph::graph::{Status, Task};
 use workgraph::parser::load_graph;
-use workgraph::WorkGraph;
 
 use super::graph_path;
 
@@ -174,11 +174,7 @@ fn print_human(task: &Task, tree: &BlockingNode, root_blockers: &[RootBlocker], 
                 .as_ref()
                 .map(|a| format!(", assigned to {}", a))
                 .unwrap_or_else(|| ", unassigned".to_string());
-            let ready_str = if rb.is_ready {
-                ", ready to start"
-            } else {
-                ""
-            };
+            let ready_str = if rb.is_ready { ", ready to start" } else { "" };
             println!(
                 "  - {}: {:?}{}{}",
                 rb.task.id, rb.task.status, assigned, ready_str

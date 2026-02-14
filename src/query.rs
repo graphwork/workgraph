@@ -123,11 +123,7 @@ pub fn tasks_within_hours<'a>(graph: &'a WorkGraph, hours: f64) -> FitResult<'a>
 }
 
 /// Generic function to find tasks within a constraint
-fn tasks_within_constraint<'a, F>(
-    graph: &'a WorkGraph,
-    limit: f64,
-    get_value: F,
-) -> FitResult<'a>
+fn tasks_within_constraint<'a, F>(graph: &'a WorkGraph, limit: f64, get_value: F) -> FitResult<'a>
 where
     F: Fn(&Task) -> f64,
 {
@@ -135,10 +131,7 @@ where
     let ready_ids: HashSet<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
     // Get all open tasks (not done, not in-progress)
-    let mut open_tasks: Vec<&Task> = graph
-        .tasks()
-        .filter(|t| t.status == Status::Open)
-        .collect();
+    let mut open_tasks: Vec<&Task> = graph.tasks().filter(|t| t.status == Status::Open).collect();
 
     // Sort: ready tasks first, then by value (cost/hours) ascending
     open_tasks.sort_by(|a, b| {
@@ -150,7 +143,9 @@ where
             _ => {
                 let a_val = get_value(a);
                 let b_val = get_value(b);
-                a_val.partial_cmp(&b_val).unwrap_or(std::cmp::Ordering::Equal)
+                a_val
+                    .partial_cmp(&b_val)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             }
         }
     });
@@ -307,11 +302,7 @@ fn cost_of_recursive(
         return 0.0;
     };
 
-    let self_cost = task
-        .estimate
-        .as_ref()
-        .and_then(|e| e.cost)
-        .unwrap_or(0.0);
+    let self_cost = task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
 
     let deps_cost: f64 = task
         .blocked_by
@@ -863,7 +854,10 @@ mod tests {
         let ready = ready_tasks(&graph);
         let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
         assert!(ready_ids.contains(&"b2"), "b2 should be ready");
-        assert!(!ready_ids.contains(&"t"), "t should NOT be ready (b2 still open)");
+        assert!(
+            !ready_ids.contains(&"t"),
+            "t should NOT be ready (b2 still open)"
+        );
     }
 
     #[test]
@@ -931,7 +925,11 @@ mod tests {
         graph.add_node(Node::Task(task));
 
         let ready = ready_tasks(&graph);
-        assert_eq!(ready.len(), 1, "Task with nonexistent blocker should be ready");
+        assert_eq!(
+            ready.len(),
+            1,
+            "Task with nonexistent blocker should be ready"
+        );
         assert_eq!(ready[0].id, "t");
     }
 
@@ -965,7 +963,10 @@ mod tests {
         graph.add_node(Node::Task(task));
 
         let blockers = blocked_by(&graph, "t");
-        assert!(blockers.is_empty(), "Nonexistent blockers should be filtered out");
+        assert!(
+            blockers.is_empty(),
+            "Nonexistent blockers should be filtered out"
+        );
     }
 
     #[test]
@@ -991,7 +992,10 @@ mod tests {
         graph.add_node(Node::Task(make_task("b", "B")));
 
         let index = build_reverse_index(&graph);
-        assert!(index.is_empty(), "No dependencies means empty reverse index");
+        assert!(
+            index.is_empty(),
+            "No dependencies means empty reverse index"
+        );
     }
 
     #[test]
@@ -1099,7 +1103,11 @@ mod tests {
         graph.add_node(Node::Task(t1));
 
         let result = tasks_within_budget(&graph, 0.0);
-        assert_eq!(result.fits.len(), 1, "Zero-cost task should fit in zero budget");
+        assert_eq!(
+            result.fits.len(),
+            1,
+            "Zero-cost task should fit in zero budget"
+        );
         assert_eq!(result.fits[0].id, "t1");
         assert_eq!(result.remaining, 0.0);
     }
@@ -1189,7 +1197,11 @@ mod tests {
 
         // Budget is 99.99999999 — just under 100
         let result = tasks_within_budget(&graph, 99.99999999);
-        assert_eq!(result.exceeds.len(), 1, "100.0 > 99.99999999, should not fit");
+        assert_eq!(
+            result.exceeds.len(),
+            1,
+            "100.0 > 99.99999999, should not fit"
+        );
         assert!(result.fits.is_empty());
     }
 
@@ -1200,20 +1212,33 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut a = make_task("a", "A");
-        a.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        a.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
         let mut b = make_task("b", "B");
         b.blocked_by = vec!["a".to_string()];
-        b.estimate = Some(Estimate { hours: None, cost: Some(20.0) });
+        b.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(20.0),
+        });
         let mut c = make_task("c", "C");
         c.blocked_by = vec!["b".to_string()];
-        c.estimate = Some(Estimate { hours: None, cost: Some(30.0) });
+        c.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(30.0),
+        });
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
         graph.add_node(Node::Task(c));
 
         let result = tasks_within_budget(&graph, 100.0);
-        assert_eq!(result.fits.len(), 3, "All three should fit within cascading plan");
+        assert_eq!(
+            result.fits.len(),
+            3,
+            "All three should fit within cascading plan"
+        );
         assert_eq!(result.fits[0].id, "a");
         assert_eq!(result.fits[1].id, "b");
         assert_eq!(result.fits[2].id, "c");
@@ -1265,23 +1290,38 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut a = make_task("a", "A");
-        a.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        a.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         let mut b = make_task("b", "B");
         b.blocked_by = vec!["a".to_string()];
-        b.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        b.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         let mut c = make_task("c", "C");
         c.blocked_by = vec!["b".to_string()];
-        c.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        c.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         let mut d = make_task("d", "D");
         d.blocked_by = vec!["c".to_string()];
-        d.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        d.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         let mut e = make_task("e", "E");
         e.blocked_by = vec!["d".to_string()];
-        e.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        e.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -1299,19 +1339,31 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut a = make_task("a", "A");
-        a.estimate = Some(Estimate { hours: None, cost: Some(10.0) });
+        a.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(10.0),
+        });
 
         let mut b = make_task("b", "B");
         b.blocked_by = vec!["a".to_string()];
-        b.estimate = Some(Estimate { hours: None, cost: Some(20.0) });
+        b.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(20.0),
+        });
 
         let mut c = make_task("c", "C");
         c.blocked_by = vec!["a".to_string()];
-        c.estimate = Some(Estimate { hours: None, cost: Some(30.0) });
+        c.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(30.0),
+        });
 
         let mut d = make_task("d", "D");
         d.blocked_by = vec!["b".to_string(), "c".to_string()];
-        d.estimate = Some(Estimate { hours: None, cost: Some(40.0) });
+        d.estimate = Some(Estimate {
+            hours: None,
+            cost: Some(40.0),
+        });
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -1396,7 +1448,10 @@ mod tests {
     fn test_is_time_ready_invalid_ready_after() {
         let mut task = make_task("t", "Task");
         task.ready_after = Some("garbage".to_string());
-        assert!(is_time_ready(&task), "Invalid ready_after should be treated as ready");
+        assert!(
+            is_time_ready(&task),
+            "Invalid ready_after should be treated as ready"
+        );
     }
 
     #[test]
@@ -1412,6 +1467,9 @@ mod tests {
         let mut task = make_task("t", "Task");
         task.not_before = Some("2020-01-01T00:00:00Z".to_string());
         task.ready_after = Some("2099-01-01T00:00:00Z".to_string());
-        assert!(!is_time_ready(&task), "Future ready_after should still block");
+        assert!(
+            !is_time_ready(&task),
+            "Future ready_after should still block"
+        );
     }
 }

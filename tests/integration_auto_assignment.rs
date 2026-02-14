@@ -223,10 +223,7 @@ fn build_assign_subgraph(dir: &Path) {
             desc.push_str(&format!("**Description:** {}\n", d));
         }
         if !ready_task.skills.is_empty() {
-            desc.push_str(&format!(
-                "**Skills:** {}\n",
-                ready_task.skills.join(", ")
-            ));
+            desc.push_str(&format!("**Skills:** {}\n", ready_task.skills.join(", ")));
         }
         desc.push_str(&format!(
             "\n## Instructions\n\
@@ -266,9 +263,9 @@ fn build_assign_subgraph(dir: &Path) {
             model: None,
             verify: None,
             agent: None,
-        loops_to: vec![],
-        loop_iteration: 0,
-        ready_after: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));
@@ -353,10 +350,7 @@ fn test_assign_subgraph_blocks_original_task() {
 
     // But assign-task-1 should be ready
     let assign_ready = ready.iter().any(|t| t.id == "assign-task-1");
-    assert!(
-        assign_ready,
-        "assign-task-1 should be ready (no blockers)"
-    );
+    assert!(assign_ready, "assign-task-1 should be ready (no blockers)");
 }
 
 #[test]
@@ -405,7 +399,11 @@ fn test_assign_subgraph_includes_skills() {
 
     setup_workgraph(
         dir,
-        vec![make_task_with_skills("task-3", "Write tests", vec!["rust", "testing"])],
+        vec![make_task_with_skills(
+            "task-3",
+            "Write tests",
+            vec!["rust", "testing"],
+        )],
     );
     write_config_auto_assign(dir, true);
 
@@ -485,10 +483,7 @@ fn test_assign_subgraph_idempotent() {
     // assign-assign-task-6, which is expected coordinator behavior (recursion
     // bottoms out at the assign task having no agent). But assign-task-6
     // itself is NOT duplicated.
-    let assign_task_6_count = graph
-        .tasks()
-        .filter(|t| t.id == "assign-task-6")
-        .count();
+    let assign_task_6_count = graph.tasks().filter(|t| t.id == "assign-task-6").count();
     assert_eq!(
         assign_task_6_count, 1,
         "assign-task-6 should not be duplicated"
@@ -531,9 +526,18 @@ fn test_assign_subgraph_multiple_ready_tasks() {
 
     let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
 
-    assert!(graph.get_task("assign-a").is_some(), "assign-a should exist");
-    assert!(graph.get_task("assign-b").is_some(), "assign-b should exist");
-    assert!(graph.get_task("assign-c").is_some(), "assign-c should exist");
+    assert!(
+        graph.get_task("assign-a").is_some(),
+        "assign-a should exist"
+    );
+    assert!(
+        graph.get_task("assign-b").is_some(),
+        "assign-b should exist"
+    );
+    assert!(
+        graph.get_task("assign-c").is_some(),
+        "assign-c should exist"
+    );
 
     // All original tasks should now be blocked
     for id in &["a", "b", "c"] {
@@ -722,10 +726,7 @@ fn test_assignment_pipeline_with_mixed_tasks() {
 
     let ready_task = make_task("needs-assignment", "Needs an agent");
 
-    setup_workgraph(
-        dir,
-        vec![assigned_task, blocked_task, ready_task],
-    );
+    setup_workgraph(dir, vec![assigned_task, blocked_task, ready_task]);
     write_config_auto_assign(dir, true);
 
     build_assign_subgraph(dir);
@@ -829,13 +830,21 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
     );
 
     // Apply template to verify it renders into prompts
-    let prompt_template =
-        "{{task_identity}}\n## Task\nID: {{task_id}}\nTitle: {{task_title}}\nDesc: {{task_description}}\nContext: {{task_context}}";
+    let prompt_template = "{{task_identity}}\n## Task\nID: {{task_id}}\nTitle: {{task_title}}\nDesc: {{task_description}}\nContext: {{task_context}}";
     let rendered = vars.apply(prompt_template);
 
-    assert!(rendered.contains("Implementer"), "rendered prompt should contain role name");
-    assert!(rendered.contains("prompt-task"), "rendered prompt should contain task ID");
-    assert!(rendered.contains("Build the widget"), "rendered prompt should contain task title");
+    assert!(
+        rendered.contains("Implementer"),
+        "rendered prompt should contain role name"
+    );
+    assert!(
+        rendered.contains("prompt-task"),
+        "rendered prompt should contain task ID"
+    );
+    assert!(
+        rendered.contains("Build the widget"),
+        "rendered prompt should contain task title"
+    );
     assert!(
         rendered.contains("Create a new widget component"),
         "rendered prompt should contain task description"
@@ -855,7 +864,10 @@ fn test_no_agent_renders_empty_identity() {
 
     let template = "Identity:{{task_identity}}:end";
     let rendered = vars.apply(template);
-    assert_eq!(rendered, "Identity::end", "empty identity should leave no gap");
+    assert_eq!(
+        rendered, "Identity::end",
+        "empty identity should leave no gap"
+    );
 }
 
 #[test]
@@ -930,7 +942,11 @@ mod llm_tests {
             path.pop();
         }
         path.push("wg");
-        assert!(path.exists(), "wg binary not found at {:?}. Run `cargo build` first.", path);
+        assert!(
+            path.exists(),
+            "wg binary not found at {:?}. Run `cargo build` first.",
+            path
+        );
         path
     }
 
@@ -956,7 +972,9 @@ mod llm_tests {
         assert!(
             output.status.success(),
             "wg {:?} failed.\nstdout: {}\nstderr: {}",
-            args, stdout, stderr
+            args,
+            stdout,
+            stderr
         );
         stdout
     }
@@ -1084,7 +1102,8 @@ Begin working on the task now.
         let second_agent_id = setup_second_agent(&wg_dir);
 
         // Create the target task that needs Rust skills
-        let mut task = make_task_with_skills("rust-feature", "Implement a Rust parser", vec!["rust"]);
+        let mut task =
+            make_task_with_skills("rust-feature", "Implement a Rust parser", vec!["rust"]);
         task.description = Some("Write a parser for a simple DSL in Rust".to_string());
 
         // Create a hand-crafted assign task with an explicit, unambiguous description
@@ -1138,9 +1157,9 @@ Begin working on the task now.
             model: None,
             verify: None,
             agent: None,
-        loops_to: vec![],
-        loop_iteration: 0,
-        ready_after: None,
+            loops_to: vec![],
+            loop_iteration: 0,
+            ready_after: None,
         };
 
         // Wire up: assign-rust-feature blocks rust-feature
@@ -1150,7 +1169,14 @@ Begin working on the task now.
         // Spawn a real Claude agent on the assign task
         let output = wg_cmd(
             &wg_dir,
-            &["spawn", "assign-rust-feature", "--executor", "claude", "--model", &model],
+            &[
+                "spawn",
+                "assign-rust-feature",
+                "--executor",
+                "claude",
+                "--model",
+                &model,
+            ],
         );
         assert!(
             output.status.success(),
@@ -1261,10 +1287,7 @@ Begin working on the task now.
         setup_workgraph(&wg_dir, vec![task]);
 
         // Write config so wg evaluate uses our test model
-        let config_content = format!(
-            "[agency]\nevaluator_model = \"{}\"\n",
-            model
-        );
+        let config_content = format!("[agency]\nevaluator_model = \"{}\"\n", model);
         fs::write(wg_dir.join("config.toml"), &config_content).unwrap();
 
         // Run wg evaluate directly (it spawns its own claude process internally)
@@ -1277,7 +1300,8 @@ Begin working on the task now.
         assert!(
             output.status.success(),
             "wg evaluate failed.\nstdout: {}\nstderr: {}",
-            stdout, stderr
+            stdout,
+            stderr
         );
 
         // Verify evaluation JSON was created
@@ -1299,8 +1323,8 @@ Begin working on the task now.
 
         // Parse the evaluation and check it has valid structure
         let eval_content = fs::read_to_string(eval_files[0].path()).unwrap();
-        let eval: serde_json::Value = serde_json::from_str(&eval_content)
-            .expect("Evaluation file should be valid JSON");
+        let eval: serde_json::Value =
+            serde_json::from_str(&eval_content).expect("Evaluation file should be valid JSON");
 
         assert!(
             eval["score"].is_f64() || eval["score"].is_i64(),

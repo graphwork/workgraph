@@ -202,7 +202,11 @@ fn gather_agent_summary(dir: &Path) -> Result<AgentSummaryInfo> {
         }
     }
 
-    Ok(AgentSummaryInfo { alive, dead, active })
+    Ok(AgentSummaryInfo {
+        alive,
+        dead,
+        active,
+    })
 }
 
 fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
@@ -230,11 +234,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
     let mut done_today = 0;
     let mut done_total = 0;
 
-    let today_start = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc();
+    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
 
     for task in graph.tasks() {
         match task.status {
@@ -342,11 +342,7 @@ fn print_status(status: &StatusOutput) {
     }
 
     // Line 2: Coordinator config
-    let model_str = status
-        .coordinator
-        .model
-        .as_deref()
-        .unwrap_or("default");
+    let model_str = status.coordinator.model.as_deref().unwrap_or("default");
     println!(
         "Coordinator: max={}, executor={}, model={}, poll={}s",
         status.coordinator.max_agents,
@@ -360,7 +356,10 @@ fn print_status(status: &StatusOutput) {
     if status.agents.alive == 0 && status.agents.dead == 0 {
         println!("Agents: none");
     } else {
-        println!("Agents ({} alive, {} dead):", status.agents.alive, status.agents.dead);
+        println!(
+            "Agents ({} alive, {} dead):",
+            status.agents.alive, status.agents.dead
+        );
         for agent in &status.agents.active {
             // Truncate task_id if too long
             let task_display = if agent.task_id.len() > 24 {

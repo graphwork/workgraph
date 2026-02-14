@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
+use workgraph::graph::{LogEntry, Status, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query;
 
@@ -49,7 +49,9 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         anyhow::bail!(
             "Task '{}' requires verification. Use 'wg submit {}' instead of 'wg done'.\n\
              After submission, a reviewer must use 'wg approve {}' to complete it.",
-            id, id, id
+            id,
+            id,
+            id
         );
     }
 

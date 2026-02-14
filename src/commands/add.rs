@@ -32,9 +32,15 @@ pub fn parse_guard_expr(expr: &str) -> Result<workgraph::graph::LoopGuard> {
                 status,
             });
         }
-        anyhow::bail!("Invalid guard format. Expected 'task:<id>=<status>', got '{}'", expr);
+        anyhow::bail!(
+            "Invalid guard format. Expected 'task:<id>=<status>', got '{}'",
+            expr
+        );
     }
-    anyhow::bail!("Invalid guard expression '{}'. Expected 'task:<id>=<status>' or 'always'", expr);
+    anyhow::bail!(
+        "Invalid guard expression '{}'. Expected 'task:<id>=<status>' or 'always'",
+        expr
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -96,8 +102,9 @@ pub fn run(
         let delay = match loop_delay {
             Some(d) => {
                 // Validate the delay parses correctly
-                parse_delay(d)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d))?;
+                parse_delay(d).ok_or_else(|| {
+                    anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+                })?;
                 Some(d.to_string())
             }
             None => None,
@@ -160,7 +167,11 @@ pub fn run(
 
     println!("Added task: {} ({})", title, task_id);
     if loops_to.is_some() {
-        println!("  Loop edge: → {} (max {} iterations)", loops_to.unwrap(), loop_max.unwrap());
+        println!(
+            "  Loop edge: → {} (max {} iterations)",
+            loops_to.unwrap(),
+            loop_max.unwrap()
+        );
     }
     super::print_service_hint(dir);
     Ok(())
@@ -179,7 +190,11 @@ fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
         .collect::<Vec<_>>()
         .join("-");
 
-    let base_id = if slug.is_empty() { "task".to_string() } else { slug };
+    let base_id = if slug.is_empty() {
+        "task".to_string()
+    } else {
+        slug
+    };
 
     // Ensure uniqueness
     if graph.get_node(&base_id).is_none() {
@@ -194,17 +209,20 @@ fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
     }
 
     // Fallback to timestamp
-    format!("task-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs())
+    format!(
+        "task-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{LoopGuard, Node, Status, Task};
     use workgraph::WorkGraph;
+    use workgraph::graph::{LoopGuard, Node, Status, Task};
 
     /// Helper: create a minimal task with the given ID for inserting into a WorkGraph.
     fn stub_task(id: &str) -> Task {

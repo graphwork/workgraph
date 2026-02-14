@@ -8,13 +8,18 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{
-    self, Agent, Evaluation, Lineage, PerformanceRecord, SkillRef,
-};
+use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord, SkillRef};
 use workgraph::graph::{LogEntry, Status, Task};
 
 /// Helper: create a minimal Task for testing.
-fn make_task(id: &str, title: &str, description: Option<&str>, tags: Vec<&str>, skills: Vec<&str>, verify: Option<&str>) -> Task {
+fn make_task(
+    id: &str,
+    title: &str,
+    description: Option<&str>,
+    tags: Vec<&str>,
+    skills: Vec<&str>,
+    verify: Option<&str>,
+) -> Task {
     Task {
         id: id.to_string(),
         title: title.to_string(),
@@ -102,8 +107,18 @@ fn test_full_agency_lifecycle() {
     let motivation_id = motivation.id.clone();
 
     // Verify IDs are content hashes (64 hex chars = SHA-256)
-    assert_eq!(role_id.len(), 64, "Role ID should be a full SHA-256 hex hash, got: {}", role_id);
-    assert_eq!(motivation_id.len(), 64, "Motivation ID should be a full SHA-256 hex hash, got: {}", motivation_id);
+    assert_eq!(
+        role_id.len(),
+        64,
+        "Role ID should be a full SHA-256 hex hash, got: {}",
+        role_id
+    );
+    assert_eq!(
+        motivation_id.len(),
+        64,
+        "Motivation ID should be a full SHA-256 hex hash, got: {}",
+        motivation_id
+    );
 
     // Save and reload to verify storage round-trip
     let roles_dir = agency_dir.join("roles");
@@ -129,7 +144,9 @@ fn test_full_agency_lifecycle() {
     let mut task = make_task(
         "impl-parser",
         "Implement the Rust parser module",
-        Some("Write a parser for the configuration file format with proper error handling and tests"),
+        Some(
+            "Write a parser for the configuration file format with proper error handling and tests",
+        ),
         vec!["rust", "parser"],
         vec!["rust", "testing"],
         Some("cargo test passes with no failures"),
@@ -197,7 +214,10 @@ fn test_full_agency_lifecycle() {
     // ---------------------------------------------------------------
     task.status = Status::Done;
     task.completed_at = Some("2025-01-15T10:30:00Z".to_string());
-    task.artifacts = vec!["src/parser.rs".to_string(), "tests/parser_test.rs".to_string()];
+    task.artifacts = vec![
+        "src/parser.rs".to_string(),
+        "tests/parser_test.rs".to_string(),
+    ];
 
     assert_eq!(task.status, Status::Done);
     assert_eq!(task.artifacts.len(), 2);
@@ -225,7 +245,11 @@ fn test_full_agency_lifecycle() {
     };
 
     let eval_path = agency::record_evaluation(&evaluation, &agency_dir).unwrap();
-    assert!(eval_path.exists(), "Evaluation file should exist at {:?}", eval_path);
+    assert!(
+        eval_path.exists(),
+        "Evaluation file should exist at {:?}",
+        eval_path
+    );
 
     // Verify the evaluation was saved and can be loaded back
     let loaded_eval = agency::load_evaluation(&eval_path).unwrap();
@@ -242,11 +266,18 @@ fn test_full_agency_lifecycle() {
         updated_role.performance.avg_score
     );
     assert_eq!(updated_role.performance.evaluations.len(), 1);
-    assert_eq!(updated_role.performance.evaluations[0].task_id, "impl-parser");
-    assert_eq!(updated_role.performance.evaluations[0].context_id, motivation_id);
+    assert_eq!(
+        updated_role.performance.evaluations[0].task_id,
+        "impl-parser"
+    );
+    assert_eq!(
+        updated_role.performance.evaluations[0].context_id,
+        motivation_id
+    );
 
     // Verify motivation performance was updated
-    let updated_motivation = agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
+    let updated_motivation =
+        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
     assert_eq!(updated_motivation.performance.task_count, 1);
     assert!(
         (updated_motivation.performance.avg_score.unwrap() - 0.88).abs() < 1e-6,
@@ -254,7 +285,10 @@ fn test_full_agency_lifecycle() {
         updated_motivation.performance.avg_score
     );
     assert_eq!(updated_motivation.performance.evaluations.len(), 1);
-    assert_eq!(updated_motivation.performance.evaluations[0].context_id, role_id);
+    assert_eq!(
+        updated_motivation.performance.evaluations[0].context_id,
+        role_id
+    );
 
     // ---------------------------------------------------------------
     // Step 7: Record a second evaluation and verify cumulative updates
@@ -305,7 +339,10 @@ fn test_seed_starters_and_round_trip() {
 
     let (roles_created, motivations_created) = agency::seed_starters(&agency_dir).unwrap();
     assert!(roles_created > 0, "Should create at least one starter role");
-    assert!(motivations_created > 0, "Should create at least one starter motivation");
+    assert!(
+        motivations_created > 0,
+        "Should create at least one starter motivation"
+    );
 
     // Verify round-trip: load all and check they're valid
     let roles = agency::load_all_roles(&agency_dir.join("roles")).unwrap();
@@ -313,7 +350,13 @@ fn test_seed_starters_and_round_trip() {
 
     // All starter roles should have content-hash IDs (64 hex chars)
     for role in &roles {
-        assert_eq!(role.id.len(), 64, "Starter role '{}' should have a content-hash ID, got: {}", role.name, role.id);
+        assert_eq!(
+            role.id.len(),
+            64,
+            "Starter role '{}' should have a content-hash ID, got: {}",
+            role.name,
+            role.id
+        );
     }
 
     let motivations = agency::load_all_motivations(&agency_dir.join("motivations")).unwrap();
@@ -321,7 +364,13 @@ fn test_seed_starters_and_round_trip() {
 
     // All starter motivations should have content-hash IDs (64 hex chars)
     for motivation in &motivations {
-        assert_eq!(motivation.id.len(), 64, "Starter motivation '{}' should have a content-hash ID, got: {}", motivation.name, motivation.id);
+        assert_eq!(
+            motivation.id.len(),
+            64,
+            "Starter motivation '{}' should have a content-hash ID, got: {}",
+            motivation.name,
+            motivation.id
+        );
     }
 
     // Seeding again should create 0 new items (idempotent)
@@ -368,7 +417,10 @@ fn test_full_agency_lifecycle_new_design() {
 
     // Verify content-hash ID
     assert_eq!(role_id.len(), 64, "Role ID should be SHA-256 hex hash");
-    assert!(role_id.chars().all(|c| c.is_ascii_hexdigit()), "Role ID should be hex");
+    assert!(
+        role_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "Role ID should be hex"
+    );
 
     // Deterministic: same content produces same hash
     let role_dup = agency::build_role(
@@ -381,7 +433,10 @@ fn test_full_agency_lifecycle_new_design() {
         ],
         "Fully tested feature implementation",
     );
-    assert_eq!(role_dup.id, role_id, "Same immutable content should produce same hash regardless of name");
+    assert_eq!(
+        role_dup.id, role_id,
+        "Same immutable content should produce same hash regardless of name"
+    );
 
     let roles_dir = agency_dir.join("roles");
     agency::save_role(&role, &roles_dir).unwrap();
@@ -403,7 +458,11 @@ fn test_full_agency_lifecycle_new_design() {
     );
     let motivation_id = motivation.id.clone();
 
-    assert_eq!(motivation_id.len(), 64, "Motivation ID should be SHA-256 hex hash");
+    assert_eq!(
+        motivation_id.len(),
+        64,
+        "Motivation ID should be SHA-256 hex hash"
+    );
     assert!(motivation_id.chars().all(|c| c.is_ascii_hexdigit()));
 
     let motivations_dir = agency_dir.join("motivations");
@@ -417,7 +476,10 @@ fn test_full_agency_lifecycle_new_design() {
 
     // Agent ID is deterministic from role+motivation
     let agent_id_dup = agency::content_hash_agent(&role_id, &motivation_id);
-    assert_eq!(agent_id, agent_id_dup, "Same role+motivation should produce same agent ID");
+    assert_eq!(
+        agent_id, agent_id_dup,
+        "Same role+motivation should produce same agent ID"
+    );
 
     // Different pairing produces different agent ID
     let alt_motivation = agency::build_motivation(
@@ -427,7 +489,10 @@ fn test_full_agency_lifecycle_new_design() {
         vec!["Broken code".to_string()],
     );
     let alt_agent_id = agency::content_hash_agent(&role_id, &alt_motivation.id);
-    assert_ne!(agent_id, alt_agent_id, "Different motivation should produce different agent ID");
+    assert_ne!(
+        agent_id, alt_agent_id,
+        "Different motivation should produce different agent ID"
+    );
 
     let agent = Agent {
         id: agent_id.clone(),
@@ -572,34 +637,48 @@ fn test_full_agency_lifecycle_new_design() {
 
     // 6b. Verify AGENT performance was updated (three-level: agent level)
     let updated_agent = agency::find_agent_by_prefix(&agents_dir, &agent_id).unwrap();
-    assert_eq!(updated_agent.performance.task_count, 1, "Agent should have 1 task recorded");
+    assert_eq!(
+        updated_agent.performance.task_count, 1,
+        "Agent should have 1 task recorded"
+    );
     assert!(
         (updated_agent.performance.avg_score.unwrap() - 0.89).abs() < 1e-6,
         "Agent avg_score should be 0.89, got {:?}",
         updated_agent.performance.avg_score
     );
     assert_eq!(updated_agent.performance.evaluations.len(), 1);
-    assert_eq!(updated_agent.performance.evaluations[0].task_id, "integration-feature");
+    assert_eq!(
+        updated_agent.performance.evaluations[0].task_id,
+        "integration-feature"
+    );
 
     // 6c. Verify ROLE performance was updated (three-level: role level)
     let updated_role = agency::load_role(&roles_dir.join(format!("{}.yaml", role_id))).unwrap();
-    assert_eq!(updated_role.performance.task_count, 1, "Role should have 1 task recorded");
+    assert_eq!(
+        updated_role.performance.task_count, 1,
+        "Role should have 1 task recorded"
+    );
     assert!(
         (updated_role.performance.avg_score.unwrap() - 0.89).abs() < 1e-6,
         "Role avg_score should be 0.89"
     );
     assert_eq!(updated_role.performance.evaluations.len(), 1);
-    assert_eq!(updated_role.performance.evaluations[0].task_id, "integration-feature");
+    assert_eq!(
+        updated_role.performance.evaluations[0].task_id,
+        "integration-feature"
+    );
     assert_eq!(
         updated_role.performance.evaluations[0].context_id, motivation_id,
         "Role eval context_id should be the motivation_id"
     );
 
     // 6d. Verify MOTIVATION performance was updated (three-level: motivation level)
-    let updated_motivation = agency::load_motivation(
-        &motivations_dir.join(format!("{}.yaml", motivation_id)),
-    ).unwrap();
-    assert_eq!(updated_motivation.performance.task_count, 1, "Motivation should have 1 task recorded");
+    let updated_motivation =
+        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
+    assert_eq!(
+        updated_motivation.performance.task_count, 1,
+        "Motivation should have 1 task recorded"
+    );
     assert!(
         (updated_motivation.performance.avg_score.unwrap() - 0.89).abs() < 1e-6,
         "Motivation avg_score should be 0.89"
@@ -648,9 +727,8 @@ fn test_full_agency_lifecycle_new_design() {
     assert_eq!(role_after_2.performance.task_count, 2);
     assert_eq!(role_after_2.performance.evaluations.len(), 2);
 
-    let mot_after_2 = agency::load_motivation(
-        &motivations_dir.join(format!("{}.yaml", motivation_id)),
-    ).unwrap();
+    let mot_after_2 =
+        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
     assert_eq!(mot_after_2.performance.task_count, 2);
     assert_eq!(mot_after_2.performance.evaluations.len(), 2);
 
@@ -748,7 +826,11 @@ fn test_full_agency_lifecycle_new_design() {
 
     // 8d. Verify role ancestry
     let role_ancestry = agency::role_ancestry(&evolved_role_id, &roles_dir).unwrap();
-    assert_eq!(role_ancestry.len(), 2, "Evolved role should have 2 ancestors (self + parent)");
+    assert_eq!(
+        role_ancestry.len(),
+        2,
+        "Evolved role should have 2 ancestors (self + parent)"
+    );
     assert_eq!(role_ancestry[0].id, evolved_role_id);
     assert_eq!(role_ancestry[0].generation, 1);
     assert_eq!(role_ancestry[0].created_by, "evolver-evo-run-1");
@@ -757,7 +839,11 @@ fn test_full_agency_lifecycle_new_design() {
 
     // 8e. Verify motivation ancestry with crossover
     let mot_ancestry = agency::motivation_ancestry(&crossover_mot_id, &motivations_dir).unwrap();
-    assert_eq!(mot_ancestry.len(), 3, "Crossover motivation should have 3 ancestors (self + 2 parents)");
+    assert_eq!(
+        mot_ancestry.len(),
+        3,
+        "Crossover motivation should have 3 ancestors (self + 2 parents)"
+    );
     assert_eq!(mot_ancestry[0].id, crossover_mot_id);
     assert_eq!(mot_ancestry[0].generation, 1);
     assert_eq!(mot_ancestry[0].created_by, "evolver-evo-run-2");
@@ -808,17 +894,18 @@ performance:
   task_count: 5
   avg_score: 0.75
 "#;
-    std::fs::write(
-        roles_dir.join("my-legacy-role.yaml"),
-        slug_role_yaml,
-    ).unwrap();
+    std::fs::write(roles_dir.join("my-legacy-role.yaml"), slug_role_yaml).unwrap();
 
     // Slug-based ID can still be found by exact prefix match
     let legacy = agency::find_role_by_prefix(&roles_dir, "my-legacy-role");
     assert!(legacy.is_ok(), "Should still load legacy slug-based role");
     let legacy_role = legacy.unwrap();
     assert_eq!(legacy_role.id, "my-legacy-role");
-    assert_ne!(legacy_role.id.len(), 64, "Legacy role should NOT have a content-hash ID");
+    assert_ne!(
+        legacy_role.id.len(),
+        64,
+        "Legacy role should NOT have a content-hash ID"
+    );
 
     // 9b. A slug-based motivation can coexist with content-hash ones
     let slug_mot_yaml = r#"
@@ -831,13 +918,13 @@ performance:
   task_count: 0
   avg_score: null
 "#;
-    std::fs::write(
-        motivations_dir.join("old-motivation.yaml"),
-        slug_mot_yaml,
-    ).unwrap();
+    std::fs::write(motivations_dir.join("old-motivation.yaml"), slug_mot_yaml).unwrap();
 
     let legacy_mot = agency::find_motivation_by_prefix(&motivations_dir, "old-motivation");
-    assert!(legacy_mot.is_ok(), "Should still load legacy slug-based motivation");
+    assert!(
+        legacy_mot.is_ok(),
+        "Should still load legacy slug-based motivation"
+    );
 
     // 9c. All entities (old and new) coexist in load_all
     let all_roles = agency::load_all_roles(&roles_dir).unwrap();
@@ -869,11 +956,17 @@ performance:
         timestamp: "2025-06-03T08:00:00Z".to_string(),
     };
     let slug_eval_result = agency::record_evaluation(&slug_eval, &agency_dir);
-    assert!(slug_eval_result.is_ok(), "Evaluation with slug-based role should succeed");
+    assert!(
+        slug_eval_result.is_ok(),
+        "Evaluation with slug-based role should succeed"
+    );
 
     // Verify the legacy role got its performance updated
     let updated_legacy = agency::find_role_by_prefix(&roles_dir, "my-legacy-role").unwrap();
-    assert_eq!(updated_legacy.performance.task_count, 6, "Legacy role task_count should increment from 5 to 6");
+    assert_eq!(
+        updated_legacy.performance.task_count, 6,
+        "Legacy role task_count should increment from 5 to 6"
+    );
 
     // 9e. Nonexistent slug prefix produces a clean NotFound error
     let missing = agency::find_role_by_prefix(&roles_dir, "nonexistent-slug");
@@ -924,17 +1017,17 @@ fn test_output_capture_standalone() {
     assert!(output_dir.join("log.json").exists());
 
     // Verify log.json contents
-    let log_json: Vec<LogEntry> = serde_json::from_str(
-        &std::fs::read_to_string(output_dir.join("log.json")).unwrap(),
-    ).unwrap();
+    let log_json: Vec<LogEntry> =
+        serde_json::from_str(&std::fs::read_to_string(output_dir.join("log.json")).unwrap())
+            .unwrap();
     assert_eq!(log_json.len(), 2);
     assert_eq!(log_json[0].actor, Some("agent".to_string()));
     assert_eq!(log_json[1].actor, None);
 
     // Verify artifacts.json contents
-    let artifacts: Vec<agency::ArtifactEntry> = serde_json::from_str(
-        &std::fs::read_to_string(output_dir.join("artifacts.json")).unwrap(),
-    ).unwrap();
+    let artifacts: Vec<agency::ArtifactEntry> =
+        serde_json::from_str(&std::fs::read_to_string(output_dir.join("artifacts.json")).unwrap())
+            .unwrap();
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0].path, "README.md");
     // Size may or may not be present depending on path resolution
@@ -969,7 +1062,11 @@ fn test_agent_independent_performance() {
         role_id: role.id.clone(),
         motivation_id: mot_a.id.clone(),
         name: "agent-a".to_string(),
-        performance: PerformanceRecord { task_count: 0, avg_score: None, evaluations: vec![] },
+        performance: PerformanceRecord {
+            task_count: 0,
+            avg_score: None,
+            evaluations: vec![],
+        },
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -983,7 +1080,11 @@ fn test_agent_independent_performance() {
         role_id: role.id.clone(),
         motivation_id: mot_b.id.clone(),
         name: "agent-b".to_string(),
-        performance: PerformanceRecord { task_count: 0, avg_score: None, evaluations: vec![] },
+        performance: PerformanceRecord {
+            task_count: 0,
+            avg_score: None,
+            evaluations: vec![],
+        },
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,

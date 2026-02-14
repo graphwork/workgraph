@@ -30,11 +30,7 @@ fn load_archive(archive_path: &Path) -> Result<Vec<Task>> {
             continue;
         }
         let node: Node = serde_json::from_str(trimmed).with_context(|| {
-            format!(
-                "Failed to parse archive line {}: {}",
-                line_num + 1,
-                trimmed
-            )
+            format!("Failed to parse archive line {}: {}", line_num + 1, trimmed)
         })?;
         if let Node::Task(task) = node {
             tasks.push(task);
@@ -52,9 +48,15 @@ fn parse_date(s: &str) -> Result<DateTime<Utc>> {
 }
 
 /// Check if a task falls within the date range
-fn in_date_range(task: &Task, since: Option<&DateTime<Utc>>, until: Option<&DateTime<Utc>>) -> bool {
+fn in_date_range(
+    task: &Task,
+    since: Option<&DateTime<Utc>>,
+    until: Option<&DateTime<Utc>>,
+) -> bool {
     let completed = task.completed_at.as_ref().and_then(|s| {
-        DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&Utc))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
     });
 
     match (completed, since, until) {
@@ -62,7 +64,7 @@ fn in_date_range(task: &Task, since: Option<&DateTime<Utc>>, until: Option<&Date
         (Some(completed), Some(since), None) => completed >= *since,
         (Some(completed), None, Some(until)) => completed <= *until,
         (None, Some(_), _) | (None, _, Some(_)) => false, // No timestamp, exclude if filtering
-        (_, None, None) => true, // No filter, include
+        (_, None, None) => true,                          // No filter, include
     }
 }
 
@@ -73,11 +75,11 @@ fn status_color(status: &Status, is_archived: bool) -> &'static str {
     }
     match status {
         Status::Done => "palegreen",
-        Status::InProgress => "coral",        // Red/orange - active work, draws attention
-        Status::Blocked => "khaki",           // Yellow - waiting
-        Status::Open => "white",              // Ready to pick up
-        Status::Failed => "salmon",           // Red-ish - needs attention
-        Status::Abandoned => "lightgray",     // Grayed out
+        Status::InProgress => "coral", // Red/orange - active work, draws attention
+        Status::Blocked => "khaki",    // Yellow - waiting
+        Status::Open => "white",       // Ready to pick up
+        Status::Failed => "salmon",    // Red-ish - needs attention
+        Status::Abandoned => "lightgray", // Grayed out
         Status::PendingReview => "lightskyblue", // Blue - awaiting review
     }
 }
@@ -88,13 +90,18 @@ fn status_style(status: &Status, is_archived: bool) -> &'static str {
         return "filled,dashed";
     }
     match status {
-        Status::InProgress => "filled,bold",  // Bold border for active work
-        Status::Failed => "filled,bold",      // Bold for attention
+        Status::InProgress => "filled,bold", // Bold border for active work
+        Status::Failed => "filled,bold",     // Bold for attention
         _ => "filled",
     }
 }
 
-pub fn run(dir: &Path, include_archive: bool, since: Option<&str>, until: Option<&str>) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    include_archive: bool,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -138,14 +145,20 @@ pub fn run(dir: &Path, include_archive: bool, since: Option<&str>, until: Option
     println!("    style=dashed;");
     println!("    fontsize=10;");
     println!("    legend_open [label=\"Open\", style=filled, fillcolor=white];");
-    println!("    legend_progress [label=\"In Progress\", style=\"filled,bold\", fillcolor=coral];");
+    println!(
+        "    legend_progress [label=\"In Progress\", style=\"filled,bold\", fillcolor=coral];"
+    );
     println!("    legend_blocked [label=\"Blocked\", style=filled, fillcolor=khaki];");
     println!("    legend_done [label=\"Done\", style=filled, fillcolor=palegreen];");
     println!("    legend_failed [label=\"Failed\", style=\"filled,bold\", fillcolor=salmon];");
     if include_archive {
-        println!("    legend_archived [label=\"Archived\", style=\"filled,dashed\", fillcolor=lightgray];");
+        println!(
+            "    legend_archived [label=\"Archived\", style=\"filled,dashed\", fillcolor=lightgray];"
+        );
     }
-    println!("    legend_open -> legend_progress -> legend_blocked -> legend_done -> legend_failed [style=invis];");
+    println!(
+        "    legend_open -> legend_progress -> legend_blocked -> legend_done -> legend_failed [style=invis];"
+    );
     println!("  }}");
     println!();
 

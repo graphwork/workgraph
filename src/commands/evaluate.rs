@@ -1,10 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
 use workgraph::agency::{
-    self, load_motivation, load_role, record_evaluation, render_evaluator_prompt, Evaluation,
-    EvaluatorInput,
+    self, Evaluation, EvaluatorInput, load_motivation, load_role, record_evaluation,
+    render_evaluator_prompt,
 };
 use workgraph::config::Config;
 use workgraph::graph::Status;
@@ -48,7 +48,10 @@ pub fn run(
     let motivations_dir = agency_dir.join("motivations");
     let agents_dir = agency_dir.join("agents");
 
-    let (resolved_agent, role, motivation, agent_role_id, agent_motivation_id) = if let Some(ref agent_hash) = task.agent {
+    let (resolved_agent, role, motivation, agent_role_id, agent_motivation_id) = if let Some(
+        ref agent_hash,
+    ) = task.agent
+    {
         match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
             Ok(agent) => {
                 let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
@@ -79,13 +82,28 @@ pub fn run(
                 (Some(agent), role, motivation, role_id, motivation_id)
             }
             Err(e) => {
-                eprintln!("Warning: agent '{}' not found ({}), evaluating without agent context", agent_hash, e);
-                (None, None, None, "unknown".to_string(), "unknown".to_string())
+                eprintln!(
+                    "Warning: agent '{}' not found ({}), evaluating without agent context",
+                    agent_hash, e
+                );
+                (
+                    None,
+                    None,
+                    None,
+                    "unknown".to_string(),
+                    "unknown".to_string(),
+                )
             }
         }
     } else {
         eprintln!("Note: task has no assigned agent — evaluating without role/motivation context");
-        (None, None, None, "unknown".to_string(), "unknown".to_string())
+        (
+            None,
+            None,
+            None,
+            "unknown".to_string(),
+            "unknown".to_string(),
+        )
     };
 
     // Step 3: Collect task artifacts and log entries
@@ -151,14 +169,18 @@ pub fn run(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Claude evaluator failed (exit code {:?}):\n{}", output.status.code(), stderr);
+        bail!(
+            "Claude evaluator failed (exit code {:?}):\n{}",
+            output.status.code(),
+            stderr
+        );
     }
 
     let raw_output = String::from_utf8_lossy(&output.stdout);
 
     // Step 7: Parse the JSON output from the evaluator
-    let eval_json = extract_json(&raw_output)
-        .context("Failed to extract valid JSON from evaluator output")?;
+    let eval_json =
+        extract_json(&raw_output).context("Failed to extract valid JSON from evaluator output")?;
 
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
@@ -172,11 +194,7 @@ pub fn run(
     let motivation_id = agent_motivation_id;
 
     let timestamp = chrono::Utc::now().to_rfc3339();
-    let eval_id = format!(
-        "eval-{}-{}",
-        task_id,
-        timestamp.replace(':', "-")
-    );
+    let eval_id = format!("eval-{}-{}", task_id, timestamp.replace(':', "-"));
 
     let evaluation = Evaluation {
         id: eval_id,
@@ -193,8 +211,8 @@ pub fn run(
 
     // Step 8: Save evaluation and update performance records
     if role_id != "unknown" && motivation_id != "unknown" {
-        let eval_path = record_evaluation(&evaluation, &agency_dir)
-            .context("Failed to record evaluation")?;
+        let eval_path =
+            record_evaluation(&evaluation, &agency_dir).context("Failed to record evaluation")?;
 
         if json {
             let out = serde_json::json!({

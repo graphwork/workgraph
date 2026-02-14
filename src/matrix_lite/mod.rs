@@ -74,7 +74,11 @@ impl MatrixClient {
             .trim_end_matches('/')
             .to_string();
 
-        let user_id = config.username.as_ref().context("username is required")?.clone();
+        let user_id = config
+            .username
+            .as_ref()
+            .context("username is required")?
+            .clone();
 
         let state_dir = workgraph_dir.join(MATRIX_STATE_DIR);
         std::fs::create_dir_all(&state_dir)?;
@@ -96,7 +100,9 @@ impl MatrixClient {
             Self::save_access_token_static(&state_dir, &token);
             token
         } else {
-            anyhow::bail!("No access_token or password configured. Set one in ~/.config/workgraph/matrix.toml");
+            anyhow::bail!(
+                "No access_token or password configured. Set one in ~/.config/workgraph/matrix.toml"
+            );
         };
 
         // Try to load sync token from disk
@@ -113,7 +119,12 @@ impl MatrixClient {
     }
 
     /// Login with username and password to get an access token
-    async fn login(http: &HttpClient, homeserver: &str, user_id: &str, password: &str) -> Result<String> {
+    async fn login(
+        http: &HttpClient,
+        homeserver: &str,
+        user_id: &str,
+        password: &str,
+    ) -> Result<String> {
         // Extract localpart from user_id (@user:server -> user)
         let localpart = user_id
             .strip_prefix('@')
@@ -145,7 +156,10 @@ impl MatrixClient {
             anyhow::bail!("Login failed: {} - {}", status, body);
         }
 
-        let login_resp: LoginResponse = resp.json().await.context("Failed to parse login response")?;
+        let login_resp: LoginResponse = resp
+            .json()
+            .await
+            .context("Failed to parse login response")?;
         Ok(login_resp.access_token)
     }
 
@@ -172,8 +186,15 @@ impl MatrixClient {
             .trim_end_matches('/')
             .to_string();
 
-        let user_id = config.username.as_ref().context("username is required")?.clone();
-        let password = config.password.as_ref().context("password is required for login")?;
+        let user_id = config
+            .username
+            .as_ref()
+            .context("username is required")?
+            .clone();
+        let password = config
+            .password
+            .as_ref()
+            .context("password is required for login")?;
 
         let state_dir = workgraph_dir.join(MATRIX_STATE_DIR);
         std::fs::create_dir_all(&state_dir)?;
@@ -258,30 +279,51 @@ impl MatrixClient {
 
     /// Send a text message to a room
     pub async fn send_message(&self, room_id: &str, message: &str) -> Result<()> {
-        self.send_event(room_id, "m.room.message", serde_json::json!({
-            "msgtype": "m.text",
-            "body": message
-        }))
+        self.send_event(
+            room_id,
+            "m.room.message",
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": message
+            }),
+        )
         .await
     }
 
     /// Send an HTML message to a room
-    pub async fn send_html_message(&self, room_id: &str, plain_text: &str, html: &str) -> Result<()> {
-        self.send_event(room_id, "m.room.message", serde_json::json!({
-            "msgtype": "m.text",
-            "body": plain_text,
-            "format": "org.matrix.custom.html",
-            "formatted_body": html
-        }))
+    pub async fn send_html_message(
+        &self,
+        room_id: &str,
+        plain_text: &str,
+        html: &str,
+    ) -> Result<()> {
+        self.send_event(
+            room_id,
+            "m.room.message",
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": plain_text,
+                "format": "org.matrix.custom.html",
+                "formatted_body": html
+            }),
+        )
         .await
     }
 
     /// Send an event to a room
-    async fn send_event(&self, room_id: &str, event_type: &str, content: serde_json::Value) -> Result<()> {
-        let txn_id = format!("wg_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos());
+    async fn send_event(
+        &self,
+        room_id: &str,
+        event_type: &str,
+        content: serde_json::Value,
+    ) -> Result<()> {
+        let txn_id = format!(
+            "wg_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
 
         let url = format!(
             "{}/_matrix/client/v3/rooms/{}/send/{}/{}",
@@ -312,7 +354,10 @@ impl MatrixClient {
     ///
     /// Note: Unlike the full matrix-sdk, this doesn't use event handlers.
     /// Instead, call sync_once_with_filter() and messages will be sent to the returned channel.
-    pub fn register_message_handler(&self, filter_own: bool) -> (mpsc::Receiver<IncomingMessage>, MessageFilter) {
+    pub fn register_message_handler(
+        &self,
+        filter_own: bool,
+    ) -> (mpsc::Receiver<IncomingMessage>, MessageFilter) {
         let (tx, rx) = mpsc::channel(100);
         let filter = MessageFilter {
             tx,
@@ -475,11 +520,24 @@ struct MessageContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VerificationEvent {
     // Stub for API compatibility - not used in lite version
-    Request { sender: String, transaction_id: String },
-    Started { sender: String },
-    EmojisReady { sender: String, emojis: Vec<String> },
-    Done { sender: String },
-    Cancelled { sender: String, reason: String },
+    Request {
+        sender: String,
+        transaction_id: String,
+    },
+    Started {
+        sender: String,
+    },
+    EmojisReady {
+        sender: String,
+        emojis: Vec<String>,
+    },
+    Done {
+        sender: String,
+    },
+    Cancelled {
+        sender: String,
+        reason: String,
+    },
 }
 
 /// Send a notification to Matrix (one-shot, no persistent client)
@@ -495,7 +553,9 @@ pub async fn send_notification(workgraph_dir: &Path, message: &str) -> Result<()
     let config = MatrixConfig::load()?;
 
     if !config.is_complete() {
-        anyhow::bail!("Matrix not configured. Set homeserver, username, token, and room in ~/.config/workgraph/matrix.toml");
+        anyhow::bail!(
+            "Matrix not configured. Set homeserver, username, token, and room in ~/.config/workgraph/matrix.toml"
+        );
     }
 
     let room_id = config.default_room.as_ref().unwrap();
@@ -506,11 +566,17 @@ pub async fn send_notification(workgraph_dir: &Path, message: &str) -> Result<()
 }
 
 /// Send a notification to Matrix with a specific room (one-shot)
-pub async fn send_notification_to_room(workgraph_dir: &Path, room_id: &str, message: &str) -> Result<()> {
+pub async fn send_notification_to_room(
+    workgraph_dir: &Path,
+    room_id: &str,
+    message: &str,
+) -> Result<()> {
     let config = MatrixConfig::load()?;
 
     if !config.has_credentials() {
-        anyhow::bail!("Matrix not configured. Set homeserver, username, and token in ~/.config/workgraph/matrix.toml");
+        anyhow::bail!(
+            "Matrix not configured. Set homeserver, username, and token in ~/.config/workgraph/matrix.toml"
+        );
     }
 
     let client = MatrixClient::new(workgraph_dir, &config).await?;

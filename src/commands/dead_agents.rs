@@ -88,7 +88,11 @@ pub fn run_check(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Resu
 }
 
 /// Detect dead agents, mark them as dead, and unclaim their tasks
-pub fn run_cleanup(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Result<DetectionResult> {
+pub fn run_cleanup(
+    dir: &Path,
+    threshold_minutes: Option<u64>,
+    json: bool,
+) -> Result<DetectionResult> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -196,20 +200,14 @@ pub fn run_cleanup(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Re
         if result.dead_agents.is_empty() {
             println!("No dead agents detected.");
         } else {
-            println!(
-                "Marked {} agent(s) as dead:",
-                result.dead_agents.len()
-            );
+            println!("Marked {} agent(s) as dead:", result.dead_agents.len());
             for agent in &result.dead_agents {
                 println!("  {} (PID {})", agent.agent_id, agent.pid);
             }
 
             if !result.tasks_unclaimed.is_empty() {
                 println!();
-                println!(
-                    "Unclaimed {} task(s):",
-                    result.tasks_unclaimed.len()
-                );
+                println!("Unclaimed {} task(s):", result.tasks_unclaimed.len());
                 for task_id in &result.tasks_unclaimed {
                     println!("  {}", task_id);
                 }

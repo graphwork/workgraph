@@ -205,7 +205,10 @@ mod tests {
     fn test_claim_blocked_task_succeeds() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Blocked)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::Blocked)],
+        );
 
         let result = claim(dir_path, "t1", None);
         assert!(result.is_ok());
@@ -220,7 +223,10 @@ mod tests {
     fn test_claim_inprogress_task_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::InProgress)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::InProgress)],
+        );
 
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
@@ -338,7 +344,10 @@ mod tests {
     fn test_unclaim_abandoned_task_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Abandoned)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::Abandoned)],
+        );
 
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());

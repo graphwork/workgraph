@@ -154,7 +154,10 @@ fn calculate_transitive_dependents<'a>(
 }
 
 fn output_json(entry_points: &[&str], dead_ends: &[DeadEndInfo], high_impact: &[(&str, usize)]) {
-    let entry_points_json: Vec<_> = entry_points.iter().map(|&id| serde_json::json!(id)).collect();
+    let entry_points_json: Vec<_> = entry_points
+        .iter()
+        .map(|&id| serde_json::json!(id))
+        .collect();
 
     let dead_ends_json: Vec<_> = dead_ends
         .iter()

@@ -66,9 +66,7 @@ impl BlockedTaskSummary {
 }
 
 /// Get coordination status from the graph
-pub fn get_coordination_status(
-    graph: &workgraph::graph::WorkGraph,
-) -> CoordinationStatus {
+pub fn get_coordination_status(graph: &workgraph::graph::WorkGraph) -> CoordinationStatus {
     let ready: Vec<_> = ready_tasks(graph)
         .iter()
         .map(|t| TaskSummary::from_task(t))

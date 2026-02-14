@@ -101,12 +101,24 @@ fn test_coordinator_identifies_ready_tasks() {
     // Create a graph with tasks in various states
     let mut graph = WorkGraph::new();
     // Open task with no blockers -> should be ready
-    graph.add_node(Node::Task(make_task("ready-1", "Ready Task 1", Status::Open)));
-    graph.add_node(Node::Task(make_task("ready-2", "Ready Task 2", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "ready-1",
+        "Ready Task 1",
+        Status::Open,
+    )));
+    graph.add_node(Node::Task(make_task(
+        "ready-2",
+        "Ready Task 2",
+        Status::Open,
+    )));
     // Done task -> not ready
     graph.add_node(Node::Task(make_task("done-1", "Done Task", Status::Done)));
     // In-progress task -> not ready
-    graph.add_node(Node::Task(make_task("ip-1", "In Progress", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "ip-1",
+        "In Progress",
+        Status::InProgress,
+    )));
     // Blocked task -> not ready
     let mut blocked = make_task("blocked-1", "Blocked Task", Status::Open);
     blocked.blocked_by = vec!["ready-1".to_string()];
@@ -124,7 +136,10 @@ fn test_coordinator_identifies_ready_tasks() {
     assert!(ready_ids.contains(&"ready-2"), "ready-2 should be ready");
     assert!(!ready_ids.contains(&"done-1"), "done-1 should not be ready");
     assert!(!ready_ids.contains(&"ip-1"), "ip-1 should not be ready");
-    assert!(!ready_ids.contains(&"blocked-1"), "blocked-1 should not be ready (blocked by ready-1)");
+    assert!(
+        !ready_ids.contains(&"blocked-1"),
+        "blocked-1 should not be ready (blocked by ready-1)"
+    );
     assert_eq!(ready.len(), 2);
 }
 
@@ -179,14 +194,15 @@ fn test_coordinator_respects_max_agents_limit() {
     registry.save(&wg_dir).unwrap();
 
     // With max_agents=3 and 3 alive agents, slots_available = 0
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     assert_eq!(alive_count, 3);
 
     let max_agents: usize = 3;
     let slots_available = max_agents.saturating_sub(alive_count);
-    assert_eq!(slots_available, 0, "No slots should be available when at max capacity");
+    assert_eq!(
+        slots_available, 0,
+        "No slots should be available when at max capacity"
+    );
 }
 
 #[test]
@@ -210,14 +226,15 @@ fn test_slot_accounting_with_dead_agents() {
     registry.save(&wg_dir).unwrap();
 
     // Only alive agents count
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     assert_eq!(alive_count, 2, "Only 2 agents should be alive");
 
     let max_agents: usize = 4;
     let slots_available = max_agents.saturating_sub(alive_count);
-    assert_eq!(slots_available, 2, "Should have 2 available slots (4 max - 2 alive)");
+    assert_eq!(
+        slots_available, 2,
+        "Should have 2 available slots (4 max - 2 alive)"
+    );
 }
 
 // ===========================================================================
@@ -236,7 +253,11 @@ fn test_coordinator_skips_assigned_tasks() {
     graph.add_node(Node::Task(assigned_task));
 
     // Unassigned ready task -> should be picked up
-    graph.add_node(Node::Task(make_task("unassigned-1", "Unassigned Task", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "unassigned-1",
+        "Unassigned Task",
+        Status::Open,
+    )));
 
     save_test_graph(&wg_dir, &graph);
 
@@ -245,9 +266,7 @@ fn test_coordinator_skips_assigned_tasks() {
 
     // Both are technically "ready" (open, no blockers), but coordinator should
     // skip the one with assigned.is_some()
-    let unassigned_ready: Vec<_> = ready.iter()
-        .filter(|t| t.assigned.is_none())
-        .collect();
+    let unassigned_ready: Vec<_> = ready.iter().filter(|t| t.assigned.is_none()).collect();
 
     assert_eq!(unassigned_ready.len(), 1);
     assert_eq!(unassigned_ready[0].id, "unassigned-1");
@@ -255,9 +274,7 @@ fn test_coordinator_skips_assigned_tasks() {
     // The assigned task is still "ready" in the ready_tasks sense
     assert_eq!(ready.len(), 2);
     // But coordinator_tick filters: `if task.assigned.is_some() { continue; }`
-    let to_spawn: Vec<_> = ready.iter()
-        .filter(|t| t.assigned.is_none())
-        .collect();
+    let to_spawn: Vec<_> = ready.iter().filter(|t| t.assigned.is_none()).collect();
     assert_eq!(to_spawn.len(), 1);
 }
 
@@ -298,19 +315,28 @@ fn test_dead_detection_process_still_running() {
 fn test_dead_detection_ignores_already_dead_agents() {
     // Agents already marked Dead should not be re-processed
     let agent = make_agent_entry("agent-1", 999999999, "task-1", AgentStatus::Dead);
-    assert!(!agent.is_alive(), "Dead agent should not be considered alive");
+    assert!(
+        !agent.is_alive(),
+        "Dead agent should not be considered alive"
+    );
 }
 
 #[test]
 fn test_dead_detection_ignores_done_agents() {
     let agent = make_agent_entry("agent-1", 999999999, "task-1", AgentStatus::Done);
-    assert!(!agent.is_alive(), "Done agent should not be considered alive");
+    assert!(
+        !agent.is_alive(),
+        "Done agent should not be considered alive"
+    );
 }
 
 #[test]
 fn test_dead_detection_ignores_failed_agents() {
     let agent = make_agent_entry("agent-1", 999999999, "task-1", AgentStatus::Failed);
-    assert!(!agent.is_alive(), "Failed agent should not be considered alive");
+    assert!(
+        !agent.is_alive(),
+        "Failed agent should not be considered alive"
+    );
 }
 
 // ===========================================================================
@@ -388,7 +414,11 @@ fn test_cleanup_skips_done_task() {
     // Task is Done, so cleanup should NOT change its status
     let graph = load_graph(&graph_path).unwrap();
     let task = graph.get_task("task-1").unwrap();
-    assert_eq!(task.status, Status::Done, "Done task should not be modified by cleanup");
+    assert_eq!(
+        task.status,
+        Status::Done,
+        "Done task should not be modified by cleanup"
+    );
 }
 
 #[test]
@@ -409,7 +439,11 @@ fn test_cleanup_skips_failed_task() {
     // Task is Failed, cleanup should not change it
     let graph = load_graph(&graph_path).unwrap();
     let task = graph.get_task("task-1").unwrap();
-    assert_eq!(task.status, Status::Failed, "Failed task should not be modified by cleanup");
+    assert_eq!(
+        task.status,
+        Status::Failed,
+        "Failed task should not be modified by cleanup"
+    );
 }
 
 // ===========================================================================
@@ -539,8 +573,16 @@ auto_evaluate = true
 
     // Create a graph with some tasks
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("task-1", "Regular Task", Status::Open)));
-    graph.add_node(Node::Task(make_task("task-2", "Another Task", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "task-1",
+        "Regular Task",
+        Status::Open,
+    )));
+    graph.add_node(Node::Task(make_task(
+        "task-2",
+        "Another Task",
+        Status::InProgress,
+    )));
     save_graph(&graph, &graph_path).unwrap();
 
     // Simulate auto_evaluate logic (same as in coordinator_tick)
@@ -558,7 +600,10 @@ auto_evaluate = true
                 return false;
             }
             let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if t.tags
+                .iter()
+                .any(|tag| dominated_tags.contains(&tag.as_str()))
+            {
                 return false;
             }
             !matches!(t.status, Status::Abandoned)
@@ -572,7 +617,11 @@ auto_evaluate = true
             continue;
         }
 
-        let eval_task = make_task(&eval_task_id, &format!("Evaluate: {}", task_title), Status::Open);
+        let eval_task = make_task(
+            &eval_task_id,
+            &format!("Evaluate: {}", task_title),
+            Status::Open,
+        );
         let mut eval_task_with_deps = eval_task;
         eval_task_with_deps.blocked_by = vec![task_id.clone()];
         eval_task_with_deps.tags = vec!["evaluation".to_string(), "agency".to_string()];
@@ -623,7 +672,10 @@ fn test_auto_evaluate_skips_evaluation_tasks() {
                 return false;
             }
             let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if t.tags
+                .iter()
+                .any(|tag| dominated_tags.contains(&tag.as_str()))
+            {
                 return false;
             }
             !matches!(t.status, Status::Abandoned)
@@ -642,7 +694,11 @@ fn test_auto_evaluate_skips_abandoned_tasks() {
     let (_wg_dir, graph_path) = setup_workgraph(&tmp);
 
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("abandoned-task", "Abandoned", Status::Abandoned)));
+    graph.add_node(Node::Task(make_task(
+        "abandoned-task",
+        "Abandoned",
+        Status::Abandoned,
+    )));
     save_graph(&graph, &graph_path).unwrap();
 
     let loaded = load_graph(&graph_path).unwrap();
@@ -650,14 +706,20 @@ fn test_auto_evaluate_skips_abandoned_tasks() {
         .tasks()
         .filter(|t| {
             let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if t.tags
+                .iter()
+                .any(|tag| dominated_tags.contains(&tag.as_str()))
+            {
                 return false;
             }
             !matches!(t.status, Status::Abandoned)
         })
         .collect();
 
-    assert!(tasks_needing_eval.is_empty(), "Abandoned tasks should not get eval tasks");
+    assert!(
+        tasks_needing_eval.is_empty(),
+        "Abandoned tasks should not get eval tasks"
+    );
 }
 
 #[test]
@@ -667,7 +729,11 @@ fn test_auto_evaluate_idempotent() {
     let (_wg_dir, graph_path) = setup_workgraph(&tmp);
 
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("task-1", "Regular Task", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "task-1",
+        "Regular Task",
+        Status::Open,
+    )));
     // Pre-create the eval task
     let mut eval_task = make_task("evaluate-task-1", "Evaluate: Regular Task", Status::Open);
     eval_task.blocked_by = vec!["task-1".to_string()];
@@ -684,7 +750,10 @@ fn test_auto_evaluate_idempotent() {
                 return false;
             }
             let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags.iter().any(|tag| dominated_tags.contains(&tag.as_str())) {
+            if t.tags
+                .iter()
+                .any(|tag| dominated_tags.contains(&tag.as_str()))
+            {
                 return false;
             }
             !matches!(t.status, Status::Abandoned)
@@ -704,7 +773,11 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
     let (_wg_dir, graph_path) = setup_workgraph(&tmp);
 
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("source-task", "Source", Status::Failed)));
+    graph.add_node(Node::Task(make_task(
+        "source-task",
+        "Source",
+        Status::Failed,
+    )));
     let mut eval_task = make_task("evaluate-source-task", "Evaluate: Source", Status::Open);
     eval_task.blocked_by = vec!["source-task".to_string()];
     eval_task.tags = vec!["evaluation".to_string()];
@@ -743,7 +816,10 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
     // Verify the eval task is now unblocked
     let final_graph = load_graph(&graph_path).unwrap();
     let eval = final_graph.get_task("evaluate-source-task").unwrap();
-    assert!(eval.blocked_by.is_empty(), "Eval task should be unblocked after source task failed");
+    assert!(
+        eval.blocked_by.is_empty(),
+        "Eval task should be unblocked after source task failed"
+    );
 
     // And it should now be ready
     let ready = ready_tasks(&final_graph);
@@ -764,9 +840,7 @@ fn test_slots_available_basic() {
     registry.register_agent(current_pid, "t2", "test", "/tmp/2.log");
 
     let max_agents: usize = 5;
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     let slots = max_agents.saturating_sub(alive_count);
     assert_eq!(slots, 3);
 }
@@ -793,9 +867,7 @@ fn test_slots_available_mixed_statuses() {
     registry.set_status(&failed, AgentStatus::Failed);
 
     // Only Working/Starting/Idle are alive
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     assert_eq!(alive_count, 2, "Only Working agents should be alive");
 
     let max_agents: usize = 4;
@@ -809,13 +881,16 @@ fn test_slots_available_at_zero() {
     let current_pid = std::process::id();
 
     for i in 0..3 {
-        registry.register_agent(current_pid, &format!("t{}", i), "test", &format!("/tmp/{}.log", i));
+        registry.register_agent(
+            current_pid,
+            &format!("t{}", i),
+            "test",
+            &format!("/tmp/{}.log", i),
+        );
     }
 
     let max_agents: usize = 3;
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     let slots = max_agents.saturating_sub(alive_count);
     assert_eq!(slots, 0, "No slots when at capacity");
 }
@@ -827,13 +902,16 @@ fn test_slots_saturating_sub_no_underflow() {
     let current_pid = std::process::id();
 
     for i in 0..5 {
-        registry.register_agent(current_pid, &format!("t{}", i), "test", &format!("/tmp/{}.log", i));
+        registry.register_agent(
+            current_pid,
+            &format!("t{}", i),
+            "test",
+            &format!("/tmp/{}.log", i),
+        );
     }
 
     let max_agents: usize = 3;
-    let alive_count = registry.agents.values()
-        .filter(|a| a.is_alive())
-        .count();
+    let alive_count = registry.agents.values().filter(|a| a.is_alive()).count();
     assert_eq!(alive_count, 5);
 
     let slots = max_agents.saturating_sub(alive_count);
@@ -995,7 +1073,11 @@ mod llm_tests {
             path.pop();
         }
         path.push("wg");
-        assert!(path.exists(), "wg binary not found at {:?}. Run `cargo build` first.", path);
+        assert!(
+            path.exists(),
+            "wg binary not found at {:?}. Run `cargo build` first.",
+            path
+        );
         path
     }
 
@@ -1021,7 +1103,9 @@ mod llm_tests {
         assert!(
             output.status.success(),
             "wg {:?} failed.\nstdout: {}\nstderr: {}",
-            args, stdout, stderr
+            args,
+            stdout,
+            stderr
         );
         stdout
     }
@@ -1149,7 +1233,14 @@ Begin working on the task now.
         // Spawn a real Claude agent on the task
         let output = wg_cmd(
             &wg_dir,
-            &["spawn", "hello-task", "--executor", "claude", "--model", &model],
+            &[
+                "spawn",
+                "hello-task",
+                "--executor",
+                "claude",
+                "--model",
+                &model,
+            ],
         );
         assert!(
             output.status.success(),
@@ -1191,7 +1282,10 @@ Begin working on the task now.
                         false
                     }
                 });
-            assert!(has_output, "Agent output should have been captured in output.log");
+            assert!(
+                has_output,
+                "Agent output should have been captured in output.log"
+            );
         }
 
         eprintln!(
@@ -1255,7 +1349,14 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
         // Spawn a Claude agent to execute the task
         let output = wg_cmd(
             &wg_dir,
-            &["spawn", "create-agency-components", "--executor", "claude", "--model", &model],
+            &[
+                "spawn",
+                "create-agency-components",
+                "--executor",
+                "claude",
+                "--model",
+                &model,
+            ],
         );
         assert!(
             output.status.success(),
@@ -1291,19 +1392,20 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
         assert!(roles_dir.exists(), "Roles directory should exist");
 
         let motivations_dir = agency_dir.join("motivations");
-        assert!(motivations_dir.exists(), "Motivations directory should exist");
+        assert!(
+            motivations_dir.exists(),
+            "Motivations directory should exist"
+        );
 
         // List roles to verify at least one was created
         let roles_output = wg_ok(&wg_dir, &["role", "list", "--json"]);
-        let roles_json: serde_json::Value = serde_json::from_str(&roles_output)
-            .expect("Failed to parse role list JSON");
+        let roles_json: serde_json::Value =
+            serde_json::from_str(&roles_output).expect("Failed to parse role list JSON");
         assert!(
             roles_json.is_array(),
             "role list --json should return an array"
         );
-        let roles_array = roles_json
-            .as_array()
-            .expect("Expected array of roles");
+        let roles_array = roles_json.as_array().expect("Expected array of roles");
         assert!(
             !roles_array.is_empty(),
             "At least one role should have been created"
@@ -1351,8 +1453,8 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
 
         // Verify an agent was created (role+motivation pairing)
         let agents_output = wg_ok(&wg_dir, &["agent", "list", "--json"]);
-        let agents_json: serde_json::Value = serde_json::from_str(&agents_output)
-            .expect("Failed to parse agent list JSON");
+        let agents_json: serde_json::Value =
+            serde_json::from_str(&agents_output).expect("Failed to parse agent list JSON");
         let agents_array = agents_json.as_array().expect("Expected array of agents");
         let has_reviewer_agent = agents_array.iter().any(|a| {
             a.get("name")
@@ -1363,7 +1465,10 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
         assert!(
             has_reviewer_agent,
             "An agent with 'reviewer' in the name should have been created. Agents: {:?}",
-            agents_array.iter().filter_map(|a| a.get("name").and_then(|n| n.as_str())).collect::<Vec<_>>()
+            agents_array
+                .iter()
+                .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                .collect::<Vec<_>>()
         );
 
         eprintln!(

@@ -14,7 +14,10 @@ use workgraph::config::MatrixConfig;
 #[cfg(feature = "matrix")]
 use workgraph::{ListenerConfig, MatrixClient, MatrixListener};
 #[cfg(all(feature = "matrix-lite", not(feature = "matrix")))]
-use workgraph::{ListenerConfigLite as ListenerConfig, MatrixClientLite as MatrixClient, MatrixListenerLite as MatrixListener};
+use workgraph::{
+    ListenerConfigLite as ListenerConfig, MatrixClientLite as MatrixClient,
+    MatrixListenerLite as MatrixListener,
+};
 
 /// Run the Matrix listener
 ///
@@ -70,9 +73,7 @@ pub fn run_send(dir: &Path, room: Option<&str>, message: &str) -> Result<()> {
     let matrix_config = MatrixConfig::load().context("Failed to load Matrix config")?;
 
     if !matrix_config.has_credentials() {
-        anyhow::bail!(
-            "Matrix not configured. Run 'wg config --matrix' to set up credentials."
-        );
+        anyhow::bail!("Matrix not configured. Run 'wg config --matrix' to set up credentials.");
     }
 
     let room_id = room
@@ -216,7 +217,10 @@ pub fn run_login(dir: &Path) -> Result<()> {
             .context("Login failed")?;
 
         // Do a sync to verify the token works
-        client.sync_once().await.context("Failed to sync - token may be invalid")?;
+        client
+            .sync_once()
+            .await
+            .context("Failed to sync - token may be invalid")?;
 
         if let Some(user_id) = client.user_id() {
             println!("Logged in as {}", user_id);

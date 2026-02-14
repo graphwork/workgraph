@@ -222,7 +222,10 @@ fn calculate_scenarios(remaining: &RemainingWork, hours_per_week: f64) -> Vec<Sc
 
     // Pessimistic (+50% buffer)
     scenarios.push(create_scenario(
-        format!("Pessimistic (+{}% buffer)", (PESSIMISTIC_BUFFER * 100.0) as i32),
+        format!(
+            "Pessimistic (+{}% buffer)",
+            (PESSIMISTIC_BUFFER * 100.0) as i32
+        ),
         PESSIMISTIC_BUFFER,
         remaining.total_hours,
         hours_per_week,
@@ -287,13 +290,13 @@ fn find_key_blockers(graph: &WorkGraph) -> Vec<Blocker> {
 
     // Sort by tasks blocked (highest first), then by hours
     blockers.sort_by(|a, b| {
-        b.tasks_blocked
-            .cmp(&a.tasks_blocked)
-            .then_with(|| {
-                let a_hours = a.hours_remaining.unwrap_or(0.0);
-                let b_hours = b.hours_remaining.unwrap_or(0.0);
-                b_hours.partial_cmp(&a_hours).unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b.tasks_blocked.cmp(&a.tasks_blocked).then_with(|| {
+            let a_hours = a.hours_remaining.unwrap_or(0.0);
+            let b_hours = b.hours_remaining.unwrap_or(0.0);
+            b_hours
+                .partial_cmp(&a_hours)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     // Take top 5
@@ -481,7 +484,10 @@ fn print_human_output(forecast: &ForecastOutput) {
                 let last = critical.path.last().unwrap();
                 format!("{} -> ... -> {}", first_three.join(" -> "), last)
             };
-            println!("Critical path ({:.0}h): {}\n", critical.total_hours, path_str);
+            println!(
+                "Critical path ({:.0}h): {}\n",
+                critical.total_hours, path_str
+            );
         }
     }
 
@@ -700,7 +706,11 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         // Root blocker that blocks many tasks
-        graph.add_node(Node::Task(make_task_with_hours("root", "Root blocker", 8.0)));
+        graph.add_node(Node::Task(make_task_with_hours(
+            "root",
+            "Root blocker",
+            8.0,
+        )));
 
         // Tasks that depend on root
         for i in 1..=5 {

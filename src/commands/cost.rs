@@ -20,7 +20,10 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
 
     let total_cost = cost_of(&graph, id);
 
-    println!("Total cost for '{}' (including dependencies): ${:.2}", id, total_cost);
+    println!(
+        "Total cost for '{}' (including dependencies): ${:.2}",
+        id, total_cost
+    );
 
     Ok(())
 }

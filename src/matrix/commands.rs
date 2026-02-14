@@ -10,7 +10,6 @@
 //! - `ready` - List ready tasks
 //! - `help` - Show help
 
-
 /// A parsed command from a Matrix message
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatrixCommand {
@@ -77,19 +76,15 @@ impl MatrixCommand {
     /// Get a human-readable description of what this command does
     pub fn description(&self) -> String {
         match self {
-            MatrixCommand::Claim { task_id, actor } => {
-                match actor {
-                    Some(a) => format!("Claim task '{}' for '{}'", task_id, a),
-                    None => format!("Claim task '{}'", task_id),
-                }
-            }
+            MatrixCommand::Claim { task_id, actor } => match actor {
+                Some(a) => format!("Claim task '{}' for '{}'", task_id, a),
+                None => format!("Claim task '{}'", task_id),
+            },
             MatrixCommand::Done { task_id } => format!("Mark task '{}' as done", task_id),
-            MatrixCommand::Fail { task_id, reason } => {
-                match reason {
-                    Some(r) => format!("Mark task '{}' as failed: {}", task_id, r),
-                    None => format!("Mark task '{}' as failed", task_id),
-                }
-            }
+            MatrixCommand::Fail { task_id, reason } => match reason {
+                Some(r) => format!("Mark task '{}' as failed: {}", task_id, r),
+                None => format!("Mark task '{}' as failed", task_id),
+            },
             MatrixCommand::Input { task_id, text } => {
                 format!("Add input to task '{}': {}", task_id, text)
             }
@@ -124,8 +119,20 @@ fn strip_prefix(message: &str) -> &str {
 fn is_known_command(word: &str) -> bool {
     matches!(
         word,
-        "claim" | "done" | "fail" | "input" | "log" | "note" | "unclaim" | "release"
-        | "status" | "ready" | "list" | "tasks" | "help" | "?"
+        "claim"
+            | "done"
+            | "fail"
+            | "input"
+            | "log"
+            | "note"
+            | "unclaim"
+            | "release"
+            | "status"
+            | "ready"
+            | "list"
+            | "tasks"
+            | "help"
+            | "?"
     )
 }
 

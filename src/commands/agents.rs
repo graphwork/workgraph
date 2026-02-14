@@ -250,9 +250,15 @@ mod tests {
         registry.register_agent(12347, "task-3", "claude", "/tmp/output3.log");
 
         // Set different statuses
-        registry.update_status("agent-1", AgentStatus::Working).unwrap();
-        registry.update_status("agent-2", AgentStatus::Idle).unwrap();
-        registry.update_status("agent-3", AgentStatus::Dead).unwrap();
+        registry
+            .update_status("agent-1", AgentStatus::Working)
+            .unwrap();
+        registry
+            .update_status("agent-2", AgentStatus::Idle)
+            .unwrap();
+        registry
+            .update_status("agent-3", AgentStatus::Dead)
+            .unwrap();
 
         registry.save(temp_dir.path()).unwrap();
 

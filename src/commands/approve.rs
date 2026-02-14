@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
+use workgraph::graph::{LogEntry, Status, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query;
 
@@ -239,7 +239,11 @@ mod tests {
 
         let graph = load_graph(&graph_path(&dir)).unwrap();
         let target = graph.get_task("target").unwrap();
-        assert_eq!(target.status, Status::Open, "Target should be re-activated to Open");
+        assert_eq!(
+            target.status,
+            Status::Open,
+            "Target should be re-activated to Open"
+        );
         assert_eq!(target.loop_iteration, 1);
     }
 

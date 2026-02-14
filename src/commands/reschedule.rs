@@ -30,9 +30,9 @@ pub fn run(
         future_time.to_rfc3339()
     } else if let Some(timestamp) = at_timestamp {
         // Validate the timestamp
-        timestamp
-            .parse::<chrono::DateTime<Utc>>()
-            .context("Invalid timestamp format. Use ISO 8601 format (e.g., 2024-01-20T10:00:00Z)")?;
+        timestamp.parse::<chrono::DateTime<Utc>>().context(
+            "Invalid timestamp format. Use ISO 8601 format (e.g., 2024-01-20T10:00:00Z)",
+        )?;
         timestamp.to_string()
     } else {
         // Clear the not_before (make it ready now)

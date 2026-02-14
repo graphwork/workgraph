@@ -17,7 +17,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use workgraph::config::Config;
-use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
+use workgraph::graph::{LogEntry, Status, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 
@@ -126,16 +126,17 @@ impl AgentState {
 
         // Create agents directory if it doesn't exist
         if !agents_dir.exists() {
-            fs::create_dir_all(&agents_dir)
-                .with_context(|| format!("Failed to create agents directory at {:?}", agents_dir))?;
+            fs::create_dir_all(&agents_dir).with_context(|| {
+                format!("Failed to create agents directory at {:?}", agents_dir)
+            })?;
         }
 
         let path = Self::state_path(dir, &self.actor_id);
 
         self.last_saved = Some(Utc::now().to_rfc3339());
 
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize agent state")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize agent state")?;
 
         fs::write(&path, content)
             .with_context(|| format!("Failed to write agent state to {:?}", path))?;
@@ -224,12 +225,21 @@ pub fn run(
     let mut stats = AgentStats::default();
 
     if !json {
-        println!("Agent '{}' starting... (session #{})", actor_id, state.session_count);
-        println!("   Interval: {}s | Once: {} | Max tasks: {:?}",
-                 interval_secs, once, max_tasks);
+        println!(
+            "Agent '{}' starting... (session #{})",
+            actor_id, state.session_count
+        );
+        println!(
+            "   Interval: {}s | Once: {} | Max tasks: {:?}",
+            interval_secs, once, max_tasks
+        );
         if state.total_tasks_completed > 0 || state.total_tasks_failed > 0 {
-            println!("   Lifetime: {} completed, {} failed across {} sessions",
-                     state.total_tasks_completed, state.total_tasks_failed, state.session_count - 1);
+            println!(
+                "   Lifetime: {} completed, {} failed across {} sessions",
+                state.total_tasks_completed,
+                state.total_tasks_failed,
+                state.session_count - 1
+            );
         }
         println!();
     }
@@ -573,7 +583,15 @@ mod tests {
         let temp_dir = setup_graph();
 
         // reset_state=true to ensure clean state for test
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            None,
+            true,
+            false,
+        );
         assert!(result.is_ok());
 
         // Verify task is done
@@ -590,7 +608,15 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            None,
+            true,
+            false,
+        );
         assert!(result.is_ok());
     }
 
@@ -611,7 +637,15 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         // Run with max_tasks=1, reset_state=true
-        let result = run(temp_dir.path(), "test-agent", false, Some(1), Some(1), true, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            false,
+            Some(1),
+            Some(1),
+            true,
+            false,
+        );
         assert!(result.is_ok());
 
         // Only one task should be done
@@ -633,7 +667,15 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            None,
+            true,
+            false,
+        );
         assert!(result.is_ok()); // Agent should handle failures gracefully
 
         let graph = load_graph(&graph_path(temp_dir.path())).unwrap();
@@ -764,7 +806,10 @@ mod tests {
         assert_eq!(state.total_tasks_failed, 1);
         assert_eq!(state.task_history.len(), 1);
         assert_eq!(state.task_history[0].outcome, "failed");
-        assert_eq!(state.task_history[0].failure_reason, Some("Exit code 1".to_string()));
+        assert_eq!(
+            state.task_history[0].failure_reason,
+            Some("Exit code 1".to_string())
+        );
     }
 
     #[test]
@@ -783,7 +828,15 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         // First run: complete one task, don't reset state
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), Some(1), false, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            Some(1),
+            false,
+            false,
+        );
         assert!(result.is_ok());
 
         // Load state and check
@@ -792,7 +845,15 @@ mod tests {
         assert_eq!(state.session_count, 2); // load incremented it
 
         // Second run: don't reset, should accumulate (completes second task)
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), Some(1), false, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            Some(1),
+            false,
+            false,
+        );
         assert!(result.is_ok());
 
         // Load state again (run increments on load, then saves at end)
@@ -808,7 +869,15 @@ mod tests {
         let temp_dir = setup_graph();
 
         // First run without reset
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, false, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
 
         // Verify state was saved
@@ -824,7 +893,15 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         // Run with reset_state=true
-        let result = run(temp_dir.path(), "test-agent", true, Some(1), None, true, false);
+        let result = run(
+            temp_dir.path(),
+            "test-agent",
+            true,
+            Some(1),
+            None,
+            true,
+            false,
+        );
         assert!(result.is_ok());
 
         // State should be reset (session_count=1 means fresh)

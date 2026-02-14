@@ -150,7 +150,10 @@ pub fn run_check_agents(dir: &Path, threshold_minutes: u64, json: bool) -> Resul
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Agent heartbeat status (threshold: {} minutes):", threshold_minutes);
+        println!(
+            "Agent heartbeat status (threshold: {} minutes):",
+            threshold_minutes
+        );
         println!();
 
         if !active_agents.is_empty() {
@@ -250,7 +253,11 @@ mod tests {
 
         // Get initial heartbeat
         let registry = AgentRegistry::load(temp_dir.path()).unwrap();
-        let original_hb = registry.get_agent("agent-1").unwrap().last_heartbeat.clone();
+        let original_hb = registry
+            .get_agent("agent-1")
+            .unwrap()
+            .last_heartbeat
+            .clone();
 
         // Wait a tiny bit
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -261,7 +268,11 @@ mod tests {
 
         // Verify heartbeat was updated
         let registry = AgentRegistry::load(temp_dir.path()).unwrap();
-        let new_hb = registry.get_agent("agent-1").unwrap().last_heartbeat.clone();
+        let new_hb = registry
+            .get_agent("agent-1")
+            .unwrap()
+            .last_heartbeat
+            .clone();
         assert_ne!(original_hb, new_hb);
     }
 

@@ -59,11 +59,7 @@ pub fn append_usage_log(dir: &Path, command: &str) {
     let line = format!("{} {}\n", timestamp, command);
 
     // Open with O_APPEND for atomic appends (no locking needed on POSIX)
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = file.write_all(line.as_bytes());
     }
 }
@@ -135,9 +131,7 @@ pub fn load_command_order(dir: &Path) -> Option<Vec<(String, u64)>> {
 
     // Sort by count descending, then alphabetically for ties
     let mut commands: Vec<(String, u64)> = stats.counts.into_iter().collect();
-    commands.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-    });
+    commands.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     Some(commands)
 }
@@ -186,17 +180,30 @@ pub fn group_by_tier(commands: &[(String, u64)]) -> (Vec<&str>, Vec<&str>, Vec<&
 /// Default command ordering for cold start (before we have usage data)
 pub const DEFAULT_ORDER: &[&str] = &[
     // Tier 1: Essential viewing (what you run first)
-    "list", "ready", "status", "show",
+    "list",
+    "ready",
+    "status",
+    "show",
     // Tier 2: Task lifecycle (common workflow)
-    "add", "done", "claim", "fail", "log",
+    "add",
+    "done",
+    "claim",
+    "fail",
+    "log",
     // Tier 3: Working on tasks
-    "artifact", "context", "submit",
+    "artifact",
+    "context",
+    "submit",
     // Tier 4: Setup & structure
-    "init", "quickstart",
+    "init",
+    "quickstart",
     // Tier 5: Automation
-    "spawn", "agents", "service",
+    "spawn",
+    "agents",
+    "service",
     // Tier 6: Advanced
-    "analyze", "config",
+    "analyze",
+    "config",
 ];
 
 /// Get command order for help display.

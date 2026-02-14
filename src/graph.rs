@@ -436,12 +436,10 @@ fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
             // This is checked separately against the target's loop_iteration
             true
         }
-        Some(LoopGuard::TaskStatus { task, status }) => {
-            graph
-                .get_task(task)
-                .map(|t| t.status == *status)
-                .unwrap_or(false)
-        }
+        Some(LoopGuard::TaskStatus { task, status }) => graph
+            .get_task(task)
+            .map(|t| t.status == *status)
+            .unwrap_or(false),
     }
 }
 
@@ -495,9 +493,7 @@ pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String
         // 3. Re-activate the target task
         let new_iteration = current_iter + 1;
         let ready_after = edge.delay.as_ref().and_then(|d| {
-            parse_delay(d).map(|secs| {
-                (Utc::now() + Duration::seconds(secs as i64)).to_rfc3339()
-            })
+            parse_delay(d).map(|secs| (Utc::now() + Duration::seconds(secs as i64)).to_rfc3339())
         });
 
         if let Some(target) = graph.get_task_mut(&edge.target) {
@@ -806,10 +802,7 @@ mod tests {
     #[test]
     fn test_deliverables_serialization() {
         let mut task = make_task("t1", "Build feature");
-        task.deliverables = vec![
-            "src/feature.rs".to_string(),
-            "docs/feature.md".to_string(),
-        ];
+        task.deliverables = vec!["src/feature.rs".to_string(), "docs/feature.md".to_string()];
 
         let json = serde_json::to_string(&Node::Task(task)).unwrap();
         assert!(json.contains("\"deliverables\""));

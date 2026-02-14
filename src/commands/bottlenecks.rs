@@ -45,10 +45,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     for task in graph.tasks() {
         // Count direct dependents
-        let direct_blocks = reverse_index
-            .get(&task.id)
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let direct_blocks = reverse_index.get(&task.id).map(|v| v.len()).unwrap_or(0);
 
         // Count transitive dependents
         let mut transitive: HashSet<String> = HashSet::new();
@@ -57,7 +54,8 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
         // Only include tasks that block at least one other task
         if transitive_blocks > 0 {
-            let recommendation = generate_recommendation(&task.status, transitive_blocks, total_tasks);
+            let recommendation =
+                generate_recommendation(&task.status, transitive_blocks, total_tasks);
 
             bottlenecks.push(BottleneckInfo {
                 id: task.id.clone(),
@@ -94,7 +92,10 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         for (i, bottleneck) in top_bottlenecks.iter().enumerate() {
             println!("{}. {}", i + 1, bottleneck.id);
             println!("   Directly blocks: {} tasks", bottleneck.direct_blocks);
-            println!("   Transitively blocks: {} tasks", bottleneck.transitive_blocks);
+            println!(
+                "   Transitively blocks: {} tasks",
+                bottleneck.transitive_blocks
+            );
 
             let status_str = match bottleneck.status {
                 Status::Open => "OPEN (not started!)".to_string(),
@@ -125,7 +126,11 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 }
 
 /// Generate a recommendation based on status and impact
-fn generate_recommendation(status: &Status, transitive_blocks: usize, total_tasks: usize) -> Option<String> {
+fn generate_recommendation(
+    status: &Status,
+    transitive_blocks: usize,
+    total_tasks: usize,
+) -> Option<String> {
     if total_tasks == 0 {
         return None;
     }
@@ -134,21 +139,26 @@ fn generate_recommendation(status: &Status, transitive_blocks: usize, total_task
 
     match status {
         Status::Done => None, // No recommendation for done tasks
-        Status::Open if percentage >= 20 => {
-            Some(format!("High priority - blocking {}% of project", percentage))
-        }
-        Status::Open if percentage >= 10 => {
-            Some(format!("Medium priority - blocking {}% of project", percentage))
-        }
-        Status::InProgress if percentage >= 20 => {
-            Some(format!("Critical path - blocking {}% of project", percentage))
-        }
-        Status::Blocked if percentage >= 20 => {
-            Some(format!("Urgent: unblock this first - blocking {}% of project", percentage))
-        }
-        Status::Blocked if percentage >= 10 => {
-            Some(format!("Priority: unblock this - blocking {}% of project", percentage))
-        }
+        Status::Open if percentage >= 20 => Some(format!(
+            "High priority - blocking {}% of project",
+            percentage
+        )),
+        Status::Open if percentage >= 10 => Some(format!(
+            "Medium priority - blocking {}% of project",
+            percentage
+        )),
+        Status::InProgress if percentage >= 20 => Some(format!(
+            "Critical path - blocking {}% of project",
+            percentage
+        )),
+        Status::Blocked if percentage >= 20 => Some(format!(
+            "Urgent: unblock this first - blocking {}% of project",
+            percentage
+        )),
+        Status::Blocked if percentage >= 10 => Some(format!(
+            "Priority: unblock this - blocking {}% of project",
+            percentage
+        )),
         _ => None,
     }
 }

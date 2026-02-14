@@ -176,7 +176,11 @@ pub fn run_dependents(dir: &Path, task_id: &str, json: bool) -> Result<()> {
         if !task.artifacts.is_empty() || !task.deliverables.is_empty() {
             println!("Outputs:");
             for d in &task.deliverables {
-                let produced = if task.artifacts.contains(d) { " [produced]" } else { " [expected]" };
+                let produced = if task.artifacts.contains(d) {
+                    " [produced]"
+                } else {
+                    " [expected]"
+                };
                 println!("  {}{}", d, produced);
             }
             for a in &task.artifacts {
@@ -408,7 +412,11 @@ mod tests {
 
         let mut t3 = make_task("t3", "Consumer");
         t3.blocked_by = vec!["t1".to_string(), "t2".to_string()];
-        t3.inputs = vec!["a.txt".to_string(), "c.txt".to_string(), "d.txt".to_string()];
+        t3.inputs = vec![
+            "a.txt".to_string(),
+            "c.txt".to_string(),
+            "d.txt".to_string(),
+        ];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));

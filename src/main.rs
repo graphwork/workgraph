@@ -461,7 +461,6 @@ enum Commands {
         list: bool,
     },
 
-
     /// Manage resources
     Resource {
         #[command(subcommand)]
@@ -622,7 +621,6 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
-
 
     /// Trigger evaluation of a completed task
     Evaluate {
@@ -1276,7 +1274,8 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
 
     // Get subcommand definitions from clap
     let cmd = Cli::command();
-    let subcommands: Vec<_> = cmd.get_subcommands()
+    let subcommands: Vec<_> = cmd
+        .get_subcommands()
         .filter(|c| !c.is_hide_set())
         .map(|c| {
             let name = c.get_name().to_string();
@@ -1296,18 +1295,29 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         let mut sorted = subcommands.clone();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let to_show = if show_all { sorted.len() } else { MAX_HELP_COMMANDS.min(sorted.len()) };
+        let to_show = if show_all {
+            sorted.len()
+        } else {
+            MAX_HELP_COMMANDS.min(sorted.len())
+        };
         println!("Commands:");
         for (name, about) in sorted.iter().take(to_show) {
             println!("  {:15} {}", name, about);
         }
         if !show_all && sorted.len() > MAX_HELP_COMMANDS {
-            println!("  ... and {} more (--help-all)", sorted.len() - MAX_HELP_COMMANDS);
+            println!(
+                "  ... and {} more (--help-all)",
+                sorted.len() - MAX_HELP_COMMANDS
+            );
         }
     } else if config.help.ordering == "curated" || usage::load_command_order(dir).is_none() {
         // Use curated default ordering
         let mut shown = std::collections::HashSet::new();
-        let to_show = if show_all { subcommands.len() } else { MAX_HELP_COMMANDS.min(subcommands.len()) };
+        let to_show = if show_all {
+            subcommands.len()
+        } else {
+            MAX_HELP_COMMANDS.min(subcommands.len())
+        };
 
         println!("Commands:");
         let mut count = 0;
@@ -1325,7 +1335,8 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         }
 
         // Then show remaining alphabetically
-        let mut remaining: Vec<_> = subcommands.iter()
+        let mut remaining: Vec<_> = subcommands
+            .iter()
             .filter(|(n, _)| !shown.contains(n))
             .collect();
         remaining.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1339,7 +1350,10 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         }
 
         if !show_all && subcommands.len() > MAX_HELP_COMMANDS {
-            println!("  ... and {} more (--help-all)", subcommands.len() - MAX_HELP_COMMANDS);
+            println!(
+                "  ... and {} more (--help-all)",
+                subcommands.len() - MAX_HELP_COMMANDS
+            );
         }
     } else {
         // Use personalized usage-based ordering with tiers
@@ -1347,7 +1361,11 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         let (frequent, occasional, rare) = usage::group_by_tier(&usage_data);
 
         let mut shown = 0;
-        let max_show = if show_all { subcommands.len() } else { MAX_HELP_COMMANDS };
+        let max_show = if show_all {
+            subcommands.len()
+        } else {
+            MAX_HELP_COMMANDS
+        };
 
         // Helper to print commands in a tier
         let mut print_tier = |title: &str, tier_cmds: &[&str]| {
@@ -1388,11 +1406,15 @@ fn print_help(dir: &PathBuf, show_all: bool, alphabetical: bool) {
         let total_cmds = frequent.len() + occasional.len() + rare.len();
         if !show_all && total_cmds > MAX_HELP_COMMANDS {
             // Count commands we didn't show
-            let unshown: usize = subcommands.iter()
+            let unshown: usize = subcommands
+                .iter()
                 .filter(|(n, _)| {
                     !frequent.contains(&n.as_str())
-                    && !occasional.contains(&n.as_str())
-                    && !rare.iter().take(max_show - frequent.len() - occasional.len()).any(|&r| r == n.as_str())
+                        && !occasional.contains(&n.as_str())
+                        && !rare
+                            .iter()
+                            .take(max_show - frequent.len() - occasional.len())
+                            .any(|&r| r == n.as_str())
                 })
                 .count();
             if unshown > 0 {
@@ -1578,20 +1600,36 @@ fn main() -> Result<()> {
             loop_iteration,
         ),
         Commands::Done { id } => commands::done::run(&workgraph_dir, &id),
-        Commands::Submit { id, actor } => commands::submit::run(&workgraph_dir, &id, actor.as_deref()),
-        Commands::Approve { id, actor } => commands::approve::run(&workgraph_dir, &id, actor.as_deref()),
-        Commands::Reject { id, reason, actor } => commands::reject::run(&workgraph_dir, &id, reason.as_deref(), actor.as_deref()),
-        Commands::Fail { id, reason } => commands::fail::run(&workgraph_dir, &id, reason.as_deref()),
-        Commands::Abandon { id, reason } => commands::abandon::run(&workgraph_dir, &id, reason.as_deref()),
+        Commands::Submit { id, actor } => {
+            commands::submit::run(&workgraph_dir, &id, actor.as_deref())
+        }
+        Commands::Approve { id, actor } => {
+            commands::approve::run(&workgraph_dir, &id, actor.as_deref())
+        }
+        Commands::Reject { id, reason, actor } => {
+            commands::reject::run(&workgraph_dir, &id, reason.as_deref(), actor.as_deref())
+        }
+        Commands::Fail { id, reason } => {
+            commands::fail::run(&workgraph_dir, &id, reason.as_deref())
+        }
+        Commands::Abandon { id, reason } => {
+            commands::abandon::run(&workgraph_dir, &id, reason.as_deref())
+        }
         Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),
-        Commands::Claim { id, actor } => commands::claim::claim(&workgraph_dir, &id, actor.as_deref()),
+        Commands::Claim { id, actor } => {
+            commands::claim::claim(&workgraph_dir, &id, actor.as_deref())
+        }
         Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
-        Commands::Reclaim { id, from, to } => commands::reclaim::run(&workgraph_dir, &id, &from, &to),
+        Commands::Reclaim { id, from, to } => {
+            commands::reclaim::run(&workgraph_dir, &id, &from, &to)
+        }
         Commands::Ready => commands::ready::run(&workgraph_dir, cli.json),
         Commands::Blocked { id } => commands::blocked::run(&workgraph_dir, &id, cli.json),
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir),
-        Commands::List { status } => commands::list::run(&workgraph_dir, status.as_deref(), cli.json),
+        Commands::List { status } => {
+            commands::list::run(&workgraph_dir, status.as_deref(), cli.json)
+        }
         Commands::Viz {
             all,
             status,
@@ -1616,9 +1654,11 @@ fn main() -> Result<()> {
             };
             commands::viz::run(&workgraph_dir, options)
         }
-        Commands::GraphExport { archive, since, until } => {
-            commands::graph::run(&workgraph_dir, archive, since.as_deref(), until.as_deref())
-        }
+        Commands::GraphExport {
+            archive,
+            since,
+            until,
+        } => commands::graph::run(&workgraph_dir, archive, since.as_deref(), until.as_deref()),
         Commands::Cost { id } => commands::cost::run(&workgraph_dir, &id),
         Commands::Coordinate { max_parallel } => {
             commands::coordinate::run(&workgraph_dir, cli.json, max_parallel)
@@ -1655,7 +1695,12 @@ fn main() -> Result<()> {
             if list || message.is_none() {
                 commands::log::run_list(&workgraph_dir, &id, cli.json)
             } else {
-                commands::log::run_add(&workgraph_dir, &id, message.as_deref().unwrap(), actor.as_deref())
+                commands::log::run_add(
+                    &workgraph_dir,
+                    &id,
+                    message.as_deref().unwrap(),
+                    actor.as_deref(),
+                )
             }
         }
         Commands::Resource { command } => match command {
@@ -1678,9 +1723,11 @@ fn main() -> Result<()> {
         Commands::Skill { command } => match command {
             SkillCommands::List => commands::skills::run_list(&workgraph_dir, cli.json),
             SkillCommands::Task { id } => commands::skills::run_task(&workgraph_dir, &id, cli.json),
-            SkillCommands::Find { skill } => commands::skills::run_find(&workgraph_dir, &skill, cli.json),
+            SkillCommands::Find { skill } => {
+                commands::skills::run_find(&workgraph_dir, &skill, cli.json)
+            }
             SkillCommands::Install => commands::skills::run_install(),
-        }
+        },
         Commands::Agency { command } => match command {
             AgencyCommands::Init => {
                 let agency_dir = workgraph_dir.join("agency");
@@ -1689,7 +1736,10 @@ fn main() -> Result<()> {
                 if roles == 0 && motivations == 0 {
                     println!("Agency already initialized (all starters present).");
                 } else {
-                    println!("Seeded agency with {} roles and {} motivations.", roles, motivations);
+                    println!(
+                        "Seeded agency with {} roles and {} motivations.",
+                        roles, motivations
+                    );
                 }
                 Ok(())
             }
@@ -1698,28 +1748,54 @@ fn main() -> Result<()> {
             }
         },
         Commands::Role { command } => match command {
-            RoleCommands::Add { name, outcome, skill, description } => {
-                commands::role::run_add(&workgraph_dir, &name, &outcome, &skill, description.as_deref())
-            }
+            RoleCommands::Add {
+                name,
+                outcome,
+                skill,
+                description,
+            } => commands::role::run_add(
+                &workgraph_dir,
+                &name,
+                &outcome,
+                &skill,
+                description.as_deref(),
+            ),
             RoleCommands::List => commands::role::run_list(&workgraph_dir, cli.json),
             RoleCommands::Show { id } => commands::role::run_show(&workgraph_dir, &id, cli.json),
             RoleCommands::Edit { id } => commands::role::run_edit(&workgraph_dir, &id),
             RoleCommands::Rm { id } => commands::role::run_rm(&workgraph_dir, &id),
-            RoleCommands::Lineage { id } => commands::role::run_lineage(&workgraph_dir, &id, cli.json),
+            RoleCommands::Lineage { id } => {
+                commands::role::run_lineage(&workgraph_dir, &id, cli.json)
+            }
         },
         Commands::Motivation { command } | Commands::Mot { command } => match command {
-            MotivationCommands::Add { name, accept, reject, description } => {
-                commands::motivation::run_add(&workgraph_dir, &name, &accept, &reject, description.as_deref())
-            }
+            MotivationCommands::Add {
+                name,
+                accept,
+                reject,
+                description,
+            } => commands::motivation::run_add(
+                &workgraph_dir,
+                &name,
+                &accept,
+                &reject,
+                description.as_deref(),
+            ),
             MotivationCommands::List => commands::motivation::run_list(&workgraph_dir, cli.json),
-            MotivationCommands::Show { id } => commands::motivation::run_show(&workgraph_dir, &id, cli.json),
+            MotivationCommands::Show { id } => {
+                commands::motivation::run_show(&workgraph_dir, &id, cli.json)
+            }
             MotivationCommands::Edit { id } => commands::motivation::run_edit(&workgraph_dir, &id),
             MotivationCommands::Rm { id } => commands::motivation::run_rm(&workgraph_dir, &id),
-            MotivationCommands::Lineage { id } => commands::motivation::run_lineage(&workgraph_dir, &id, cli.json),
+            MotivationCommands::Lineage { id } => {
+                commands::motivation::run_lineage(&workgraph_dir, &id, cli.json)
+            }
         },
-        Commands::Assign { task, agent_hash, clear } => {
-            commands::assign::run(&workgraph_dir, &task, agent_hash.as_deref(), clear)
-        }
+        Commands::Assign {
+            task,
+            agent_hash,
+            clear,
+        } => commands::assign::run(&workgraph_dir, &task, agent_hash.as_deref(), clear),
         Commands::Match { task } => commands::match_cmd::run(&workgraph_dir, &task, cli.json),
         Commands::Heartbeat {
             actor,
@@ -1790,50 +1866,82 @@ fn main() -> Result<()> {
                 trust_level,
                 contact,
                 executor,
-            } => {
-                commands::agent_crud::run_create(
-                    &workgraph_dir,
-                    &name,
-                    role.as_deref(),
-                    motivation.as_deref(),
-                    &capabilities,
-                    rate,
-                    capacity,
-                    trust_level.as_deref(),
-                    contact.as_deref(),
-                    &executor,
-                )
-            }
+            } => commands::agent_crud::run_create(
+                &workgraph_dir,
+                &name,
+                role.as_deref(),
+                motivation.as_deref(),
+                &capabilities,
+                rate,
+                capacity,
+                trust_level.as_deref(),
+                contact.as_deref(),
+                &executor,
+            ),
             AgentCommands::List => commands::agent_crud::run_list(&workgraph_dir, cli.json),
-            AgentCommands::Show { id } => commands::agent_crud::run_show(&workgraph_dir, &id, cli.json),
+            AgentCommands::Show { id } => {
+                commands::agent_crud::run_show(&workgraph_dir, &id, cli.json)
+            }
             AgentCommands::Rm { id } => commands::agent_crud::run_rm(&workgraph_dir, &id),
-            AgentCommands::Lineage { id } => commands::agent_crud::run_lineage(&workgraph_dir, &id, cli.json),
-            AgentCommands::Performance { id } => commands::agent_crud::run_performance(&workgraph_dir, &id, cli.json),
+            AgentCommands::Lineage { id } => {
+                commands::agent_crud::run_lineage(&workgraph_dir, &id, cli.json)
+            }
+            AgentCommands::Performance { id } => {
+                commands::agent_crud::run_performance(&workgraph_dir, &id, cli.json)
+            }
             AgentCommands::Run {
                 actor,
                 once,
                 interval,
                 max_tasks,
                 reset_state,
-            } => commands::agent::run(&workgraph_dir, &actor, once, interval, max_tasks, reset_state, cli.json),
+            } => commands::agent::run(
+                &workgraph_dir,
+                &actor,
+                once,
+                interval,
+                max_tasks,
+                reset_state,
+                cli.json,
+            ),
         },
         Commands::Spawn {
             task,
             executor,
             timeout,
             model,
-        } => commands::spawn::run(&workgraph_dir, &task, &executor, timeout.as_deref(), model.as_deref(), cli.json),
+        } => commands::spawn::run(
+            &workgraph_dir,
+            &task,
+            &executor,
+            timeout.as_deref(),
+            model.as_deref(),
+            cli.json,
+        ),
         Commands::Evaluate {
             task,
             evaluator_model,
             dry_run,
-        } => commands::evaluate::run(&workgraph_dir, &task, evaluator_model.as_deref(), dry_run, cli.json),
+        } => commands::evaluate::run(
+            &workgraph_dir,
+            &task,
+            evaluator_model.as_deref(),
+            dry_run,
+            cli.json,
+        ),
         Commands::Evolve {
             dry_run,
             strategy,
             budget,
             model,
-        } => commands::evolve::run(&workgraph_dir, dry_run, strategy.as_deref(), budget, model.as_deref(), cli.json),
+        } => commands::evolve::run(
+            &workgraph_dir,
+            dry_run,
+            strategy.as_deref(),
+            budget,
+            model.as_deref(),
+            cli.json,
+        ),
         Commands::Config {
             show,
             init,
@@ -1891,15 +1999,28 @@ fn main() -> Result<()> {
                 }
             } else if init {
                 commands::config_cmd::init(&workgraph_dir)
-            } else if show || (executor.is_none() && model.is_none() && set_interval.is_none()
-                && max_agents.is_none() && coordinator_interval.is_none() && poll_interval.is_none()
-                && coordinator_executor.is_none()
-                && auto_evaluate.is_none() && auto_assign.is_none()
-                && assigner_model.is_none() && evaluator_model.is_none() && evolver_model.is_none()
-                && assigner_agent.is_none() && evaluator_agent.is_none()
-                && evolver_agent.is_none() && retention_heuristics.is_none()
-                && auto_triage.is_none() && triage_model.is_none()
-                && triage_timeout.is_none() && triage_max_log_bytes.is_none()) {
+            } else if show
+                || (executor.is_none()
+                    && model.is_none()
+                    && set_interval.is_none()
+                    && max_agents.is_none()
+                    && coordinator_interval.is_none()
+                    && poll_interval.is_none()
+                    && coordinator_executor.is_none()
+                    && auto_evaluate.is_none()
+                    && auto_assign.is_none()
+                    && assigner_model.is_none()
+                    && evaluator_model.is_none()
+                    && evolver_model.is_none()
+                    && assigner_agent.is_none()
+                    && evaluator_agent.is_none()
+                    && evolver_agent.is_none()
+                    && retention_heuristics.is_none()
+                    && auto_triage.is_none()
+                    && triage_model.is_none()
+                    && triage_timeout.is_none()
+                    && triage_max_log_bytes.is_none())
+            {
                 commands::config_cmd::show(&workgraph_dir, cli.json)
             } else {
                 commands::config_cmd::update(
@@ -1974,64 +2095,83 @@ fn main() -> Result<()> {
             }
         }
         Commands::Service { command } => match command {
-            ServiceCommands::Start { port, socket, max_agents, executor, interval, model } => {
-                commands::service::run_start(
-                    &workgraph_dir,
-                    socket.as_deref(),
-                    port,
-                    max_agents,
-                    executor.as_deref(),
-                    interval,
-                    model.as_deref(),
-                    cli.json,
-                )
-            }
+            ServiceCommands::Start {
+                port,
+                socket,
+                max_agents,
+                executor,
+                interval,
+                model,
+            } => commands::service::run_start(
+                &workgraph_dir,
+                socket.as_deref(),
+                port,
+                max_agents,
+                executor.as_deref(),
+                interval,
+                model.as_deref(),
+                cli.json,
+            ),
             ServiceCommands::Stop { force, kill_agents } => {
                 commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
             }
-            ServiceCommands::Status => {
-                commands::service::run_status(&workgraph_dir, cli.json)
-            }
-            ServiceCommands::Reload { max_agents, executor, interval, model } => {
-                commands::service::run_reload(
-                    &workgraph_dir,
-                    max_agents,
-                    executor.as_deref(),
-                    interval,
-                    model.as_deref(),
-                    cli.json,
-                )
-            }
-            ServiceCommands::Pause => {
-                commands::service::run_pause(&workgraph_dir, cli.json)
-            }
-            ServiceCommands::Resume => {
-                commands::service::run_resume(&workgraph_dir, cli.json)
-            }
-            ServiceCommands::Install => {
-                commands::service::generate_systemd_service(&workgraph_dir)
-            }
-            ServiceCommands::Tick { max_agents, executor, model } => {
-                commands::service::run_tick(&workgraph_dir, max_agents, executor.as_deref(), model.as_deref())
-            }
-            ServiceCommands::Daemon { socket, max_agents, executor, interval, model } => {
-                commands::service::run_daemon(
-                    &workgraph_dir,
-                    &socket,
-                    max_agents,
-                    executor.as_deref(),
-                    interval,
-                    model.as_deref(),
-                )
-            }
-        }
+            ServiceCommands::Status => commands::service::run_status(&workgraph_dir, cli.json),
+            ServiceCommands::Reload {
+                max_agents,
+                executor,
+                interval,
+                model,
+            } => commands::service::run_reload(
+                &workgraph_dir,
+                max_agents,
+                executor.as_deref(),
+                interval,
+                model.as_deref(),
+                cli.json,
+            ),
+            ServiceCommands::Pause => commands::service::run_pause(&workgraph_dir, cli.json),
+            ServiceCommands::Resume => commands::service::run_resume(&workgraph_dir, cli.json),
+            ServiceCommands::Install => commands::service::generate_systemd_service(&workgraph_dir),
+            ServiceCommands::Tick {
+                max_agents,
+                executor,
+                model,
+            } => commands::service::run_tick(
+                &workgraph_dir,
+                max_agents,
+                executor.as_deref(),
+                model.as_deref(),
+            ),
+            ServiceCommands::Daemon {
+                socket,
+                max_agents,
+                executor,
+                interval,
+                model,
+            } => commands::service::run_daemon(
+                &workgraph_dir,
+                &socket,
+                max_agents,
+                executor.as_deref(),
+                interval,
+                model.as_deref(),
+            ),
+        },
         Commands::Tui { refresh_rate } => tui::run(workgraph_dir, refresh_rate),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
-        Commands::Notify { task, room, message } => {
-            commands::notify::run(&workgraph_dir, &task, room.as_deref(), message.as_deref(), cli.json)
-        }
+        Commands::Notify {
+            task,
+            room,
+            message,
+        } => commands::notify::run(
+            &workgraph_dir,
+            &task,
+            room.as_deref(),
+            message.as_deref(),
+            cli.json,
+        ),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Matrix { command } => match command {
             MatrixCommands::Listen { room } => {
@@ -2040,15 +2180,9 @@ fn main() -> Result<()> {
             MatrixCommands::Send { message, room } => {
                 commands::matrix::run_send(&workgraph_dir, room.as_deref(), &message)
             }
-            MatrixCommands::Status => {
-                commands::matrix::run_status(&workgraph_dir, cli.json)
-            }
-            MatrixCommands::Login => {
-                commands::matrix::run_login(&workgraph_dir)
-            }
-            MatrixCommands::Logout => {
-                commands::matrix::run_logout(&workgraph_dir)
-            }
-        }
+            MatrixCommands::Status => commands::matrix::run_status(&workgraph_dir, cli.json),
+            MatrixCommands::Login => commands::matrix::run_login(&workgraph_dir),
+            MatrixCommands::Logout => commands::matrix::run_logout(&workgraph_dir),
+        },
     }
 }

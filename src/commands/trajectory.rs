@@ -165,12 +165,17 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
             };
             let hours_str = step.hours.map(|h| format!(" ({}h)", h)).unwrap_or_default();
 
-            println!("{}{} - {}{}{}", indent, step.id, step.title, hours_str, status_str);
+            println!(
+                "{}{} - {}{}{}",
+                indent, step.id, step.title, hours_str, status_str
+            );
 
             if !step.receives.is_empty() {
                 println!("{}  ← receives: {}", indent, step.receives.join(", "));
             }
-            if !step.produces.is_empty() && step.depth < trajectory.steps.iter().map(|s| s.depth).max().unwrap_or(0) {
+            if !step.produces.is_empty()
+                && step.depth < trajectory.steps.iter().map(|s| s.depth).max().unwrap_or(0)
+            {
                 println!("{}  → produces: {}", indent, step.produces.join(", "));
             }
         }
@@ -200,9 +205,12 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
         .tasks()
         .filter(|t| {
             t.status == Status::Open
-                && t.blocked_by
-                    .iter()
-                    .all(|b| graph.get_task(b).map(|bt| bt.status == Status::Done).unwrap_or(true))
+                && t.blocked_by.iter().all(|b| {
+                    graph
+                        .get_task(b)
+                        .map(|bt| bt.status == Status::Done)
+                        .unwrap_or(true)
+                })
         })
         .collect();
 

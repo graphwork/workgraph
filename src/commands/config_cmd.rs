@@ -420,10 +420,27 @@ mod tests {
         init(temp_dir.path()).unwrap();
 
         let result = update(
-            temp_dir.path(), Some("opencode"), Some("gpt-4"), Some(30),
-            None, None, None, None,
-            None, None, None, None, None, None, None, None, None,
-            None, None, None, None,
+            temp_dir.path(),
+            Some("opencode"),
+            Some("gpt-4"),
+            Some(30),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -439,9 +456,27 @@ mod tests {
         init(temp_dir.path()).unwrap();
 
         let result = update(
-            temp_dir.path(), None, None, None, Some(8), Some(60), None, Some("shell"),
-            None, None, None, None, None, None, None, None, None,
-            None, None, None, None,
+            temp_dir.path(),
+            None,
+            None,
+            None,
+            Some(8),
+            Some(60),
+            None,
+            Some("shell"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -457,9 +492,27 @@ mod tests {
         init(temp_dir.path()).unwrap();
 
         let result = update(
-            temp_dir.path(), None, None, None, None, None, Some(120), None,
-            None, None, None, None, None, None, None, None, None,
-            None, None, None, None,
+            temp_dir.path(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(120),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -473,12 +526,27 @@ mod tests {
         init(temp_dir.path()).unwrap();
 
         let result = update(
-            temp_dir.path(), None, None, None, None, None, None, None,
-            Some(true), Some(true),
-            Some("sonnet"), Some("haiku"), Some("opus-4-5"),
-            Some("assigner-hash"), Some("evaluator-hash"),
-            Some("evolver-hash"), Some("Retire below 0.3 after 10 evals"),
-            None, None, None, None,
+            temp_dir.path(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some(true),
+            Some("sonnet"),
+            Some("haiku"),
+            Some("opus-4-5"),
+            Some("assigner-hash"),
+            Some("evaluator-hash"),
+            Some("evolver-hash"),
+            Some("Retire below 0.3 after 10 evals"),
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -488,9 +556,18 @@ mod tests {
         assert_eq!(config.agency.assigner_model, Some("sonnet".to_string()));
         assert_eq!(config.agency.evaluator_model, Some("haiku".to_string()));
         assert_eq!(config.agency.evolver_model, Some("opus-4-5".to_string()));
-        assert_eq!(config.agency.assigner_agent, Some("assigner-hash".to_string()));
-        assert_eq!(config.agency.evaluator_agent, Some("evaluator-hash".to_string()));
-        assert_eq!(config.agency.evolver_agent, Some("evolver-hash".to_string()));
+        assert_eq!(
+            config.agency.assigner_agent,
+            Some("assigner-hash".to_string())
+        );
+        assert_eq!(
+            config.agency.evaluator_agent,
+            Some("evaluator-hash".to_string())
+        );
+        assert_eq!(
+            config.agency.evolver_agent,
+            Some("evolver-hash".to_string())
+        );
         assert_eq!(
             config.agency.retention_heuristics,
             Some("Retire below 0.3 after 10 evals".to_string())

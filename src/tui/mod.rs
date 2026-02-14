@@ -9,20 +9,20 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    DefaultTerminal, Frame,
 };
 
 use self::app::{App, GraphViewMode, Panel, View};
-use self::dag_layout::{render_to_buffer, CellStyle};
-use workgraph::graph::Status;
+use self::dag_layout::{CellStyle, render_to_buffer};
 use workgraph::AgentStatus;
+use workgraph::graph::Status;
 
 /// Interval between data refresh polls
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
@@ -299,10 +299,7 @@ fn draw_dashboard(frame: &mut Frame, app: &mut App) {
     // Main area: horizontal split into task list (left) and agent list (right)
     let panels = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(outer[0]);
 
     // Task list panel
@@ -329,7 +326,7 @@ fn draw_log_view(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
-            Constraint::Min(3),   // log content
+            Constraint::Min(3),    // log content
             Constraint::Length(1), // help bar
         ])
         .split(size);
@@ -340,14 +337,29 @@ fn draw_log_view(frame: &mut Frame, app: &mut App) {
     let status_color = agent_status_color(&agent.status);
 
     let header_line = Line::from(vec![
-        Span::styled(" Agent: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(&agent.id, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Agent: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            &agent.id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  Task: ", Style::default().fg(Color::Cyan)),
         Span::styled(&agent.task_id, Style::default().fg(Color::White)),
         Span::styled("  PID: ", Style::default().fg(Color::Cyan)),
         Span::styled(agent.pid.to_string(), Style::default().fg(Color::White)),
         Span::styled("  Status: ", Style::default().fg(Color::Cyan)),
-        Span::styled(status_label, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            status_label,
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  Uptime: ", Style::default().fg(Color::Cyan)),
         Span::styled(&agent.uptime, Style::default().fg(Color::White)),
     ]);
@@ -416,7 +428,10 @@ fn draw_log_view(frame: &mut Frame, app: &mut App) {
     let help_bar = Paragraph::new(Line::from(vec![
         Span::styled(
             " Log Viewer ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(line_info, Style::default().fg(Color::White)),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
@@ -463,7 +478,11 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
     let block = Block::default()
         .title(" Graph Explorer [Tree] ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     if explorer.rows.is_empty() {
         let content = Paragraph::new(vec![
@@ -527,18 +546,18 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
                     "▾ "
                 };
 
-                let mut spans = vec![
-                    Span::styled(
-                        format!(" {}{}{}", indent, connector, collapse_marker),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ];
+                let mut spans = vec![Span::styled(
+                    format!(" {}{}{}", indent, connector, collapse_marker),
+                    Style::default().fg(Color::DarkGray),
+                )];
 
                 // Agent activity marker: pulsing dot before the status indicator
                 if has_active_agent && row.back_ref.is_none() {
                     spans.push(Span::styled(
                         "● ",
-                        Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
 
@@ -548,15 +567,22 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
                 // Show assigned agent or active agent IDs
                 if has_active_agent && row.back_ref.is_none() {
                     let agent_label = if row.active_agent_count > 1 {
-                        format!("  [{}x agents: {}]",
+                        format!(
+                            "  [{}x agents: {}]",
                             row.active_agent_count,
-                            row.active_agent_ids.join(", "))
+                            row.active_agent_ids.join(", ")
+                        )
                     } else {
-                        format!("  [{}]", row.active_agent_ids.first().unwrap_or(&String::new()))
+                        format!(
+                            "  [{}]",
+                            row.active_agent_ids.first().unwrap_or(&String::new())
+                        )
                     };
                     spans.push(Span::styled(
                         agent_label,
-                        Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 } else if let Some(ref agent) = row.assigned {
                     spans.push(Span::styled(
@@ -605,10 +631,16 @@ fn draw_graph_tree_view(frame: &mut Frame, app: &mut App) {
     let help_bar = Paragraph::new(Line::from(vec![
         Span::styled(
             " Tree View ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" q=quit ?=help Esc=back d=graph j/k=nav h/l=fold Enter=details r=refresh{} ", agent_hint),
+            format!(
+                " q=quit ?=help Esc=back d=graph j/k=nav h/l=fold Enter=details r=refresh{} ",
+                agent_hint
+            ),
             Style::default().fg(Color::DarkGray),
         ),
     ]));
@@ -635,7 +667,11 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
     let block = Block::default()
         .title(" Graph Explorer [Graph] ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let inner = block.inner(layout[0]);
 
@@ -665,11 +701,8 @@ fn draw_graph_dag_view(frame: &mut Frame, app: &mut App) {
     };
 
     if dag.nodes.is_empty() {
-        let content = Paragraph::new(vec![
-            Line::from(""),
-            Line::from("  No tasks found."),
-        ])
-        .block(block);
+        let content =
+            Paragraph::new(vec![Line::from(""), Line::from("  No tasks found.")]).block(block);
         frame.render_widget(content, layout[0]);
         draw_dag_help_bar(frame, explorer, layout[1]);
         return;
@@ -797,15 +830,13 @@ fn draw_dag_help_bar(frame: &mut Frame, explorer: &app::GraphExplorer, area: Rec
         .map(|l| l.loop_edges.len())
         .unwrap_or(0);
 
-    let mut spans = vec![
-        Span::styled(
-            " Graph View ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut spans = vec![Span::styled(
+        " Graph View ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
 
     // Show cycle indicator if cycles exist
     if has_cycles {
@@ -827,10 +858,7 @@ fn draw_dag_help_bar(frame: &mut Frame, explorer: &app::GraphExplorer, area: Rec
         ));
     }
 
-    spans.push(Span::styled(
-        node_info,
-        Style::default().fg(Color::White),
-    ));
+    spans.push(Span::styled(node_info, Style::default().fg(Color::White)));
     spans.push(Span::styled(
         format!(
             " q=quit ?=help Esc=back d=tree j/k=nav h/l=scroll Enter=details r=refresh{} ",
@@ -860,13 +888,11 @@ fn cell_style_to_ratatui(cell_style: CellStyle) -> Style {
         CellStyle::Arrow => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
-        CellStyle::BackEdge => Style::default()
-            .fg(Color::Magenta),
+        CellStyle::BackEdge => Style::default().fg(Color::Magenta),
         CellStyle::BackEdgeArrow => Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
-        CellStyle::LoopEdge => Style::default()
-            .fg(Color::LightMagenta),
+        CellStyle::LoopEdge => Style::default().fg(Color::LightMagenta),
         CellStyle::LoopEdgeArrow => Style::default()
             .fg(Color::LightMagenta)
             .add_modifier(Modifier::BOLD),
@@ -1052,14 +1078,19 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
                 None => String::new(),
             };
             lines.push(Line::from(Span::styled(
-                format!("  -> {} (max: {}{}{})", edge.target, edge.max_iterations, guard_str, delay_str),
+                format!(
+                    "  -> {} (max: {}{}{})",
+                    edge.target, edge.max_iterations, guard_str, delay_str
+                ),
                 Style::default().fg(Color::LightMagenta),
             )));
         }
         if task.loop_iteration > 0 {
             lines.push(Line::from(Span::styled(
                 format!("  Current iteration: {}", task.loop_iteration),
-                Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         lines.push(Line::from(""));
@@ -1091,9 +1122,7 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
     if let Some(ref reason) = task.failure_reason {
         lines.push(Line::from(Span::styled(
             "Failure reason:",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             format!("  {}", reason),
@@ -1106,7 +1135,11 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
     let viewport_height = inner.height as usize;
     let max_scroll = lines.len().saturating_sub(viewport_height);
     let scroll = explorer.detail_scroll.min(max_scroll);
-    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(viewport_height).collect();
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(viewport_height)
+        .collect();
 
     let paragraph = Paragraph::new(visible_lines).block(block);
     frame.render_widget(paragraph, area);
@@ -1195,7 +1228,10 @@ fn draw_agent_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let border_style = panel_style(app, Panel::Agents);
 
     let (alive, dead, total) = app.agent_counts;
-    let title = format!(" Agents ({} alive / {} dead / {} total) ", alive, dead, total);
+    let title = format!(
+        " Agents ({} alive / {} dead / {} total) ",
+        alive, dead, total
+    );
 
     let block = Block::default()
         .title(title)
@@ -1238,30 +1274,19 @@ fn draw_agent_list(frame: &mut Frame, app: &mut App, area: Rect) {
             };
 
             let spans = vec![
-                Span::styled(
-                    format!(" {:>9} ", agent.id),
-                    style,
-                ),
+                Span::styled(format!(" {:>9} ", agent.id), style),
                 Span::styled(
                     format!("{:<8} ", status_label),
-                    if highlighted { style } else { Style::default().fg(base_color).add_modifier(Modifier::BOLD) },
+                    if highlighted {
+                        style
+                    } else {
+                        Style::default().fg(base_color).add_modifier(Modifier::BOLD)
+                    },
                 ),
-                Span::styled(
-                    agent.task_id.clone(),
-                    style,
-                ),
-                Span::styled(
-                    format!("  {} ", agent.executor),
-                    detail_style,
-                ),
-                Span::styled(
-                    format!("pid:{} ", agent.pid),
-                    detail_style,
-                ),
-                Span::styled(
-                    agent.uptime.clone(),
-                    detail_style,
-                ),
+                Span::styled(agent.task_id.clone(), style),
+                Span::styled(format!("  {} ", agent.executor), detail_style),
+                Span::styled(format!("pid:{} ", agent.pid), detail_style),
+                Span::styled(agent.uptime.clone(), detail_style),
             ];
 
             ListItem::new(Line::from(spans))
@@ -1349,10 +1374,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" {} ", app.view_label()),
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} tasks ({} active, {} done) ", c.total, c.in_progress, c.done),
+            format!(
+                " {} tasks ({} active, {} done) ",
+                c.total, c.in_progress, c.done
+            ),
             Style::default().fg(Color::White),
         ),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
@@ -1362,8 +1393,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            if service_running { " service: running " } else { " service: stopped " },
-            Style::default().fg(if service_running { Color::Green } else { Color::DarkGray }),
+            if service_running {
+                " service: running "
+            } else {
+                " service: stopped "
+            },
+            Style::default().fg(if service_running {
+                Color::Green
+            } else {
+                Color::DarkGray
+            }),
         ),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -1395,23 +1434,26 @@ fn draw_help_overlay(frame: &mut Frame, current_view: &View) {
     let block = Block::default()
         .title(" Keybindings ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let inner = block.inner(area);
 
     let heading = |text: &str| -> Line {
         Line::from(Span::styled(
             text.to_string(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
     };
 
     let binding = |key: &str, desc: &str| -> Line {
         Line::from(vec![
-            Span::styled(
-                format!("  {:<14}", key),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(format!("  {:<14}", key), Style::default().fg(Color::Yellow)),
             Span::styled(desc.to_string(), Style::default().fg(Color::White)),
         ])
     };
@@ -1427,7 +1469,12 @@ fn draw_help_overlay(frame: &mut Frame, current_view: &View) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled(" Current view: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(current_label, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                current_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         blank(),
         heading("Global"),

@@ -174,11 +174,14 @@ impl LogViewer {
         loop {
             buf.clear();
             match reader.read_line(&mut buf) {
-                Ok(0) => break,      // EOF
+                Ok(0) => break, // EOF
                 Ok(n) => {
                     self.file_pos += n as u64;
                     // Strip trailing newline
-                    let line = buf.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                    let line = buf
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .to_string();
                     self.lines.push(line);
                 }
                 Err(_) => break,
@@ -332,10 +335,12 @@ impl GraphExplorer {
             let process_alive = is_process_alive(entry.pid);
             let effectively_alive = entry.is_alive() && process_alive;
             if effectively_alive {
-                let info = map.entry(entry.task_id.clone()).or_insert_with(|| TaskAgentInfo {
-                    agent_ids: Vec::new(),
-                    count: 0,
-                });
+                let info = map
+                    .entry(entry.task_id.clone())
+                    .or_insert_with(|| TaskAgentInfo {
+                        agent_ids: Vec::new(),
+                        count: 0,
+                    });
                 info.agent_ids.push(entry.id.clone());
                 info.count += 1;
             }
@@ -363,7 +368,11 @@ impl GraphExplorer {
         let prev_id = self.rows.get(self.selected).map(|r| r.task_id.clone());
         self.rows = rows;
         if let Some(ref id) = prev_id {
-            if let Some(pos) = self.rows.iter().position(|r| r.task_id == *id && r.back_ref.is_none()) {
+            if let Some(pos) = self
+                .rows
+                .iter()
+                .position(|r| r.task_id == *id && r.back_ref.is_none())
+            {
                 self.selected = pos;
             }
         }
@@ -375,7 +384,10 @@ impl GraphExplorer {
 
         // Update agent map and compute active indices for 'a' cycling
         self.agent_map = agent_map.clone();
-        self.agent_active_indices = self.rows.iter().enumerate()
+        self.agent_active_indices = self
+            .rows
+            .iter()
+            .enumerate()
             .filter(|(_, r)| r.active_agent_count > 0 && r.back_ref.is_none())
             .map(|(i, _)| i)
             .collect();
@@ -386,9 +398,10 @@ impl GraphExplorer {
         super::dag_layout::reroute_edges(&mut dag, &graph);
 
         // Preserve DAG selection by task ID
-        let prev_dag_id = self.dag_layout.as_ref().and_then(|l| {
-            l.nodes.get(self.dag_selected).map(|n| n.task_id.clone())
-        });
+        let prev_dag_id = self
+            .dag_layout
+            .as_ref()
+            .and_then(|l| l.nodes.get(self.dag_selected).map(|n| n.task_id.clone()));
         if let Some(ref id) = prev_dag_id {
             if let Some(&idx) = dag.id_to_idx.get(id) {
                 self.dag_selected = idx;
@@ -464,7 +477,9 @@ impl GraphExplorer {
             return;
         }
         // Find the next index after the current selection
-        let next = self.agent_active_indices.iter()
+        let next = self
+            .agent_active_indices
+            .iter()
             .find(|&&idx| idx > self.selected)
             .or_else(|| self.agent_active_indices.first());
         if let Some(&idx) = next {
@@ -664,7 +679,8 @@ fn build_graph_tree(
     for id in orphans {
         if let Some(task) = tasks.get(&id) {
             placed.insert(id.clone());
-            let (agent_count, agent_ids) = agent_map.get(&task.id)
+            let (agent_count, agent_ids) = agent_map
+                .get(&task.id)
                 .map(|info| (info.count, info.agent_ids.clone()))
                 .unwrap_or((0, Vec::new()));
             rows.push(GraphRow {
@@ -701,7 +717,8 @@ fn flatten_subtree(
     };
 
     let is_back_ref = placed.contains(task_id);
-    let (agent_count, agent_ids) = agent_map.get(task_id)
+    let (agent_count, agent_ids) = agent_map
+        .get(task_id)
         .map(|info| (info.count, info.agent_ids.clone()))
         .unwrap_or((0, Vec::new()));
 
@@ -743,7 +760,17 @@ fn flatten_subtree(
 
     if let Some(kids) = children.get(task_id) {
         for kid_id in kids {
-            flatten_subtree(kid_id, tasks, children, collapsed, critical_ids, agent_map, placed, rows, depth + 1);
+            flatten_subtree(
+                kid_id,
+                tasks,
+                children,
+                collapsed,
+                critical_ids,
+                agent_map,
+                placed,
+                rows,
+                depth + 1,
+            );
         }
     }
 }
@@ -838,7 +865,14 @@ fn compute_critical_path(graph: &WorkGraph) -> HashSet<String> {
     let mut best_len = 0;
 
     for root_id in &roots {
-        let len = longest_chain(root_id, &tasks, &children, &mut memo, &mut path_next, &mut HashSet::new());
+        let len = longest_chain(
+            root_id,
+            &tasks,
+            &children,
+            &mut memo,
+            &mut path_next,
+            &mut HashSet::new(),
+        );
         if len > best_len {
             best_len = len;
             best_root = Some(root_id.clone());
@@ -1175,8 +1209,7 @@ impl App {
         if !self.first_load {
             for a in &agents {
                 if !self.prev_agent_ids.contains(&a.id) {
-                    self.highlighted_agents
-                        .insert(a.id.clone(), Instant::now());
+                    self.highlighted_agents.insert(a.id.clone(), Instant::now());
                 }
             }
 
@@ -1187,8 +1220,7 @@ impl App {
                 };
                 if let Some(prev) = self.prev_agent_snapshots.get(&a.id) {
                     if *prev != snap {
-                        self.highlighted_agents
-                            .insert(a.id.clone(), Instant::now());
+                        self.highlighted_agents.insert(a.id.clone(), Instant::now());
                     }
                 }
             }
@@ -1275,7 +1307,11 @@ impl App {
                     let task_id = task.id.clone();
                     let mut explorer = GraphExplorer::new(&self.workgraph_dir);
                     // Try to select the task in the graph
-                    if let Some(pos) = explorer.rows.iter().position(|r| r.task_id == task_id && r.back_ref.is_none()) {
+                    if let Some(pos) = explorer
+                        .rows
+                        .iter()
+                        .position(|r| r.task_id == task_id && r.back_ref.is_none())
+                    {
                         explorer.selected = pos;
                     }
                     self.graph_explorer = Some(explorer);
@@ -1352,7 +1388,9 @@ impl App {
         match self.view {
             View::Dashboard => "q=quit ?=help Tab=switch j/k=nav Enter=drill-in g=graph r=refresh",
             View::LogView => "q=quit ?=help Esc=back j/k=scroll PgUp/PgDn g=top G=bottom",
-            View::GraphExplorer => "q=quit ?=help Esc=back d=toggle view j/k=nav Enter=details r=refresh",
+            View::GraphExplorer => {
+                "q=quit ?=help Esc=back d=toggle view j/k=nav Enter=details r=refresh"
+            }
         }
     }
 
@@ -1367,11 +1405,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::dag_layout::DagLayout;
+    use super::*;
     use ratatui::style::Color;
-    use workgraph::graph::Status;
     use workgraph::AgentStatus;
+    use workgraph::graph::Status;
 
     // ── Helpers ──────────────────────────────────────────────────────
 
@@ -1461,23 +1499,48 @@ mod tests {
 
     fn sample_tasks() -> Vec<TaskEntry> {
         vec![
-            TaskEntry { id: "a".into(), title: "Alpha".into(), status: Status::InProgress, assigned: None },
-            TaskEntry { id: "b".into(), title: "Beta".into(), status: Status::Open, assigned: None },
-            TaskEntry { id: "c".into(), title: "Gamma".into(), status: Status::Done, assigned: None },
+            TaskEntry {
+                id: "a".into(),
+                title: "Alpha".into(),
+                status: Status::InProgress,
+                assigned: None,
+            },
+            TaskEntry {
+                id: "b".into(),
+                title: "Beta".into(),
+                status: Status::Open,
+                assigned: None,
+            },
+            TaskEntry {
+                id: "c".into(),
+                title: "Gamma".into(),
+                status: Status::Done,
+                assigned: None,
+            },
         ]
     }
 
     fn sample_agents() -> Vec<AgentInfo> {
         vec![
             AgentInfo {
-                id: "agent-1".into(), task_id: "a".into(), executor: "claude".into(),
-                pid: 1, uptime: "1m".into(), status: AgentStatus::Working,
-                process_alive: true, output_file: String::new(),
+                id: "agent-1".into(),
+                task_id: "a".into(),
+                executor: "claude".into(),
+                pid: 1,
+                uptime: "1m".into(),
+                status: AgentStatus::Working,
+                process_alive: true,
+                output_file: String::new(),
             },
             AgentInfo {
-                id: "agent-2".into(), task_id: "b".into(), executor: "claude".into(),
-                pid: 2, uptime: "2m".into(), status: AgentStatus::Done,
-                process_alive: false, output_file: String::new(),
+                id: "agent-2".into(),
+                task_id: "b".into(),
+                executor: "claude".into(),
+                pid: 2,
+                uptime: "2m".into(),
+                status: AgentStatus::Done,
+                process_alive: false,
+                output_file: String::new(),
             },
         ]
     }
@@ -1502,20 +1565,45 @@ mod tests {
                 status: status.clone(),
                 assigned: None,
             };
-            assert_eq!(entry.sort_key(), *expected, "sort_key mismatch for {:?}", status);
+            assert_eq!(
+                entry.sort_key(),
+                *expected,
+                "sort_key mismatch for {:?}",
+                status
+            );
         }
     }
 
     #[test]
     fn task_entry_sort_key_is_monotonic() {
         let ordered = [
-            Status::InProgress, Status::Open, Status::PendingReview,
-            Status::Failed, Status::Blocked, Status::Done, Status::Abandoned,
+            Status::InProgress,
+            Status::Open,
+            Status::PendingReview,
+            Status::Failed,
+            Status::Blocked,
+            Status::Done,
+            Status::Abandoned,
         ];
         for w in ordered.windows(2) {
-            let a = TaskEntry { id: "x".into(), title: "x".into(), status: w[0].clone(), assigned: None };
-            let b = TaskEntry { id: "x".into(), title: "x".into(), status: w[1].clone(), assigned: None };
-            assert!(a.sort_key() < b.sort_key(), "{:?} should sort before {:?}", w[0], w[1]);
+            let a = TaskEntry {
+                id: "x".into(),
+                title: "x".into(),
+                status: w[0].clone(),
+                assigned: None,
+            };
+            let b = TaskEntry {
+                id: "x".into(),
+                title: "x".into(),
+                status: w[1].clone(),
+                assigned: None,
+            };
+            assert!(
+                a.sort_key() < b.sort_key(),
+                "{:?} should sort before {:?}",
+                w[0],
+                w[1]
+            );
         }
     }
 
@@ -1580,7 +1668,11 @@ mod tests {
 
     #[test]
     fn graph_explorer_scroll_down_advances() {
-        let rows = vec![make_row("a", Status::Open), make_row("b", Status::Open), make_row("c", Status::Open)];
+        let rows = vec![
+            make_row("a", Status::Open),
+            make_row("b", Status::Open),
+            make_row("c", Status::Open),
+        ];
         let mut ex = make_graph_explorer(rows);
         ex.scroll_down();
         assert_eq!(ex.selected, 1);
@@ -1700,8 +1792,10 @@ mod tests {
 
     fn make_dag_layout(task_ids: &[&str]) -> DagLayout {
         use super::super::dag_layout::LayoutNode;
-        let nodes: Vec<LayoutNode> = task_ids.iter().enumerate().map(|(i, id)| {
-            LayoutNode {
+        let nodes: Vec<LayoutNode> = task_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| LayoutNode {
                 task_id: id.to_string(),
                 title: id.to_string(),
                 status: Status::Open,
@@ -1715,9 +1809,13 @@ mod tests {
                 y: i * 4,
                 w: 10,
                 h: 3,
-            }
-        }).collect();
-        let id_to_idx = task_ids.iter().enumerate().map(|(i, id)| (id.to_string(), i)).collect();
+            })
+            .collect();
+        let id_to_idx = task_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.to_string(), i))
+            .collect();
         DagLayout {
             nodes,
             edges: vec![],
@@ -2062,9 +2160,14 @@ mod tests {
     #[test]
     fn agent_info_is_alive() {
         let mut info = AgentInfo {
-            id: "a".into(), task_id: "t".into(), executor: "e".into(),
-            pid: 1, uptime: "1s".into(), status: AgentStatus::Working,
-            process_alive: true, output_file: String::new(),
+            id: "a".into(),
+            task_id: "t".into(),
+            executor: "e".into(),
+            pid: 1,
+            uptime: "1s".into(),
+            status: AgentStatus::Working,
+            process_alive: true,
+            output_file: String::new(),
         };
         assert!(info.is_alive());
         info.status = AgentStatus::Starting;
@@ -2084,9 +2187,14 @@ mod tests {
     #[test]
     fn agent_info_is_dead() {
         let mut info = AgentInfo {
-            id: "a".into(), task_id: "t".into(), executor: "e".into(),
-            pid: 1, uptime: "1s".into(), status: AgentStatus::Dead,
-            process_alive: false, output_file: String::new(),
+            id: "a".into(),
+            task_id: "t".into(),
+            executor: "e".into(),
+            pid: 1,
+            uptime: "1s".into(),
+            status: AgentStatus::Dead,
+            process_alive: false,
+            output_file: String::new(),
         };
         assert!(info.is_dead());
         info.status = AgentStatus::Failed;

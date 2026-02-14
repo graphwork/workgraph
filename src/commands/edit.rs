@@ -141,8 +141,9 @@ pub fn run(
         };
         let delay = match loop_delay {
             Some(d) => {
-                parse_delay(d)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d))?;
+                parse_delay(d).ok_or_else(|| {
+                    anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+                })?;
                 Some(d.to_string())
             }
             None => None,
@@ -157,7 +158,10 @@ pub fn run(
                 max_iterations,
                 delay,
             });
-            println!("Added loops_to: {} (max_iterations: {})", target, max_iterations);
+            println!(
+                "Added loops_to: {} (max_iterations: {})",
+                target, max_iterations
+            );
             changed = true;
         }
     } else if loop_max.is_some() || loop_guard.is_some() || loop_delay.is_some() {
@@ -197,8 +201,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     fn create_test_graph(dir: &Path) -> Result<()> {
         // Create the workgraph directory if it doesn't exist
@@ -225,7 +229,10 @@ mod tests {
             None,
             Some("sonnet"),
             None,
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
         )?;
 
         Ok(())
@@ -248,7 +255,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -275,7 +287,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -302,7 +319,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -330,7 +352,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -357,7 +384,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -385,7 +417,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -412,7 +449,12 @@ mod tests {
             Some("opus"),
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -439,7 +481,12 @@ mod tests {
             None,
             &["skill2".to_string()],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -467,7 +514,12 @@ mod tests {
             None,
             &[],
             &["skill1".to_string()],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -494,7 +546,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -517,7 +574,12 @@ mod tests {
             None,
             &[],
             &[],
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
     }

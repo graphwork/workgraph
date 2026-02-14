@@ -46,13 +46,15 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     if json {
         let mut output: Vec<_> = ready
             .iter()
-            .map(|t| serde_json::json!({
-                "id": t.id,
-                "title": t.title,
-                "assigned": t.assigned,
-                "estimate": t.estimate,
-                "ready": true,
-            }))
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "assigned": t.assigned,
+                    "estimate": t.estimate,
+                    "ready": true,
+                })
+            })
             .collect();
         for t in &waiting {
             output.push(serde_json::json!({

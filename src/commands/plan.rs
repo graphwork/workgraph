@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::parser::load_graph;
-use workgraph::query::{project_summary, tasks_within_budget, tasks_within_hours, ProjectSummary};
+use workgraph::query::{ProjectSummary, project_summary, tasks_within_budget, tasks_within_hours};
 
 use super::graph_path;
 

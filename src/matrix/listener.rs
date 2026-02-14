@@ -17,7 +17,7 @@ use crate::config::MatrixConfig;
 use crate::graph::{LogEntry, Status};
 use crate::parser::{load_graph, save_graph};
 
-use super::commands::{help_text, MatrixCommand};
+use super::commands::{MatrixCommand, help_text};
 use super::{IncomingMessage, MatrixClient};
 
 /// Configuration for the Matrix listener
@@ -215,7 +215,10 @@ impl MatrixListener {
             MatrixCommand::Ready => self.execute_ready(),
             MatrixCommand::Help => help_text(),
             MatrixCommand::Unknown { command } => {
-                format!("Unknown command: '{}'. Type 'help' for available commands.", command)
+                format!(
+                    "Unknown command: '{}'. Type 'help' for available commands.",
+                    command
+                )
             }
         }
     }
@@ -321,7 +324,10 @@ impl MatrixListener {
         };
 
         if task.status == Status::Done {
-            return format!("Task '{}' is already done and cannot be marked as failed", task_id);
+            return format!(
+                "Task '{}' is already done and cannot be marked as failed",
+                task_id
+            );
         }
 
         if task.status == Status::Failed {
@@ -339,7 +345,10 @@ impl MatrixListener {
         }
 
         let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
-        format!("Marked '{}' as failed{} (retry #{})", task_id, reason_msg, retry_count)
+        format!(
+            "Marked '{}' as failed{} (retry #{})",
+            task_id, reason_msg, retry_count
+        )
     }
 
     /// Execute input/log command
@@ -452,9 +461,13 @@ impl MatrixListener {
         let ready_tasks: Vec<_> = graph
             .tasks()
             .filter(|t| {
-                t.status == Status::Open && t.blocked_by.iter().all(|dep| {
-                    graph.get_task(dep).map(|d| d.status == Status::Done).unwrap_or(true)
-                })
+                t.status == Status::Open
+                    && t.blocked_by.iter().all(|dep| {
+                        graph
+                            .get_task(dep)
+                            .map(|d| d.status == Status::Done)
+                            .unwrap_or(true)
+                    })
             })
             .collect();
 
@@ -485,9 +498,7 @@ pub async fn run_listener(workgraph_dir: &Path) -> Result<()> {
     let matrix_config = MatrixConfig::load().context("Failed to load Matrix config")?;
 
     if !matrix_config.has_credentials() {
-        anyhow::bail!(
-            "Matrix not configured. Run 'wg config --matrix' to set up credentials."
-        );
+        anyhow::bail!("Matrix not configured. Run 'wg config --matrix' to set up credentials.");
     }
 
     let listener_config = ListenerConfig::default();

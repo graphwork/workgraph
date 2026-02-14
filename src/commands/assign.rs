@@ -7,12 +7,7 @@ use super::graph_path;
 
 /// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
 /// `wg assign <task-id> --clear`       — remove agent assignment
-pub fn run(
-    dir: &Path,
-    task_id: &str,
-    agent_hash: Option<&str>,
-    clear: bool,
-) -> Result<()> {
+pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -40,16 +35,15 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     let agents_dir = agency_dir.join("agents");
 
     // Resolve agent by prefix
-    let agent = agency::find_agent_by_prefix(&agents_dir, agent_hash)
-        .with_context(|| {
-            let available = list_available_agent_ids(&agents_dir);
-            let hint = if available.is_empty() {
-                "No agents defined. Use 'wg agent create' to create one.".to_string()
-            } else {
-                format!("Available agents: {}", available.join(", "))
-            };
-            format!("No agent matching '{}'. {}", agent_hash, hint)
-        })?;
+    let agent = agency::find_agent_by_prefix(&agents_dir, agent_hash).with_context(|| {
+        let available = list_available_agent_ids(&agents_dir);
+        let hint = if available.is_empty() {
+            "No agents defined. Use 'wg agent create' to create one.".to_string()
+        } else {
+            format!("Available agents: {}", available.join(", "))
+        };
+        format!("No agent matching '{}'. {}", agent_hash, hint)
+    })?;
 
     let mut graph = load_graph(path).context("Failed to load graph")?;
 
@@ -73,9 +67,21 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         .unwrap_or_else(|_| "(not found)".to_string());
 
     println!("Assigned agent to task '{}':", task_id);
-    println!("  Agent:      {} ({})", agent.name, agency::short_hash(&agent.id));
-    println!("  Role:       {} ({})", role_name, agency::short_hash(&agent.role_id));
-    println!("  Motivation: {} ({})", motivation_name, agency::short_hash(&agent.motivation_id));
+    println!(
+        "  Agent:      {} ({})",
+        agent.name,
+        agency::short_hash(&agent.id)
+    );
+    println!(
+        "  Role:       {} ({})",
+        role_name,
+        agency::short_hash(&agent.role_id)
+    );
+    println!(
+        "  Motivation: {} ({})",
+        motivation_name,
+        agency::short_hash(&agent.motivation_id)
+    );
 
     Ok(())
 }
@@ -124,7 +130,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
     use workgraph::agency::{Lineage, PerformanceRecord, SkillRef};
-    use workgraph::graph::{Node, Task, Status, WorkGraph};
+    use workgraph::graph::{Node, Status, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -246,7 +252,11 @@ mod tests {
         // Use 8-char prefix instead of full hash
         let prefix = &agent_id[..8];
         let result = run(dir_path, "t1", Some(prefix), false);
-        assert!(result.is_ok(), "assign by prefix failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "assign by prefix failed: {:?}",
+            result.err()
+        );
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();

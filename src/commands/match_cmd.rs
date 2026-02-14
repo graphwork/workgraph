@@ -37,8 +37,7 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
     // Load agents from .workgraph/agency/agents/
     let agents_dir = dir.join("agency").join("agents");
-    let agents = agency::load_all_agents(&agents_dir)
-        .context("Failed to load agents")?;
+    let agents = agency::load_all_agents(&agents_dir).context("Failed to load agents")?;
 
     let mut matches: Vec<MatchResult> = agents
         .iter()
@@ -122,7 +121,10 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
                 let short_id = agency::short_hash(&m.agent_id);
 
                 if required_skills.is_empty() {
-                    println!("  {} - {}{}{}", short_id, m.agent_name, trust_str, available_str);
+                    println!(
+                        "  {} - {}{}{}",
+                        short_id, m.agent_name, trust_str, available_str
+                    );
                 } else if m.missing_skills.is_empty() {
                     println!(
                         "  {} - {} (all skills matched){}{} ",

@@ -4,9 +4,7 @@
 //! `find_intermediate_tasks`, `ready_tasks`, and `is_time_ready` — no mocks.
 
 use chrono::{Duration, Utc};
-use workgraph::graph::{
-    evaluate_loop_edges, LoopEdge, LoopGuard, Node, Status, Task, WorkGraph,
-};
+use workgraph::graph::{LoopEdge, LoopGuard, Node, Status, Task, WorkGraph, evaluate_loop_edges};
 use workgraph::query::{is_time_ready, ready_tasks};
 
 /// Helper: create a minimal open task.
@@ -82,7 +80,11 @@ fn test_basic_loop_a_b_c_loops_to_a() {
 
     // B and C should be re-opened as intermediates (they depend on A transitively)
     let b = graph.get_task("b").unwrap();
-    assert_eq!(b.status, Status::Open, "B should be re-opened via propagation");
+    assert_eq!(
+        b.status,
+        Status::Open,
+        "B should be re-opened via propagation"
+    );
 
     // reactivated should contain a, b, and c (source is also re-opened)
     assert!(reactivated.contains(&"a".to_string()));
@@ -148,7 +150,10 @@ fn test_self_loop_with_delay() {
     assert_eq!(t.loop_iteration, 1);
 
     // ready_after should be set to ~30 seconds from now
-    assert!(t.ready_after.is_some(), "ready_after should be set for delayed loop");
+    assert!(
+        t.ready_after.is_some(),
+        "ready_after should be set for delayed loop"
+    );
     let ready_after: chrono::DateTime<Utc> = t.ready_after.as_ref().unwrap().parse().unwrap();
     let now = Utc::now();
     // Should be roughly 30 seconds from now (allow 5s tolerance for test execution)
@@ -162,7 +167,10 @@ fn test_self_loop_with_delay() {
     );
 
     // Task should be Open but NOT time-ready (ready_after is in the future)
-    assert!(!is_time_ready(t), "Task with future ready_after should not be time-ready");
+    assert!(
+        !is_time_ready(t),
+        "Task with future ready_after should not be time-ready"
+    );
 
     // ready_tasks should not include it
     let ready = ready_tasks(&graph);
@@ -203,7 +211,11 @@ fn test_guard_condition_true_fires() {
 
     // Guard is true (gate is Done) → loop should fire
     let w = graph.get_task("worker").unwrap();
-    assert_eq!(w.status, Status::Open, "Loop should fire when guard is true");
+    assert_eq!(
+        w.status,
+        Status::Open,
+        "Loop should fire when guard is true"
+    );
     assert_eq!(w.loop_iteration, 1);
     assert!(reactivated.contains(&"worker".to_string()));
 }
@@ -235,7 +247,11 @@ fn test_guard_condition_false_does_not_fire() {
 
     // Guard is false (gate is Open, not Done) → loop should NOT fire
     let w = graph.get_task("worker").unwrap();
-    assert_eq!(w.status, Status::Done, "Loop should NOT fire when guard is false");
+    assert_eq!(
+        w.status,
+        Status::Done,
+        "Loop should NOT fire when guard is false"
+    );
     assert_eq!(w.loop_iteration, 0);
     assert!(reactivated.is_empty());
 }
@@ -264,7 +280,12 @@ fn test_max_iterations() {
         if expected_iter <= 3 {
             let t = graph.get_task("bounded").unwrap();
             if expected_iter < 3 {
-                assert_eq!(t.status, Status::Open, "Should re-open at iteration {}", expected_iter);
+                assert_eq!(
+                    t.status,
+                    Status::Open,
+                    "Should re-open at iteration {}",
+                    expected_iter
+                );
                 assert_eq!(t.loop_iteration, expected_iter);
                 assert!(reactivated.contains(&"bounded".to_string()));
             }
@@ -277,9 +298,16 @@ fn test_max_iterations() {
     let reactivated = evaluate_loop_edges(&mut graph, "bounded");
 
     let t = graph.get_task("bounded").unwrap();
-    assert_eq!(t.status, Status::Done, "Task should stay Done when max_iterations reached");
+    assert_eq!(
+        t.status,
+        Status::Done,
+        "Task should stay Done when max_iterations reached"
+    );
     assert_eq!(t.loop_iteration, 3);
-    assert!(reactivated.is_empty(), "No reactivation past max_iterations");
+    assert!(
+        reactivated.is_empty(),
+        "No reactivation past max_iterations"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +575,10 @@ fn test_iteration_less_than_guard() {
     // Iteration 2: guard says iteration < 2, current=2 so does NOT fire
     graph.get_task_mut("guarded").unwrap().status = Status::Done;
     let r = evaluate_loop_edges(&mut graph, "guarded");
-    assert!(r.is_empty(), "IterationLessThan(2) should stop at iteration 2");
+    assert!(
+        r.is_empty(),
+        "IterationLessThan(2) should stop at iteration 2"
+    );
     assert_eq!(graph.get_task("guarded").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("guarded").unwrap().loop_iteration, 2);
 }

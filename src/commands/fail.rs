@@ -21,7 +21,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
 
     if task.status == Status::Done {
-        anyhow::bail!("Task '{}' is already done and cannot be marked as failed", id);
+        anyhow::bail!(
+            "Task '{}' is already done and cannot be marked as failed",
+            id
+        );
     }
 
     if task.status == Status::Abandoned {
@@ -29,7 +32,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     }
 
     if task.status == Status::Failed {
-        println!("Task '{}' is already failed (retry_count: {})", id, task.retry_count);
+        println!(
+            "Task '{}' is already failed (retry_count: {})",
+            id, task.retry_count
+        );
         return Ok(());
     }
 
@@ -63,7 +69,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     // Show retry info if max_retries is set
     if let Some(max) = max_retries {
         if retry_count >= max {
-            println!("  Warning: Max retries ({}) reached. Consider abandoning or increasing limit.", max);
+            println!(
+                "  Warning: Max retries ({}) reached. Consider abandoning or increasing limit.",
+                max
+            );
         } else {
             println!("  Retries remaining: {}", max - retry_count);
         }
@@ -179,19 +188,30 @@ mod tests {
         let result = run(dir_path, "t1", Some("reason"));
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("already done"), "Expected 'already done' error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("already done"),
+            "Expected 'already done' error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
     fn test_fail_already_abandoned_task_errors() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Abandoned)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::Abandoned)],
+        );
 
         let result = run(dir_path, "t1", Some("reason"));
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("already abandoned"), "Expected 'already abandoned' error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("already abandoned"),
+            "Expected 'already abandoned' error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -212,7 +232,10 @@ mod tests {
     fn test_fail_stores_failure_reason() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::InProgress)]);
+        setup_workgraph(
+            dir_path,
+            vec![make_task("t1", "Test task", Status::InProgress)],
+        );
 
         run(dir_path, "t1", Some("timeout exceeded")).unwrap();
 
@@ -251,7 +274,11 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
         assert!(!task.log.is_empty());
         let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("network failure"), "Log message should contain reason, got: {}", last_log.message);
+        assert!(
+            last_log.message.contains("network failure"),
+            "Log message should contain reason, got: {}",
+            last_log.message
+        );
     }
 
     #[test]

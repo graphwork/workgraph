@@ -127,7 +127,10 @@ pub fn check_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeIssue> {
             }
 
             // Guard task references must exist
-            if let Some(LoopGuard::TaskStatus { task: guard_task, .. }) = &edge.guard {
+            if let Some(LoopGuard::TaskStatus {
+                task: guard_task, ..
+            }) = &edge.guard
+            {
                 if graph.get_task(guard_task).is_none() {
                     issues.push(LoopEdgeIssue {
                         from: task.id.clone(),

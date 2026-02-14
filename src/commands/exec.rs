@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use std::process::Command;
-use workgraph::graph::{evaluate_loop_edges, LogEntry, Status};
+use workgraph::graph::{LogEntry, Status, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -27,9 +27,10 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", task_id))?;
 
     // Check task has an exec command
-    let exec_cmd = task.exec.clone().ok_or_else(|| {
-        anyhow::anyhow!("Task '{}' has no exec command defined", task_id)
-    })?;
+    let exec_cmd = task
+        .exec
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' has no exec command defined", task_id))?;
 
     // Check task status
     if task.status == Status::Done {

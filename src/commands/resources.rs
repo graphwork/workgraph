@@ -54,11 +54,7 @@ pub fn calculate_utilization(graph: &WorkGraph) -> Vec<ResourceUtilization> {
 
         for task in graph.tasks() {
             if task.requires.contains(&resource.id) {
-                let cost = task
-                    .estimate
-                    .as_ref()
-                    .and_then(|e| e.cost)
-                    .unwrap_or(0.0);
+                let cost = task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
 
                 match task.status {
                     Status::Open | Status::InProgress | Status::Blocked | Status::PendingReview => {
@@ -133,7 +129,11 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     }
 
     if json {
-        let alerts: Vec<_> = utilizations.iter().filter(|u| u.over_budget).cloned().collect();
+        let alerts: Vec<_> = utilizations
+            .iter()
+            .filter(|u| u.over_budget)
+            .cloned()
+            .collect();
         let output = ResourcesOutput {
             resources: utilizations,
             alerts,

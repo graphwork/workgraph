@@ -114,7 +114,13 @@ mod tests {
         assert_eq!(task.status, Status::Abandoned);
         assert_eq!(task.failure_reason.as_deref(), Some("no longer needed"));
         assert!(!task.log.is_empty());
-        assert!(task.log.last().unwrap().message.contains("Task abandoned: no longer needed"));
+        assert!(
+            task.log
+                .last()
+                .unwrap()
+                .message
+                .contains("Task abandoned: no longer needed")
+        );
     }
 
     #[test]

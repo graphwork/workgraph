@@ -86,10 +86,7 @@ fn agent_output_dir(workgraph_dir: &Path, agent_id: &str) -> PathBuf {
 }
 
 /// Build context string from dependency artifacts
-fn build_task_context(
-    graph: &workgraph::WorkGraph,
-    task: &workgraph::graph::Task,
-) -> String {
+fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Task) -> String {
     let mut context_parts = Vec::new();
 
     for dep_id in &task.blocked_by {
@@ -144,7 +141,12 @@ fn spawn_agent_inner(
                 .unwrap_or_default();
             match &task.assigned {
                 Some(assigned) => {
-                    anyhow::bail!("Task '{}' is already claimed by @{}{}", task_id, assigned, since);
+                    anyhow::bail!(
+                        "Task '{}' is already claimed by @{}{}",
+                        task_id,
+                        assigned,
+                        since
+                    );
                 }
                 None => {
                     anyhow::bail!("Task '{}' is already in progress{}", task_id, since);
@@ -185,8 +187,12 @@ fn spawn_agent_inner(
     // We need to know the agent ID before spawning to set up the output directory
     let temp_agent_id = format!("agent-{}", agent_registry.next_agent_id);
     let output_dir = agent_output_dir(dir, &temp_agent_id);
-    fs::create_dir_all(&output_dir)
-        .with_context(|| format!("Failed to create agent output directory at {:?}", output_dir))?;
+    fs::create_dir_all(&output_dir).with_context(|| {
+        format!(
+            "Failed to create agent output directory at {:?}",
+            output_dir
+        )
+    })?;
 
     let output_file = output_dir.join("output.log");
     let output_file_str = output_file.to_string_lossy().to_string();
@@ -223,7 +229,11 @@ fn spawn_agent_inner(
             }
         }
         "shell" => {
-            format!("{} -c {}", shell_escape(&settings.command), shell_escape(task_exec.as_ref().unwrap()))
+            format!(
+                "{} -c {}",
+                shell_escape(&settings.command),
+                shell_escape(task_exec.as_ref().unwrap())
+            )
         }
         _ => {
             let mut parts = vec![shell_escape(&settings.command)];
@@ -354,7 +364,10 @@ exit $EXIT_CODE
             "Spawned by {} --executor {}{}",
             spawned_by,
             executor_name,
-            effective_model.as_ref().map(|m| format!(" --model {}", m)).unwrap_or_default()
+            effective_model
+                .as_ref()
+                .map(|m| format!(" --model {}", m))
+                .unwrap_or_default()
         ),
     });
 
@@ -645,7 +658,11 @@ mod tests {
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
-        assert!(wrapper_path.exists(), "Wrapper script not found at {:?}", wrapper_path);
+        assert!(
+            wrapper_path.exists(),
+            "Wrapper script not found at {:?}",
+            wrapper_path
+        );
 
         // Read wrapper script and verify it contains the expected auto-complete logic
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -668,7 +685,11 @@ mod tests {
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
-        assert!(wrapper_path.exists(), "Wrapper script not found at {:?}", wrapper_path);
+        assert!(
+            wrapper_path.exists(),
+            "Wrapper script not found at {:?}",
+            wrapper_path
+        );
 
         // Read wrapper script and verify it uses submit for verified tasks
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -687,7 +708,11 @@ mod tests {
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
-        assert!(wrapper_path.exists(), "Wrapper script not found at {:?}", wrapper_path);
+        assert!(
+            wrapper_path.exists(),
+            "Wrapper script not found at {:?}",
+            wrapper_path
+        );
 
         // Read wrapper script and verify it handles failure
         let script = fs::read_to_string(&wrapper_path).unwrap();

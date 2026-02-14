@@ -98,11 +98,7 @@ fn load_archive(archive_path: &Path) -> Result<Vec<Task>> {
             continue;
         }
         let node: Node = serde_json::from_str(trimmed).with_context(|| {
-            format!(
-                "Failed to parse archive line {}: {}",
-                line_num + 1,
-                trimmed
-            )
+            format!("Failed to parse archive line {}: {}", line_num + 1, trimmed)
         })?;
         if let Node::Task(task) = node {
             tasks.push(task);
@@ -128,10 +124,7 @@ pub fn run(dir: &Path, dry_run: bool, older: Option<&str>, list: bool) -> Result
         } else {
             println!("Archived tasks ({}):", tasks.len());
             for task in &tasks {
-                let completed = task
-                    .completed_at
-                    .as_deref()
-                    .unwrap_or("unknown");
+                let completed = task.completed_at.as_deref().unwrap_or("unknown");
                 println!("  {} - {} (completed: {})", task.id, task.title, completed);
             }
         }
@@ -162,10 +155,7 @@ pub fn run(dir: &Path, dry_run: bool, older: Option<&str>, list: bool) -> Result
     if dry_run {
         println!("Would archive {} tasks:", tasks_to_archive.len());
         for task in &tasks_to_archive {
-            let completed = task
-                .completed_at
-                .as_deref()
-                .unwrap_or("unknown");
+            let completed = task.completed_at.as_deref().unwrap_or("unknown");
             println!("  {} - {} (completed: {})", task.id, task.title, completed);
         }
         return Ok(());

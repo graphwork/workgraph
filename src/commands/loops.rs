@@ -385,7 +385,11 @@ mod tests {
     #[test]
     fn test_classify_cycle_with_recurring_tag_is_intentional() {
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task_with_tags("a", "Task A", vec!["recurring"])));
+        graph.add_node(Node::Task(make_task_with_tags(
+            "a",
+            "Task A",
+            vec!["recurring"],
+        )));
         graph.add_node(Node::Task(make_task("b", "Task B")));
 
         let cycle = vec!["a".to_string(), "b".to_string()];
@@ -397,7 +401,11 @@ mod tests {
     #[test]
     fn test_classify_cycle_with_cycle_intentional_tag_is_intentional() {
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task_with_tags("a", "Task A", vec!["cycle:intentional"])));
+        graph.add_node(Node::Task(make_task_with_tags(
+            "a",
+            "Task A",
+            vec!["cycle:intentional"],
+        )));
         graph.add_node(Node::Task(make_task("b", "Task B")));
 
         let cycle = vec!["a".to_string(), "b".to_string()];

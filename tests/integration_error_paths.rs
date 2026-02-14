@@ -5,14 +5,14 @@
 //! invalid state transitions, dependency cycles, and loop edge edge cases.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::{NamedTempFile, TempDir};
-use workgraph::check::{check_all, check_cycles, check_loop_edges, check_orphans, LoopEdgeIssueKind};
-use workgraph::graph::{
-    evaluate_loop_edges, LoopEdge, LoopGuard, Node, Status, Task, WorkGraph,
+use workgraph::check::{
+    LoopEdgeIssueKind, check_all, check_cycles, check_loop_edges, check_orphans,
 };
-use workgraph::parser::{load_graph, save_graph, ParseError};
+use workgraph::graph::{LoopEdge, LoopGuard, Node, Status, Task, WorkGraph, evaluate_loop_edges};
+use workgraph::parser::{ParseError, load_graph, save_graph};
 use workgraph::query::{blocked_by, ready_tasks};
 
 /// Helper: create a minimal open task.
@@ -60,7 +60,10 @@ fn test_load_missing_graph_file_returns_io_error() {
     let path = dir.path().join("nonexistent.jsonl");
 
     let result = load_graph(&path);
-    assert!(result.is_err(), "Loading a missing file should return an error");
+    assert!(
+        result.is_err(),
+        "Loading a missing file should return an error"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, ParseError::Io(_)),
@@ -138,7 +141,10 @@ fn test_load_json_missing_required_fields() {
 
     let result = load_graph(file.path());
     assert!(result.is_err(), "Missing required fields should fail");
-    assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ParseError::Json { line: 1, .. }
+    ));
 }
 
 #[test]
@@ -153,7 +159,10 @@ fn test_load_json_wrong_type_for_field() {
 
     let result = load_graph(file.path());
     assert!(result.is_err(), "Wrong type for field should fail");
-    assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ParseError::Json { line: 1, .. }
+    ));
 }
 
 #[test]
@@ -168,7 +177,10 @@ fn test_load_json_invalid_status_value() {
 
     let result = load_graph(file.path());
     assert!(result.is_err(), "Invalid status value should fail");
-    assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ParseError::Json { line: 1, .. }
+    ));
 }
 
 #[test]
@@ -186,7 +198,10 @@ fn test_load_corruption_on_second_line() {
     assert!(result.is_err());
     match result.unwrap_err() {
         ParseError::Json { line, .. } => {
-            assert_eq!(line, 2, "Error should report line 2 for second-line corruption");
+            assert_eq!(
+                line, 2,
+                "Error should report line 2 for second-line corruption"
+            );
         }
         other => panic!("Expected Json error on line 2, got: {:?}", other),
     }
@@ -200,7 +215,10 @@ fn test_load_truncated_json() {
 
     let result = load_graph(file.path());
     assert!(result.is_err(), "Truncated JSON should fail");
-    assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ParseError::Json { line: 1, .. }
+    ));
 }
 
 #[test]
@@ -250,7 +268,10 @@ fn test_load_empty_object_line() {
     writeln!(file, "{{}}").unwrap();
 
     let result = load_graph(file.path());
-    assert!(result.is_err(), "Empty JSON object should fail (missing kind)");
+    assert!(
+        result.is_err(),
+        "Empty JSON object should fail (missing kind)"
+    );
 }
 
 #[test]
@@ -319,7 +340,11 @@ fn test_abandoned_task_blocks_dependents() {
     );
 
     let blockers = blocked_by(&graph, "t2");
-    assert_eq!(blockers.len(), 1, "Abandoned task should still appear as blocker");
+    assert_eq!(
+        blockers.len(),
+        1,
+        "Abandoned task should still appear as blocker"
+    );
     assert_eq!(blockers[0].id, "t1");
 }
 
@@ -489,7 +514,10 @@ fn test_concurrent_writes_produce_valid_graph() {
 
     // The graph must still be parseable — no corruption
     let final_graph = load_graph(path.as_ref()).unwrap();
-    assert!(final_graph.len() >= 1, "Graph must contain at least the seed task");
+    assert!(
+        final_graph.len() >= 1,
+        "Graph must contain at least the seed task"
+    );
     assert!(
         success_count.load(Ordering::SeqCst) > 0,
         "At least some concurrent operations should succeed"
@@ -670,7 +698,10 @@ fn test_three_node_cycle() {
     assert!(!cycles.is_empty(), "Three-node cycle should be detected");
 
     let ready = ready_tasks(&graph);
-    assert!(ready.is_empty(), "No tasks in a three-node cycle should be ready");
+    assert!(
+        ready.is_empty(),
+        "No tasks in a three-node cycle should be ready"
+    );
 }
 
 #[test]
@@ -687,13 +718,13 @@ fn test_five_node_cycle() {
     }
 
     let cycles = check_cycles(&graph);
-    assert!(
-        !cycles.is_empty(),
-        "Five-node cycle should be detected"
-    );
+    assert!(!cycles.is_empty(), "Five-node cycle should be detected");
 
     let ready = ready_tasks(&graph);
-    assert!(ready.is_empty(), "No tasks in a five-node cycle should be ready");
+    assert!(
+        ready.is_empty(),
+        "No tasks in a five-node cycle should be ready"
+    );
 }
 
 #[test]
@@ -737,7 +768,10 @@ fn test_cycle_persists_through_save_load() {
     let loaded = load_graph(file.path()).unwrap();
 
     let cycles = check_cycles(&loaded);
-    assert!(!cycles.is_empty(), "Cycle should survive save/load roundtrip");
+    assert!(
+        !cycles.is_empty(),
+        "Cycle should survive save/load roundtrip"
+    );
 }
 
 #[test]
@@ -760,7 +794,10 @@ fn test_diamond_dependency_no_false_cycle() {
     graph.add_node(Node::Task(d));
 
     let cycles = check_cycles(&graph);
-    assert!(cycles.is_empty(), "Diamond dependency should NOT be flagged as a cycle");
+    assert!(
+        cycles.is_empty(),
+        "Diamond dependency should NOT be flagged as a cycle"
+    );
 
     // Only 'a' should be ready (b and c depend on a, d depends on b and c)
     let ready = ready_tasks(&graph);
@@ -834,7 +871,11 @@ fn test_loop_edge_zero_max_iterations() {
     graph.add_node(Node::Task(source));
 
     let issues = check_loop_edges(&graph);
-    assert!(issues.iter().any(|i| i.kind == LoopEdgeIssueKind::ZeroMaxIterations));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == LoopEdgeIssueKind::ZeroMaxIterations)
+    );
 
     // Even if we try to fire it, zero max_iterations means it never fires
     graph.get_task_mut("source").unwrap().status = Status::Done;
@@ -865,9 +906,11 @@ fn test_loop_edge_guard_references_nonexistent_task() {
     graph.add_node(Node::Task(source));
 
     let issues = check_loop_edges(&graph);
-    assert!(issues
-        .iter()
-        .any(|i| i.kind == LoopEdgeIssueKind::GuardTaskNotFound("phantom".to_string())));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == LoopEdgeIssueKind::GuardTaskNotFound("phantom".to_string()))
+    );
 
     // Guard evaluates to false when the referenced task doesn't exist
     graph.get_task_mut("source").unwrap().status = Status::Done;
@@ -893,7 +936,11 @@ fn test_loop_edge_multiple_issues_on_single_edge() {
     graph.add_node(Node::Task(t));
 
     let issues = check_loop_edges(&graph);
-    assert_eq!(issues.len(), 2, "Should report both SelfLoop and ZeroMaxIterations");
+    assert_eq!(
+        issues.len(),
+        2,
+        "Should report both SelfLoop and ZeroMaxIterations"
+    );
     let kinds: Vec<_> = issues.iter().map(|i| &i.kind).collect();
     assert!(kinds.contains(&&LoopEdgeIssueKind::SelfLoop));
     assert!(kinds.contains(&&LoopEdgeIssueKind::ZeroMaxIterations));
@@ -923,7 +970,10 @@ fn test_blocked_by_cycle_with_loop_edge_overlay() {
     let result = check_all(&graph);
     // The blocked_by cycle makes this invalid
     assert!(!result.ok);
-    assert!(!result.cycles.is_empty(), "blocked_by cycle should be detected");
+    assert!(
+        !result.cycles.is_empty(),
+        "blocked_by cycle should be detected"
+    );
     // The loop edge itself is valid (target exists, max_iterations > 0, not self-loop)
     assert!(
         result.loop_edge_issues.is_empty(),
@@ -998,7 +1048,10 @@ fn test_loop_edge_fires_only_up_to_max_iterations_with_persistence() {
     // Iteration 2: max reached, should NOT fire
     graph.get_task_mut("looper").unwrap().status = Status::Done;
     let reactivated = evaluate_loop_edges(&mut graph, "looper");
-    assert!(reactivated.is_empty(), "Should not fire past max_iterations");
+    assert!(
+        reactivated.is_empty(),
+        "Should not fire past max_iterations"
+    );
     assert_eq!(graph.get_task("looper").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("looper").unwrap().loop_iteration, 2);
 }
@@ -1103,7 +1156,10 @@ fn test_graph_with_multiple_error_types() {
     assert!(!result.ok);
     assert!(!result.cycles.is_empty(), "Should detect cycle");
     assert!(!result.orphan_refs.is_empty(), "Should detect orphan");
-    assert!(!result.loop_edge_issues.is_empty(), "Should detect loop edge issue");
+    assert!(
+        !result.loop_edge_issues.is_empty(),
+        "Should detect loop edge issue"
+    );
 }
 
 #[test]

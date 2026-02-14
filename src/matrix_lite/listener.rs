@@ -13,7 +13,7 @@ use crate::config::MatrixConfig;
 use crate::graph::{LogEntry, Status};
 use crate::parser::{load_graph, save_graph};
 
-use super::commands::{help_text, MatrixCommand};
+use super::commands::{MatrixCommand, help_text};
 use super::{IncomingMessage, MatrixClient};
 
 /// Configuration for the Matrix listener
@@ -153,11 +153,15 @@ impl MatrixListener {
     async fn execute_command(&self, command: &MatrixCommand, msg: &IncomingMessage) -> String {
         match command {
             MatrixCommand::Claim { task_id, actor } => {
-                let actor_id = actor.clone().unwrap_or_else(|| extract_localpart(&msg.sender));
+                let actor_id = actor
+                    .clone()
+                    .unwrap_or_else(|| extract_localpart(&msg.sender));
                 self.execute_claim(task_id, Some(&actor_id))
             }
             MatrixCommand::Done { task_id } => self.execute_done(task_id),
-            MatrixCommand::Fail { task_id, reason } => self.execute_fail(task_id, reason.as_deref()),
+            MatrixCommand::Fail { task_id, reason } => {
+                self.execute_fail(task_id, reason.as_deref())
+            }
             MatrixCommand::Input { task_id, text } => {
                 let actor = extract_localpart(&msg.sender);
                 self.execute_input(task_id, text, &actor)
@@ -167,7 +171,10 @@ impl MatrixListener {
             MatrixCommand::Ready => self.execute_ready(),
             MatrixCommand::Help => help_text(),
             MatrixCommand::Unknown { command } => {
-                format!("Unknown command: '{}'. Type 'help' for available commands.", command)
+                format!(
+                    "Unknown command: '{}'. Type 'help' for available commands.",
+                    command
+                )
             }
         }
     }
@@ -190,7 +197,11 @@ impl MatrixListener {
 
         match task.status {
             Status::InProgress => {
-                let holder = task.assigned.as_ref().map(|a| format!(" by {}", a)).unwrap_or_default();
+                let holder = task
+                    .assigned
+                    .as_ref()
+                    .map(|a| format!(" by {}", a))
+                    .unwrap_or_default();
                 return format!("Task '{}' is already claimed{}", task_id, holder);
             }
             Status::Done => return format!("Task '{}' is already done", task_id),
@@ -260,7 +271,10 @@ impl MatrixListener {
         };
 
         if task.status == Status::Done {
-            return format!("Task '{}' is already done and cannot be marked as failed", task_id);
+            return format!(
+                "Task '{}' is already done and cannot be marked as failed",
+                task_id
+            );
         }
         if task.status == Status::Failed {
             return format!("Task '{}' is already failed", task_id);
@@ -276,7 +290,10 @@ impl MatrixListener {
         }
 
         let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
-        format!("Marked '{}' as failed{} (retry #{})", task_id, reason_msg, retry_count)
+        format!(
+            "Marked '{}' as failed{} (retry #{})",
+            task_id, reason_msg, retry_count
+        )
     }
 
     fn execute_input(&self, task_id: &str, text: &str, actor: &str) -> String {
@@ -348,9 +365,15 @@ impl MatrixListener {
 
         let total = graph.tasks().count();
         let done = graph.tasks().filter(|t| t.status == Status::Done).count();
-        let in_progress = graph.tasks().filter(|t| t.status == Status::InProgress).count();
+        let in_progress = graph
+            .tasks()
+            .filter(|t| t.status == Status::InProgress)
+            .count();
         let open = graph.tasks().filter(|t| t.status == Status::Open).count();
-        let blocked = graph.tasks().filter(|t| t.status == Status::Blocked).count();
+        let blocked = graph
+            .tasks()
+            .filter(|t| t.status == Status::Blocked)
+            .count();
         let failed = graph.tasks().filter(|t| t.status == Status::Failed).count();
 
         format!(
@@ -375,7 +398,10 @@ impl MatrixListener {
             .filter(|t| {
                 t.status == Status::Open
                     && t.blocked_by.iter().all(|dep| {
-                        graph.get_task(dep).map(|d| d.status == Status::Done).unwrap_or(true)
+                        graph
+                            .get_task(dep)
+                            .map(|d| d.status == Status::Done)
+                            .unwrap_or(true)
                     })
             })
             .collect();

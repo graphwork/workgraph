@@ -44,7 +44,8 @@ pub fn run_add(
         .open(&path)
         .context("Failed to open graph.jsonl")?;
 
-    let json = serde_json::to_string(&Node::Resource(resource)).context("Failed to serialize resource")?;
+    let json =
+        serde_json::to_string(&Node::Resource(resource)).context("Failed to serialize resource")?;
     writeln!(file, "{}", json).context("Failed to write resource")?;
 
     let display_name = name.unwrap_or(id);
@@ -66,13 +67,15 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
     if json {
         let output: Vec<_> = resources
             .iter()
-            .map(|r| serde_json::json!({
-                "id": r.id,
-                "name": r.name,
-                "type": r.resource_type,
-                "available": r.available,
-                "unit": r.unit,
-            }))
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "type": r.resource_type,
+                    "available": r.available,
+                    "unit": r.unit,
+                })
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -112,14 +115,7 @@ mod tests {
     fn test_add_resource_basic() {
         let temp_dir = setup_workgraph();
 
-        let result = run_add(
-            temp_dir.path(),
-            "budget-q1",
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = run_add(temp_dir.path(), "budget-q1", None, None, None, None);
 
         assert!(result.is_ok());
 
@@ -198,7 +194,8 @@ mod tests {
             Some("money"),
             Some(50000.0),
             Some("usd"),
-        ).unwrap();
+        )
+        .unwrap();
 
         run_add(
             temp_dir.path(),
@@ -207,7 +204,8 @@ mod tests {
             Some("compute"),
             Some(100.0),
             Some("gpu-hours"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = run_list(temp_dir.path(), false);
         assert!(result.is_ok());
@@ -224,7 +222,8 @@ mod tests {
             Some("money"),
             Some(1000.0),
             Some("usd"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = run_list(temp_dir.path(), true);
         assert!(result.is_ok());

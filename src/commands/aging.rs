@@ -133,16 +133,29 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let stale_in_progress = find_stale_in_progress(&graph, &now, 14);
 
     if json {
-        output_json(&distribution, &oldest_tasks, &stale_in_progress, unknown_age_count);
+        output_json(
+            &distribution,
+            &oldest_tasks,
+            &stale_in_progress,
+            unknown_age_count,
+        );
     } else {
-        output_text(&distribution, &oldest_tasks, &stale_in_progress, unknown_age_count);
+        output_text(
+            &distribution,
+            &oldest_tasks,
+            &stale_in_progress,
+            unknown_age_count,
+        );
     }
 
     Ok(())
 }
 
 /// Collect all open/in-progress tasks with their ages
-fn collect_task_ages<'a>(graph: &'a WorkGraph, now: &DateTime<Utc>) -> (Vec<TaskAgeInfo<'a>>, usize) {
+fn collect_task_ages<'a>(
+    graph: &'a WorkGraph,
+    now: &DateTime<Utc>,
+) -> (Vec<TaskAgeInfo<'a>>, usize) {
     let mut tasks_with_age = Vec::new();
     let mut unknown_age_count = 0;
 
@@ -271,7 +284,10 @@ fn output_text(
     // Print distribution
     for (bucket, count) in distribution {
         let bar = make_bar(*count, max_count, 25);
-        let warning = bucket.warning_level().map(|w| format!(" [{}]", w)).unwrap_or_default();
+        let warning = bucket
+            .warning_level()
+            .map(|w| format!(" [{}]", w))
+            .unwrap_or_default();
         println!(
             "  {:>12}: {:>3} tasks  {}{}",
             bucket.label(),
@@ -282,7 +298,10 @@ fn output_text(
     }
 
     if unknown_age_count > 0 {
-        println!("\n  ({} tasks with unknown age - missing created_at)", unknown_age_count);
+        println!(
+            "\n  ({} tasks with unknown age - missing created_at)",
+            unknown_age_count
+        );
     }
 
     // Print oldest open tasks
@@ -455,7 +474,10 @@ mod tests {
         assert_eq!(AgeBucket::OneToSevenDays.warning_level(), None);
         assert_eq!(AgeBucket::OneToFourWeeks.warning_level(), None);
         assert_eq!(AgeBucket::OneToThreeMonths.warning_level(), Some("WARNING"));
-        assert_eq!(AgeBucket::MoreThanThreeMonths.warning_level(), Some("CRITICAL"));
+        assert_eq!(
+            AgeBucket::MoreThanThreeMonths.warning_level(),
+            Some("CRITICAL")
+        );
     }
 
     #[test]

@@ -118,10 +118,7 @@ pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
 
     // Filter to only tasks with non-negative score (at least partial capability match)
     // But include tasks with no skill requirements
-    let viable: Vec<TaskCandidate> = candidates
-        .into_iter()
-        .filter(|c| c.score >= 0)
-        .collect();
+    let viable: Vec<TaskCandidate> = candidates.into_iter().filter(|c| c.score >= 0).collect();
 
     let (recommended, alternatives) = if viable.is_empty() {
         (None, vec![])
@@ -141,7 +138,11 @@ pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("Next task for: {} ({})", agent.name, agency::short_hash(&agent.id));
+        println!(
+            "Next task for: {} ({})",
+            agent.name,
+            agency::short_hash(&agent.id)
+        );
         if !result.agent_capabilities.is_empty() {
             println!("Capabilities: {}", result.agent_capabilities.join(", "));
         }
@@ -169,11 +170,12 @@ pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
 }
 
 fn print_candidate(task: &TaskCandidate) {
-    let hours_str = task
-        .hours
-        .map(|h| format!(" ({}h)", h))
-        .unwrap_or_default();
-    let inputs_str = if task.inputs_available { "" } else { " [waiting for inputs]" };
+    let hours_str = task.hours.map(|h| format!(" ({}h)", h)).unwrap_or_default();
+    let inputs_str = if task.inputs_available {
+        ""
+    } else {
+        " [waiting for inputs]"
+    };
 
     println!("  {} - {}{}{}", task.id, task.title, hours_str, inputs_str);
     println!("    Score: {}", task.score);

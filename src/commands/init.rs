@@ -28,8 +28,8 @@ pub fn run(dir: &Path) -> Result<()> {
     if let Some(gitignore_path_repo) = repo_gitignore {
         let entry = ".workgraph";
         if gitignore_path_repo.exists() {
-            let contents = fs::read_to_string(&gitignore_path_repo)
-                .context("Failed to read .gitignore")?;
+            let contents =
+                fs::read_to_string(&gitignore_path_repo).context("Failed to read .gitignore")?;
             let already_present = contents.lines().any(|line| line.trim() == entry);
             if !already_present {
                 let separator = if contents.ends_with('\n') || contents.is_empty() {
@@ -60,11 +60,14 @@ pub fn run(dir: &Path) -> Result<()> {
 
     // Seed agency with starter roles and motivations
     let agency_dir = dir.join("agency");
-    let (roles, motivations) = workgraph::agency::seed_starters(&agency_dir)
-        .context("Failed to seed agency starters")?;
+    let (roles, motivations) =
+        workgraph::agency::seed_starters(&agency_dir).context("Failed to seed agency starters")?;
 
     println!("Initialized workgraph at {}", dir.display());
-    println!("Seeded agency with {} roles and {} motivations.", roles, motivations);
+    println!(
+        "Seeded agency with {} roles and {} motivations.",
+        roles, motivations
+    );
     Ok(())
 }
 
@@ -169,7 +172,10 @@ mod tests {
         let roles_dir = agency_dir.join("roles");
         let motivations_dir = agency_dir.join("motivations");
         assert!(roles_dir.exists(), "agency/roles should be created");
-        assert!(motivations_dir.exists(), "agency/motivations should be created");
+        assert!(
+            motivations_dir.exists(),
+            "agency/motivations should be created"
+        );
 
         // At least one role and one motivation should be seeded
         let role_count = fs::read_dir(&roles_dir).unwrap().count();

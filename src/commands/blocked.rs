@@ -23,11 +23,13 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     if json {
         let output: Vec<_> = blockers
             .iter()
-            .map(|t| serde_json::json!({
-                "id": t.id,
-                "title": t.title,
-                "status": t.status,
-            }))
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                })
+            })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -36,7 +38,10 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         } else {
             println!("Task '{}' is blocked by:", id);
             for blocker in blockers {
-                println!("  {} - {} [{:?}]", blocker.id, blocker.title, blocker.status);
+                println!(
+                    "  {} - {} [{:?}]",
+                    blocker.id, blocker.title, blocker.status
+                );
             }
         }
     }

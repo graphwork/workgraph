@@ -60,12 +60,11 @@ pub fn run(dir: &Path, json: bool, min_evals: u32) -> Result<()> {
     let motivations_dir = agency_dir.join("motivations");
     let evals_dir = agency_dir.join("evaluations");
 
-    let roles = agency::load_all_roles(&roles_dir)
-        .context("Failed to load roles")?;
-    let motivations = agency::load_all_motivations(&motivations_dir)
-        .context("Failed to load motivations")?;
-    let evaluations = agency::load_all_evaluations(&evals_dir)
-        .context("Failed to load evaluations")?;
+    let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
+    let motivations =
+        agency::load_all_motivations(&motivations_dir).context("Failed to load motivations")?;
+    let evaluations =
+        agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
     // Try to load graph for tag-based breakdown (non-fatal if missing)
     let graph_path = super::graph_path(dir);
@@ -96,12 +95,7 @@ fn build_role_stats(roles: &[Role]) -> Vec<EntityStats> {
     roles
         .iter()
         .map(|r| {
-            let mut scores: Vec<f64> = r
-                .performance
-                .evaluations
-                .iter()
-                .map(|e| e.score)
-                .collect();
+            let mut scores: Vec<f64> = r.performance.evaluations.iter().map(|e| e.score).collect();
             scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             EntityStats {
                 id: r.id.clone(),
@@ -187,11 +181,7 @@ fn build_tag_breakdown(
             }
         })
         .collect();
-    cells.sort_by(|a, b| {
-        a.entity_id
-            .cmp(&b.entity_id)
-            .then(a.tag.cmp(&b.tag))
-    });
+    cells.sort_by(|a, b| a.entity_id.cmp(&b.entity_id).then(a.tag.cmp(&b.tag)));
     cells
 }
 
@@ -350,10 +340,7 @@ fn output_text(
     let role_tags = build_tag_breakdown(evaluations, task_tags, true);
     if !role_tags.is_empty() {
         println!("\n--- Score by Role x Tag ---\n");
-        println!(
-            "  {:<20} {:<20} {:>8} {:>6}",
-            "Role", "Tag", "Avg", "Count"
-        );
+        println!("  {:<20} {:<20} {:>8} {:>6}", "Role", "Tag", "Avg", "Count");
         println!("  {}", "-".repeat(58));
         for cell in &role_tags {
             println!(
@@ -392,10 +379,7 @@ fn output_text(
             "\n--- Under-explored Combinations (< {} evals) ---\n",
             min_evals
         );
-        println!(
-            "  {:<20} {:<20} {:>6}",
-            "Role", "Motivation", "Evals"
-        );
+        println!("  {:<20} {:<20} {:>6}", "Role", "Motivation", "Evals");
         println!("  {}", "-".repeat(50));
         for (role_id, mot_id, count) in &under {
             println!(
@@ -425,7 +409,9 @@ fn output_json(
     let overall_avg = if evaluations.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::json!(evaluations.iter().map(|e| e.score).sum::<f64>() / total_evaluations as f64)
+        serde_json::json!(
+            evaluations.iter().map(|e| e.score).sum::<f64>() / total_evaluations as f64
+        )
     };
 
     // Role leaderboard

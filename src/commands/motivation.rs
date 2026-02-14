@@ -199,8 +199,11 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         let parents = if node.parent_ids.is_empty() {
             String::new()
         } else {
-            let short_parents: Vec<&str> =
-                node.parent_ids.iter().map(|p| agency::short_hash(p)).collect();
+            let short_parents: Vec<&str> = node
+                .parent_ids
+                .iter()
+                .map(|p| agency::short_hash(p))
+                .collect();
             format!(" <- [{}]", short_parents.join(", "))
         };
 
@@ -267,10 +270,7 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
     } else {
         // Mutable fields (name, etc.) may have changed; re-save in place
         agency::save_motivation(&edited, &dir)?;
-        println!(
-            "Motivation '{}' updated",
-            agency::short_hash(&edited.id)
-        );
+        println!("Motivation '{}' updated", agency::short_hash(&edited.id));
     }
 
     Ok(())
@@ -306,23 +306,11 @@ mod tests {
 
     #[test]
     fn test_content_hash_deterministic() {
-        let h1 = agency::content_hash_motivation(
-            &["Slow".into()],
-            &["Broken".into()],
-            "desc",
-        );
-        let h2 = agency::content_hash_motivation(
-            &["Slow".into()],
-            &["Broken".into()],
-            "desc",
-        );
+        let h1 = agency::content_hash_motivation(&["Slow".into()], &["Broken".into()], "desc");
+        let h2 = agency::content_hash_motivation(&["Slow".into()], &["Broken".into()], "desc");
         assert_eq!(h1, h2);
         // Different content produces different hash
-        let h3 = agency::content_hash_motivation(
-            &["Fast".into()],
-            &["Broken".into()],
-            "desc",
-        );
+        let h3 = agency::content_hash_motivation(&["Fast".into()], &["Broken".into()], "desc");
         assert_ne!(h1, h3);
     }
 
@@ -364,8 +352,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("not found") || err.contains("Failed to find") || err.contains("No motivation matching"),
-            "unexpected error: {}", err
+            err.contains("not found")
+                || err.contains("Failed to find")
+                || err.contains("No motivation matching"),
+            "unexpected error: {}",
+            err
         );
     }
 
@@ -415,8 +406,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("not found") || err.contains("Failed to find") || err.contains("No motivation matching"),
-            "unexpected error: {}", err
+            err.contains("not found")
+                || err.contains("Failed to find")
+                || err.contains("No motivation matching"),
+            "unexpected error: {}",
+            err
         );
     }
 
@@ -430,7 +424,14 @@ mod tests {
     #[test]
     fn test_list_json() {
         let tmp = setup();
-        run_add(tmp.path(), "Test Mot", &["a".to_string()], &["b".to_string()], None).unwrap();
+        run_add(
+            tmp.path(),
+            "Test Mot",
+            &["a".to_string()],
+            &["b".to_string()],
+            None,
+        )
+        .unwrap();
         let result = run_list(tmp.path(), true);
         assert!(result.is_ok());
     }

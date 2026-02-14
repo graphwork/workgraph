@@ -280,11 +280,7 @@ mod tests {
             "TIPS",
         ];
         for section in &required_sections {
-            assert!(
-                text.contains(section),
-                "Missing section: {}",
-                section
-            );
+            assert!(text.contains(section), "Missing section: {}", section);
         }
     }
 }

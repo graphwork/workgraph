@@ -154,7 +154,13 @@ fn test_submit_transitions_to_pending_review() {
 
     // Verify log entry was added
     assert!(!task.log.is_empty());
-    assert!(task.log.last().unwrap().message.contains("submitted for review"));
+    assert!(
+        task.log
+            .last()
+            .unwrap()
+            .message
+            .contains("submitted for review")
+    );
 }
 
 #[test]
@@ -164,7 +170,11 @@ fn test_submit_checks_blockers() {
 
     // Create two tasks: one blocker (Open), one blocked (InProgress)
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("blocker", "Blocker Task", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "blocker",
+        "Blocker Task",
+        Status::Open,
+    )));
 
     let mut task = make_task("task-1", "Test Task", Status::InProgress);
     task.blocked_by = vec!["blocker".to_string()];
@@ -192,13 +202,20 @@ fn test_reject_requires_pending_review_status() {
 
     // Create a task that's InProgress (not PendingReview)
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("task-1", "Test Task", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "task-1",
+        "Test Task",
+        Status::InProgress,
+    )));
 
     let graph_path = wg_dir.join("graph.jsonl");
     save_graph(&graph, &graph_path).unwrap();
 
     // Try to reject - should fail because status is not PendingReview
-    let output = wg_cmd(&wg_dir, &["reject", "task-1", "--reason", "Not good enough"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["reject", "task-1", "--reason", "Not good enough"],
+    );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("PendingReview"));
@@ -221,7 +238,10 @@ fn test_reject_transitions_back_to_open() {
     save_graph(&graph, &graph_path).unwrap();
 
     // Reject the task
-    wg_ok(&wg_dir, &["reject", "task-1", "--reason", "Not perfect enough"]);
+    wg_ok(
+        &wg_dir,
+        &["reject", "task-1", "--reason", "Not perfect enough"],
+    );
 
     // Verify status changed back to Open
     let loaded = load_graph(&graph_path).unwrap();
@@ -298,7 +318,11 @@ fn test_approve_requires_pending_review_status() {
 
     // Create a task that's InProgress (not PendingReview)
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("task-1", "Test Task", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "task-1",
+        "Test Task",
+        Status::InProgress,
+    )));
 
     let graph_path = wg_dir.join("graph.jsonl");
     save_graph(&graph, &graph_path).unwrap();
@@ -347,7 +371,11 @@ fn test_approve_checks_blockers() {
 
     // Create two tasks: one blocker (Open), one blocked (PendingReview)
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("blocker", "Blocker Task", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "blocker",
+        "Blocker Task",
+        Status::Open,
+    )));
 
     let mut task = make_task("task-1", "Test Task", Status::PendingReview);
     task.blocked_by = vec!["blocker".to_string()];
@@ -391,7 +419,10 @@ fn test_complete_review_cycle_with_rejection() {
     assert_eq!(task.retry_count, 0);
 
     // Step 3: Reviewer rejects the work
-    wg_ok(&wg_dir, &["reject", "task-1", "--reason", "Tests are insufficient"]);
+    wg_ok(
+        &wg_dir,
+        &["reject", "task-1", "--reason", "Tests are insufficient"],
+    );
 
     let loaded = load_graph(&graph_path).unwrap();
     let task = loaded.get_task("task-1").unwrap();

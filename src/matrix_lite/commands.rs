@@ -75,21 +75,37 @@ fn strip_prefix(message: &str) -> &str {
 fn is_known_command(word: &str) -> bool {
     matches!(
         word,
-        "claim" | "done" | "fail" | "input" | "log" | "note" | "unclaim" | "release"
-        | "status" | "ready" | "list" | "tasks" | "help" | "?"
+        "claim"
+            | "done"
+            | "fail"
+            | "input"
+            | "log"
+            | "note"
+            | "unclaim"
+            | "release"
+            | "status"
+            | "ready"
+            | "list"
+            | "tasks"
+            | "help"
+            | "?"
     )
 }
 
 fn parse_command(words: &[&str]) -> MatrixCommand {
     if words.is_empty() {
-        return MatrixCommand::Unknown { command: "".to_string() };
+        return MatrixCommand::Unknown {
+            command: "".to_string(),
+        };
     }
 
     let command = words[0].to_lowercase();
     match command.as_str() {
         "claim" => {
             if words.len() < 2 {
-                return MatrixCommand::Unknown { command: "claim (missing task ID)".to_string() };
+                return MatrixCommand::Unknown {
+                    command: "claim (missing task ID)".to_string(),
+                };
             }
             let task_id = words[1].to_string();
             let actor = parse_actor_arg(&words[2..]);
@@ -97,34 +113,55 @@ fn parse_command(words: &[&str]) -> MatrixCommand {
         }
         "done" => {
             if words.len() < 2 {
-                return MatrixCommand::Unknown { command: "done (missing task ID)".to_string() };
+                return MatrixCommand::Unknown {
+                    command: "done (missing task ID)".to_string(),
+                };
             }
-            MatrixCommand::Done { task_id: words[1].to_string() }
+            MatrixCommand::Done {
+                task_id: words[1].to_string(),
+            }
         }
         "fail" => {
             if words.len() < 2 {
-                return MatrixCommand::Unknown { command: "fail (missing task ID)".to_string() };
+                return MatrixCommand::Unknown {
+                    command: "fail (missing task ID)".to_string(),
+                };
             }
             let task_id = words[1].to_string();
-            let reason = if words.len() > 2 { Some(words[2..].join(" ")) } else { None };
+            let reason = if words.len() > 2 {
+                Some(words[2..].join(" "))
+            } else {
+                None
+            };
             MatrixCommand::Fail { task_id, reason }
         }
         "input" | "log" | "note" => {
             if words.len() < 3 {
-                return MatrixCommand::Unknown { command: format!("{} (missing task ID or text)", command) };
+                return MatrixCommand::Unknown {
+                    command: format!("{} (missing task ID or text)", command),
+                };
             }
-            MatrixCommand::Input { task_id: words[1].to_string(), text: words[2..].join(" ") }
+            MatrixCommand::Input {
+                task_id: words[1].to_string(),
+                text: words[2..].join(" "),
+            }
         }
         "unclaim" | "release" => {
             if words.len() < 2 {
-                return MatrixCommand::Unknown { command: "unclaim (missing task ID)".to_string() };
+                return MatrixCommand::Unknown {
+                    command: "unclaim (missing task ID)".to_string(),
+                };
             }
-            MatrixCommand::Unclaim { task_id: words[1].to_string() }
+            MatrixCommand::Unclaim {
+                task_id: words[1].to_string(),
+            }
         }
         "status" => MatrixCommand::Status,
         "ready" | "list" | "tasks" => MatrixCommand::Ready,
         "help" | "?" => MatrixCommand::Help,
-        _ => MatrixCommand::Unknown { command: command.to_string() },
+        _ => MatrixCommand::Unknown {
+            command: command.to_string(),
+        },
     }
 }
 
@@ -158,5 +195,6 @@ pub fn help_text() -> String {
 • `status` - Show project status
 • `help` - Show this help
 
-Prefix commands with `wg` if needed (e.g., `wg claim task-1`)"#.to_string()
+Prefix commands with `wg` if needed (e.g., `wg claim task-1`)"#
+        .to_string()
 }

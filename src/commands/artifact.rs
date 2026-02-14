@@ -20,7 +20,10 @@ pub fn run_add(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> {
 
     // Check if artifact already registered
     if task.artifacts.contains(&artifact_path.to_string()) {
-        println!("Artifact '{}' already registered for task '{}'", artifact_path, task_id);
+        println!(
+            "Artifact '{}' already registered for task '{}'",
+            artifact_path, task_id
+        );
         return Ok(());
     }
 
@@ -28,7 +31,10 @@ pub fn run_add(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> {
 
     save_graph(&graph, &path).context("Failed to save graph")?;
 
-    println!("Registered artifact '{}' for task '{}'", artifact_path, task_id);
+    println!(
+        "Registered artifact '{}' for task '{}'",
+        artifact_path, task_id
+    );
     Ok(())
 }
 
@@ -50,12 +56,19 @@ pub fn run_remove(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> 
     task.artifacts.retain(|a| a != artifact_path);
 
     if task.artifacts.len() == original_len {
-        anyhow::bail!("Artifact '{}' not found on task '{}'", artifact_path, task_id);
+        anyhow::bail!(
+            "Artifact '{}' not found on task '{}'",
+            artifact_path,
+            task_id
+        );
     }
 
     save_graph(&graph, &path).context("Failed to save graph")?;
 
-    println!("Removed artifact '{}' from task '{}'", artifact_path, task_id);
+    println!(
+        "Removed artifact '{}' from task '{}'",
+        artifact_path, task_id
+    );
     Ok(())
 }
 
@@ -87,7 +100,11 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
         if !task.deliverables.is_empty() {
             println!("Expected deliverables:");
             for d in &task.deliverables {
-                let produced = if task.artifacts.contains(d) { " [produced]" } else { "" };
+                let produced = if task.artifacts.contains(d) {
+                    " [produced]"
+                } else {
+                    ""
+                };
                 println!("  {}{}", d, produced);
             }
             println!();
@@ -96,7 +113,11 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
         if !task.artifacts.is_empty() {
             println!("Produced artifacts:");
             for a in &task.artifacts {
-                let expected = if task.deliverables.contains(a) { "" } else { " [extra]" };
+                let expected = if task.deliverables.contains(a) {
+                    ""
+                } else {
+                    " [extra]"
+                };
                 println!("  {}{}", a, expected);
             }
         } else {

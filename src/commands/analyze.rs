@@ -134,7 +134,8 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let bottlenecks = compute_bottlenecks(&graph, &now);
     let workload = compute_workload(&graph);
     let aging = compute_aging(&graph, &now);
-    let recommendations = generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
+    let recommendations =
+        generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
 
     let output = AnalysisOutput {
         summary,
@@ -277,7 +278,10 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
             .collect();
         issues.push(StructuralIssue {
             severity: Severity::Critical,
-            message: format!("{} orphan reference(s) found", check_result.orphan_refs.len()),
+            message: format!(
+                "{} orphan reference(s) found",
+                check_result.orphan_refs.len()
+            ),
             details: Some(details),
         });
     }
@@ -320,7 +324,10 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
         } else if intentional_count > 0 {
             issues.push(StructuralIssue {
                 severity: Severity::Ok,
-                message: format!("{} cycle(s) detected (marked as intentional)", intentional_count),
+                message: format!(
+                    "{} cycle(s) detected (marked as intentional)",
+                    intentional_count
+                ),
                 details: None,
             });
         }
@@ -331,7 +338,10 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
     if !dead_ends.is_empty() {
         issues.push(StructuralIssue {
             severity: Severity::Warning,
-            message: format!("{} dead-end task(s) with status=open (may be forgotten)", dead_ends.len()),
+            message: format!(
+                "{} dead-end task(s) with status=open (may be forgotten)",
+                dead_ends.len()
+            ),
             details: Some(dead_ends),
         });
     }
@@ -351,7 +361,10 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
                         format!("{} -> {} (max_iterations=0)", issue.from, issue.target)
                     }
                     LoopEdgeIssueKind::GuardTaskNotFound(guard_task) => {
-                        format!("{} -> {} (guard task '{}' not found)", issue.from, issue.target, guard_task)
+                        format!(
+                            "{} -> {} (guard task '{}' not found)",
+                            issue.from, issue.target, guard_task
+                        )
                     }
                     LoopEdgeIssueKind::SelfLoop => {
                         format!("{} -> {} (self-loop)", issue.from, issue.target)
@@ -361,7 +374,10 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
             .collect();
         issues.push(StructuralIssue {
             severity: Severity::Critical,
-            message: format!("{} loop edge issue(s) found", check_result.loop_edge_issues.len()),
+            message: format!(
+                "{} loop edge issue(s) found",
+                check_result.loop_edge_issues.len()
+            ),
             details: Some(details),
         });
     }
@@ -529,11 +545,7 @@ fn compute_workload(graph: &WorkGraph) -> WorkloadSection {
             continue;
         }
         if let Some(ref actor_id) = task.assigned {
-            let hours = task
-                .estimate
-                .as_ref()
-                .and_then(|e| e.hours)
-                .unwrap_or(0.0);
+            let hours = task.estimate.as_ref().and_then(|e| e.hours).unwrap_or(0.0);
             *actor_hours.entry(actor_id.clone()).or_default() += hours;
         }
     }
@@ -624,7 +636,10 @@ fn generate_recommendations(
                 priority,
                 action: "assign_and_start".to_string(),
                 task: Some(bottleneck.id.clone()),
-                reason: format!("critical bottleneck - blocks {} tasks", bottleneck.transitive_blocks),
+                reason: format!(
+                    "critical bottleneck - blocks {} tasks",
+                    bottleneck.transitive_blocks
+                ),
             });
             priority += 1;
         }
@@ -771,11 +786,7 @@ fn print_human_readable(output: &AnalysisOutput) {
 
             println!(
                 "  {} {}: blocks {} tasks, status={}{}",
-                indicator,
-                bottleneck.id,
-                bottleneck.transitive_blocks,
-                status_str,
-                assigned_str
+                indicator, bottleneck.id, bottleneck.transitive_blocks, status_str, assigned_str
             );
         }
         println!();
@@ -836,7 +847,10 @@ fn print_human_readable(output: &AnalysisOutput) {
                 "fix_structural" => "Fix",
                 _ => &rec.action,
             };
-            println!("  {}. {}{} ({})", rec.priority, action_str, task_str, rec.reason);
+            println!(
+                "  {}. {}{} ({})",
+                rec.priority, action_str, task_str, rec.reason
+            );
         }
     }
 }
@@ -1065,7 +1079,8 @@ mod tests {
             issues: vec![],
         };
 
-        let recommendations = generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
+        let recommendations =
+            generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
 
         assert!(!recommendations.is_empty());
         assert_eq!(recommendations[0].task, Some("critical-task".to_string()));
@@ -1332,7 +1347,10 @@ mod tests {
         // Create 8 independent bottlenecks each blocking 3 tasks
         for root_idx in 0..8 {
             let root_id = format!("root{}", root_idx);
-            graph.add_node(Node::Task(make_task(&root_id, &format!("Root {}", root_idx))));
+            graph.add_node(Node::Task(make_task(
+                &root_id,
+                &format!("Root {}", root_idx),
+            )));
             for child_idx in 0..3 {
                 let child_id = format!("child{}_{}", root_idx, child_idx);
                 let mut t = make_task(&child_id, &format!("Child {}-{}", root_idx, child_idx));
@@ -1723,7 +1741,10 @@ mod tests {
         };
 
         let recs = generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
-        let fix_recs: Vec<_> = recs.iter().filter(|r| r.action == "fix_structural").collect();
+        let fix_recs: Vec<_> = recs
+            .iter()
+            .filter(|r| r.action == "fix_structural")
+            .collect();
         assert_eq!(fix_recs.len(), 1);
         assert!(fix_recs[0].reason.contains("orphan"));
     }
@@ -1758,7 +1779,8 @@ mod tests {
         };
 
         let recs = generate_recommendations(&summary, &structural, &bottlenecks, &workload, &aging);
-        let redistribute_recs: Vec<_> = recs.iter().filter(|r| r.action == "redistribute").collect();
+        let redistribute_recs: Vec<_> =
+            recs.iter().filter(|r| r.action == "redistribute").collect();
         assert_eq!(redistribute_recs.len(), 1);
         assert!(redistribute_recs[0].reason.contains("alice"));
         assert!(redistribute_recs[0].reason.contains("150"));

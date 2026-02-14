@@ -97,8 +97,7 @@ fn test_record_evaluation_nonexistent_agent() {
     assert!(eval_path.exists());
 
     // Role and motivation should still have their performance updated
-    let updated_role =
-        agency::load_role(&roles_dir.join(format!("{}.yaml", role.id))).unwrap();
+    let updated_role = agency::load_role(&roles_dir.join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(updated_role.performance.task_count, 1);
 
     let updated_mot =
@@ -329,8 +328,7 @@ fn test_delete_motivation_referenced_by_agent() {
     assert_eq!(updated_agent.performance.task_count, 1);
 
     // Role got updated (still exists)
-    let updated_role =
-        agency::load_role(&roles_dir.join(format!("{}.yaml", role.id))).unwrap();
+    let updated_role = agency::load_role(&roles_dir.join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(updated_role.performance.task_count, 1);
 }
 
@@ -491,7 +489,10 @@ fn test_extreme_scores_yaml_roundtrip() {
 fn test_content_hash_role_different_descriptions() {
     let h1 = agency::content_hash_role(&[], "outcome", "Description A");
     let h2 = agency::content_hash_role(&[], "outcome", "Description B");
-    assert_ne!(h1, h2, "Different descriptions must produce different hashes");
+    assert_ne!(
+        h1, h2,
+        "Different descriptions must produce different hashes"
+    );
 }
 
 /// Slightly different desired_outcomes produce different role hashes.
@@ -505,16 +506,8 @@ fn test_content_hash_role_different_outcomes() {
 /// Slightly different skills produce different role hashes.
 #[test]
 fn test_content_hash_role_different_skills() {
-    let h1 = agency::content_hash_role(
-        &[SkillRef::Name("rust".to_string())],
-        "outcome",
-        "desc",
-    );
-    let h2 = agency::content_hash_role(
-        &[SkillRef::Name("python".to_string())],
-        "outcome",
-        "desc",
-    );
+    let h1 = agency::content_hash_role(&[SkillRef::Name("rust".to_string())], "outcome", "desc");
+    let h2 = agency::content_hash_role(&[SkillRef::Name("python".to_string())], "outcome", "desc");
     assert_ne!(h1, h2, "Different skills must produce different hashes");
 }
 
@@ -537,7 +530,10 @@ fn test_content_hash_role_skill_order_matters() {
         "outcome",
         "desc",
     );
-    assert_ne!(h1, h2, "Different skill order must produce different hashes");
+    assert_ne!(
+        h1, h2,
+        "Different skill order must produce different hashes"
+    );
 }
 
 /// Different motivation descriptions produce different hashes.
@@ -545,39 +541,29 @@ fn test_content_hash_role_skill_order_matters() {
 fn test_content_hash_motivation_different_descriptions() {
     let h1 = agency::content_hash_motivation(&[], &[], "Description A");
     let h2 = agency::content_hash_motivation(&[], &[], "Description B");
-    assert_ne!(h1, h2, "Different descriptions must produce different hashes");
+    assert_ne!(
+        h1, h2,
+        "Different descriptions must produce different hashes"
+    );
 }
 
 /// Different tradeoffs produce different hashes.
 #[test]
 fn test_content_hash_motivation_different_tradeoffs() {
-    let h1 = agency::content_hash_motivation(
-        &["speed".to_string()],
-        &[],
-        "desc",
-    );
-    let h2 = agency::content_hash_motivation(
-        &["quality".to_string()],
-        &[],
-        "desc",
-    );
+    let h1 = agency::content_hash_motivation(&["speed".to_string()], &[], "desc");
+    let h2 = agency::content_hash_motivation(&["quality".to_string()], &[], "desc");
     assert_ne!(h1, h2);
 }
 
 /// Swapping acceptable and unacceptable tradeoffs produces different hashes.
 #[test]
 fn test_content_hash_motivation_swapped_tradeoff_categories() {
-    let h1 = agency::content_hash_motivation(
-        &["X".to_string()],
-        &["Y".to_string()],
-        "desc",
+    let h1 = agency::content_hash_motivation(&["X".to_string()], &["Y".to_string()], "desc");
+    let h2 = agency::content_hash_motivation(&["Y".to_string()], &["X".to_string()], "desc");
+    assert_ne!(
+        h1, h2,
+        "Swapping tradeoff categories must produce different hashes"
     );
-    let h2 = agency::content_hash_motivation(
-        &["Y".to_string()],
-        &["X".to_string()],
-        "desc",
-    );
-    assert_ne!(h1, h2, "Swapping tradeoff categories must produce different hashes");
 }
 
 /// Different agent pairings produce different hashes.
@@ -596,22 +582,17 @@ fn test_content_hash_agent_different_pairings() {
 fn test_content_hash_agent_swapped_ids() {
     let h1 = agency::content_hash_agent("aaa", "bbb");
     let h2 = agency::content_hash_agent("bbb", "aaa");
-    assert_ne!(h1, h2, "Swapping role/motivation IDs must produce different hashes");
+    assert_ne!(
+        h1, h2,
+        "Swapping role/motivation IDs must produce different hashes"
+    );
 }
 
 /// Content hashing is deterministic — same inputs always yield same hash.
 #[test]
 fn test_content_hash_determinism() {
-    let h1 = agency::content_hash_role(
-        &[SkillRef::Name("x".to_string())],
-        "out",
-        "desc",
-    );
-    let h2 = agency::content_hash_role(
-        &[SkillRef::Name("x".to_string())],
-        "out",
-        "desc",
-    );
+    let h1 = agency::content_hash_role(&[SkillRef::Name("x".to_string())], "out", "desc");
+    let h2 = agency::content_hash_role(&[SkillRef::Name("x".to_string())], "out", "desc");
     assert_eq!(h1, h2);
     assert_eq!(h1.len(), 64, "SHA-256 hash should be 64 hex chars");
 }
@@ -682,7 +663,11 @@ fn test_prefix_lookup_zero_matches() {
 
     let m = agency::find_motivation_by_prefix(&motivations_dir, "zzzzzzz");
     assert!(m.is_err());
-    assert!(m.unwrap_err().to_string().contains("No motivation matching"));
+    assert!(
+        m.unwrap_err()
+            .to_string()
+            .contains("No motivation matching")
+    );
 
     let a = agency::find_agent_by_prefix(&agents_dir, "zzzzzzz");
     assert!(a.is_err());
@@ -785,11 +770,7 @@ fn test_load_corrupted_motivation_yaml() {
     agency::init(&agency_dir).unwrap();
 
     let motivations_dir = agency_dir.join("motivations");
-    std::fs::write(
-        motivations_dir.join("corrupt.yaml"),
-        "not: [valid: {yaml",
-    )
-    .unwrap();
+    std::fs::write(motivations_dir.join("corrupt.yaml"), "not: [valid: {yaml").unwrap();
 
     let result = agency::load_motivation(&motivations_dir.join("corrupt.yaml"));
     assert!(result.is_err());
@@ -841,7 +822,10 @@ fn test_load_all_roles_with_one_corrupted() {
 
     // load_all_roles should return an error because it can't deserialize the corrupted file
     let result = agency::load_all_roles(&roles_dir);
-    assert!(result.is_err(), "load_all_roles should fail with corrupted file");
+    assert!(
+        result.is_err(),
+        "load_all_roles should fail with corrupted file"
+    );
 }
 
 /// An empty YAML file produces a deserialization error (not a panic).
@@ -867,11 +851,7 @@ fn test_load_wrong_schema_yaml() {
 
     let roles_dir = agency_dir.join("roles");
     // Valid YAML but missing required Role fields
-    std::fs::write(
-        roles_dir.join("wrong-schema.yaml"),
-        "foo: bar\nbaz: 42\n",
-    )
-    .unwrap();
+    std::fs::write(roles_dir.join("wrong-schema.yaml"), "foo: bar\nbaz: 42\n").unwrap();
 
     let result = agency::load_role(&roles_dir.join("wrong-schema.yaml"));
     assert!(result.is_err());

@@ -46,10 +46,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let graph = load_graph(&path).context("Failed to load graph")?;
 
     // Get non-done tasks only
-    let active_tasks: Vec<_> = graph
-        .tasks()
-        .filter(|t| t.status != Status::Done)
-        .collect();
+    let active_tasks: Vec<_> = graph.tasks().filter(|t| t.status != Status::Done).collect();
 
     if active_tasks.is_empty() {
         if json {
@@ -105,8 +102,9 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     }
 
     // Find the overall longest path
-    let (critical_path, total_hours) = if let Some((_, (hours, path))) =
-        memo.iter().max_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap())
+    let (critical_path, total_hours) = if let Some((_, (hours, path))) = memo
+        .iter()
+        .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap())
     {
         (path.clone(), *hours)
     } else {
@@ -230,7 +228,10 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         }
 
         if !cycles.is_empty() {
-            println!("\nNote: {} cycle(s) were skipped in analysis.", cycles.len());
+            println!(
+                "\nNote: {} cycle(s) were skipped in analysis.",
+                cycles.len()
+            );
         }
     }
 
@@ -261,7 +262,8 @@ fn build_forward_index<'a>(
 
         // For each blocker, add this task to its forward list
         for blocker_id in &task.blocked_by {
-            if active_ids.contains(blocker_id.as_str()) && !cycle_nodes.contains(blocker_id.as_str())
+            if active_ids.contains(blocker_id.as_str())
+                && !cycle_nodes.contains(blocker_id.as_str())
             {
                 index
                     .entry(blocker_id.as_str())
@@ -305,7 +307,9 @@ fn calculate_longest_path<'a>(
     let (longest_child_hours, longest_child_path) = if let Some(children) = blocked_tasks {
         children
             .iter()
-            .map(|child_id| calculate_longest_path(child_id, graph, forward_index, memo, cycle_nodes))
+            .map(|child_id| {
+                calculate_longest_path(child_id, graph, forward_index, memo, cycle_nodes)
+            })
             .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
             .unwrap_or((0.0, vec![]))
     } else {

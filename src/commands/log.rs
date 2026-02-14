@@ -63,7 +63,11 @@ pub fn run_list(dir: &Path, id: &str, json: bool) -> Result<()> {
     println!();
 
     for entry in &task.log {
-        let actor_str = entry.actor.as_ref().map(|a| format!(" [{}]", a)).unwrap_or_default();
+        let actor_str = entry
+            .actor
+            .as_ref()
+            .map(|a| format!(" [{}]", a))
+            .unwrap_or_default();
         println!("  {} {}", entry.timestamp, actor_str);
         println!("    {}", entry.message);
         println!();

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -6,9 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{
-    self, Evaluation, Lineage, Motivation, PerformanceRecord, Role, SkillRef,
-};
+use workgraph::agency::{self, Evaluation, Lineage, Motivation, PerformanceRecord, Role, SkillRef};
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task};
 use workgraph::{load_graph, save_graph};
@@ -127,12 +125,11 @@ pub fn run(
     };
 
     // Load all agency data
-    let roles = agency::load_all_roles(&roles_dir)
-        .context("Failed to load roles")?;
-    let motivations = agency::load_all_motivations(&motivations_dir)
-        .context("Failed to load motivations")?;
-    let all_evaluations = agency::load_all_evaluations(&evals_dir)
-        .context("Failed to load evaluations")?;
+    let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
+    let motivations =
+        agency::load_all_motivations(&motivations_dir).context("Failed to load motivations")?;
+    let all_evaluations =
+        agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
     // Filter out evaluations from human agents — their work quality isn't a
     // reflection of a role+motivation prompt, so including them would pollute
@@ -181,10 +178,7 @@ pub fn run(
     );
 
     // Generate a run ID
-    let run_id = format!(
-        "run-{}",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    );
+    let run_id = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
 
     if dry_run {
         if json {
@@ -204,7 +198,12 @@ pub fn run(
         } else {
             println!("=== Dry Run: wg evolve ===\n");
             println!("Strategy:        {}", strategy.label());
-            println!("Budget:          {}", budget.map(|b| b.to_string()).unwrap_or_else(|| "unlimited".into()));
+            println!(
+                "Budget:          {}",
+                budget
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "unlimited".into())
+            );
             println!("Model:           {}", model);
             println!("Run ID:          {}", run_id);
             println!("Roles:           {}", roles.len());
@@ -249,8 +248,8 @@ pub fn run(
     let raw_output = String::from_utf8_lossy(&output.stdout);
 
     // Parse the structured output
-    let evolver_output = parse_evolver_output(&raw_output)
-        .context("Failed to parse evolver output")?;
+    let evolver_output =
+        parse_evolver_output(&raw_output).context("Failed to parse evolver output")?;
 
     let actual_run_id = evolver_output.run_id.as_deref().unwrap_or(&run_id);
 
@@ -291,7 +290,9 @@ pub fn run(
     let evolver_entity_ids: HashSet<String> = {
         let mut ids = HashSet::new();
         if let Some(ref agent_hash) = config.agency.evolver_agent {
-            let agent_path = agency_dir.join("agents").join(format!("{}.yaml", agent_hash));
+            let agent_path = agency_dir
+                .join("agents")
+                .join(format!("{}.yaml", agent_hash));
             if let Ok(agent) = agency::load_agent(&agent_path) {
                 ids.insert(agent.role_id.clone());
                 ids.insert(agent.motivation_id.clone());
@@ -312,7 +313,10 @@ pub fn run(
         if !evolver_entity_ids.is_empty() {
             if let Some(ref target) = op.target_id {
                 let target_ids: Vec<&str> = target.split(',').map(|s| s.trim()).collect();
-                if target_ids.iter().any(|tid| evolver_entity_ids.contains(*tid)) {
+                if target_ids
+                    .iter()
+                    .any(|tid| evolver_entity_ids.contains(*tid))
+                {
                     match defer_self_mutation(op, dir, actual_run_id) {
                         Ok(task_id) => {
                             deferred += 1;
@@ -326,17 +330,14 @@ pub fn run(
                             if !json {
                                 eprintln!(
                                     "  [deferred] {} on {:?} → review task '{}' (evolver self-mutation)",
-                                    op.op,
-                                    op.target_id,
-                                    task_id,
+                                    op.op, op.target_id, task_id,
                                 );
                             }
                             results.push(result);
                         }
                         Err(e) => {
-                            let err_msg = format!(
-                                "Failed to defer self-mutation {:?}: {}", op.op, e
-                            );
+                            let err_msg =
+                                format!("Failed to defer self-mutation {:?}: {}", op.op, e);
                             eprintln!("{}", err_msg);
                             results.push(serde_json::json!({
                                 "op": op.op,
@@ -349,7 +350,14 @@ pub fn run(
             }
         }
 
-        match apply_operation(op, &roles, &motivations, actual_run_id, &roles_dir, &motivations_dir) {
+        match apply_operation(
+            op,
+            &roles,
+            &motivations,
+            actual_run_id,
+            &roles_dir,
+            &motivations_dir,
+        ) {
             Ok(result) => {
                 applied += 1;
                 if !json {
@@ -403,7 +411,10 @@ pub fn run(
         println!("Model:      {}", model);
         println!("Applied:    {} of {} operations", applied, operations.len());
         if deferred > 0 {
-            println!("Deferred:   {} (evolver self-mutations, require human approval)", deferred);
+            println!(
+                "Deferred:   {} (evolver self-mutations, require human approval)",
+                deferred
+            );
         }
         if let Some(ref summary) = evolver_output.summary {
             println!("\nSummary:\n  {}", summary);
@@ -463,11 +474,17 @@ fn build_performance_summary(
             out.push_str(&format!("  skills: {}\n", skill_names.join(", ")));
         }
         if !role.lineage.parent_ids.is_empty() {
-            out.push_str(&format!("  parents: {}\n", role.lineage.parent_ids.join(", ")));
+            out.push_str(&format!(
+                "  parents: {}\n",
+                role.lineage.parent_ids.join(", ")
+            ));
         }
 
         // Dimension averages from evaluations
-        let role_evals: Vec<&Evaluation> = evaluations.iter().filter(|e| e.role_id == role.id).collect();
+        let role_evals: Vec<&Evaluation> = evaluations
+            .iter()
+            .filter(|e| e.role_id == role.id)
+            .collect();
         if !role_evals.is_empty() {
             let dims = aggregate_dimensions(&role_evals);
             if !dims.is_empty() {
@@ -532,7 +549,9 @@ fn build_performance_summary(
         pairs.sort_by(|a, b| {
             let avg_a = a.1.iter().sum::<f64>() / a.1.len() as f64;
             let avg_b = b.1.iter().sum::<f64>() / b.1.len() as f64;
-            avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+            avg_b
+                .partial_cmp(&avg_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         for ((role_id, mot_id), scores) in &pairs {
             let avg = scores.iter().sum::<f64>() / scores.len() as f64;
@@ -575,7 +594,10 @@ fn load_evolver_skills(skills_dir: &Path, strategy: Strategy) -> Result<Vec<(Str
     let mut docs = Vec::new();
 
     if !skills_dir.exists() {
-        eprintln!("Warning: evolver-skills directory not found at {}", skills_dir.display());
+        eprintln!(
+            "Warning: evolver-skills directory not found at {}",
+            skills_dir.display()
+        );
         return Ok(docs);
     }
 
@@ -643,7 +665,10 @@ fn build_evolver_prompt(
             if let Some(role) = roles.iter().find(|r| r.id == agent.role_id) {
                 out.push_str("## Your Identity\n\n");
                 out.push_str(&format!("**Role:** {} — {}\n", role.name, role.description));
-                out.push_str(&format!("**Desired Outcome:** {}\n\n", role.desired_outcome));
+                out.push_str(&format!(
+                    "**Desired Outcome:** {}\n\n",
+                    role.desired_outcome
+                ));
             }
             if let Some(motivation) = motivations.iter().find(|m| m.id == agent.motivation_id) {
                 out.push_str(&format!(
@@ -689,11 +714,13 @@ fn build_evolver_prompt(
                 }
                 let agent_path = agents_dir.join(format!("{}.yaml", hash));
                 if let Ok(agent) = agency::load_agent(&agent_path) {
-                    let role_name = roles.iter()
+                    let role_name = roles
+                        .iter()
                         .find(|r| r.id == agent.role_id)
                         .map(|r| r.name.as_str())
                         .unwrap_or("unknown");
-                    let mot_name = motivations.iter()
+                    let mot_name = motivations
+                        .iter()
                         .find(|m| m.id == agent.motivation_id)
                         .map(|m| m.name.as_str())
                         .unwrap_or("unknown");
@@ -796,7 +823,9 @@ fn build_evolver_prompt(
     out.push_str("- **create_motivation**: Creates a new motivation (from gap-analysis). Requires: new_id, name, description, acceptable_tradeoffs, unacceptable_tradeoffs.\n");
     out.push_str("- **modify_motivation**: Tunes an existing motivation. Requires: target_id (parent), new_id, name, description, acceptable_tradeoffs, unacceptable_tradeoffs.\n");
     out.push_str("- **retire_role**: Retires a poor-performing role. Requires: target_id.\n");
-    out.push_str("- **retire_motivation**: Retires a poor-performing motivation. Requires: target_id.\n\n");
+    out.push_str(
+        "- **retire_motivation**: Retires a poor-performing motivation. Requires: target_id.\n\n",
+    );
 
     out.push_str("For modify operations involving crossover (two parents), set target_id to a comma-separated pair like \"parent-a,parent-b\".\n\n");
 
@@ -863,14 +892,10 @@ fn extract_json(raw: &str) -> Option<String> {
 
 /// Create a verified workgraph task for an evolver self-mutation operation.
 /// The task requires human approval before the mutation can be applied.
-fn defer_self_mutation(
-    op: &EvolverOperation,
-    dir: &Path,
-    run_id: &str,
-) -> Result<String> {
+fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Result<String> {
     let graph_path = super::graph_path(dir);
-    let mut graph = load_graph(&graph_path)
-        .context("Failed to load graph for self-mutation deferral")?;
+    let mut graph =
+        load_graph(&graph_path).context("Failed to load graph for self-mutation deferral")?;
 
     let task_id = format!(
         "evolve-review-{}-{}",
@@ -883,8 +908,7 @@ fn defer_self_mutation(
         return Ok(task_id);
     }
 
-    let op_json = serde_json::to_string_pretty(op)
-        .unwrap_or_else(|_| format!("{:?}", op.op));
+    let op_json = serde_json::to_string_pretty(op).unwrap_or_else(|_| format!("{:?}", op.op));
 
     let desc = format!(
         "The evolver (run {run_id}) proposed a mutation targeting its own identity. \
@@ -899,7 +923,11 @@ fn defer_self_mutation(
 
     let task = Task {
         id: task_id.clone(),
-        title: format!("Review evolver self-mutation: {} on {}", op.op, op.target_id.as_deref().unwrap_or("?")),
+        title: format!(
+            "Review evolver self-mutation: {} on {}",
+            op.op,
+            op.target_id.as_deref().unwrap_or("?")
+        ),
         description: Some(desc),
         status: Status::Open,
         assigned: None,
@@ -956,9 +984,7 @@ fn apply_operation(
             apply_modify_motivation(op, existing_motivations, run_id, motivations_dir)
         }
         "retire_role" => apply_retire_role(op, existing_roles, roles_dir),
-        "retire_motivation" => {
-            apply_retire_motivation(op, existing_motivations, motivations_dir)
-        }
+        "retire_motivation" => apply_retire_motivation(op, existing_motivations, motivations_dir),
         other => bail!("Unknown operation type: '{}'", other),
     }
 }
@@ -1004,8 +1030,7 @@ fn apply_create_role(
         },
     };
 
-    let path = agency::save_role(&role, roles_dir)
-        .context("Failed to save new role")?;
+    let path = agency::save_role(&role, roles_dir).context("Failed to save new role")?;
 
     Ok(serde_json::json!({
         "op": "create_role",
@@ -1073,8 +1098,7 @@ fn apply_modify_role(
         lineage,
     };
 
-    let path = agency::save_role(&role, roles_dir)
-        .context("Failed to save modified role")?;
+    let path = agency::save_role(&role, roles_dir).context("Failed to save modified role")?;
 
     Ok(serde_json::json!({
         "op": "modify_role",
@@ -1259,10 +1283,7 @@ fn apply_retire_motivation(
         fs::rename(&yaml_path, &retired_path)
             .with_context(|| format!("Failed to retire motivation '{}'", target_id))?;
     } else {
-        bail!(
-            "Motivation file not found: {}",
-            yaml_path.display()
-        );
+        bail!("Motivation file not found: {}", yaml_path.display());
     }
 
     Ok(serde_json::json!({
@@ -1351,12 +1372,18 @@ mod tests {
     #[test]
     fn test_strategy_from_str() {
         assert_eq!(Strategy::from_str("mutation").unwrap(), Strategy::Mutation);
-        assert_eq!(Strategy::from_str("crossover").unwrap(), Strategy::Crossover);
+        assert_eq!(
+            Strategy::from_str("crossover").unwrap(),
+            Strategy::Crossover
+        );
         assert_eq!(
             Strategy::from_str("gap-analysis").unwrap(),
             Strategy::GapAnalysis
         );
-        assert_eq!(Strategy::from_str("retirement").unwrap(), Strategy::Retirement);
+        assert_eq!(
+            Strategy::from_str("retirement").unwrap(),
+            Strategy::Retirement
+        );
         assert_eq!(
             Strategy::from_str("motivation-tuning").unwrap(),
             Strategy::MotivationTuning
@@ -1381,8 +1408,7 @@ mod tests {
 
     #[test]
     fn test_extract_json_with_surrounding_text() {
-        let input =
-            "Here is my analysis:\n{\"run_id\": \"r1\", \"operations\": [], \"summary\": \"ok\"}\nDone.";
+        let input = "Here is my analysis:\n{\"run_id\": \"r1\", \"operations\": [], \"summary\": \"ok\"}\nDone.";
         let result = extract_json(input).unwrap();
         assert!(result.contains("r1"));
     }
@@ -1432,10 +1458,7 @@ mod tests {
         let output: EvolverOutput = serde_json::from_str(json).unwrap();
         assert_eq!(output.operations.len(), 1);
         assert_eq!(output.operations[0].op, "retire_role");
-        assert_eq!(
-            output.operations[0].target_id,
-            Some("bad-role".to_string())
-        );
+        assert_eq!(output.operations[0].target_id, Some("bad-role".to_string()));
     }
 
     #[test]
@@ -1616,8 +1639,7 @@ mod tests {
             rationale: Some("Poor performance".into()),
         };
 
-        let result =
-            apply_retire_role(&op, &[role_a, role_b], &roles_dir).unwrap();
+        let result = apply_retire_role(&op, &[role_a, role_b], &roles_dir).unwrap();
         assert_eq!(result["status"], "applied");
 
         // .yaml should be gone, .yaml.retired should exist
@@ -1661,10 +1683,12 @@ mod tests {
 
         let result = apply_retire_role(&op, &[role], &roles_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only remaining role"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only remaining role")
+        );
     }
 
     // =======================================================================
@@ -1764,11 +1788,17 @@ mod tests {
         let create_mot = &output.operations[3];
         assert_eq!(
             create_mot.acceptable_tradeoffs,
-            Some(vec!["Slower delivery".to_string(), "More verbose code".to_string()])
+            Some(vec![
+                "Slower delivery".to_string(),
+                "More verbose code".to_string()
+            ])
         );
         assert_eq!(
             create_mot.unacceptable_tradeoffs,
-            Some(vec!["Known vulnerabilities".to_string(), "Skipping auth checks".to_string()])
+            Some(vec![
+                "Known vulnerabilities".to_string(),
+                "Skipping auth checks".to_string()
+            ])
         );
     }
 
@@ -1870,8 +1900,14 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(motivation.id, id);
         assert_eq!(motivation.name, "Security First");
         assert_eq!(motivation.description, "Prioritizes security");
-        assert_eq!(motivation.acceptable_tradeoffs, vec!["Slower delivery", "More verbose code"]);
-        assert_eq!(motivation.unacceptable_tradeoffs, vec!["Known vulnerabilities"]);
+        assert_eq!(
+            motivation.acceptable_tradeoffs,
+            vec!["Slower delivery", "More verbose code"]
+        );
+        assert_eq!(
+            motivation.unacceptable_tradeoffs,
+            vec!["Known vulnerabilities"]
+        );
         assert_eq!(motivation.lineage.generation, 0);
         assert!(motivation.lineage.created_by.contains("test-run"));
         assert!(motivation.lineage.parent_ids.is_empty());
@@ -1939,8 +1975,7 @@ Let me know if you'd like me to adjust anything."#;
             rationale: Some("Motivation was too conservative".into()),
         };
 
-        let result =
-            apply_modify_motivation(&op, &[parent], "test-run", &motivations_dir).unwrap();
+        let result = apply_modify_motivation(&op, &[parent], "test-run", &motivations_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "modify_motivation");
         assert_eq!(result["target_id"], "parent-mot");
@@ -1960,10 +1995,8 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(new_id.len(), 64);
 
         // Load and verify
-        let mot = agency::load_motivation(
-            &motivations_dir.join(format!("{}.yaml", new_id)),
-        )
-        .unwrap();
+        let mot =
+            agency::load_motivation(&motivations_dir.join(format!("{}.yaml", new_id))).unwrap();
         assert_eq!(mot.name, "Carefully Fast");
         assert_eq!(mot.lineage.generation, 1);
         assert_eq!(mot.lineage.parent_ids, vec!["parent-mot"]);
@@ -1991,10 +2024,12 @@ Let me know if you'd like me to adjust anything."#;
 
         let result = apply_modify_motivation(&op, &[], "test-run", &motivations_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("requires target_id"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires target_id")
+        );
     }
 
     #[test]
@@ -2070,8 +2105,7 @@ Let me know if you'd like me to adjust anything."#;
             rationale: Some("Poor outcomes".into()),
         };
 
-        let result =
-            apply_retire_motivation(&op, &[mot_a, mot_b], &motivations_dir).unwrap();
+        let result = apply_retire_motivation(&op, &[mot_a, mot_b], &motivations_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "retire_motivation");
 
@@ -2116,10 +2150,12 @@ Let me know if you'd like me to adjust anything."#;
 
         let result = apply_retire_motivation(&op, &[mot], &motivations_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only remaining motivation"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only remaining motivation")
+        );
     }
 
     #[test]
@@ -2221,8 +2257,7 @@ Let me know if you'd like me to adjust anything."#;
             rationale: Some("Combining best of both".into()),
         };
 
-        let result =
-            apply_modify_role(&op, &[parent_a, parent_b], "test-run", &roles_dir).unwrap();
+        let result = apply_modify_role(&op, &[parent_a, parent_b], "test-run", &roles_dir).unwrap();
         assert_eq!(result["status"], "applied");
 
         // Generation should be max(2, 1) + 1 = 3
@@ -2295,10 +2330,12 @@ Let me know if you'd like me to adjust anything."#;
 
         let result = apply_modify_role(&op, &[], "test-run", &roles_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("requires target_id"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires target_id")
+        );
     }
 
     // =======================================================================
@@ -2327,8 +2364,7 @@ Let me know if you'd like me to adjust anything."#;
         };
 
         let result =
-            apply_operation(&op, &[], &[], "run-dispatch", &roles_dir, &motivations_dir)
-                .unwrap();
+            apply_operation(&op, &[], &[], "run-dispatch", &roles_dir, &motivations_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "create_role");
     }
@@ -2354,13 +2390,14 @@ Let me know if you'd like me to adjust anything."#;
             rationale: None,
         };
 
-        let result =
-            apply_operation(&op, &[], &[], "run-bad", &roles_dir, &motivations_dir);
+        let result = apply_operation(&op, &[], &[], "run-bad", &roles_dir, &motivations_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown operation type"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown operation type")
+        );
     }
 
     // =======================================================================
@@ -2599,8 +2636,14 @@ Let me know if you'd like me to adjust anything."#;
         let config = Config::default();
 
         let skill_docs = vec![
-            ("role-mutation.md".to_string(), "Mutation procedure: vary one trait at a time.".to_string()),
-            ("gap-analysis.md".to_string(), "Identify missing capabilities.".to_string()),
+            (
+                "role-mutation.md".to_string(),
+                "Mutation procedure: vary one trait at a time.".to_string(),
+            ),
+            (
+                "gap-analysis.md".to_string(),
+                "Identify missing capabilities.".to_string(),
+            ),
         ];
 
         let prompt = build_evolver_prompt(
@@ -2869,8 +2912,7 @@ Let me know if you'd like me to adjust anything."#;
             rationale: None,
         };
 
-        let result =
-            apply_modify_role(&op, &[parent_a, parent_b], "run-x", &roles_dir).unwrap();
+        let result = apply_modify_role(&op, &[parent_a, parent_b], "run-x", &roles_dir).unwrap();
         // max(3, 7) + 1 = 8
         assert_eq!(result["generation"], 8);
     }

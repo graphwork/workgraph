@@ -3,7 +3,7 @@
 //! Provides configuration loading and template variable substitution for
 //! executor configs stored in `.workgraph/executors/<name>.toml`.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -106,7 +106,9 @@ impl TemplateVars {
     fn resolve_skills_preamble(workgraph_dir: Option<&Path>) -> String {
         let project_root = match workgraph_dir.and_then(|d| {
             // Canonicalize to handle relative paths like ".workgraph"
-            d.canonicalize().ok().and_then(|abs| abs.parent().map(|p| p.to_path_buf()))
+            d.canonicalize()
+                .ok()
+                .and_then(|abs| abs.parent().map(|p| p.to_path_buf()))
         }) {
             Some(r) => r,
             None => return String::new(),
@@ -122,11 +124,7 @@ impl TemplateVars {
             Ok(content) => {
                 // Strip YAML frontmatter if present
                 let body = if content.starts_with("---") {
-                    content
-                        .splitn(3, "---")
-                        .nth(2)
-                        .unwrap_or(&content)
-                        .trim()
+                    content.splitn(3, "---").nth(2).unwrap_or(&content).trim()
                 } else {
                     content.trim()
                 };
@@ -215,7 +213,9 @@ impl ExecutorConfig {
 
     /// Load executor configuration from the workgraph executors directory.
     pub fn load_by_name(workgraph_dir: &Path, name: &str) -> Result<Self> {
-        let config_path = workgraph_dir.join("executors").join(format!("{}.toml", name));
+        let config_path = workgraph_dir
+            .join("executors")
+            .join(format!("{}.toml", name));
 
         if !config_path.exists() {
             return Err(anyhow!(
@@ -397,8 +397,12 @@ Begin working on the task now."#.to_string(),
     /// Ensure the executors directory exists and has default configs.
     pub fn init(&self) -> Result<()> {
         if !self.config_dir.exists() {
-            fs::create_dir_all(&self.config_dir)
-                .with_context(|| format!("Failed to create executors directory: {}", self.config_dir.display()))?;
+            fs::create_dir_all(&self.config_dir).with_context(|| {
+                format!(
+                    "Failed to create executors directory: {}",
+                    self.config_dir.display()
+                )
+            })?;
         }
 
         // Create default executor configs if they don't exist
@@ -597,12 +601,7 @@ template = "Work on {{task_id}}"
         fs::create_dir_all(&agents_dir).unwrap();
 
         // Create a role using content-hash ID builder
-        let role = agency::build_role(
-            "Implementer",
-            "Implements features",
-            vec![],
-            "Working code",
-        );
+        let role = agency::build_role("Implementer", "Implements features", vec![], "Working code");
         let role_id = role.id.clone();
         agency::save_role(&role, &roles_dir).unwrap();
 
@@ -817,7 +816,9 @@ template = "Work on {{task_id}}"
         let vars = TemplateVars::from_task(&task, Some("Context with\nnewlines\tand\ttabs"), None);
 
         // Template application should be a literal substitution
-        let result = vars.apply("id={{task_id}} title={{task_title}} desc={{task_description}} ctx={{task_context}}");
+        let result = vars.apply(
+            "id={{task_id}} title={{task_title}} desc={{task_description}} ctx={{task_context}}",
+        );
         assert_eq!(
             result,
             "id=task-with-special title=Title with \"quotes\" & <tags> desc=Desc with {{braces}} and $dollars and `backticks` ctx=Context with\nnewlines\tand\ttabs"
@@ -928,13 +929,11 @@ args = ["--custom-flag"]
 
         // First init
         registry.init().unwrap();
-        let claude_content_1 =
-            fs::read_to_string(wg_dir.join("executors/claude.toml")).unwrap();
+        let claude_content_1 = fs::read_to_string(wg_dir.join("executors/claude.toml")).unwrap();
 
         // Second init should not fail and should not overwrite existing files
         registry.init().unwrap();
-        let claude_content_2 =
-            fs::read_to_string(wg_dir.join("executors/claude.toml")).unwrap();
+        let claude_content_2 = fs::read_to_string(wg_dir.join("executors/claude.toml")).unwrap();
 
         assert_eq!(claude_content_1, claude_content_2);
     }
@@ -960,8 +959,14 @@ args = ["--custom-flag"]
         let registry = ExecutorRegistry::new(temp_dir.path());
         let config = registry.load_config("shell").unwrap();
 
-        assert_eq!(config.executor.env.get("TASK_ID"), Some(&"{{task_id}}".to_string()));
-        assert_eq!(config.executor.env.get("TASK_TITLE"), Some(&"{{task_title}}".to_string()));
+        assert_eq!(
+            config.executor.env.get("TASK_ID"),
+            Some(&"{{task_id}}".to_string())
+        );
+        assert_eq!(
+            config.executor.env.get("TASK_TITLE"),
+            Some(&"{{task_title}}".to_string())
+        );
     }
 
     #[test]
@@ -1047,8 +1052,14 @@ args = ["--custom-flag"]
 
         assert_eq!(settings.env.get("ID"), Some(&"t-1".to_string()));
         assert_eq!(settings.env.get("TITLE"), Some(&"My Task".to_string()));
-        assert_eq!(settings.env.get("DESC"), Some(&"Test description".to_string()));
-        assert_eq!(settings.env.get("STATIC"), Some(&"no-template-here".to_string()));
+        assert_eq!(
+            settings.env.get("DESC"),
+            Some(&"Test description".to_string())
+        );
+        assert_eq!(
+            settings.env.get("STATIC"),
+            Some(&"no-template-here".to_string())
+        );
     }
 
     // --- Identity resolution edge cases ---
@@ -1117,12 +1128,19 @@ args = ["--custom-flag"]
             .join("skills")
             .join("using-superpowers");
         fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "Use the Skill tool to invoke skills.").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "Use the Skill tool to invoke skills.",
+        )
+        .unwrap();
 
         let task = make_test_task("task-1", "Test");
         let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
         assert!(vars.skills_preamble.contains("EXTREMELY_IMPORTANT"));
-        assert!(vars.skills_preamble.contains("Use the Skill tool to invoke skills."));
+        assert!(
+            vars.skills_preamble
+                .contains("Use the Skill tool to invoke skills.")
+        );
     }
 
     #[test]

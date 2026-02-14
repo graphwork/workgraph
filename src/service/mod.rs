@@ -10,7 +10,6 @@ pub mod executor;
 pub mod registry;
 
 pub use executor::{
-    ExecutorConfig, ExecutorRegistry, ExecutorSettings,
-    PromptTemplate, TemplateVars,
+    ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
 };
 pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};

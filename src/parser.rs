@@ -136,7 +136,8 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
         .open(path)?;
 
     for node in graph.nodes() {
-        let json = serde_json::to_string(node).map_err(|e| ParseError::Json { line: 0, source: e })?;
+        let json =
+            serde_json::to_string(node).map_err(|e| ParseError::Json { line: 0, source: e })?;
         writeln!(file, "{}", json)?;
     }
 
@@ -148,8 +149,8 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
 mod tests {
     use super::*;
     use crate::graph::{Status, Task};
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -195,7 +196,11 @@ mod tests {
     #[test]
     fn test_load_single_task() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#
+        )
+        .unwrap();
 
         let graph = load_graph(file.path()).unwrap();
         assert_eq!(graph.len(), 1);
@@ -205,8 +210,16 @@ mod tests {
     #[test]
     fn test_load_multiple_nodes() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#
+        )
+        .unwrap();
 
         let graph = load_graph(file.path()).unwrap();
         assert_eq!(graph.len(), 2);
@@ -215,9 +228,17 @@ mod tests {
     #[test]
     fn test_load_skips_legacy_actor_nodes() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, r#"{{"id":"erik","kind":"actor","name":"Erik"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t2","kind":"task","title":"Task 2","status":"done"}}"#
+        )
+        .unwrap();
 
         let graph = load_graph(file.path()).unwrap();
         // Actor nodes should be silently skipped
@@ -231,7 +252,11 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# This is a comment").unwrap();
         writeln!(file, "").unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, "   ").unwrap();
 
         let graph = load_graph(file.path()).unwrap();
@@ -277,9 +302,17 @@ mod tests {
     fn test_load_mid_record_corruption() {
         // Valid line, then a corrupted line (truncated JSON), then another valid line
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Good","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Good","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, r#"{{"id":"t2","kind":"task","title":"Trun"#).unwrap(); // truncated
-        writeln!(file, r#"{{"id":"t3","kind":"task","title":"Also Good","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t3","kind":"task","title":"Also Good","status":"open"}}"#
+        )
+        .unwrap();
 
         let result = load_graph(file.path());
         assert!(result.is_err());
@@ -297,17 +330,36 @@ mod tests {
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
     fn test_load_invalid_json_on_specific_lines() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"OK","status":"open"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"t2","kind":"task","title":"OK","status":"open"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"t3","kind":"task","title":"OK","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"OK","status":"open"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t2","kind":"task","title":"OK","status":"open"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t3","kind":"task","title":"OK","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, "this is not json at all").unwrap(); // line 4
-        writeln!(file, r#"{{"id":"t5","kind":"task","title":"OK","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t5","kind":"task","title":"OK","status":"open"}}"#
+        )
+        .unwrap();
 
         let result = load_graph(file.path());
         assert!(result.is_err());
@@ -324,27 +376,40 @@ mod tests {
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
     fn test_load_json_array_instead_of_object() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"[{{"id":"t1","kind":"task","title":"T","status":"open"}}]"#).unwrap();
+        writeln!(
+            file,
+            r#"[{{"id":"t1","kind":"task","title":"T","status":"open"}}]"#
+        )
+        .unwrap();
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
     fn test_load_mixed_line_endings_crlf() {
         let mut file = NamedTempFile::new().unwrap();
         // Write with \r\n line endings
-        write!(file, "{}\r\n{}\r\n",
+        write!(
+            file,
+            "{}\r\n{}\r\n",
             r#"{"id":"t1","kind":"task","title":"CRLF Task 1","status":"open"}"#,
             r#"{"id":"t2","kind":"task","title":"CRLF Task 2","status":"done"}"#,
-        ).unwrap();
+        )
+        .unwrap();
         file.flush().unwrap();
 
         let graph = load_graph(file.path()).unwrap();
@@ -357,11 +422,14 @@ mod tests {
     fn test_load_mixed_line_endings_mixed() {
         let mut file = NamedTempFile::new().unwrap();
         // Mix \n and \r\n in the same file
-        write!(file, "{}\n{}\r\n{}\n",
+        write!(
+            file,
+            "{}\n{}\r\n{}\n",
             r#"{"id":"t1","kind":"task","title":"LF","status":"open"}"#,
             r#"{"id":"t2","kind":"task","title":"CRLF","status":"open"}"#,
             r#"{"id":"t3","kind":"task","title":"LF again","status":"open"}"#,
-        ).unwrap();
+        )
+        .unwrap();
         file.flush().unwrap();
 
         let graph = load_graph(file.path()).unwrap();
@@ -381,7 +449,11 @@ mod tests {
     #[test]
     fn test_load_file_with_trailing_newlines() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Test","status":"open"}}"#
+        )
+        .unwrap();
         write!(file, "\n\n\n").unwrap();
         file.flush().unwrap();
 
@@ -412,7 +484,11 @@ mod tests {
     fn test_load_large_graph_1000_nodes() {
         let mut file = NamedTempFile::new().unwrap();
         for i in 0..1000 {
-            writeln!(file, r#"{{"id":"t{i}","kind":"task","title":"Task {i}","status":"open"}}"#).unwrap();
+            writeln!(
+                file,
+                r#"{{"id":"t{i}","kind":"task","title":"Task {i}","status":"open"}}"#
+            )
+            .unwrap();
         }
         file.flush().unwrap();
 
@@ -422,14 +498,21 @@ mod tests {
 
         assert_eq!(graph.len(), 1000);
         // Sanity: loading 1000 tasks should be well under 5 seconds
-        assert!(elapsed.as_secs() < 5, "Loading 1000 nodes took {:?}, which is too slow", elapsed);
+        assert!(
+            elapsed.as_secs() < 5,
+            "Loading 1000 nodes took {:?}, which is too slow",
+            elapsed
+        );
     }
 
     #[test]
     fn test_save_and_load_large_graph_roundtrip() {
         let mut graph = WorkGraph::new();
         for i in 0..1000 {
-            graph.add_node(Node::Task(make_task(&format!("t{i}"), &format!("Task {i}"))));
+            graph.add_node(Node::Task(make_task(
+                &format!("t{i}"),
+                &format!("Task {i}"),
+            )));
         }
 
         let file = NamedTempFile::new().unwrap();
@@ -458,7 +541,11 @@ mod tests {
             let file = NamedTempFile::new().unwrap();
             save_graph(&graph, file.path()).unwrap();
             let loaded = load_graph(file.path()).unwrap();
-            assert!(loaded.get_task(id).is_some(), "Failed roundtrip for id: {}", id);
+            assert!(
+                loaded.get_task(id).is_some(),
+                "Failed roundtrip for id: {}",
+                id
+            );
         }
     }
 
@@ -497,7 +584,10 @@ mod tests {
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
@@ -508,7 +598,10 @@ mod tests {
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
@@ -518,7 +611,10 @@ mod tests {
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
@@ -534,11 +630,18 @@ mod tests {
     #[test]
     fn test_load_unknown_kind() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"x1","kind":"unknown_type","title":"Mystery"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"x1","kind":"unknown_type","title":"Mystery"}}"#
+        )
+        .unwrap();
 
         let result = load_graph(file.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Json { line: 1, .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::Json { line: 1, .. }
+        ));
     }
 
     #[test]
@@ -601,8 +704,16 @@ mod tests {
     #[test]
     fn test_load_duplicate_ids_last_wins() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"First","status":"open"}}"#).unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Second","status":"done"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"First","status":"open"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Second","status":"done"}}"#
+        )
+        .unwrap();
 
         let graph = load_graph(file.path()).unwrap();
         assert_eq!(graph.len(), 1);
@@ -636,10 +747,18 @@ mod tests {
     fn test_load_interleaved_comments_and_tasks() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# Header comment").unwrap();
-        writeln!(file, r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t1","kind":"task","title":"Task 1","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, "# Mid-file comment").unwrap();
         writeln!(file, "").unwrap();
-        writeln!(file, r#"{{"id":"t2","kind":"task","title":"Task 2","status":"open"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"t2","kind":"task","title":"Task 2","status":"open"}}"#
+        )
+        .unwrap();
         writeln!(file, "# Trailing comment").unwrap();
 
         let graph = load_graph(file.path()).unwrap();
@@ -660,8 +779,8 @@ mod tests {
     #[test]
     fn test_concurrent_access_with_locking() {
         use std::sync::Arc;
-        use std::thread;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
 
         // Create a temporary file
         let file = NamedTempFile::new().unwrap();
@@ -683,7 +802,10 @@ mod tests {
             let handle = thread::spawn(move || {
                 // Each thread loads the graph, adds a task, and saves it back
                 if let Ok(mut graph) = load_graph(path.as_ref()) {
-                    graph.add_node(Node::Task(make_task(&format!("t{}", i + 2), &format!("Task {}", i + 2))));
+                    graph.add_node(Node::Task(make_task(
+                        &format!("t{}", i + 2),
+                        &format!("Task {}", i + 2),
+                    )));
                     if save_graph(&graph, path.as_ref()).is_ok() {
                         success_count.fetch_add(1, Ordering::SeqCst);
                     }

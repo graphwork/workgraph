@@ -129,8 +129,8 @@ fn resolve_all_skills_mixed_types() {
         "A role with mixed skills",
         vec![
             SkillRef::Name("tag-skill".to_string()),
-            SkillRef::File(file),                                // absolute, valid
-            SkillRef::File(PathBuf::from("/missing/skill.md")),  // will fail
+            SkillRef::File(file), // absolute, valid
+            SkillRef::File(PathBuf::from("/missing/skill.md")), // will fail
             SkillRef::Inline("Inline skill body".to_string()),
         ],
         "Test outcome",
@@ -206,23 +206,35 @@ fn render_identity_prompt_includes_resolved_skills() {
 
     // Role header
     assert!(prompt.contains("### Role: Debugger"), "Missing role header");
-    assert!(prompt.contains("Finds and fixes bugs quickly."), "Missing role description");
+    assert!(
+        prompt.contains("Finds and fixes bugs quickly."),
+        "Missing role description"
+    );
 
     // Skills section present
     assert!(prompt.contains("#### Skills"), "Missing Skills header");
 
     // Name-based skill
-    assert!(prompt.contains("### debugging"), "Missing Name skill heading");
+    assert!(
+        prompt.contains("### debugging"),
+        "Missing Name skill heading"
+    );
 
     // File-based skill name (file stem) and content
-    assert!(prompt.contains("### debugging"), "Missing file skill heading");
+    assert!(
+        prompt.contains("### debugging"),
+        "Missing file skill heading"
+    );
     assert!(
         prompt.contains("Use systematic debugging with bisection"),
         "Missing file skill content"
     );
 
     // Inline skill
-    assert!(prompt.contains("### inline"), "Missing inline skill heading");
+    assert!(
+        prompt.contains("### inline"),
+        "Missing inline skill heading"
+    );
     assert!(
         prompt.contains("Always add regression tests"),
         "Missing inline skill content"
@@ -235,7 +247,10 @@ fn render_identity_prompt_includes_resolved_skills() {
     );
 
     // Motivation tradeoffs
-    assert!(prompt.contains("- Takes longer"), "Missing acceptable tradeoff");
+    assert!(
+        prompt.contains("- Takes longer"),
+        "Missing acceptable tradeoff"
+    );
     assert!(
         prompt.contains("- Ignoring root cause"),
         "Missing non-negotiable constraint"
@@ -250,6 +265,12 @@ fn render_identity_prompt_no_skills_omits_section() {
     let prompt = agency::render_identity_prompt(&role, &motivation, &[]);
 
     assert!(prompt.contains("### Role: Bare"), "Missing role header");
-    assert!(!prompt.contains("#### Skills"), "Skills section should be omitted when empty");
-    assert!(prompt.contains("#### Desired Outcome"), "Missing desired outcome header");
+    assert!(
+        !prompt.contains("#### Skills"),
+        "Skills section should be omitted when empty"
+    );
+    assert!(
+        prompt.contains("#### Desired Outcome"),
+        "Missing desired outcome header"
+    );
 }

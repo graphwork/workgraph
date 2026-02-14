@@ -79,18 +79,19 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         match &task.assigned {
             Some(agent_id) => {
                 // Get or create agent entry
-                let workload = agent_workloads.entry(agent_id.clone()).or_insert_with(|| {
-                    AgentWorkload {
-                        id: agent_id.clone(),
-                        name: agent_id.clone(),
-                        assigned_count: 0,
-                        assigned_hours: 0.0,
-                        in_progress_count: 0,
-                        capacity: None,
-                        load_percent: None,
-                        is_overloaded: false,
-                    }
-                });
+                let workload =
+                    agent_workloads
+                        .entry(agent_id.clone())
+                        .or_insert_with(|| AgentWorkload {
+                            id: agent_id.clone(),
+                            name: agent_id.clone(),
+                            assigned_count: 0,
+                            assigned_hours: 0.0,
+                            in_progress_count: 0,
+                            capacity: None,
+                            load_percent: None,
+                            is_overloaded: false,
+                        });
 
                 workload.assigned_count += 1;
 
@@ -175,7 +176,11 @@ fn print_human_readable(
             println!(
                 "    In progress: {} task{}",
                 agent.in_progress_count,
-                if agent.in_progress_count == 1 { "" } else { "s" }
+                if agent.in_progress_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             );
 
             // Capacity
@@ -292,17 +297,15 @@ mod tests {
     }
 
     /// Process tasks into an agent workload map (mirrors run() logic)
-    fn process_tasks(
-        graph: &WorkGraph,
-        workloads: &mut HashMap<String, AgentWorkload>,
-    ) {
+    fn process_tasks(graph: &WorkGraph, workloads: &mut HashMap<String, AgentWorkload>) {
         for task in graph.tasks() {
             if task.status == Status::Done {
                 continue;
             }
             if let Some(agent_id) = &task.assigned {
-                let workload = workloads.entry(agent_id.clone()).or_insert_with(|| {
-                    AgentWorkload {
+                let workload = workloads
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| AgentWorkload {
                         id: agent_id.clone(),
                         name: agent_id.clone(),
                         assigned_count: 0,
@@ -311,8 +314,7 @@ mod tests {
                         capacity: None,
                         load_percent: None,
                         is_overloaded: false,
-                    }
-                });
+                    });
                 workload.assigned_count += 1;
                 if let Some(ref estimate) = task.estimate {
                     if let Some(hours) = estimate.hours {

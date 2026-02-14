@@ -265,11 +265,8 @@ fn test_multiple_evaluations_same_agent_avg() {
     agency::record_evaluation(&eval1, &fix.agency_dir).unwrap();
     agency::record_evaluation(&eval2, &fix.agency_dir).unwrap();
 
-    let agent = agency::find_agent_by_prefix(
-        &fix.agency_dir.join("agents"),
-        &fix.agent_id,
-    )
-    .unwrap();
+    let agent =
+        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
 
     assert_eq!(agent.performance.task_count, 2);
     let expected = (0.80 + 0.90) / 2.0;
@@ -306,11 +303,8 @@ fn test_three_evaluations_incremental_avg() {
         agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     }
 
-    let agent = agency::find_agent_by_prefix(
-        &fix.agency_dir.join("agents"),
-        &fix.agent_id,
-    )
-    .unwrap();
+    let agent =
+        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
 
     assert_eq!(agent.performance.task_count, 3);
     let expected = (0.60 + 0.80 + 1.0) / 3.0;
@@ -347,11 +341,8 @@ fn test_context_ids_tracked_independently() {
     agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
 
     // Agent's context_id = task_id
-    let agent = agency::find_agent_by_prefix(
-        &fix.agency_dir.join("agents"),
-        &fix.agent_id,
-    )
-    .unwrap();
+    let agent =
+        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
     assert_eq!(
         agent.performance.evaluations[0].context_id, "context-task",
         "Agent context_id should be the task_id"
@@ -359,7 +350,9 @@ fn test_context_ids_tracked_independently() {
 
     // Role's context_id = motivation_id
     let role = agency::load_role(
-        &fix.agency_dir.join("roles").join(format!("{}.yaml", fix.role_id)),
+        &fix.agency_dir
+            .join("roles")
+            .join(format!("{}.yaml", fix.role_id)),
     )
     .unwrap();
     assert_eq!(
@@ -426,10 +419,8 @@ fn test_role_tracks_different_motivation_context_ids() {
     };
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
-    let updated_role = agency::load_role(
-        &agency_dir.join("roles").join(format!("{}.yaml", role.id)),
-    )
-    .unwrap();
+    let updated_role =
+        agency::load_role(&agency_dir.join("roles").join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(updated_role.performance.evaluations.len(), 2);
     assert_eq!(
         updated_role.performance.evaluations[0].context_id, mot_a.id,
@@ -529,10 +520,8 @@ fn test_performance_zero_evaluations_yaml_roundtrip() {
     let role = agency::build_role("Fresh", "no evals yet", vec![], "outcome");
     agency::save_role(&role, &agency_dir.join("roles")).unwrap();
 
-    let loaded = agency::load_role(
-        &agency_dir.join("roles").join(format!("{}.yaml", role.id)),
-    )
-    .unwrap();
+    let loaded =
+        agency::load_role(&agency_dir.join("roles").join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(loaded.performance.task_count, 0);
     assert!(loaded.performance.avg_score.is_none());
     assert!(loaded.performance.evaluations.is_empty());
@@ -632,11 +621,8 @@ fn test_twelve_evaluations_end_to_end() {
     let expected_avg = scores.iter().sum::<f64>() / scores.len() as f64;
 
     // Agent
-    let agent = agency::find_agent_by_prefix(
-        &fix.agency_dir.join("agents"),
-        &fix.agent_id,
-    )
-    .unwrap();
+    let agent =
+        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
     assert_eq!(agent.performance.task_count, 12);
     assert_eq!(agent.performance.evaluations.len(), 12);
     assert!(
@@ -669,8 +655,7 @@ fn test_twelve_evaluations_end_to_end() {
     assert!((mot.performance.avg_score.unwrap() - expected_avg).abs() < 1e-10);
 
     // All 12 evaluation files should exist on disk
-    let all_evals =
-        agency::load_all_evaluations(&fix.agency_dir.join("evaluations")).unwrap();
+    let all_evals = agency::load_all_evaluations(&fix.agency_dir.join("evaluations")).unwrap();
     assert_eq!(all_evals.len(), 12);
 }
 
@@ -689,13 +674,8 @@ fn test_all_dimension_fields_preserved() {
     dimensions.insert("efficiency".to_string(), 0.72);
     dimensions.insert("style_adherence".to_string(), 0.91);
 
-    let eval = fix.make_evaluation_with_dims(
-        "dim-test",
-        "dims-task",
-        0.87,
-        true,
-        dimensions.clone(),
-    );
+    let eval =
+        fix.make_evaluation_with_dims("dim-test", "dims-task", 0.87, true, dimensions.clone());
 
     let eval_path = agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     let loaded = agency::load_evaluation(&eval_path).unwrap();
@@ -775,13 +755,8 @@ fn test_dimensions_independent_of_score() {
     dimensions.insert("completeness".to_string(), 0.5);
 
     // Overall score intentionally different from any dimension average
-    let eval = fix.make_evaluation_with_dims(
-        "indep-dims",
-        "indep-task",
-        0.99,
-        false,
-        dimensions.clone(),
-    );
+    let eval =
+        fix.make_evaluation_with_dims("indep-dims", "indep-task", 0.99, false, dimensions.clone());
 
     let eval_path = agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     let loaded = agency::load_evaluation(&eval_path).unwrap();
@@ -948,11 +923,7 @@ fn test_recalculate_avg_score_precision() {
         },
     ];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
-    assert!(
-        (avg - 0.5).abs() < 1e-8,
-        "Expected ~0.5, got {}",
-        avg
-    );
+    assert!((avg - 0.5).abs() < 1e-8, "Expected ~0.5, got {}", avg);
 }
 
 /// update_performance correctly increments task_count and recalculates after each call.

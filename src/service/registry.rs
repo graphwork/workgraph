@@ -152,12 +152,12 @@ impl AgentRegistry {
 
         // Create service directory if it doesn't exist
         if !service_dir.exists() {
-            fs::create_dir_all(&service_dir)
-                .with_context(|| format!("Failed to create service directory at {:?}", service_dir))?;
+            fs::create_dir_all(&service_dir).with_context(|| {
+                format!("Failed to create service directory at {:?}", service_dir)
+            })?;
         }
 
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize registry")?;
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize registry")?;
 
         // Write to temporary file first
         let temp_path = service_dir.join(".registry.json.tmp");
@@ -166,8 +166,7 @@ impl AgentRegistry {
                 .with_context(|| format!("Failed to create temp file at {:?}", temp_path))?;
             file.write_all(content.as_bytes())
                 .context("Failed to write to temp file")?;
-            file.sync_all()
-                .context("Failed to sync temp file")?;
+            file.sync_all().context("Failed to sync temp file")?;
         }
 
         // Atomic rename
@@ -190,8 +189,9 @@ impl AgentRegistry {
 
         // Ensure service directory exists
         if !service_dir.exists() {
-            fs::create_dir_all(&service_dir)
-                .with_context(|| format!("Failed to create service directory at {:?}", service_dir))?;
+            fs::create_dir_all(&service_dir).with_context(|| {
+                format!("Failed to create service directory at {:?}", service_dir)
+            })?;
         }
 
         let lock_path = service_dir.join(".registry.lock");
@@ -628,12 +628,20 @@ mod tests {
         let mut registry = AgentRegistry::new();
         registry.register_agent(12345, "task-1", "claude", "/tmp/output.log");
 
-        let original_hb = registry.get_agent("agent-1").unwrap().last_heartbeat.clone();
+        let original_hb = registry
+            .get_agent("agent-1")
+            .unwrap()
+            .last_heartbeat
+            .clone();
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         registry.update_heartbeat("agent-1").unwrap();
 
-        let new_hb = registry.get_agent("agent-1").unwrap().last_heartbeat.clone();
+        let new_hb = registry
+            .get_agent("agent-1")
+            .unwrap()
+            .last_heartbeat
+            .clone();
         assert_ne!(original_hb, new_hb);
     }
 
@@ -649,7 +657,9 @@ mod tests {
         let mut registry = AgentRegistry::new();
         registry.register_agent(12345, "task-1", "claude", "/tmp/output.log");
 
-        registry.update_status("agent-1", AgentStatus::Working).unwrap();
+        registry
+            .update_status("agent-1", AgentStatus::Working)
+            .unwrap();
 
         let agent = registry.get_agent("agent-1").unwrap();
         assert_eq!(agent.status, AgentStatus::Working);
@@ -739,8 +749,14 @@ mod tests {
         assert_eq!(dead_ids.len(), 2);
 
         // Both should now be marked as dead
-        assert_eq!(registry.get_agent("agent-1").unwrap().status, AgentStatus::Dead);
-        assert_eq!(registry.get_agent("agent-2").unwrap().status, AgentStatus::Dead);
+        assert_eq!(
+            registry.get_agent("agent-1").unwrap().status,
+            AgentStatus::Dead
+        );
+        assert_eq!(
+            registry.get_agent("agent-2").unwrap().status,
+            AgentStatus::Dead
+        );
     }
 
     #[test]

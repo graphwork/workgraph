@@ -139,10 +139,7 @@ mod tests {
         let mut task = make_task("t1", "Test task", Status::InProgress);
         task.assigned = Some("agent-old".to_string());
 
-        setup_workgraph(
-            dir_path,
-            vec![task],
-        );
+        setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
         assert!(result.is_ok());
@@ -164,10 +161,7 @@ mod tests {
         let mut task = make_task("t1", "Test task", Status::InProgress);
         task.assigned = Some("agent-actual".to_string());
 
-        setup_workgraph(
-            dir_path,
-            vec![task],
-        );
+        setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
         assert!(result.is_err());
@@ -180,10 +174,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Test task", Status::Open)],
-        );
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
         assert!(result.is_err());
@@ -212,10 +203,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![],
-        );
+        setup_workgraph(dir_path, vec![]);
 
         let result = run(dir_path, "nonexistent", "agent-old", "agent-new");
         assert!(result.is_err());
@@ -243,10 +231,7 @@ mod tests {
         let mut task = make_task("t1", "Test task", Status::InProgress);
         task.assigned = Some("agent-old".to_string());
 
-        setup_workgraph(
-            dir_path,
-            vec![task],
-        );
+        setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
         assert!(result.is_ok());
