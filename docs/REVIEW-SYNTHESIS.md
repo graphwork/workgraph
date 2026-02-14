@@ -1,5 +1,7 @@
 # Workgraph Code Review Synthesis
 
+> **Note:** This document synthesizes findings from a Feb 11, 2026 code review. Detailed review documents have been archived to `docs/archive/reviews/`. Some recommendations may be partially completed or outdated. Use the Top 10 Recommendations section below as a prioritized action list.
+
 **Date:** 2026-02-11
 **Source:** 10 review documents covering the full codebase
 **Scope:** 92 source files (~45,800 lines), 9 test files (~7,650 lines), 67 CLI commands
