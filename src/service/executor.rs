@@ -22,6 +22,8 @@ pub struct TemplateVars {
     pub task_identity: String,
     pub working_dir: String,
     pub skills_preamble: String,
+    /// Optional project-level protocol appended to prompts (from `.workgraph/protocol.md`).
+    pub project_protocol: String,
 }
 
 impl TemplateVars {
@@ -44,6 +46,7 @@ impl TemplateVars {
             .unwrap_or_default();
 
         let skills_preamble = Self::resolve_skills_preamble(workgraph_dir);
+        let project_protocol = Self::resolve_project_protocol(workgraph_dir);
 
         Self {
             task_id: task.id.clone(),
@@ -53,6 +56,7 @@ impl TemplateVars {
             task_identity,
             working_dir,
             skills_preamble,
+            project_protocol,
         }
     }
 
@@ -142,6 +146,23 @@ impl TemplateVars {
         }
     }
 
+    /// Read project protocol from `.workgraph/protocol.md`, if present.
+    ///
+    /// This is a simple, git-friendly way to keep an agent "session protocol" in sync
+    /// without hardcoding it into every executor template.
+    fn resolve_project_protocol(workgraph_dir: Option<&Path>) -> String {
+        let wg_dir = match workgraph_dir {
+            Some(d) => d,
+            None => return String::new(),
+        };
+
+        let protocol_path = wg_dir.join("protocol.md");
+        match std::fs::read_to_string(&protocol_path) {
+            Ok(content) => content.trim().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Apply template substitution to a string.
     pub fn apply(&self, template: &str) -> String {
         template
@@ -152,6 +173,7 @@ impl TemplateVars {
             .replace("{{task_identity}}", &self.task_identity)
             .replace("{{working_dir}}", &self.working_dir)
             .replace("{{skills_preamble}}", &self.skills_preamble)
+            .replace("{{project_protocol}}", &self.project_protocol)
     }
 }
 
@@ -247,7 +269,14 @@ impl ExecutorConfig {
 
         // Apply to prompt template
         if let Some(ref mut pt) = settings.prompt_template {
-            pt.template = vars.apply(&pt.template);
+            let mut combined = pt.template.clone();
+            let proto = vars.project_protocol.trim();
+            if !combined.contains("{{project_protocol}}") && !proto.is_empty() {
+                combined.push_str("\n\n## Project Protocol\n");
+                combined.push_str(proto);
+                combined.push('\n');
+            }
+            pt.template = vars.apply(&combined);
         }
 
         // Apply to working dir
@@ -1148,5 +1177,58 @@ args = ["--custom-flag"]
         assert!(vars.skills_preamble.contains("Actual content here."));
         // The frontmatter itself should not appear in the preamble body
         assert!(!vars.skills_preamble.contains("title: Skill"));
+    }
+
+    #[test]
+    fn test_project_protocol_empty_when_no_protocol_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path().join(".workgraph");
+        fs::create_dir_all(&wg_dir).unwrap();
+
+        let task = make_test_task("task-1", "Test");
+        let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
+        assert_eq!(vars.project_protocol, "");
+    }
+
+    #[test]
+    fn test_project_protocol_loaded_when_file_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path().join(".workgraph");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(wg_dir.join("protocol.md"), "hello {{task_id}}\n").unwrap();
+
+        let task = make_test_task("task-1", "Test");
+        let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
+        assert_eq!(vars.project_protocol, "hello {{task_id}}");
+    }
+
+    #[test]
+    fn test_apply_templates_appends_project_protocol_when_present() {
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path().join(".workgraph");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(wg_dir.join("protocol.md"), "proto {{task_id}}\n").unwrap();
+
+        let config = ExecutorConfig {
+            executor: ExecutorSettings {
+                executor_type: "test".to_string(),
+                command: "cmd".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                prompt_template: Some(PromptTemplate {
+                    template: "Context: {{task_context}}".to_string(),
+                }),
+                working_dir: None,
+                timeout: None,
+            },
+        };
+
+        let task = make_test_task("task-1", "Test Task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), Some(&wg_dir));
+        let settings = config.apply_templates(&vars);
+        let out = settings.prompt_template.unwrap().template;
+        assert!(out.contains("Context: dep context"));
+        assert!(out.contains("## Project Protocol"));
+        assert!(out.contains("proto task-1"));
     }
 }

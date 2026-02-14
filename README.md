@@ -185,6 +185,23 @@ The skill teaches agents to:
 - Let the service handle claiming and spawning — not do it manually
 - Use manual mode only as a fallback when working alone without the service
 
+### Project Protocols (Optional)
+
+If `.workgraph/protocol.md` exists, its contents are appended to agent prompts (for executors with a `prompt_template`). This is the recommended integration point for sidecar tools and project-specific rules.
+
+- To control where the content is inserted, include `{{project_protocol}}` in your executor prompt template.
+- Otherwise it is appended under a `## Project Protocol` header.
+
+Example `.workgraph/protocol.md`:
+
+```markdown
+## Speedrift
+- ./.workgraph/speedrift check --task {{task_id}} --write-log --create-followups
+
+## uxrift
+- ./.workgraph/uxrift wg check --task {{task_id}} --write-log --create-followups
+```
+
 ## Agentic workflows
 
 ### Pattern 1: Service mode (recommended)
