@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -1245,7 +1245,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
         .collect();
 
     // Load config for ordering preference
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let use_alphabetical = alphabetical || config.help.ordering == "alphabetical";
 
     println!("wg - workgraph task management\n");
@@ -1729,20 +1729,7 @@ fn main() -> Result<()> {
             SkillCommands::Install => commands::skills::run_install(),
         },
         Commands::Agency { command } => match command {
-            AgencyCommands::Init => {
-                let agency_dir = workgraph_dir.join("agency");
-                let (roles, motivations) = workgraph::agency::seed_starters(&agency_dir)
-                    .context("Failed to seed agency starters")?;
-                if roles == 0 && motivations == 0 {
-                    println!("Agency already initialized (all starters present).");
-                } else {
-                    println!(
-                        "Seeded agency with {} roles and {} motivations.",
-                        roles, motivations
-                    );
-                }
-                Ok(())
-            }
+            AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
             AgencyCommands::Stats { min_evals } => {
                 commands::agency_stats::run(&workgraph_dir, cli.json, min_evals)
             }

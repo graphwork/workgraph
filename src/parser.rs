@@ -117,6 +117,14 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
             line: line_num + 1,
             source: e,
         })?;
+        let node_id = node.id().to_string();
+        if graph.get_node(&node_id).is_some() {
+            eprintln!(
+                "Warning: duplicate node ID '{}' at line {} (overwriting previous definition)",
+                node_id,
+                line_num + 1
+            );
+        }
         graph.add_node(node);
     }
 
@@ -824,5 +832,21 @@ mod tests {
 
         // The graph should be parseable (no EOF errors or corruption)
         assert!(!final_graph.is_empty());
+    }
+
+    #[test]
+    fn test_load_graph_duplicate_ids_last_wins() {
+        let mut file = NamedTempFile::new().unwrap();
+
+        let task1 = Node::Task(make_task("dup", "First version"));
+        let task2 = Node::Task(make_task("dup", "Second version"));
+        writeln!(file, "{}", serde_json::to_string(&task1).unwrap()).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&task2).unwrap()).unwrap();
+        file.flush().unwrap();
+
+        let graph = load_graph(file.path()).unwrap();
+        // Last-wins semantics: the second definition should be kept
+        let task = graph.get_task("dup").unwrap();
+        assert_eq!(task.title, "Second version");
     }
 }

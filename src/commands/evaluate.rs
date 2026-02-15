@@ -128,7 +128,7 @@ pub fn run(
     let prompt = render_evaluator_prompt(&evaluator_input);
 
     // Determine the model to use
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let model = evaluator_model
         .map(|s| s.to_string())
         .or(config.agency.evaluator_model.clone())

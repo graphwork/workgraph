@@ -322,7 +322,7 @@ pub fn coordinator_tick(
     let graph_path = graph_path(dir);
 
     // Load config for agency settings
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
 
     // Clean up dead agents: process exited
     let finished_agents = cleanup_dead_agents(dir, &graph_path)?;
@@ -830,7 +830,7 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     locked_registry.save_ref()?;
 
     // Load config for triage settings
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
 
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
@@ -1493,7 +1493,7 @@ pub fn run_start(
     }
 
     // Resolve effective config for display (CLI flags override config.toml)
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let eff_max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let eff_poll_interval = interval.unwrap_or(config.coordinator.poll_interval);
     let eff_executor = executor
@@ -1625,7 +1625,7 @@ pub fn run_daemon(
     let mut running = true;
 
     // Load coordinator config, CLI args override config values
-    let config = Config::load(&dir).unwrap_or_default();
+    let config = Config::load_or_default(&dir);
     let mut daemon_cfg = DaemonConfig {
         max_agents: cli_max_agents.unwrap_or(config.coordinator.max_agents),
         executor: cli_executor

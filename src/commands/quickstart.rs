@@ -5,6 +5,29 @@ const QUICKSTART_TEXT: &str = r#"
 ║                         WORKGRAPH AGENT QUICKSTART                           ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
+GETTING STARTED
+─────────────────────────────────────────
+  wg init                     # Create a .workgraph directory
+  wg agency init              # Bootstrap roles, motivations, and a default agent
+  wg service start            # Start the coordinator
+  wg add "My first task"      # Add work — the service dispatches automatically
+
+AGENCY SETUP
+─────────────────────────────────────────
+  'wg agency init' creates sensible defaults so the service can auto-assign
+  agents to tasks immediately. It sets up:
+
+  • Roles     — what agents do (Programmer, Reviewer, Documenter, Architect)
+  • Motivations — constraints on how (Careful, Fast, Thorough, Balanced)
+  • Agent     — a role+motivation pairing (default: Careful Programmer)
+  • Config    — enables auto_assign and auto_evaluate
+
+  You can also set up manually:
+    wg role add "Name" --outcome "What it produces" --skill skill-name
+    wg motivation add "Name" --accept "Slow" --reject "Untested"
+    wg agent create "Name" --role <hash> --motivation <hash>
+    wg config --auto-assign true --auto-evaluate true
+
 ⚠ COORDINATOR SERVICE REMINDER ⚠
 ─────────────────────────────────────────
   Check if the coordinator is running:  wg service status
@@ -79,56 +102,80 @@ TIPS
 • Check 'wg blocked <task-id>' if a task isn't appearing in ready list
 "#;
 
+fn json_output() -> serde_json::Value {
+    serde_json::json!({
+        "getting_started": [
+            "wg init",
+            "wg agency init",
+            "wg service start",
+            "wg add \"My first task\""
+        ],
+        "agency": {
+            "description": "Agency gives the service agents to assign to tasks.",
+            "quick_setup": "wg agency init",
+            "concepts": {
+                "roles": "What agents do (skills + desired outcome)",
+                "motivations": "Constraints on how agents work (acceptable/unacceptable trade-offs)",
+                "agents": "A role + motivation pairing that gets assigned to tasks"
+            },
+            "manual_setup": [
+                "wg role add \"Name\" --outcome \"...\" --skill name",
+                "wg motivation add \"Name\" --accept \"...\" --reject \"...\"",
+                "wg agent create \"Name\" --role <hash> --motivation <hash>",
+                "wg config --auto-assign true --auto-evaluate true"
+            ]
+        },
+        "modes": {
+            "service": {
+                "description": "Recommended for parallel work. Coordinator dispatches automatically.",
+                "start": "wg service start --max-agents 5",
+                "workflow": "Add tasks with dependencies → coordinator spawns agents on ready tasks",
+                "warning": "Do NOT manually wg spawn or wg claim while the service is running",
+                "monitor": ["wg service status", "wg agents", "wg list", "wg tui"]
+            },
+            "manual": {
+                "description": "For when no service is running. You claim and work tasks yourself.",
+                "workflow": ["wg ready", "wg claim <task-id>", "wg log <task-id> \"msg\"", "wg done <task-id>"]
+            }
+        },
+        "commands": {
+            "discovery": {
+                "list": "List all tasks",
+                "show": "View task details and context",
+                "add": "Add a new task",
+                "ready": "See tasks available to work on (manual mode)"
+            },
+            "work": {
+                "claim": "Claim a task for work (manual mode only)",
+                "log": "Log progress as you work",
+                "context": "See context from dependencies",
+                "artifact": "Record output file/artifact"
+            },
+            "completion": {
+                "done": "Mark task complete",
+                "fail": "Mark failed (can be retried)",
+                "abandon": "Give up permanently"
+            }
+        },
+        "loops": {
+            "description": "Loop edges model repeating workflows. A loops_to edge fires when its task completes, resetting a target back to open and incrementing loop_iteration.",
+            "create": "wg add \"Revise\" --loops-to write --loop-max 3",
+            "inspect": ["wg show <task-id>", "wg loops"],
+            "note": "Agents read loop_iteration from wg show to know which pass they are on"
+        },
+        "tips": [
+            "If the coordinator is running: add tasks with dependencies, it dispatches automatically",
+            "If no coordinator: ready → claim → work → done",
+            "Run 'wg log' BEFORE starting work to track progress",
+            "Use 'wg context' to understand what dependencies produced",
+            "Check 'wg blocked <task-id>' if a task isn't appearing in ready list"
+        ]
+    })
+}
+
 pub fn run(json: bool) -> Result<()> {
     if json {
-        let output = serde_json::json!({
-            "modes": {
-                "service": {
-                    "description": "Recommended for parallel work. Coordinator dispatches automatically.",
-                    "start": "wg service start --max-agents 5",
-                    "workflow": "Add tasks with dependencies → coordinator spawns agents on ready tasks",
-                    "warning": "Do NOT manually wg spawn or wg claim while the service is running",
-                    "monitor": ["wg service status", "wg agents", "wg list", "wg tui"]
-                },
-                "manual": {
-                    "description": "For when no service is running. You claim and work tasks yourself.",
-                    "workflow": ["wg ready", "wg claim <task-id>", "wg log <task-id> \"msg\"", "wg done <task-id>"]
-                }
-            },
-            "commands": {
-                "discovery": {
-                    "list": "List all tasks",
-                    "show": "View task details and context",
-                    "add": "Add a new task",
-                    "ready": "See tasks available to work on (manual mode)"
-                },
-                "work": {
-                    "claim": "Claim a task for work (manual mode only)",
-                    "log": "Log progress as you work",
-                    "context": "See context from dependencies",
-                    "artifact": "Record output file/artifact"
-                },
-                "completion": {
-                    "done": "Mark task complete",
-                    "fail": "Mark failed (can be retried)",
-                    "abandon": "Give up permanently"
-                }
-            },
-            "loops": {
-                "description": "Loop edges model repeating workflows. A loops_to edge fires when its task completes, resetting a target back to open and incrementing loop_iteration.",
-                "create": "wg add \"Revise\" --loops-to write --loop-max 3",
-                "inspect": ["wg show <task-id>", "wg loops"],
-                "note": "Agents read loop_iteration from wg show to know which pass they are on"
-            },
-            "tips": [
-                "If the coordinator is running: add tasks with dependencies, it dispatches automatically",
-                "If no coordinator: ready → claim → work → done",
-                "Run 'wg log' BEFORE starting work to track progress",
-                "Use 'wg context' to understand what dependencies produced",
-                "Check 'wg blocked <task-id>' if a task isn't appearing in ready list"
-            ]
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", serde_json::to_string_pretty(&json_output())?);
     } else {
         println!("{}", QUICKSTART_TEXT.trim());
     }
@@ -181,6 +228,19 @@ mod tests {
     }
 
     #[test]
+    fn test_quickstart_text_contains_getting_started() {
+        assert!(QUICKSTART_TEXT.contains("GETTING STARTED"));
+        assert!(QUICKSTART_TEXT.contains("wg agency init"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_agency_setup() {
+        assert!(QUICKSTART_TEXT.contains("AGENCY SETUP"));
+        assert!(QUICKSTART_TEXT.contains("Roles"));
+        assert!(QUICKSTART_TEXT.contains("Motivations"));
+    }
+
+    #[test]
     fn test_run_text_mode_succeeds() {
         assert!(run(false).is_ok());
     }
@@ -191,71 +251,45 @@ mod tests {
     }
 
     #[test]
-    fn test_json_output_has_modes() {
-        // Build the same JSON structure as the run function and verify fields
-        let output = serde_json::json!({
-            "modes": {
-                "service": {
-                    "description": "Recommended for parallel work. Coordinator dispatches automatically.",
-                    "start": "wg service start --max-agents 5",
-                    "workflow": "Add tasks with dependencies → coordinator spawns agents on ready tasks",
-                    "warning": "Do NOT manually wg spawn or wg claim while the service is running",
-                    "monitor": ["wg service status", "wg agents", "wg list", "wg tui"]
-                },
-                "manual": {
-                    "description": "For when no service is running. You claim and work tasks yourself.",
-                    "workflow": ["wg ready", "wg claim <task-id>", "wg log <task-id> \"msg\"", "wg done <task-id>"]
-                }
-            },
-            "commands": {
-                "discovery": { "list": "List all tasks", "show": "View task details and context", "add": "Add a new task", "ready": "See tasks available to work on (manual mode)" },
-                "work": { "claim": "Claim a task for work (manual mode only)", "log": "Log progress as you work", "context": "See context from dependencies", "artifact": "Record output file/artifact" },
-                "completion": { "done": "Mark task complete", "fail": "Mark failed (can be retried)", "abandon": "Give up permanently" }
-            },
-            "loops": {
-                "description": "Loop edges model repeating workflows. A loops_to edge fires when its task completes, resetting a target back to open and incrementing loop_iteration.",
-                "create": "wg add \"Revise\" --loops-to write --loop-max 3",
-                "inspect": ["wg show <task-id>", "wg loops"],
-                "note": "Agents read loop_iteration from wg show to know which pass they are on"
-            },
-            "tips": [
-                "If the coordinator is running: add tasks with dependencies, it dispatches automatically",
-                "If no coordinator: ready → claim → work → done",
-                "Run 'wg log' BEFORE starting work to track progress",
-                "Use 'wg context' to understand what dependencies produced",
-                "Check 'wg blocked <task-id>' if a task isn't appearing in ready list"
-            ]
-        });
-
-        // Verify it's valid JSON
-        let serialized = serde_json::to_string_pretty(&output).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+    fn test_json_output_has_expected_fields() {
+        let output = json_output();
 
         // Check top-level keys
-        assert!(parsed.get("modes").is_some());
-        assert!(parsed.get("commands").is_some());
-        assert!(parsed.get("loops").is_some());
-        assert!(parsed.get("tips").is_some());
+        assert!(output.get("getting_started").is_some());
+        assert!(output.get("agency").is_some());
+        assert!(output.get("modes").is_some());
+        assert!(output.get("commands").is_some());
+        assert!(output.get("loops").is_some());
+        assert!(output.get("tips").is_some());
+
+        // Check getting_started is an array
+        let gs = output.get("getting_started").unwrap().as_array().unwrap();
+        assert!(gs.len() >= 3);
+
+        // Check agency fields
+        let agency = output.get("agency").unwrap();
+        assert!(agency.get("quick_setup").is_some());
+        assert!(agency.get("concepts").is_some());
 
         // Check modes
-        let modes = parsed.get("modes").unwrap();
+        let modes = output.get("modes").unwrap();
         assert!(modes.get("service").is_some());
         assert!(modes.get("manual").is_some());
 
         // Check commands sub-sections
-        let commands = parsed.get("commands").unwrap();
+        let commands = output.get("commands").unwrap();
         assert!(commands.get("discovery").is_some());
         assert!(commands.get("work").is_some());
         assert!(commands.get("completion").is_some());
 
         // Check loops fields
-        let loops = parsed.get("loops").unwrap();
+        let loops = output.get("loops").unwrap();
         assert!(loops.get("description").is_some());
         assert!(loops.get("create").is_some());
         assert!(loops.get("inspect").is_some());
 
         // Check tips is an array with entries
-        let tips = parsed.get("tips").unwrap().as_array().unwrap();
+        let tips = output.get("tips").unwrap().as_array().unwrap();
         assert!(!tips.is_empty());
         assert!(tips.len() >= 5);
     }
@@ -265,6 +299,8 @@ mod tests {
         let text = QUICKSTART_TEXT.trim();
         let required_sections = [
             "WORKGRAPH AGENT QUICKSTART",
+            "GETTING STARTED",
+            "AGENCY SETUP",
             "COORDINATOR SERVICE REMINDER",
             "SERVICE MODE",
             "MANUAL MODE",

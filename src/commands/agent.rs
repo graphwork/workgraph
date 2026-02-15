@@ -205,7 +205,7 @@ pub fn run(
     }
 
     // Load config and apply defaults
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let interval_secs = interval_secs.unwrap_or(config.agent.interval);
     let max_tasks = max_tasks.or(config.agent.max_tasks);
 

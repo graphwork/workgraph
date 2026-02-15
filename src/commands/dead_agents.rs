@@ -40,7 +40,7 @@ pub struct DetectionResult {
 
 /// Check for dead agents without modifying anything
 pub fn run_check(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Result<()> {
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let threshold_mins = threshold_minutes.unwrap_or(config.agent.heartbeat_timeout);
     let threshold_secs = (threshold_mins * 60) as i64;
 
@@ -99,7 +99,7 @@ pub fn run_cleanup(
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
     let threshold_mins = threshold_minutes.unwrap_or(config.agent.heartbeat_timeout);
     let threshold_secs = (threshold_mins * 60) as i64;
 

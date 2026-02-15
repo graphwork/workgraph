@@ -824,14 +824,19 @@ mod tests {
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
+        assert_eq!(agents.len(), 1);
         let agent_id = &agents[0].id;
+        assert_eq!(agents[0].name, "Show Agent");
+        assert_eq!(agents[0].role_id, role_id);
+        assert_eq!(agents[0].motivation_id, mot_id);
 
-        // Show should work
+        // Show should work (human-readable + JSON)
         run_show(tmp.path(), agent_id, false).unwrap();
         run_show(tmp.path(), agent_id, true).unwrap();
 
-        // Show by prefix
-        run_show(tmp.path(), &agent_id[..8], false).unwrap();
+        // Show by prefix should resolve to the same agent
+        let resolved = agency::find_agent_by_prefix(&agents_dir, &agent_id[..8]).unwrap();
+        assert_eq!(resolved.id, *agent_id);
 
         // Remove
         run_rm(tmp.path(), agent_id).unwrap();
@@ -848,6 +853,11 @@ mod tests {
     #[test]
     fn test_list_empty() {
         let tmp = setup();
+        // Verify underlying data is empty
+        let agents_dir = tmp.path().join("agency").join("agents");
+        let agents = agency::load_all_agents(&agents_dir).unwrap();
+        assert!(agents.is_empty(), "Expected no agents in fresh setup");
+        // Both output modes should succeed
         run_list(tmp.path(), false).unwrap();
         run_list(tmp.path(), true).unwrap();
     }
@@ -862,7 +872,20 @@ mod tests {
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
-        let agent_id = &agents[0].id;
+        assert_eq!(agents.len(), 1);
+        let agent = &agents[0];
+        let agent_id = &agent.id;
+
+        // Verify lineage data is populated
+        assert_eq!(agent.lineage.generation, 0);
+        assert_eq!(agent.lineage.created_by, "human");
+        assert!(agent.lineage.parent_ids.is_empty());
+
+        // Verify role ancestry resolves
+        let roles_dir = tmp.path().join("agency").join("roles");
+        let role_ancestry = agency::role_ancestry(&agent.role_id, &roles_dir).unwrap_or_default();
+        assert!(!role_ancestry.is_empty(), "Role ancestry should resolve");
+        assert_eq!(role_ancestry[0].name, "Test Role");
 
         run_lineage(tmp.path(), agent_id, false).unwrap();
         run_lineage(tmp.path(), agent_id, true).unwrap();
@@ -878,7 +901,18 @@ mod tests {
 
         let agents_dir = tmp.path().join("agency").join("agents");
         let agents = agency::load_all_agents(&agents_dir).unwrap();
-        let agent_id = &agents[0].id;
+        let agent = &agents[0];
+        let agent_id = &agent.id;
+
+        // Verify performance data is initialized correctly
+        assert_eq!(agent.performance.task_count, 0);
+        assert!(agent.performance.avg_score.is_none());
+        assert!(agent.performance.evaluations.is_empty());
+
+        // Verify evaluations dir is empty
+        let evals_dir = tmp.path().join("agency").join("evaluations");
+        let all_evals = agency::load_all_evaluations(&evals_dir).unwrap_or_default();
+        assert!(all_evals.is_empty());
 
         run_performance(tmp.path(), agent_id, false).unwrap();
         run_performance(tmp.path(), agent_id, true).unwrap();

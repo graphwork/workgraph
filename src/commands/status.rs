@@ -165,7 +165,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     }
 
     // Fall back to config file
-    let config = workgraph::config::Config::load(dir).unwrap_or_default();
+    let config = workgraph::config::Config::load_or_default(dir);
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
         executor: config.coordinator.executor,

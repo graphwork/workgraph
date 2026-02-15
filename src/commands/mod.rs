@@ -1,5 +1,6 @@
 pub mod abandon;
 pub mod add;
+pub mod agency_init;
 pub mod agency_stats;
 pub mod agent;
 pub mod agent_crud;

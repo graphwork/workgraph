@@ -98,10 +98,16 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         .blocked_by
         .iter()
         .map(|blocker_id| {
-            let status = graph
-                .get_task(blocker_id)
-                .map(|t| t.status.clone())
-                .unwrap_or(Status::Open);
+            let status = match graph.get_task(blocker_id) {
+                Some(t) => t.status.clone(),
+                None => {
+                    eprintln!(
+                        "Warning: blocker '{}' referenced by '{}' not found in graph",
+                        blocker_id, id
+                    );
+                    Status::Open
+                }
+            };
             BlockerInfo {
                 id: blocker_id.clone(),
                 status,
@@ -537,5 +543,42 @@ mod tests {
 
         let result = run(temp_dir.path(), "t1", true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_task_with_orphan_blocker() {
+        // A task references a blocker that doesn't exist in the graph
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("t1", "Task with ghost blocker");
+        task.blocked_by = vec!["nonexistent".to_string()];
+        graph.add_node(Node::Task(task));
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        // Should succeed (not crash), blocker defaults to Status::Open with a warning
+        let result = run(temp_dir.path(), "t1", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_task_with_orphan_blocker_json() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("t1", "Task with ghost blocker");
+        task.blocked_by = vec!["ghost".to_string()];
+        graph.add_node(Node::Task(task));
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        let result = run(temp_dir.path(), "t1", true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_no_graph_file() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let result = run(temp_dir.path(), "t1", false);
+        assert!(result.is_err());
     }
 }

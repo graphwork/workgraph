@@ -273,7 +273,7 @@ impl MatrixConfig {
     /// Get the path to the global Matrix config file
     pub fn config_path() -> anyhow::Result<PathBuf> {
         let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory. Expected ~/.config on Linux, ~/Library/Application Support on macOS, or %APPDATA% on Windows."))?;
         Ok(config_dir.join("workgraph").join("matrix.toml"))
     }
 
@@ -340,10 +340,26 @@ impl Config {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config: {}", e))?;
 
-        let config: Config = toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+        let config: Config = toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
+        })?;
 
         Ok(config)
+    }
+
+    /// Load configuration, falling back to defaults with a warning on errors.
+    ///
+    /// Unlike `.load().unwrap_or_default()`, this emits a stderr warning
+    /// when the config file exists but is corrupt, so the user knows
+    /// their configuration is being ignored.
+    pub fn load_or_default(workgraph_dir: &Path) -> Self {
+        match Self::load(workgraph_dir) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Warning: {}, using defaults", e);
+                Self::default()
+            }
+        }
     }
 
     /// Save configuration to .workgraph/config.toml

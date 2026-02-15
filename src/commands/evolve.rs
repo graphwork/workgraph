@@ -162,7 +162,7 @@ pub fn run(
     let skill_docs = load_evolver_skills(&skills_dir, strategy)?;
 
     // Load config for evolver identity and model
-    let config = Config::load(dir).unwrap_or_default();
+    let config = Config::load_or_default(dir);
 
     // Determine model: CLI flag > agency.evolver_model > agent.model
     let model = model
