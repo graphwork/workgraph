@@ -1892,7 +1892,9 @@ fn handle_connection(
             Ok(l) => l,
             Err(e) => {
                 let response = IpcResponse::error(&format!("Read error: {}", e));
-                let _ = write_response(&mut write_stream, &response);
+                if let Err(we) = write_response(&mut write_stream, &response) {
+                    logger.warn(&format!("Failed to send error response: {}", we));
+                }
                 return Ok(());
             }
         };
@@ -2269,8 +2271,13 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
     {
         let request = IpcRequest::Shutdown { force, kill_agents };
         let json_req = serde_json::to_string(&request)?;
-        let _ = writeln!(stream, "{}", json_req);
-        let _ = stream.flush();
+        // Best-effort: shutdown falls through to kill if IPC fails
+        if let Err(e) = writeln!(stream, "{}", json_req) {
+            eprintln!("Warning: failed to send shutdown request: {}", e);
+        }
+        if let Err(e) = stream.flush() {
+            eprintln!("Warning: failed to flush shutdown request: {}", e);
+        }
         // Give it a moment to process
         std::thread::sleep(Duration::from_millis(200));
     }

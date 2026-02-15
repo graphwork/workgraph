@@ -470,7 +470,16 @@ fn build_performance_summary(
     // Overview
     let total_evals = evaluations.len();
     let overall_avg = if total_evals > 0 {
-        Some(evaluations.iter().map(|e| e.score).sum::<f64>() / total_evals as f64)
+        let valid: Vec<f64> = evaluations
+            .iter()
+            .map(|e| e.score)
+            .filter(|s| s.is_finite())
+            .collect();
+        if valid.is_empty() {
+            None
+        } else {
+            Some(valid.iter().sum::<f64>() / valid.len() as f64)
+        }
     } else {
         None
     };

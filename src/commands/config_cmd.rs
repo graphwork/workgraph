@@ -390,10 +390,13 @@ pub fn update_matrix(
 
 /// Mask a token for display (show first and last 4 chars)
 fn mask_token(token: &str) -> String {
-    if token.len() <= 12 {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() <= 12 {
         "********".to_string()
     } else {
-        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{}...{}", prefix, suffix)
     }
 }
 
@@ -572,6 +575,26 @@ mod tests {
         assert_eq!(
             config.agency.retention_heuristics,
             Some("Retire below 0.3 after 10 evals".to_string())
+        );
+    }
+
+    #[test]
+    fn test_mask_token_short() {
+        assert_eq!(mask_token("abc"), "********");
+        assert_eq!(mask_token("123456789012"), "********");
+    }
+
+    #[test]
+    fn test_mask_token_long() {
+        assert_eq!(mask_token("abcdefghijklm"), "abcd...jklm");
+    }
+
+    #[test]
+    fn test_mask_token_unicode_no_panic() {
+        // Multi-byte chars should not panic
+        assert_eq!(
+            mask_token("🎯🎯🎯🎯🎯🎯🎯🎯🎯🎯🎯🎯🎯"),
+            "🎯🎯🎯🎯...🎯🎯🎯🎯"
         );
     }
 }

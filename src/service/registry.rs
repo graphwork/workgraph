@@ -80,6 +80,7 @@ impl AgentEntry {
     /// Format uptime as human-readable string (e.g., "5m", "2h", "1d")
     pub fn uptime_human(&self) -> String {
         match self.uptime_secs() {
+            Some(secs) if secs < 0 => "0s".to_string(),
             Some(secs) if secs < 60 => format!("{}s", secs),
             Some(secs) if secs < 3600 => format!("{}m", secs / 60),
             Some(secs) if secs < 86400 => format!("{}h", secs / 3600),

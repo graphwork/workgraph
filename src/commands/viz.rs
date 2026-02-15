@@ -835,7 +835,10 @@ fn generate_ascii(
 
 /// Format hours nicely (no decimals if whole number)
 fn format_hours(hours: f64) -> String {
-    if hours.fract() == 0.0 {
+    if !hours.is_finite() {
+        return "?".to_string();
+    }
+    if hours.fract() == 0.0 && hours >= i64::MIN as f64 && hours <= i64::MAX as f64 {
         format!("{}", hours as i64)
     } else {
         format!("{:.1}", hours)
@@ -1236,5 +1239,14 @@ mod tests {
         let active_ids: HashSet<&str> = HashSet::new();
         let path = calculate_critical_path(&graph, &active_ids);
         assert!(path.is_empty());
+    }
+
+    #[test]
+    fn test_format_hours_nan_and_infinity() {
+        assert_eq!(format_hours(f64::NAN), "?");
+        assert_eq!(format_hours(f64::INFINITY), "?");
+        assert_eq!(format_hours(f64::NEG_INFINITY), "?");
+        assert_eq!(format_hours(5.0), "5");
+        assert_eq!(format_hours(2.5), "2.5");
     }
 }

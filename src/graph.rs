@@ -38,13 +38,17 @@ pub fn parse_delay(s: &str) -> Option<u64> {
     if s.is_empty() {
         return None;
     }
-    let (num_part, unit) = s.split_at(s.len().saturating_sub(1));
+    // Use char boundary to avoid panic on multi-byte UTF-8
+    let last_char = s.chars().last()?;
+    let split_pos = s.len() - last_char.len_utf8();
+    let num_part = &s[..split_pos];
     let num: u64 = num_part.parse().ok()?;
+    let unit = last_char;
     match unit {
-        "s" => Some(num),
-        "m" => num.checked_mul(60),
-        "h" => num.checked_mul(3600),
-        "d" => num.checked_mul(86400),
+        's' => Some(num),
+        'm' => num.checked_mul(60),
+        'h' => num.checked_mul(3600),
+        'd' => num.checked_mul(86400),
         _ => None,
     }
 }
@@ -552,7 +556,16 @@ pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String
         // 3. Re-activate the target task
         let new_iteration = current_iter + 1;
         let ready_after = edge.delay.as_ref().and_then(|d| match parse_delay(d) {
-            Some(secs) => Some((Utc::now() + Duration::seconds(secs as i64)).to_rfc3339()),
+            Some(secs) if secs <= i64::MAX as u64 => {
+                Some((Utc::now() + Duration::seconds(secs as i64)).to_rfc3339())
+            }
+            Some(secs) => {
+                eprintln!(
+                    "Warning: delay value {}s on loop edge {} → {} exceeds maximum, ignoring delay",
+                    secs, source_id, edge.target
+                );
+                None
+            }
             None => {
                 eprintln!(
                     "Warning: invalid delay '{}' on loop edge {} → {}, ignoring delay",
@@ -1116,6 +1129,14 @@ mod tests {
     fn test_parse_delay_no_unit_just_number() {
         // Last char is a digit, not a valid unit
         assert_eq!(parse_delay("10"), None);
+    }
+
+    #[test]
+    fn test_parse_delay_multibyte_utf8_no_panic() {
+        // Multi-byte UTF-8 unit should return None, not panic
+        assert_eq!(parse_delay("30🎯"), None);
+        assert_eq!(parse_delay("5ñ"), None);
+        assert_eq!(parse_delay("10日"), None);
     }
 
     // ── find_intermediate_tasks tests ────────────────────────────────

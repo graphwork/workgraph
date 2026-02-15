@@ -139,7 +139,19 @@ impl TemplateVars {
             Ok(content) => {
                 // Strip YAML frontmatter if present
                 let body = if content.starts_with("---") {
-                    content.splitn(3, "---").nth(2).unwrap_or(&content).trim()
+                    // splitn(3, "---") on "---\nfoo: bar\n---\nbody" gives ["", "\nfoo: bar\n", "\nbody"]
+                    // If there's no closing ---, nth(2) is None; skip past the first line instead.
+                    content
+                        .splitn(3, "---")
+                        .nth(2)
+                        .unwrap_or_else(|| {
+                            // Malformed frontmatter (no closing ---): skip the opening --- line
+                            content
+                                .strip_prefix("---")
+                                .and_then(|s| s.split_once('\n').map(|(_, rest)| rest))
+                                .unwrap_or("")
+                        })
+                        .trim()
                 } else {
                     content.trim()
                 };
