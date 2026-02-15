@@ -54,7 +54,7 @@ wg tui                   # Interactive TUI dashboard
 - **Don't `wg spawn`** — the service spawns agents automatically
 - **Don't work on tasks yourself** — spawned agents do the work
 
-If `wg done` fails, the task may require verification — use `wg submit`.
+Always use `wg done` to complete tasks. Do NOT use `wg submit` (deprecated).
 
 ## If you ARE a spawned agent working on a task
 
@@ -94,9 +94,11 @@ wg done <task-id>        # Mark complete
 
 ```
 open → [claim] → in-progress → [done] → done
-                             → [fail] → failed → [retry] → open
-                             → [abandon] → abandoned
+                              → [fail] → failed → [retry] → open
+                              → [abandon] → abandoned
 ```
+
+**Note:** `wg submit`, `wg approve`, and `wg reject` are deprecated. Always use `wg done`.
 
 ## Loop edges (cyclic processes)
 
@@ -149,9 +151,6 @@ wg show <task-id>           # See loop_iteration and loop edges
 | `wg claim <id>` | Claim task (in-progress) |
 | `wg unclaim <id>` | Release claimed task (back to open) |
 | `wg done <id>` | Complete task |
-| `wg submit <id>` | Submit verified task for review |
-| `wg approve <id>` | Approve reviewed task |
-| `wg reject <id> --reason "why"` | Reject reviewed task |
 | `wg fail <id> --reason "why"` | Mark task failed |
 | `wg retry <id>` | Retry failed task |
 | `wg abandon <id> --reason "why"` | Abandon permanently |
@@ -223,7 +222,6 @@ wg show <task-id>           # See loop_iteration and loop edges
 | `wg kill <agent-id>` | Kill an agent |
 | `wg kill --all` | Kill all agents |
 | `wg kill <id> --force` | Force kill (SIGKILL) |
-| `wg dead-agents --check` | Detect dead agents |
 | `wg dead-agents --cleanup` | Unclaim dead agents' tasks |
 | `wg dead-agents --remove` | Remove from registry |
 
