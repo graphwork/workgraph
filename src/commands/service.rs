@@ -817,16 +817,14 @@ pub fn coordinator_tick(
         Err(early_result) => return Ok(early_result),
     };
 
-    // Phase 2: Load graph and check for ready tasks
+    // Phase 2: Load graph
     let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
-
-    if let Some(early_result) = check_ready_or_return(&graph, alive_count) {
-        return Ok(early_result);
-    }
 
     let slots_available = max_agents.saturating_sub(alive_count);
 
     // Phase 3: Auto-assign unassigned ready tasks
+    // NOTE: These must run BEFORE the early-return check, because they may
+    // create new ready tasks (e.g. evaluate-* tasks) that weren't there before.
     let mut graph_modified = false;
     if config.agency.auto_assign {
         graph_modified |= build_auto_assign_tasks(&mut graph, &config);
@@ -845,7 +843,12 @@ pub fn coordinator_tick(
             .context("Failed to save graph after auto-assign/auto-evaluate; aborting tick")?;
     }
 
-    // Phase 5: Spawn agents on ready tasks
+    // Phase 5: Check for ready tasks (after agency phases may have created new ones)
+    if let Some(early_result) = check_ready_or_return(&graph, alive_count) {
+        return Ok(early_result);
+    }
+
+    // Phase 6: Spawn agents on ready tasks
     let final_ready = ready_tasks(&graph);
     let ready_count = final_ready.len();
     drop(final_ready);
