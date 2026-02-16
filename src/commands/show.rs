@@ -75,6 +75,12 @@ struct TaskDetails {
     loop_iteration: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     ready_after: Option<String>,
+    #[serde(default, skip_serializing_if = "is_not_paused")]
+    paused: bool,
+}
+
+fn is_not_paused(val: &bool) -> bool {
+    !*val
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -165,6 +171,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         loops_to: task.loops_to.clone(),
         loop_iteration: task.loop_iteration,
         ready_after: task.ready_after.clone(),
+        paused: task.paused,
     };
 
     if json {
@@ -179,7 +186,11 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 fn print_human_readable(details: &TaskDetails) {
     println!("Task: {}", details.id);
     println!("Title: {}", details.title);
-    println!("Status: {}", format_status(&details.status));
+    if details.paused {
+        println!("Status: {} (PAUSED)", format_status(&details.status));
+    } else {
+        println!("Status: {}", format_status(&details.status));
+    }
 
     if let Some(ref assigned) = details.assigned {
         println!("Assigned: {}", assigned);
@@ -411,6 +422,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 
@@ -478,6 +490,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
 
         let json = serde_json::to_string(&details).unwrap();

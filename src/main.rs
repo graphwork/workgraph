@@ -229,6 +229,18 @@ enum Commands {
         id: String,
     },
 
+    /// Pause a task (coordinator will skip it until resumed)
+    Pause {
+        /// Task ID to pause
+        id: String,
+    },
+
+    /// Resume a paused task
+    Resume {
+        /// Task ID to resume
+        id: String,
+    },
+
     /// Reclaim a task from a dead/unresponsive agent
     Reclaim {
         /// Task ID to reclaim
@@ -1411,6 +1423,8 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Retry { .. } => "retry",
         Commands::Claim { .. } => "claim",
         Commands::Unclaim { .. } => "unclaim",
+        Commands::Pause { .. } => "pause",
+        Commands::Resume { .. } => "resume",
         Commands::Reclaim { .. } => "reclaim",
         Commands::Ready => "ready",
         Commands::Blocked { .. } => "blocked",
@@ -1687,6 +1701,8 @@ fn main() -> Result<()> {
             commands::claim::claim(&workgraph_dir, &id, actor.as_deref())
         }
         Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
+        Commands::Pause { id } => commands::pause::run(&workgraph_dir, &id),
+        Commands::Resume { id } => commands::resume::run(&workgraph_dir, &id),
         Commands::Reclaim { id, from, to } => {
             commands::reclaim::run(&workgraph_dir, &id, &from, &to)
         }

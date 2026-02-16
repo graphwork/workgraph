@@ -995,6 +995,7 @@ fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Resul
         loops_to: vec![],
         loop_iteration: 0,
         ready_after: None,
+        paused: false,
     };
 
     graph.add_node(Node::Task(task));

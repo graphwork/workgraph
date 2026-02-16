@@ -252,6 +252,10 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             if task.status != Status::Open {
                 return false;
             }
+            // Must not be paused
+            if task.paused {
+                return false;
+            }
             // Must be past not_before timestamp
             if !is_time_ready(task) {
                 return false;
@@ -347,6 +351,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 

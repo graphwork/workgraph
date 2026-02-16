@@ -95,6 +95,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
         loops_to: vec![],
         loop_iteration: 0,
         ready_after: None,
+        paused: false,
     }
 }
 

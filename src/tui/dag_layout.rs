@@ -1374,6 +1374,7 @@ mod tests {
             loops_to: Vec::new(),
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 

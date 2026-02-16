@@ -577,6 +577,7 @@ pub fn coordinator_tick(
                 loops_to: vec![],
                 loop_iteration: 0,
                 ready_after: None,
+                paused: false,
             };
 
             graph.add_node(Node::Task(assign_task));
@@ -695,6 +696,7 @@ pub fn coordinator_tick(
                 loops_to: vec![],
                 loop_iteration: 0,
                 ready_after: None,
+                paused: false,
             };
 
             graph.add_node(Node::Task(eval_task));
@@ -3134,6 +3136,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let prompt = build_triage_prompt(&task, "some log output");
         assert!(prompt.contains("test-task"));
@@ -3211,6 +3214,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -3255,6 +3259,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -3297,6 +3302,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "continue".to_string(),
@@ -3353,6 +3359,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "restart".to_string(),
@@ -3399,6 +3406,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "continue".to_string(),
@@ -3449,6 +3457,7 @@ poll_interval = 120
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         };
         let verdict = TriageVerdict {
             verdict: "restart".to_string(),

@@ -173,6 +173,7 @@ pub fn run(
         loops_to: loops_to_edges,
         loop_iteration: 0,
         ready_after: None,
+        paused: false,
     };
 
     // Add task to graph and save atomically (temp file + rename)
@@ -267,6 +268,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 

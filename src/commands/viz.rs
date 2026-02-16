@@ -881,6 +881,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 
@@ -918,6 +919,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 

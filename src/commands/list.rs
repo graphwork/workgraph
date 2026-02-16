@@ -48,6 +48,9 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
                 if let Some(ref ra) = t.ready_after {
                     obj["ready_after"] = serde_json::json!(ra);
                 }
+                if t.paused {
+                    obj["paused"] = serde_json::json!(true);
+                }
                 obj
             })
             .collect();
@@ -64,8 +67,12 @@ pub fn run(dir: &Path, status_filter: Option<&str>, json: bool) -> Result<()> {
                 Status::Failed => "[F]",
                 Status::Abandoned => "[A]",
             };
+            let pause_str = if task.paused { " [PAUSED]" } else { "" };
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
-            println!("{} {} - {}{}", status, task.id, task.title, delay_str);
+            println!(
+                "{} {} - {}{}{}",
+                status, task.id, task.title, pause_str, delay_str
+            );
         }
     }
 
@@ -137,6 +144,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 

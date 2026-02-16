@@ -42,6 +42,7 @@ pub mod motivation;
 pub mod next;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
+pub mod pause;
 pub mod plan;
 pub mod quickstart;
 pub mod ready;
@@ -49,6 +50,7 @@ pub mod reclaim;
 pub mod reschedule;
 pub mod resource;
 pub mod resources;
+pub mod resume;
 pub mod retry;
 pub mod role;
 pub mod service;

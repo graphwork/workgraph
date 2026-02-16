@@ -210,6 +210,10 @@ pub struct Task {
     /// Set by loop edges with a delay — prevents immediate dispatch after re-activation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready_after: Option<String>,
+    /// When true, the task is paused and will not be dispatched by the coordinator.
+    /// The task retains its status and loop state; `wg resume` clears this flag.
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub paused: bool,
 }
 
 /// Legacy identity format: `{"role_id": "...", "motivation_id": "..."}`.
@@ -279,6 +283,8 @@ struct TaskHelper {
     loop_iteration: u32,
     #[serde(default)]
     ready_after: Option<String>,
+    #[serde(default)]
+    paused: bool,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -331,12 +337,17 @@ impl<'de> Deserialize<'de> for Task {
             loops_to: helper.loops_to,
             loop_iteration: helper.loop_iteration,
             ready_after: helper.ready_after,
+            paused: helper.paused,
         })
     }
 }
 
 fn is_zero(val: &u32) -> bool {
     *val == 0
+}
+
+fn is_bool_false(val: &bool) -> bool {
+    !*val
 }
 
 /// Trust level for an agent
@@ -783,6 +794,7 @@ mod tests {
             loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
+            paused: false,
         }
     }
 
