@@ -34,6 +34,14 @@ struct TagCell {
     avg_score: f64,
 }
 
+/// Per-model aggregated stats.
+struct ModelStats {
+    model: String,
+    count: u32,
+    avg_score: f64,
+    scores: Vec<f64>,
+}
+
 /// Compute a simple trend indicator from recent scores.
 /// Returns "up", "down", "flat", or "-" if insufficient data.
 fn trend(scores: &[f64]) -> &'static str {
@@ -53,8 +61,8 @@ fn trend(scores: &[f64]) -> &'static str {
     }
 }
 
-/// Run `wg agency stats [--json] [--min-evals N]`.
-pub fn run(dir: &Path, json: bool, min_evals: u32) -> Result<()> {
+/// Run `wg agency stats [--json] [--min-evals N] [--by-model]`.
+pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("roles");
     let motivations_dir = agency_dir.join("motivations");
@@ -81,9 +89,23 @@ pub fn run(dir: &Path, json: bool, min_evals: u32) -> Result<()> {
     };
 
     if json {
-        output_json(&roles, &motivations, &evaluations, &task_tags, min_evals)
+        output_json(
+            &roles,
+            &motivations,
+            &evaluations,
+            &task_tags,
+            min_evals,
+            by_model,
+        )
     } else {
-        output_text(&roles, &motivations, &evaluations, &task_tags, min_evals);
+        output_text(
+            &roles,
+            &motivations,
+            &evaluations,
+            &task_tags,
+            min_evals,
+            by_model,
+        );
         Ok(())
     }
 }
@@ -186,6 +208,36 @@ fn build_tag_breakdown(
     cells
 }
 
+fn build_model_stats(evaluations: &[Evaluation]) -> Vec<ModelStats> {
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    for eval in evaluations {
+        let model_key = eval
+            .model
+            .as_deref()
+            .unwrap_or("(unknown)")
+            .to_string();
+        map.entry(model_key).or_default().push(eval.score);
+    }
+    let mut stats: Vec<ModelStats> = map
+        .into_iter()
+        .map(|(model, scores)| {
+            let avg = scores.iter().sum::<f64>() / scores.len() as f64;
+            ModelStats {
+                model,
+                count: scores.len() as u32,
+                avg_score: avg,
+                scores,
+            }
+        })
+        .collect();
+    stats.sort_by(|a, b| {
+        b.avg_score
+            .partial_cmp(&a.avg_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stats
+}
+
 fn find_underexplored(
     roles: &[Role],
     motivations: &[Motivation],
@@ -226,6 +278,7 @@ fn output_text(
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
+    by_model: bool,
 ) {
     // 1. Overall stats
     let total_roles = roles.len();
@@ -391,6 +444,23 @@ fn output_text(
             );
         }
     }
+
+    // 7. Model leaderboard (if --by-model)
+    if by_model {
+        let model_stats = build_model_stats(evaluations);
+        println!("\n--- Model Leaderboard ---\n");
+        println!(
+            "  {:<40} {:>8} {:>6} {:>6}",
+            "Model", "Avg", "Evals", "Trend"
+        );
+        println!("  {}", "-".repeat(64));
+        for s in &model_stats {
+            println!(
+                "  {:<40} {:>8.2} {:>6} {:>6}",
+                s.model, s.avg_score, s.count, trend(&s.scores),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +473,7 @@ fn output_json(
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
+    by_model: bool,
 ) -> Result<()> {
     let total_evaluations = evaluations.len();
     let overall_avg = if evaluations.is_empty() {

@@ -936,6 +936,10 @@ enum AgencyCommands {
         /// Minimum evaluations to consider a pair "explored" (default: 3)
         #[arg(long, default_value = "3")]
         min_evals: u32,
+
+        /// Group stats by model (shows per-model score breakdown)
+        #[arg(long)]
+        by_model: bool,
     },
 }
 
@@ -1876,8 +1880,11 @@ fn main() -> Result<()> {
         },
         Commands::Agency { command } => match command {
             AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
-            AgencyCommands::Stats { min_evals } => {
-                commands::agency_stats::run(&workgraph_dir, cli.json, min_evals)
+            AgencyCommands::Stats {
+                min_evals,
+                by_model,
+            } => {
+                commands::agency_stats::run(&workgraph_dir, cli.json, min_evals, by_model)
             }
         },
         Commands::Role { command } => match command {
