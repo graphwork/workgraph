@@ -34,6 +34,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 ratatui = "0.29"
 crossterm = "0.28"
 ascii-dag = "0.8"
+zstd = "0.13"
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }

@@ -55,6 +55,21 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let detail = match reason {
+        Some(r) => serde_json::json!({ "reason": r }),
+        None => serde_json::Value::Null,
+    };
+    let _ = workgraph::provenance::record(
+        dir,
+        "fail",
+        Some(id),
+        None,
+        detail,
+        config.log.rotation_threshold,
+    );
+
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
     println!(
         "Marked '{}' as failed{} (retry #{})",
@@ -70,6 +85,20 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             );
         } else {
             println!("  Retries remaining: {}", max - retry_count);
+        }
+    }
+
+    // Archive agent conversation (prompt + output) for provenance
+    if let Some(task) = graph.get_task(id)
+        && let Some(ref agent_id) = task.assigned
+    {
+        match super::log::archive_agent(dir, id, agent_id) {
+            Ok(archive_dir) => {
+                eprintln!("Agent archived to {}", archive_dir.display());
+            }
+            Err(e) => {
+                eprintln!("Warning: agent archive failed: {}", e);
+            }
         }
     }
 

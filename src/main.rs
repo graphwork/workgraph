@@ -435,6 +435,17 @@ enum Commands {
         list: bool,
     },
 
+    /// Garbage collect terminal tasks (failed, abandoned) from the graph
+    Gc {
+        /// Show what would be removed without actually removing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also remove done tasks (by default only failed+abandoned)
+        #[arg(long)]
+        include_done: bool,
+    },
+
     /// Show detailed information about a single task
     Show {
         /// Task ID
@@ -443,8 +454,8 @@ enum Commands {
 
     /// Add progress log/notes to a task
     Log {
-        /// Task ID
-        id: String,
+        /// Task ID (not required with --operations)
+        id: Option<String>,
 
         /// Log message (if not provided, lists log entries)
         message: Option<String>,
@@ -456,6 +467,14 @@ enum Commands {
         /// List log entries instead of adding
         #[arg(long)]
         list: bool,
+
+        /// Show archived agent prompts and outputs for a task
+        #[arg(long)]
+        agent: bool,
+
+        /// Show the operations log (reads current and rotated files)
+        #[arg(long)]
+        operations: bool,
     },
 
     /// Manage resources
@@ -1474,6 +1493,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::CriticalPath => "critical-path",
         Commands::Analyze => "analyze",
         Commands::Archive { .. } => "archive",
+        Commands::Gc { .. } => "gc",
         Commands::Show { .. } => "show",
         Commands::Log { .. } => "log",
         Commands::Resource { .. } => "resource",
@@ -1530,6 +1550,7 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::CriticalPath
             | Commands::Analyze
             | Commands::Archive { .. }
+            | Commands::Gc { .. }
             | Commands::Show { .. }
             | Commands::Log { .. }
             | Commands::Resource { .. }
@@ -1798,17 +1819,34 @@ fn main() -> Result<()> {
             older,
             list,
         } => commands::archive::run(&workgraph_dir, dry_run, older.as_deref(), list, cli.json),
+        Commands::Gc {
+            dry_run,
+            include_done,
+        } => commands::gc::run(&workgraph_dir, dry_run, include_done),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Log {
             id,
             message,
             actor,
             list,
+            agent,
+            operations,
         } => {
-            if let (false, Some(msg)) = (list, &message) {
-                commands::log::run_add(&workgraph_dir, &id, msg, actor.as_deref())
+            if operations {
+                commands::log::run_operations(&workgraph_dir, cli.json)
             } else {
-                commands::log::run_list(&workgraph_dir, &id, cli.json)
+                let id = id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Task ID is required (use --operations to view the operations log)"
+                    )
+                })?;
+                if agent {
+                    commands::log::run_agent(&workgraph_dir, id, cli.json)
+                } else if let (false, Some(msg)) = (list, &message) {
+                    commands::log::run_add(&workgraph_dir, id, msg, actor.as_deref())
+                } else {
+                    commands::log::run_list(&workgraph_dir, id, cli.json)
+                }
             }
         }
         Commands::Resource { command } => match command {

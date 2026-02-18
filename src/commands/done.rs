@@ -57,10 +57,35 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "done",
+        Some(id),
+        None,
+        serde_json::Value::Null,
+        config.log.rotation_threshold,
+    );
+
     println!("Marked '{}' as done", id);
 
     for task_id in &reactivated {
         println!("  Loop: re-activated '{}'", task_id);
+    }
+
+    // Archive agent conversation (prompt + output) for provenance
+    if let Some(task) = graph.get_task(id)
+        && let Some(ref agent_id) = task.assigned
+    {
+        match super::log::archive_agent(dir, id, agent_id) {
+            Ok(archive_dir) => {
+                eprintln!("Agent archived to {}", archive_dir.display());
+            }
+            Err(e) => {
+                eprintln!("Warning: agent archive failed: {}", e);
+            }
+        }
     }
 
     // Capture task output (git diff, artifacts, log) for evaluation.

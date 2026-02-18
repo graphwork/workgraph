@@ -32,6 +32,10 @@ pub struct Config {
     /// Agency (evolutionary identity) configuration
     #[serde(default)]
     pub agency: AgencyConfig,
+
+    /// Log configuration
+    #[serde(default)]
+    pub log: LogConfig,
 }
 
 /// Help display configuration
@@ -50,6 +54,26 @@ impl Default for HelpConfig {
     fn default() -> Self {
         Self {
             ordering: default_help_ordering(),
+        }
+    }
+}
+
+/// Log configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogConfig {
+    /// Rotation threshold in bytes (default: 10 MB)
+    #[serde(default = "default_rotation_threshold")]
+    pub rotation_threshold: u64,
+}
+
+fn default_rotation_threshold() -> u64 {
+    10 * 1024 * 1024 // 10 MB
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            rotation_threshold: default_rotation_threshold(),
         }
     }
 }

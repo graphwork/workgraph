@@ -192,6 +192,17 @@ pub fn run(
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "add_task",
+        Some(&task_id),
+        assign,
+        serde_json::json!({ "title": title }),
+        config.log.rotation_threshold,
+    );
+
     println!("Added task: {} ({})", title, task_id);
     if let (Some(target), Some(max)) = (&loops_to, &loop_max) {
         println!("  Loop edge: → {} (max {} iterations)", target, max);

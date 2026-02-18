@@ -8,6 +8,7 @@ pub mod matrix_commands;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix_lite;
 pub mod parser;
+pub mod provenance;
 pub mod query;
 pub mod service;
 pub mod usage;
