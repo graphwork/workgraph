@@ -27,6 +27,7 @@ pub mod evolve;
 pub mod exec;
 pub mod fail;
 pub mod forecast;
+pub mod gc;
 pub mod graph;
 pub mod heartbeat;
 pub mod impact;
