@@ -55,6 +55,7 @@ pub fn run(
     }
 
     let mut changed = false;
+    let mut field_changes: Vec<serde_json::Value> = Vec::new();
 
     // Modify the task in a block so the mutable borrow is released afterwards
     {
@@ -62,14 +63,18 @@ pub fn run(
 
         // Update title
         if let Some(new_title) = title {
+            let old = task.title.clone();
             task.title = new_title.to_string();
+            field_changes.push(serde_json::json!({"field": "title", "old": old, "new": new_title}));
             println!("Updated title: {}", new_title);
             changed = true;
         }
 
         // Update description
         if let Some(new_description) = description {
+            let old = task.description.clone();
             task.description = Some(new_description.to_string());
+            field_changes.push(serde_json::json!({"field": "description", "old": old, "new": new_description}));
             println!("Updated description");
             changed = true;
         }
@@ -223,6 +228,18 @@ pub fn run(
     if changed {
         save_graph(&graph, &path).context("Failed to save graph")?;
         super::notify_graph_changed(dir);
+
+        // Record operation
+        let config = workgraph::config::Config::load_or_default(dir);
+        let _ = workgraph::provenance::record(
+            dir,
+            "edit",
+            Some(task_id),
+            None,
+            serde_json::json!({ "fields": field_changes }),
+            config.log.rotation_threshold,
+        );
+
         println!("\nTask '{}' updated successfully", task_id);
     } else {
         println!("No changes made to task '{}'", task_id);

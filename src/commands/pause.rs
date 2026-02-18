@@ -28,6 +28,17 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "pause",
+        Some(id),
+        None,
+        serde_json::json!({}),
+        config.log.rotation_threshold,
+    );
+
     println!("Paused '{}'", id);
     Ok(())
 }

@@ -34,6 +34,9 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         );
     }
 
+    let prev_failure_reason = task.failure_reason.clone();
+    let attempt = task.retry_count + 1;
+
     task.status = Status::Open;
     // Keep retry_count for history - don't reset it
     // Clear failure_reason since we're retrying
@@ -53,6 +56,17 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "retry",
+        Some(id),
+        None,
+        serde_json::json!({ "attempt": attempt, "prev_failure_reason": prev_failure_reason }),
+        config.log.rotation_threshold,
+    );
 
     println!(
         "Reset '{}' to open for retry (attempt #{})",

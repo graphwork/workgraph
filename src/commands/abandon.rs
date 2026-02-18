@@ -23,6 +23,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
+    let prev_assigned = task.assigned.clone();
     task.status = Status::Abandoned;
     task.failure_reason = reason.map(String::from);
 
@@ -38,6 +39,17 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "abandon",
+        Some(id),
+        prev_assigned.as_deref(),
+        serde_json::json!({ "reason": reason, "prev_assigned": prev_assigned }),
+        config.log.rotation_threshold,
+    );
 
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
     println!("Marked '{}' as abandoned{}", id, reason_msg);

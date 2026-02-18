@@ -155,6 +155,282 @@ pub fn print_service_hint(dir: &Path) -> bool {
 }
 
 #[cfg(test)]
+mod provenance_coverage_tests {
+    use std::path::Path;
+    use tempfile::TempDir;
+    use workgraph::graph::WorkGraph;
+    use workgraph::parser::save_graph;
+    use workgraph::provenance::read_all_operations;
+
+    fn setup_dir() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir).unwrap();
+        let graph_path = dir.join("graph.jsonl");
+        let graph = WorkGraph::new();
+        save_graph(&graph, &graph_path).unwrap();
+        tmp
+    }
+
+    fn ops_with_type(dir: &Path, op: &str) -> Vec<workgraph::provenance::OperationEntry> {
+        read_all_operations(dir)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.op == op)
+            .collect()
+    }
+
+    #[test]
+    fn provenance_add_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Test task", Some("prov-add"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        let entries = ops_with_type(dir, "add_task");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].task_id.as_deref(), Some("prov-add"));
+    }
+
+    #[test]
+    fn provenance_edit_records_field_changes() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Edit target", Some("prov-edit"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::edit::run(
+            dir, "prov-edit", Some("New Title"), None,
+            &[], &[], &[], &[], None, &[], &[], None, None, None, None, None, None,
+        ).unwrap();
+
+        let entries = ops_with_type(dir, "edit");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].task_id.as_deref(), Some("prov-edit"));
+        let fields = entries[0].detail.get("fields").unwrap().as_array().unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0]["field"], "title");
+    }
+
+    #[test]
+    fn provenance_claim_unclaim_records_entries() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Claim target", Some("prov-claim"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::claim::claim(dir, "prov-claim", Some("agent-1")).unwrap();
+        let entries = ops_with_type(dir, "claim");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].actor.as_deref(), Some("agent-1"));
+        assert_eq!(entries[0].detail["prev_status"], "Open");
+
+        super::claim::unclaim(dir, "prov-claim").unwrap();
+        let entries = ops_with_type(dir, "unclaim");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["prev_assigned"], "agent-1");
+    }
+
+    #[test]
+    fn provenance_done_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Done target", Some("prov-done"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::done::run(dir, "prov-done").unwrap();
+        let entries = ops_with_type(dir, "done");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].task_id.as_deref(), Some("prov-done"));
+    }
+
+    #[test]
+    fn provenance_fail_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Fail target", Some("prov-fail"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::fail::run(dir, "prov-fail", Some("timeout")).unwrap();
+        let entries = ops_with_type(dir, "fail");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["reason"], "timeout");
+    }
+
+    #[test]
+    fn provenance_abandon_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Abandon target", Some("prov-abandon"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::abandon::run(dir, "prov-abandon", Some("no longer needed")).unwrap();
+        let entries = ops_with_type(dir, "abandon");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["reason"], "no longer needed");
+    }
+
+    #[test]
+    fn provenance_retry_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Retry target", Some("prov-retry"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::fail::run(dir, "prov-retry", Some("compile error")).unwrap();
+        super::retry::run(dir, "prov-retry").unwrap();
+
+        let entries = ops_with_type(dir, "retry");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["attempt"], 2); // retry_count was 1 after fail, so attempt = 2
+        assert_eq!(entries[0].detail["prev_failure_reason"], "compile error");
+    }
+
+    #[test]
+    fn provenance_pause_resume_records_entries() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Pause target", Some("prov-pause"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::pause::run(dir, "prov-pause").unwrap();
+        let entries = ops_with_type(dir, "pause");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].task_id.as_deref(), Some("prov-pause"));
+
+        super::resume::run(dir, "prov-pause").unwrap();
+        let entries = ops_with_type(dir, "resume");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].task_id.as_deref(), Some("prov-pause"));
+    }
+
+    #[test]
+    fn provenance_artifact_add_remove_records_entries() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Artifact target", Some("prov-art"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+
+        super::artifact::run_add(dir, "prov-art", "output.txt").unwrap();
+        let entries = ops_with_type(dir, "artifact_add");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["path"], "output.txt");
+
+        super::artifact::run_remove(dir, "prov-art", "output.txt").unwrap();
+        let entries = ops_with_type(dir, "artifact_rm");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].detail["path"], "output.txt");
+    }
+
+    #[test]
+    fn provenance_archive_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "Archive target", Some("prov-archive"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+        super::done::run(dir, "prov-archive").unwrap();
+
+        super::archive::run(dir, false, None, false, false).unwrap();
+        let entries = ops_with_type(dir, "archive");
+        assert_eq!(entries.len(), 1);
+        let task_ids = entries[0].detail["task_ids"].as_array().unwrap();
+        assert!(task_ids.iter().any(|id| id == "prov-archive"));
+    }
+
+    #[test]
+    fn provenance_gc_records_entry() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+        super::add::run(
+            dir, "GC target", Some("prov-gc"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+        super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
+        super::abandon::run(dir, "prov-gc", Some("giving up")).unwrap();
+
+        super::gc::run(dir, false, false).unwrap();
+        let entries = ops_with_type(dir, "gc");
+        assert_eq!(entries.len(), 1);
+        let removed = entries[0].detail["removed"].as_array().unwrap();
+        assert!(removed.iter().any(|r| r["id"] == "prov-gc"));
+    }
+
+    #[test]
+    fn provenance_full_lifecycle_all_ops_recorded() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+
+        // add
+        super::add::run(
+            dir, "Lifecycle task", Some("lifecycle"), None,
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None,
+        ).unwrap();
+        // edit
+        super::edit::run(
+            dir, "lifecycle", Some("Renamed"), None,
+            &[], &[], &["tag1".to_string()], &[], None, &[], &[], None, None, None, None, None, None,
+        ).unwrap();
+        // pause
+        super::pause::run(dir, "lifecycle").unwrap();
+        // resume
+        super::resume::run(dir, "lifecycle").unwrap();
+        // claim
+        super::claim::claim(dir, "lifecycle", Some("worker")).unwrap();
+        // artifact add
+        super::artifact::run_add(dir, "lifecycle", "result.txt").unwrap();
+        // unclaim
+        super::claim::unclaim(dir, "lifecycle").unwrap();
+        // fail
+        super::fail::run(dir, "lifecycle", Some("timeout")).unwrap();
+        // retry
+        super::retry::run(dir, "lifecycle").unwrap();
+        // done
+        super::done::run(dir, "lifecycle").unwrap();
+
+        let all = read_all_operations(dir).unwrap();
+        let ops: Vec<&str> = all.iter().map(|e| e.op.as_str()).collect();
+
+        assert!(ops.contains(&"add_task"), "missing add_task, got: {:?}", ops);
+        assert!(ops.contains(&"edit"), "missing edit, got: {:?}", ops);
+        assert!(ops.contains(&"pause"), "missing pause, got: {:?}", ops);
+        assert!(ops.contains(&"resume"), "missing resume, got: {:?}", ops);
+        assert!(ops.contains(&"claim"), "missing claim, got: {:?}", ops);
+        assert!(ops.contains(&"artifact_add"), "missing artifact_add, got: {:?}", ops);
+        assert!(ops.contains(&"unclaim"), "missing unclaim, got: {:?}", ops);
+        assert!(ops.contains(&"fail"), "missing fail, got: {:?}", ops);
+        assert!(ops.contains(&"retry"), "missing retry, got: {:?}", ops);
+        assert!(ops.contains(&"done"), "missing done, got: {:?}", ops);
+
+        // All entries should have task_id = "lifecycle"
+        for entry in &all {
+            if let Some(ref tid) = entry.task_id {
+                assert_eq!(tid, "lifecycle");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

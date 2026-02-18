@@ -27,6 +27,17 @@ pub fn run_add(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> {
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "artifact_add",
+        Some(task_id),
+        None,
+        serde_json::json!({ "path": artifact_path }),
+        config.log.rotation_threshold,
+    );
+
     println!(
         "Registered artifact '{}' for task '{}'",
         artifact_path, task_id
@@ -53,6 +64,17 @@ pub fn run_remove(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> 
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "artifact_rm",
+        Some(task_id),
+        None,
+        serde_json::json!({ "path": artifact_path }),
+        config.log.rotation_threshold,
+    );
 
     println!(
         "Removed artifact '{}' from task '{}'",

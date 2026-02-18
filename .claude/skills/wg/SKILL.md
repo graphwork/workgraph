@@ -313,3 +313,50 @@ wg service resume           # Resume dispatching
 ### Output options
 
 All commands support `--json` for structured output. Run `wg --help` for the quick list or `wg --help-all` for every command.
+
+## Executor and model awareness
+
+### Environment variables
+
+Every spawned agent receives these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `WG_TASK_ID` | The task ID you're working on |
+| `WG_AGENT_ID` | Your agent ID |
+| `WG_EXECUTOR_TYPE` | Executor type: `claude`, `amplifier`, or `shell` |
+| `WG_MODEL` | Model you're running on (e.g. `opus`, `sonnet`, `haiku`) — set when a model is configured |
+
+### Multi-executor awareness
+
+You may be running under different executors:
+
+- **claude** — Claude Code CLI (`claude --print`). You have full access to Claude Code tools (file editing, bash, etc).
+- **amplifier** — Amplifier multi-agent runtime. You have access to installed amplifier bundles and can delegate to sub-agents.
+- **shell** — Direct shell execution for scripted tasks.
+
+Check `$WG_EXECUTOR_TYPE` to know which executor you're running under if your behavior should differ.
+
+### Model awareness
+
+The `$WG_MODEL` variable tells you what model you're running on. Different tasks may use different models based on complexity (model hierarchy: task.model > executor.model > coordinator.model).
+
+Calibrate your approach to your model tier:
+- **Frontier models** (opus): Tackle complex multi-file refactors, architectural decisions, nuanced trade-offs.
+- **Mid-tier models** (sonnet): Good for standard implementation, bug fixes, well-scoped features.
+- **Fast models** (haiku): Best for simple, well-defined tasks — lookups, single-file edits, formatting.
+
+If a task feels beyond your model's capability, use `wg fail` with a clear reason rather than producing low-quality output.
+
+### Amplifier bundles (amplifier executor only)
+
+When running under the amplifier executor (`WG_EXECUTOR_TYPE=amplifier`), you can use installed amplifier bundles for specialized capabilities. Delegate to sub-agents when:
+
+- The subtask is independent and well-scoped (e.g. "write tests for module X")
+- Parallel execution would speed things up
+- The subtask needs a different skill set than your current context
+
+Do the work yourself when:
+- The task is simple and sequential
+- Context from prior steps is critical and hard to transfer
+- Coordination overhead would exceed the work itself

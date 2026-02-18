@@ -15,6 +15,10 @@ cargo install --path .
 
 to update the global binary. Forgetting this step is a common source of "why isn't this working" issues when testing changes.
 
+## Service Configuration
+
+Configure the coordinator's executor and model with `wg config coordinator.executor <type>` and `wg config coordinator.model <model>`. Supported executors: `claude` (default), `amplifier` (provides bundles and multi-agent delegation). Spawned agents receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars indicating their runtime context.
+
 ## For Spawned Agents
 
 CRITICAL: Do NOT use built-in TaskCreate/TaskUpdate/TaskList/TaskGet tools.

@@ -53,6 +53,9 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         }
     }
 
+    let prev_status = format!("{:?}", task.status);
+    let prev_assigned = task.assigned.clone();
+
     task.status = Status::InProgress;
     task.started_at = Some(Utc::now().to_rfc3339());
     if let Some(actor_id) = actor {
@@ -71,6 +74,17 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "claim",
+        Some(id),
+        actor,
+        serde_json::json!({ "prev_status": prev_status, "prev_assigned": prev_assigned }),
+        config.log.rotation_threshold,
+    );
 
     match actor {
         Some(actor_id) => println!("Claimed '{}' for '{}'", id, actor_id),
@@ -105,12 +119,23 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
     };
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
-        actor: prev_assigned,
+        actor: prev_assigned.clone(),
         message: log_message,
     });
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "unclaim",
+        Some(id),
+        prev_assigned.as_deref(),
+        serde_json::json!({ "prev_assigned": prev_assigned }),
+        config.log.rotation_threshold,
+    );
 
     println!("Unclaimed '{}'", id);
     Ok(())

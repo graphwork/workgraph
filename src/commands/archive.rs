@@ -187,6 +187,18 @@ pub fn run(dir: &Path, dry_run: bool, older: Option<&str>, list: bool, json: boo
     save_graph(&modified_graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let task_ids: Vec<&str> = tasks_to_archive.iter().map(|t| t.id.as_str()).collect();
+    let _ = workgraph::provenance::record(
+        dir,
+        "archive",
+        None,
+        None,
+        serde_json::json!({ "task_ids": task_ids }),
+        config.log.rotation_threshold,
+    );
+
     println!(
         "Archived {} tasks to {:?}",
         tasks_to_archive.len(),

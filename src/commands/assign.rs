@@ -53,6 +53,17 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     save_graph(&graph, path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "assign",
+        Some(task_id),
+        None,
+        serde_json::json!({ "agent_hash": agent.id, "role_id": agent.role_id }),
+        config.log.rotation_threshold,
+    );
+
     // Resolve role/motivation names for display
     let roles_dir = agency_dir.join("roles");
     let motivations_dir = agency_dir.join("motivations");
@@ -90,12 +101,23 @@ fn run_clear(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
 
     let task = graph.get_task_mut_or_err(task_id)?;
 
-    let had_agent = task.agent.is_some();
+    let prev_agent = task.agent.clone();
     task.agent = None;
     save_graph(&graph, path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
-    if had_agent {
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "assign",
+        Some(task_id),
+        None,
+        serde_json::json!({ "action": "clear", "prev_agent": prev_agent }),
+        config.log.rotation_threshold,
+    );
+
+    if prev_agent.is_some() {
         println!("Cleared agent from task '{}'", task_id);
     } else {
         println!("Task '{}' had no agent assigned (no change)", task_id);

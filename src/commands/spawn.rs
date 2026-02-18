@@ -334,6 +334,10 @@ exit $EXIT_CODE
     // Add task ID and agent ID to environment
     cmd.env("WG_TASK_ID", task_id);
     cmd.env("WG_AGENT_ID", &temp_agent_id);
+    cmd.env("WG_EXECUTOR_TYPE", &settings.executor_type);
+    if let Some(ref m) = effective_model {
+        cmd.env("WG_MODEL", m);
+    }
 
     // Set working directory if specified
     if let Some(ref wd) = settings.working_dir {

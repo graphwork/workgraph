@@ -95,6 +95,20 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Capture details of tasks being removed for provenance
+    let removed_details: Vec<serde_json::Value> = gc_list
+        .iter()
+        .filter_map(|id| {
+            graph.get_task(id).map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "status": format!("{:?}", t.status),
+                    "title": t.title,
+                })
+            })
+        })
+        .collect();
+
     let mut modified_graph = graph;
     for id in &gc_list {
         modified_graph.remove_node(id);
@@ -102,6 +116,17 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool) -> Result<()> {
 
     save_graph(&modified_graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
+
+    // Record operation
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "gc",
+        None,
+        None,
+        serde_json::json!({ "removed": removed_details }),
+        config.log.rotation_threshold,
+    );
 
     println!("Removed {} tasks:", gc_list.len());
     for id in &gc_list {

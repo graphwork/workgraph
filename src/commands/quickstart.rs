@@ -100,6 +100,31 @@ TIPS
 • Run 'wg log' BEFORE starting work to track progress
 • Use 'wg context' to understand what dependencies produced
 • Check 'wg blocked <task-id>' if a task isn't appearing in ready list
+
+EXECUTORS & MODELS
+─────────────────────────────────────────
+  The coordinator spawns agents using an executor (default: claude).
+  Switch to amplifier for OpenRouter-backed models:
+
+  wg config --coordinator-executor amplifier
+
+  Set a default model for all agents:
+
+  wg service start --model anthropic/claude-sonnet-4   # CLI override
+  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic/claude-sonnet-4"
+
+  Per-task model selection (overrides the default):
+
+  wg add "Fast task" --model google/gemini-2.5-flash
+  wg add "Heavy task" --model anthropic/claude-opus-4
+
+  Model hierarchy: task --model > executor model > coordinator model > 'default'
+
+  Model registry (catalog available models with cost/capability metadata):
+
+  wg models init                      # Seed registry with defaults
+  wg models list                      # Show available models and tiers
+  wg models add <id> --tier <tier>    # Add a custom model entry
 "#;
 
 fn json_output() -> serde_json::Value {
@@ -169,7 +194,15 @@ fn json_output() -> serde_json::Value {
             "Run 'wg log' BEFORE starting work to track progress",
             "Use 'wg context' to understand what dependencies produced",
             "Check 'wg blocked <task-id>' if a task isn't appearing in ready list"
-        ]
+        ],
+        "executors_and_models": {
+            "switch_executor": "wg config --coordinator-executor amplifier",
+            "set_model_cli": "wg service start --model anthropic/claude-sonnet-4",
+            "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4\"",
+            "per_task_model": "wg add \"task\" --model google/gemini-2.5-flash",
+            "hierarchy": "task --model > executor model > coordinator model > 'default'",
+            "model_registry": ["wg models init", "wg models list", "wg models add <id> --tier <tier>"]
+        }
     })
 }
 
@@ -292,6 +325,21 @@ mod tests {
         let tips = output.get("tips").unwrap().as_array().unwrap();
         assert!(!tips.is_empty());
         assert!(tips.len() >= 5);
+
+        // Check executors_and_models section
+        let em = output.get("executors_and_models").unwrap();
+        assert!(em.get("switch_executor").is_some());
+        assert!(em.get("per_task_model").is_some());
+        assert!(em.get("hierarchy").is_some());
+        assert!(em.get("model_registry").is_some());
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_executors_and_models() {
+        assert!(QUICKSTART_TEXT.contains("EXECUTORS & MODELS"));
+        assert!(QUICKSTART_TEXT.contains("--coordinator-executor amplifier"));
+        assert!(QUICKSTART_TEXT.contains("--model"));
+        assert!(QUICKSTART_TEXT.contains("wg models"));
     }
 
     #[test]
@@ -309,6 +357,7 @@ mod tests {
             "CONTEXT & ARTIFACTS",
             "LOOP EDGES",
             "TIPS",
+            "EXECUTORS & MODELS",
         ];
         for section in &required_sections {
             assert!(text.contains(section), "Missing section: {}", section);
