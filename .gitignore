@@ -6,3 +6,6 @@
 # Session/user files
 USER_FEEDBACK.md
 agency_session_id.txt
+
+# PDFs (generated artifacts, not source)
+*.pdf
