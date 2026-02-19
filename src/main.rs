@@ -452,6 +452,57 @@ enum Commands {
         id: String,
     },
 
+    /// Trace the complete execution history of a task
+    Trace {
+        /// Task ID to trace
+        id: String,
+
+        /// Show complete agent conversation output
+        #[arg(long)]
+        full: bool,
+
+        /// Show only provenance log entries for this task
+        #[arg(long)]
+        ops_only: bool,
+    },
+
+    /// Replay tasks: snapshot graph, selectively reset tasks, re-execute with a different model
+    Replay {
+        /// Model to use for replayed tasks
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Only reset Failed/Abandoned tasks
+        #[arg(long)]
+        failed_only: bool,
+
+        /// Only reset tasks with evaluation score below this threshold
+        #[arg(long)]
+        below_score: Option<f64>,
+
+        /// Reset specific tasks (comma-separated) plus their transitive dependents
+        #[arg(long, value_delimiter = ',')]
+        tasks: Vec<String>,
+
+        /// Preserve Done tasks scoring above this threshold (default: 0.9)
+        #[arg(long)]
+        keep_done: Option<f64>,
+
+        /// Dry run: show what would be reset without making changes
+        #[arg(long)]
+        plan_only: bool,
+
+        /// Only replay tasks in this subgraph (rooted at given task)
+        #[arg(long)]
+        subgraph: Option<String>,
+    },
+
+    /// Manage run snapshots (list, show, restore, diff)
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommands,
+    },
+
     /// Add progress log/notes to a task
     Log {
         /// Task ID (not required with --operations)
@@ -874,6 +925,30 @@ enum Commands {
     Matrix {
         #[command(subcommand)]
         command: MatrixCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunsCommands {
+    /// List all run snapshots
+    List,
+
+    /// Show details of a specific run
+    Show {
+        /// Run ID (e.g., run-001)
+        id: String,
+    },
+
+    /// Restore graph from a run snapshot
+    Restore {
+        /// Run ID to restore from
+        id: String,
+    },
+
+    /// Diff current graph against a run snapshot
+    Diff {
+        /// Run ID to diff against
+        id: String,
     },
 }
 
@@ -1499,6 +1574,9 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Archive { .. } => "archive",
         Commands::Gc { .. } => "gc",
         Commands::Show { .. } => "show",
+        Commands::Trace { .. } => "trace",
+        Commands::Replay { .. } => "replay",
+        Commands::Runs { .. } => "runs",
         Commands::Log { .. } => "log",
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
@@ -1556,6 +1634,9 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Archive { .. }
             | Commands::Gc { .. }
             | Commands::Show { .. }
+            | Commands::Trace { .. }
+            | Commands::Replay { .. }
+            | Commands::Runs { .. }
             | Commands::Log { .. }
             | Commands::Resource { .. }
             | Commands::Skill { .. }
@@ -1828,6 +1909,50 @@ fn main() -> Result<()> {
             include_done,
         } => commands::gc::run(&workgraph_dir, dry_run, include_done),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
+        Commands::Trace { id, full, ops_only } => {
+            let mode = if cli.json {
+                commands::trace::TraceMode::Json
+            } else if full {
+                commands::trace::TraceMode::Full
+            } else if ops_only {
+                commands::trace::TraceMode::OpsOnly
+            } else {
+                commands::trace::TraceMode::Summary
+            };
+            commands::trace::run(&workgraph_dir, &id, mode)
+        }
+        Commands::Replay {
+            model,
+            failed_only,
+            below_score,
+            tasks,
+            keep_done,
+            plan_only,
+            subgraph,
+        } => {
+            let opts = commands::replay::ReplayOptions {
+                model,
+                failed_only,
+                below_score,
+                tasks,
+                keep_done,
+                plan_only,
+                subgraph,
+            };
+            commands::replay::run(&workgraph_dir, &opts, cli.json)
+        }
+        Commands::Runs { command } => match command {
+            RunsCommands::List => commands::runs_cmd::run_list(&workgraph_dir, cli.json),
+            RunsCommands::Show { id } => {
+                commands::runs_cmd::run_show(&workgraph_dir, &id, cli.json)
+            }
+            RunsCommands::Restore { id } => {
+                commands::runs_cmd::run_restore(&workgraph_dir, &id, cli.json)
+            }
+            RunsCommands::Diff { id } => {
+                commands::runs_cmd::run_diff(&workgraph_dir, &id, cli.json)
+            }
+        },
         Commands::Log {
             id,
             message,

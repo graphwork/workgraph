@@ -10,6 +10,7 @@ pub mod matrix_lite;
 pub mod parser;
 pub mod provenance;
 pub mod query;
+pub mod runs;
 pub mod service;
 pub mod usage;
 

@@ -36,6 +36,10 @@ pub struct Config {
     /// Log configuration
     #[serde(default)]
     pub log: LogConfig,
+
+    /// Replay configuration
+    #[serde(default)]
+    pub replay: ReplayConfig,
 }
 
 /// Help display configuration
@@ -74,6 +78,31 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             rotation_threshold: default_rotation_threshold(),
+        }
+    }
+}
+
+/// Replay configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayConfig {
+    /// Default threshold for --keep-done: preserve Done tasks scoring above this (0.0-1.0)
+    #[serde(default = "default_keep_done_threshold")]
+    pub keep_done_threshold: f64,
+
+    /// Whether to snapshot agent output logs alongside graph.jsonl
+    #[serde(default)]
+    pub snapshot_agent_output: bool,
+}
+
+fn default_keep_done_threshold() -> f64 {
+    0.9
+}
+
+impl Default for ReplayConfig {
+    fn default() -> Self {
+        Self {
+            keep_done_threshold: default_keep_done_threshold(),
+            snapshot_agent_output: false,
         }
     }
 }
