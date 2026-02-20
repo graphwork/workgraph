@@ -1,10 +1,13 @@
 use anyhow::Result;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
-use workgraph::graph::Status;
+use workgraph::graph::{Status, Task, WorkGraph};
 use workgraph::provenance::{self, OperationEntry};
+use workgraph::query::build_reverse_index;
 
 /// Output mode for the trace command
 pub enum TraceMode {
@@ -452,6 +455,701 @@ fn print_agent_runs_full(runs: &[AgentRun]) {
     }
 }
 
+// ── Recursive trace ─────────────────────────────────────────────────────
+
+/// A human intervention detected from the provenance log.
+#[derive(Debug, Serialize, Clone)]
+pub struct HumanIntervention {
+    pub timestamp: String,
+    pub task_id: String,
+    pub kind: String, // "fail", "retry", "add_task", "edit", "abandon"
+    pub actor: Option<String>,
+    pub detail: String,
+}
+
+/// Per-task summary used in recursive views.
+#[derive(Debug, Serialize)]
+struct RecursiveTaskInfo {
+    id: String,
+    title: String,
+    status: Status,
+    assigned: Option<String>,
+    duration_secs: Option<i64>,
+    duration_human: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    artifacts: Vec<String>,
+    agent_runs: usize,
+    interventions: Vec<HumanIntervention>,
+}
+
+/// Full recursive trace output (for JSON mode).
+#[derive(Debug, Serialize)]
+struct RecursiveTraceOutput {
+    root_id: String,
+    total_tasks: usize,
+    wall_clock_secs: Option<i64>,
+    wall_clock_human: Option<String>,
+    tasks: Vec<RecursiveTaskInfo>,
+    interventions: Vec<HumanIntervention>,
+}
+
+/// Collect the subgraph rooted at `root_id`: the task itself plus all tasks
+/// whose blocked_by chains trace back to it. Filters out internal tasks
+/// (assignment/evaluation tags) for cleaner display.
+fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
+    let reverse_index = build_reverse_index(graph);
+    let mut visited = HashSet::new();
+    let mut queue = vec![root_id.to_string()];
+    let mut result = Vec::new();
+
+    while let Some(id) = queue.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        if let Some(task) = graph.get_task(&id) {
+            // Skip internal agency tasks for cleaner output
+            let is_internal = task.tags.iter().any(|t| t == "assignment" || t == "evaluation");
+            if !is_internal {
+                result.push(task);
+            }
+            // Follow reverse index: tasks that depend on this one
+            if let Some(deps) = reverse_index.get(&id) {
+                for dep_id in deps {
+                    queue.push(dep_id.clone());
+                }
+            }
+        }
+    }
+
+    // Sort by started_at for chronological ordering, falling back to created_at
+    result.sort_by(|a, b| {
+        let a_time = a.started_at.as_deref().or(a.created_at.as_deref()).unwrap_or("");
+        let b_time = b.started_at.as_deref().or(b.created_at.as_deref()).unwrap_or("");
+        a_time.cmp(b_time)
+    });
+    result
+}
+
+/// Detect human interventions from the provenance log for a set of task IDs.
+fn detect_interventions(
+    dir: &Path,
+    task_ids: &HashSet<&str>,
+) -> Vec<HumanIntervention> {
+    let all_ops = provenance::read_all_operations(dir).unwrap_or_default();
+    let mut interventions = Vec::new();
+
+    // Ops that indicate human intervention: fail, retry, abandon, add_task (manual),
+    // edit (manual changes)
+    for op in &all_ops {
+        let task_id = match op.task_id.as_deref() {
+            Some(id) if task_ids.contains(id) => id,
+            _ => continue,
+        };
+
+        // Skip operations by agents (actor starting with "agent-" is automated)
+        let is_human = op.actor.as_ref()
+            .map(|a| !a.starts_with("agent-") && !a.starts_with("coordinator"))
+            .unwrap_or(true); // No actor = likely human CLI usage
+
+        if !is_human {
+            continue;
+        }
+
+        let (kind, detail) = match op.op.as_str() {
+            "fail" => {
+                let reason = op.detail.get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                ("fail".to_string(), format!("Task manually failed: {}", reason))
+            }
+            "retry" => {
+                let attempt = op.detail.get("attempt")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                ("retry".to_string(), format!("Task retried (attempt {})", attempt))
+            }
+            "abandon" => {
+                let reason = op.detail.get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                ("abandon".to_string(), format!("Task abandoned: {}", reason))
+            }
+            "add_task" => {
+                ("add_task".to_string(), "Task manually added".to_string())
+            }
+            "edit" => {
+                let fields = op.detail.get("fields")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|f| f.get("field").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                ("edit".to_string(), format!("Task manually edited: {}", fields))
+            }
+            _ => continue,
+        };
+
+        interventions.push(HumanIntervention {
+            timestamp: op.timestamp.clone(),
+            task_id: task_id.to_string(),
+            kind,
+            actor: op.actor.clone(),
+            detail,
+        });
+    }
+
+    interventions.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    interventions
+}
+
+fn parse_timestamp(ts: &str) -> Option<DateTime<Utc>> {
+    ts.parse::<DateTime<chrono::FixedOffset>>()
+        .ok()
+        .map(|d| d.into())
+}
+
+fn task_duration_secs(task: &Task) -> Option<i64> {
+    let started = task.started_at.as_ref().and_then(|s| parse_timestamp(s))?;
+    let completed = task.completed_at.as_ref().and_then(|s| parse_timestamp(s))?;
+    Some((completed - started).num_seconds())
+}
+
+/// Compute wall-clock duration from the earliest start to the latest completion
+/// across all tasks in the subgraph.
+fn compute_wall_clock(tasks: &[&Task]) -> Option<i64> {
+    let earliest = tasks.iter()
+        .filter_map(|t| t.started_at.as_ref().and_then(|s| parse_timestamp(s)))
+        .min()?;
+    let latest = tasks.iter()
+        .filter_map(|t| t.completed_at.as_ref().and_then(|s| parse_timestamp(s)))
+        .max()?;
+    Some((latest - earliest).num_seconds())
+}
+
+/// Build a RecursiveTaskInfo for a single task.
+fn build_recursive_info(
+    task: &Task,
+    dir: &Path,
+    task_interventions: &[HumanIntervention],
+) -> RecursiveTaskInfo {
+    let duration = task_duration_secs(task);
+    let agent_runs = load_agent_runs(dir, &task.id, false).len();
+
+    RecursiveTaskInfo {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        status: task.status,
+        assigned: task.assigned.clone(),
+        duration_secs: duration,
+        duration_human: duration.map(format_duration),
+        started_at: task.started_at.clone(),
+        completed_at: task.completed_at.clone(),
+        artifacts: task.artifacts.clone(),
+        agent_runs,
+        interventions: task_interventions.to_vec(),
+    }
+}
+
+/// Run the recursive trace view.
+pub fn run_recursive(dir: &Path, root_id: &str, timeline: bool, json: bool) -> Result<()> {
+    let (graph, _path) = super::load_workgraph(dir)?;
+    let _root = graph.get_task_or_err(root_id)?;
+
+    let descendants = collect_descendants(root_id, &graph);
+    let task_ids: HashSet<&str> = descendants.iter().map(|t| t.id.as_str()).collect();
+    let interventions = detect_interventions(dir, &task_ids);
+
+    // Build per-task intervention map
+    let mut intervention_map: HashMap<&str, Vec<HumanIntervention>> = HashMap::new();
+    for iv in &interventions {
+        intervention_map.entry(iv.task_id.as_str()).or_default().push(iv.clone());
+    }
+
+    let wall_clock = compute_wall_clock(&descendants);
+
+    if json {
+        let task_infos: Vec<RecursiveTaskInfo> = descendants.iter()
+            .map(|t| {
+                let task_ivs = intervention_map.get(t.id.as_str())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                build_recursive_info(t, dir, task_ivs)
+            })
+            .collect();
+
+        let output = RecursiveTraceOutput {
+            root_id: root_id.to_string(),
+            total_tasks: descendants.len(),
+            wall_clock_secs: wall_clock,
+            wall_clock_human: wall_clock.map(format_duration),
+            tasks: task_infos,
+            interventions: interventions.clone(),
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    if timeline {
+        print_timeline(&descendants, &interventions, dir, wall_clock);
+    } else {
+        print_recursive_tree(root_id, &graph, &descendants, &intervention_map, dir, wall_clock);
+    }
+
+    Ok(())
+}
+
+/// Print the recursive execution tree with ASCII rendering.
+fn print_recursive_tree(
+    root_id: &str,
+    graph: &WorkGraph,
+    descendants: &[&Task],
+    intervention_map: &HashMap<&str, Vec<HumanIntervention>>,
+    dir: &Path,
+    wall_clock: Option<i64>,
+) {
+    let use_color = std::io::stdout().is_terminal();
+    let reset = if use_color { "\x1b[0m" } else { "" };
+    let bold = if use_color { "\x1b[1m" } else { "" };
+    let dim = if use_color { "\x1b[2m" } else { "" };
+    let red = if use_color { "\x1b[31m" } else { "" };
+    let green = if use_color { "\x1b[32m" } else { "" };
+    let yellow = if use_color { "\x1b[33m" } else { "" };
+    let magenta = if use_color { "\x1b[35m" } else { "" };
+
+    // Header
+    let root = graph.get_task(root_id);
+    let root_title = root.map(|t| t.title.as_str()).unwrap_or(root_id);
+    println!("{}Recursive Trace: {}{} ({})", bold, root_id, reset, root_title);
+    println!("{}Tasks: {}{}", dim, descendants.len(), reset);
+    if let Some(wc) = wall_clock {
+        println!("{}Wall clock: {}{}", dim, format_duration(wc), reset);
+    }
+    println!();
+
+    // Build adjacency within descendant set
+    let desc_ids: HashSet<&str> = descendants.iter().map(|t| t.id.as_str()).collect();
+    let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for task in descendants {
+        for blocker in &task.blocked_by {
+            if desc_ids.contains(blocker.as_str()) {
+                forward.entry(blocker.as_str()).or_default().push(task.id.as_str());
+                reverse.entry(task.id.as_str()).or_default().push(blocker.as_str());
+            }
+        }
+    }
+    for v in forward.values_mut() { v.sort(); }
+    for v in reverse.values_mut() { v.sort(); }
+
+    // Find roots (no parents in descendant set)
+    let mut roots: Vec<&str> = descendants.iter()
+        .filter(|t| reverse.get(t.id.as_str()).map(Vec::is_empty).unwrap_or(true))
+        .map(|t| t.id.as_str())
+        .collect();
+    roots.sort();
+
+    let task_map: HashMap<&str, &&Task> = descendants.iter()
+        .map(|t| (t.id.as_str(), t))
+        .collect();
+
+    let mut rendered: HashSet<&str> = HashSet::new();
+
+    fn render_tree_recursive<'a>(
+        id: &'a str,
+        prefix: &str,
+        is_last: bool,
+        is_root: bool,
+        rendered: &mut HashSet<&'a str>,
+        forward: &HashMap<&str, Vec<&'a str>>,
+        reverse: &HashMap<&str, Vec<&'a str>>,
+        task_map: &HashMap<&str, &&Task>,
+        intervention_map: &HashMap<&str, Vec<HumanIntervention>>,
+        dir: &Path,
+        use_color: bool,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        let connector = if is_root {
+            String::new()
+        } else if is_last {
+            "└→ ".to_string()
+        } else {
+            "├→ ".to_string()
+        };
+
+        let reset = if use_color { "\x1b[0m" } else { "" };
+        let dim = if use_color { "\x1b[2m" } else { "" };
+        let cyan = if use_color { "\x1b[36m" } else { "" };
+        let magenta = if use_color { "\x1b[35m" } else { "" };
+
+        let status_color_fn = |s: &Status| -> &str {
+            if !use_color { return ""; }
+            match s {
+                Status::Done => "\x1b[32m",
+                Status::InProgress => "\x1b[33m",
+                Status::Failed => "\x1b[31m",
+                Status::Open => "\x1b[37m",
+                Status::Blocked | Status::Abandoned => "\x1b[90m",
+            }
+        };
+
+        let status_label_fn = |s: &Status| -> &str {
+            match s {
+                Status::Done => "done",
+                Status::InProgress => "in-progress",
+                Status::Failed => "failed",
+                Status::Open => "open",
+                Status::Blocked => "blocked",
+                Status::Abandoned => "abandoned",
+            }
+        };
+
+        // Back-reference for already-rendered nodes (fan-in)
+        if rendered.contains(id) {
+            if let Some(task) = task_map.get(id) {
+                lines.push(format!(
+                    "{}{}{}{}  ({}) ...{}",
+                    prefix, connector,
+                    status_color_fn(&task.status), id, status_label_fn(&task.status),
+                    reset
+                ));
+            }
+            return lines;
+        }
+        rendered.insert(id);
+
+        // Fan-in annotation
+        let parents = reverse.get(id).map(Vec::as_slice).unwrap_or(&[]);
+        let fan_in = if parents.len() > 1 {
+            format!("  {}(← {}){}", dim, parents.join(", "), reset)
+        } else {
+            String::new()
+        };
+
+        // Build node display
+        if let Some(task) = task_map.get(id) {
+            let dur = task_duration_secs(task)
+                .map(|s| format!("  {}[{}]{}", dim, format_duration(s), reset))
+                .unwrap_or_default();
+
+            let assigned = task.assigned.as_ref()
+                .map(|a| format!("  {}({}){}", cyan, a, reset))
+                .unwrap_or_default();
+
+            let artifacts_str = if !task.artifacts.is_empty() {
+                format!("  {}→ {}{}", dim, task.artifacts.join(", "), reset)
+            } else {
+                String::new()
+            };
+
+            lines.push(format!(
+                "{}{}{}{}{}  ({}){}{}{}{}",
+                prefix, connector,
+                status_color_fn(&task.status), id, reset,
+                status_label_fn(&task.status),
+                dur, assigned, artifacts_str, fan_in,
+            ));
+
+            // Show interventions on this task
+            if let Some(ivs) = intervention_map.get(id) {
+                let child_prefix = if is_root {
+                    prefix.to_string()
+                } else if is_last {
+                    format!("{}  ", prefix)
+                } else {
+                    format!("{}│ ", prefix)
+                };
+                for iv in ivs {
+                    lines.push(format!(
+                        "{}{}⚠ {} — {}{}",
+                        child_prefix, magenta, iv.kind, iv.detail, reset
+                    ));
+                }
+            }
+        } else {
+            lines.push(format!("{}{}{}  (unknown){}", prefix, connector, id, fan_in));
+        }
+
+        // Recurse into children
+        let child_prefix = if is_root {
+            prefix.to_string()
+        } else if is_last {
+            format!("{}  ", prefix)
+        } else {
+            format!("{}│ ", prefix)
+        };
+
+        let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
+        for (i, &child) in children.iter().enumerate() {
+            let child_is_last = i == children.len() - 1;
+            let child_lines = render_tree_recursive(
+                child, &child_prefix, child_is_last, false,
+                rendered, forward, reverse, task_map,
+                intervention_map, dir, use_color,
+            );
+            lines.extend(child_lines);
+        }
+
+        lines
+    }
+
+    for (i, root_node) in roots.iter().enumerate() {
+        if i > 0 { println!(); }
+        let tree_lines = render_tree_recursive(
+            root_node, "", true, true,
+            &mut rendered, &forward, &reverse, &task_map,
+            intervention_map, dir, use_color,
+        );
+        for line in &tree_lines {
+            println!("{}", line);
+        }
+    }
+
+    // Summary at bottom
+    println!();
+
+    // Count statuses
+    let done_count = descendants.iter().filter(|t| t.status == Status::Done).count();
+    let failed_count = descendants.iter().filter(|t| t.status == Status::Failed).count();
+    let in_progress = descendants.iter().filter(|t| t.status == Status::InProgress).count();
+    let open_count = descendants.iter().filter(|t| t.status == Status::Open).count();
+
+    print!("{}Summary: ", dim);
+    let mut parts = Vec::new();
+    if done_count > 0 { parts.push(format!("{}{} done{}", green, done_count, reset)); }
+    if in_progress > 0 { parts.push(format!("{}{} in-progress{}", yellow, in_progress, reset)); }
+    if open_count > 0 { parts.push(format!("{} open", open_count)); }
+    if failed_count > 0 { parts.push(format!("{}{} failed{}", red, failed_count, reset)); }
+    println!("{}{}", parts.join(", "), reset);
+
+    // Show interventions summary
+    let total_interventions: usize = intervention_map.values().map(|v| v.len()).sum();
+    if total_interventions > 0 {
+        println!(
+            "{}Human interventions: {}{}{}",
+            dim, magenta, total_interventions, reset
+        );
+    }
+}
+
+/// Print the chronological timeline with parallel execution lanes.
+fn print_timeline(
+    descendants: &[&Task],
+    interventions: &[HumanIntervention],
+    _dir: &Path,
+    wall_clock: Option<i64>,
+) {
+    let use_color = std::io::stdout().is_terminal();
+    let reset = if use_color { "\x1b[0m" } else { "" };
+    let bold = if use_color { "\x1b[1m" } else { "" };
+    let dim = if use_color { "\x1b[2m" } else { "" };
+    let magenta = if use_color { "\x1b[35m" } else { "" };
+
+    let status_color = |s: &Status| -> &str {
+        if !use_color { return ""; }
+        match s {
+            Status::Done => "\x1b[32m",
+            Status::InProgress => "\x1b[33m",
+            Status::Failed => "\x1b[31m",
+            Status::Open => "\x1b[37m",
+            Status::Blocked | Status::Abandoned => "\x1b[90m",
+        }
+    };
+
+    println!("{}Execution Timeline{}", bold, reset);
+    if let Some(wc) = wall_clock {
+        println!("{}Total wall clock: {}{}", dim, format_duration(wc), reset);
+    }
+    println!();
+
+    // Collect timeline events (start/end for each task + interventions)
+    #[derive(Debug, Clone)]
+    struct TimelineEvent {
+        timestamp: DateTime<Utc>,
+        kind: TimelineEventKind,
+        task_id: String,
+    }
+
+    #[derive(Debug, Clone)]
+    enum TimelineEventKind {
+        Start,
+        End(Status),
+        Intervention(String), // detail string
+    }
+
+    let mut events: Vec<TimelineEvent> = Vec::new();
+
+    for task in descendants {
+        if let Some(ref started) = task.started_at {
+            if let Some(ts) = parse_timestamp(started) {
+                events.push(TimelineEvent {
+                    timestamp: ts,
+                    kind: TimelineEventKind::Start,
+                    task_id: task.id.clone(),
+                });
+            }
+        }
+        if let Some(ref completed) = task.completed_at {
+            if let Some(ts) = parse_timestamp(completed) {
+                events.push(TimelineEvent {
+                    timestamp: ts,
+                    kind: TimelineEventKind::End(task.status),
+                    task_id: task.id.clone(),
+                });
+            }
+        }
+    }
+
+    for iv in interventions {
+        if let Some(ts) = parse_timestamp(&iv.timestamp) {
+            events.push(TimelineEvent {
+                timestamp: ts,
+                kind: TimelineEventKind::Intervention(iv.detail.clone()),
+                task_id: iv.task_id.clone(),
+            });
+        }
+    }
+
+    events.sort_by_key(|e| e.timestamp);
+
+    if events.is_empty() {
+        println!("{}(no execution data available){}", dim, reset);
+        return;
+    }
+
+    // Track active lanes (parallel execution)
+    let mut active_lanes: Vec<String> = Vec::new(); // task_id per lane
+    let mut task_lanes: HashMap<String, usize> = HashMap::new();
+
+    let base_time = events.first().map(|e| e.timestamp).unwrap();
+
+    for event in &events {
+        let elapsed = (event.timestamp - base_time).num_seconds();
+        let time_str = format!("+{}", format_duration(elapsed));
+
+        match &event.kind {
+            TimelineEventKind::Start => {
+                // Find an empty lane or create a new one
+                let lane = active_lanes.iter().position(|l| l.is_empty())
+                    .unwrap_or_else(|| {
+                        active_lanes.push(String::new());
+                        active_lanes.len() - 1
+                    });
+                active_lanes[lane] = event.task_id.clone();
+                task_lanes.insert(event.task_id.clone(), lane);
+
+                // Render lane indicators
+                let lanes_str = render_lanes(&active_lanes, Some(lane), "▶", use_color);
+                println!(
+                    "  {}{:>8}{}  {}  {} started",
+                    dim, time_str, reset, lanes_str, event.task_id
+                );
+            }
+            TimelineEventKind::End(status) => {
+                let lane = task_lanes.get(&event.task_id).copied();
+                let marker = match status {
+                    Status::Done => "✓",
+                    Status::Failed => "✗",
+                    _ => "•",
+                };
+                let color = status_color(status);
+                let lanes_str = render_lanes(&active_lanes, lane, marker, use_color);
+
+                let dur = descendants.iter()
+                    .find(|t| t.id == event.task_id)
+                    .and_then(|t| task_duration_secs(t))
+                    .map(|s| format!(" {}{}{}", dim, format_duration(s), reset))
+                    .unwrap_or_default();
+
+                println!(
+                    "  {}{:>8}{}  {}  {}{} completed{}{}",
+                    dim, time_str, reset, lanes_str,
+                    color, event.task_id, reset, dur
+                );
+
+                // Free the lane
+                if let Some(l) = lane {
+                    if l < active_lanes.len() {
+                        active_lanes[l] = String::new();
+                    }
+                }
+            }
+            TimelineEventKind::Intervention(detail) => {
+                let lane = task_lanes.get(&event.task_id).copied();
+                let lanes_str = render_lanes(&active_lanes, lane, "⚠", use_color);
+                println!(
+                    "  {}{:>8}{}  {}  {}⚠ {} — {}{}",
+                    dim, time_str, reset, lanes_str,
+                    magenta, event.task_id, detail, reset
+                );
+            }
+        }
+    }
+
+    // Legend
+    println!();
+    let max_parallel = {
+        let mut max = 0usize;
+        let mut current = 0usize;
+        for event in &events {
+            match &event.kind {
+                TimelineEventKind::Start => {
+                    current += 1;
+                    if current > max { max = current; }
+                }
+                TimelineEventKind::End(_) => {
+                    current = current.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        max
+    };
+
+    println!(
+        "{}Max parallel: {} | Total tasks: {} | Events: {}{}",
+        dim, max_parallel, descendants.len(), events.len(), reset
+    );
+}
+
+/// Render lane indicators for the timeline view.
+fn render_lanes(
+    active_lanes: &[String],
+    highlight_lane: Option<usize>,
+    marker: &str,
+    use_color: bool,
+) -> String {
+    let cyan = if use_color { "\x1b[36m" } else { "" };
+    let dim = if use_color { "\x1b[2m" } else { "" };
+    let reset = if use_color { "\x1b[0m" } else { "" };
+
+    // Trim trailing empty lanes for display
+    let effective_len = active_lanes.iter()
+        .rposition(|l| !l.is_empty())
+        .map(|p| p + 1)
+        .unwrap_or(0)
+        .max(highlight_lane.map(|l| l + 1).unwrap_or(0));
+
+    let mut result = String::new();
+    for i in 0..effective_len {
+        if Some(i) == highlight_lane {
+            result.push_str(&format!("{}{}{}", cyan, marker, reset));
+        } else if !active_lanes[i].is_empty() {
+            result.push_str(&format!("{}│{}", dim, reset));
+        } else {
+            result.push(' ');
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,5 +1398,237 @@ mod tests {
         let dir = tmp.path().join(".workgraph");
         let runs = load_agent_runs(&dir, "nonexistent", false);
         assert!(runs.is_empty());
+    }
+
+    // ── Recursive trace tests ──
+
+    fn make_done_task(id: &str, title: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            title: title.to_string(),
+            status: Status::Done,
+            started_at: Some("2026-02-20T10:00:00+00:00".to_string()),
+            completed_at: Some("2026-02-20T10:05:00+00:00".to_string()),
+            ..Task::default()
+        }
+    }
+
+    #[test]
+    fn test_collect_descendants_single_task() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root")));
+        let desc = collect_descendants("root", &graph);
+        assert_eq!(desc.len(), 1);
+        assert_eq!(desc[0].id, "root");
+    }
+
+    #[test]
+    fn test_collect_descendants_chain() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root")));
+        let mut b = make_done_task("child", "Child");
+        b.blocked_by = vec!["root".to_string()];
+        graph.add_node(Node::Task(b));
+        let mut c = make_done_task("grandchild", "Grandchild");
+        c.blocked_by = vec!["child".to_string()];
+        graph.add_node(Node::Task(c));
+
+        let desc = collect_descendants("root", &graph);
+        assert_eq!(desc.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_descendants_diamond() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root")));
+        let mut b = make_done_task("left", "Left");
+        b.blocked_by = vec!["root".to_string()];
+        let mut c = make_done_task("right", "Right");
+        c.blocked_by = vec!["root".to_string()];
+        let mut d = make_done_task("merge", "Merge");
+        d.blocked_by = vec!["left".to_string(), "right".to_string()];
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+
+        let desc = collect_descendants("root", &graph);
+        assert_eq!(desc.len(), 4);
+    }
+
+    #[test]
+    fn test_collect_descendants_skips_internal_tasks() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root")));
+        let mut assign = make_done_task("assign-root", "Assign agent");
+        assign.tags = vec!["assignment".to_string(), "agency".to_string()];
+        assign.blocked_by = vec!["root".to_string()];
+        graph.add_node(Node::Task(assign));
+
+        let desc = collect_descendants("root", &graph);
+        assert_eq!(desc.len(), 1);
+        assert_eq!(desc[0].id, "root");
+    }
+
+    #[test]
+    fn test_detect_interventions_finds_manual_fail() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        provenance::record(
+            &dir,
+            "fail",
+            Some("task-1"),
+            None, // no actor = human
+            serde_json::json!({"reason": "wrong approach"}),
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+
+        let task_ids: HashSet<&str> = ["task-1"].into_iter().collect();
+        let interventions = detect_interventions(&dir, &task_ids);
+        assert_eq!(interventions.len(), 1);
+        assert_eq!(interventions[0].kind, "fail");
+        assert!(interventions[0].detail.contains("wrong approach"));
+    }
+
+    #[test]
+    fn test_detect_interventions_skips_agent_ops() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        provenance::record(
+            &dir,
+            "fail",
+            Some("task-1"),
+            Some("agent-42"),
+            serde_json::json!({"reason": "compile error"}),
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+
+        let task_ids: HashSet<&str> = ["task-1"].into_iter().collect();
+        let interventions = detect_interventions(&dir, &task_ids);
+        assert_eq!(interventions.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_wall_clock() {
+        let t1 = Task {
+            started_at: Some("2026-02-20T10:00:00+00:00".to_string()),
+            completed_at: Some("2026-02-20T10:05:00+00:00".to_string()),
+            ..make_task("t1", "T1")
+        };
+        let t2 = Task {
+            started_at: Some("2026-02-20T10:02:00+00:00".to_string()),
+            completed_at: Some("2026-02-20T10:10:00+00:00".to_string()),
+            ..make_task("t2", "T2")
+        };
+
+        let wc = compute_wall_clock(&[&t1, &t2]);
+        assert_eq!(wc, Some(600)); // 10 minutes from earliest start to latest end
+    }
+
+    #[test]
+    fn test_run_recursive_basic() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root task")));
+        let mut child = make_done_task("child", "Child task");
+        child.blocked_by = vec!["root".to_string()];
+        child.assigned = Some("agent-1".to_string());
+        child.artifacts = vec!["output.txt".to_string()];
+        graph.add_node(Node::Task(child));
+        setup_graph(&dir, &graph);
+
+        // Should not panic
+        let result = run_recursive(&dir, "root", false, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_recursive_json() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root task")));
+        let mut child = make_done_task("child", "Child task");
+        child.blocked_by = vec!["root".to_string()];
+        graph.add_node(Node::Task(child));
+        setup_graph(&dir, &graph);
+
+        let result = run_recursive(&dir, "root", false, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_recursive_timeline() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        let mut root = make_done_task("root", "Root");
+        root.started_at = Some("2026-02-20T10:00:00+00:00".to_string());
+        root.completed_at = Some("2026-02-20T10:01:00+00:00".to_string());
+        graph.add_node(Node::Task(root));
+        let mut child1 = make_done_task("c1", "Child 1");
+        child1.blocked_by = vec!["root".to_string()];
+        child1.started_at = Some("2026-02-20T10:01:00+00:00".to_string());
+        child1.completed_at = Some("2026-02-20T10:03:00+00:00".to_string());
+        graph.add_node(Node::Task(child1));
+        let mut child2 = make_done_task("c2", "Child 2");
+        child2.blocked_by = vec!["root".to_string()];
+        child2.started_at = Some("2026-02-20T10:01:00+00:00".to_string());
+        child2.completed_at = Some("2026-02-20T10:04:00+00:00".to_string());
+        graph.add_node(Node::Task(child2));
+        setup_graph(&dir, &graph);
+
+        let result = run_recursive(&dir, "root", true, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_recursive_nonexistent_task() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Test")));
+        setup_graph(&dir, &graph);
+
+        let result = run_recursive(&dir, "nonexistent", false, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_render_lanes_basic() {
+        let lanes = vec!["t1".to_string(), "t2".to_string(), String::new()];
+        let result = render_lanes(&lanes, Some(0), "▶", false);
+        assert_eq!(result, "▶│");
+    }
+
+    #[test]
+    fn test_render_lanes_empty() {
+        let lanes: Vec<String> = vec![];
+        let result = render_lanes(&lanes, None, "▶", false);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_task_duration_secs() {
+        let task = Task {
+            started_at: Some("2026-02-20T10:00:00+00:00".to_string()),
+            completed_at: Some("2026-02-20T10:05:00+00:00".to_string()),
+            ..make_task("t1", "Test")
+        };
+        assert_eq!(task_duration_secs(&task), Some(300));
+    }
+
+    #[test]
+    fn test_task_duration_secs_no_timestamps() {
+        let task = make_task("t1", "Test");
+        assert_eq!(task_duration_secs(&task), None);
     }
 }

@@ -5,43 +5,126 @@ use workgraph::trace_function::{
 };
 
 /// List all available trace functions.
-pub fn run_list(dir: &Path, json: bool, verbose: bool) -> Result<()> {
+pub fn run_list(dir: &Path, json: bool, verbose: bool, include_peers: bool) -> Result<()> {
     let func_dir = trace_function::functions_dir(dir);
-    let functions = trace_function::load_all_functions(&func_dir)?;
+    let local_functions = trace_function::load_all_functions(&func_dir)?;
 
-    if functions.is_empty() {
+    // Collect peer functions if requested
+    let peer_entries: Vec<(String, Vec<TraceFunction>)> = if include_peers {
+        load_peer_functions(dir)?
+    } else {
+        Vec::new()
+    };
+
+    let has_local = !local_functions.is_empty();
+    let has_peers = peer_entries.iter().any(|(_, funcs)| !funcs.is_empty());
+
+    if !has_local && !has_peers {
         if json {
             println!("[]");
         } else {
             println!("No trace functions found.");
             println!("  Extract one with: wg trace extract <task-id>");
+            if !include_peers {
+                println!("  Use --include-peers to search federated workgraphs.");
+            }
         }
         return Ok(());
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&functions)?);
+        let mut all_entries: Vec<serde_json::Value> = Vec::new();
+        for func in &local_functions {
+            let mut val = serde_json::to_value(func)?;
+            val["source"] = serde_json::json!("local");
+            all_entries.push(val);
+        }
+        for (peer_name, funcs) in &peer_entries {
+            for func in funcs {
+                let mut val = serde_json::to_value(func)?;
+                val["source"] = serde_json::json!(format!("peer:{}", peer_name));
+                all_entries.push(val);
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&all_entries)?);
         return Ok(());
     }
 
-    println!("Functions:");
-    // Calculate column widths for alignment
-    let id_width = functions.iter().map(|f| f.id.len()).max().unwrap_or(4).max(4);
-    let name_width = functions
-        .iter()
-        .map(|f| f.name.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    // Print local functions
+    if has_local {
+        let label = if include_peers { "Local functions:" } else { "Functions:" };
+        println!("{}", label);
+        print_function_table(&local_functions, verbose, None);
+    }
 
-    for func in &functions {
+    // Print peer functions
+    if include_peers {
+        for (peer_name, funcs) in &peer_entries {
+            if funcs.is_empty() {
+                continue;
+            }
+            if has_local {
+                println!();
+            }
+            println!("Peer functions ({}):", peer_name);
+            print_function_table(funcs, verbose, Some(peer_name));
+        }
+
+        if !has_peers && has_local {
+            println!();
+            println!("No functions found in peer workgraphs.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Load functions from all configured peer workgraphs.
+fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> {
+    let config = workgraph::federation::load_federation_config(dir)?;
+    let mut results = Vec::new();
+
+    for (name, _peer_config) in &config.peers {
+        match workgraph::federation::resolve_peer(name, dir) {
+            Ok(resolved) => {
+                let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
+                let funcs = trace_function::load_all_functions(&peer_func_dir).unwrap_or_default();
+                results.push((name.clone(), funcs));
+            }
+            Err(_) => {
+                // Peer not accessible, skip silently
+                results.push((name.clone(), Vec::new()));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Print a table of functions with consistent formatting.
+fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: Option<&str>) {
+    let id_width = functions.iter().map(|f| f.id.len()).max().unwrap_or(4).max(4);
+    let name_width = functions.iter().map(|f| f.name.len()).max().unwrap_or(4).max(4);
+
+    for func in functions {
+        let display_id = if let Some(peer) = peer_name {
+            format!("{}:{}", peer, func.id)
+        } else {
+            func.id.clone()
+        };
+        let display_id_width = if peer_name.is_some() {
+            display_id.len().max(id_width + peer_name.unwrap().len() + 1)
+        } else {
+            id_width
+        };
+
         println!(
             "  {:<id_w$}  {:<name_w$}  {} tasks, {} inputs",
-            func.id,
+            display_id,
             format!("\"{}\"", func.name),
             func.tasks.len(),
             func.inputs.len(),
-            id_w = id_width,
+            id_w = display_id_width,
             name_w = name_width + 2, // +2 for quotes
         );
 
@@ -61,8 +144,6 @@ pub fn run_list(dir: &Path, json: bool, verbose: bool) -> Result<()> {
             println!();
         }
     }
-
-    Ok(())
 }
 
 /// Show details of a single trace function.
@@ -373,7 +454,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("functions")).unwrap();
-        assert!(run_list(dir, false, false).is_ok());
+        assert!(run_list(dir, false, false, false).is_ok());
     }
 
     #[test]
@@ -381,7 +462,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("functions")).unwrap();
-        assert!(run_list(dir, true, false).is_ok());
+        assert!(run_list(dir, true, false, false).is_ok());
     }
 
     #[test]
@@ -390,7 +471,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, false, false).is_ok());
+        assert!(run_list(dir, false, false, false).is_ok());
     }
 
     #[test]
@@ -399,7 +480,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, false, true).is_ok());
+        assert!(run_list(dir, false, true, false).is_ok());
     }
 
     #[test]
@@ -408,7 +489,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, true, false).is_ok());
+        assert!(run_list(dir, true, false, false).is_ok());
     }
 
     #[test]
@@ -485,8 +566,112 @@ mod tests {
         save_function(&f1, &func_dir).unwrap();
         save_function(&f2, &func_dir).unwrap();
 
-        assert!(run_list(dir, false, false).is_ok());
-        assert!(run_list(dir, true, false).is_ok());
-        assert!(run_list(dir, false, true).is_ok());
+        assert!(run_list(dir, false, false, false).is_ok());
+        assert!(run_list(dir, true, false, false).is_ok());
+        assert!(run_list(dir, false, true, false).is_ok());
+    }
+
+    // ── --include-peers tests ──
+
+    #[test]
+    fn list_include_peers_with_peer_functions() {
+        let tmp = TempDir::new().unwrap();
+        let local_dir = tmp.path().join("local");
+        let local_wg = local_dir.join(".workgraph");
+        std::fs::create_dir_all(local_wg.join("functions")).unwrap();
+
+        // Set up peer project with a function
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg).unwrap();
+        let peer_func_dir = peer_wg.join("functions");
+        save_function(&sample_function(), &peer_func_dir).unwrap();
+
+        // Configure peer in federation.yaml
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "other".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: peer_project.to_str().unwrap().to_string(),
+                    description: Some("Test peer".to_string()),
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
+
+        // List with --include-peers should find peer functions
+        assert!(run_list(&local_wg, false, false, true).is_ok());
+        assert!(run_list(&local_wg, true, false, true).is_ok());
+    }
+
+    #[test]
+    fn list_include_peers_no_peers_configured() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("functions")).unwrap();
+
+        // No federation.yaml = no peers
+        assert!(run_list(dir, false, false, true).is_ok());
+    }
+
+    #[test]
+    fn list_include_peers_with_inaccessible_peer() {
+        let tmp = TempDir::new().unwrap();
+        let local_wg = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(local_wg.join("functions")).unwrap();
+
+        // Add a local function
+        save_function(&sample_function(), &local_wg.join("functions")).unwrap();
+
+        // Configure a peer that doesn't exist
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "missing".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: "/nonexistent/path".to_string(),
+                    description: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
+
+        // Should not error, just skip the inaccessible peer
+        assert!(run_list(&local_wg, false, false, true).is_ok());
+        assert!(run_list(&local_wg, true, false, true).is_ok());
+    }
+
+    #[test]
+    fn list_include_peers_json_includes_source() {
+        let tmp = TempDir::new().unwrap();
+        let local_wg = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(local_wg.join("functions")).unwrap();
+
+        // Local function
+        save_function(&sample_function(), &local_wg.join("functions")).unwrap();
+
+        // Peer with function
+        let peer_project = tmp.path().join("peer");
+        let peer_wg = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg).unwrap();
+        let mut peer_func = sample_function();
+        peer_func.id = "peer-func".to_string();
+        save_function(&peer_func, &peer_wg.join("functions")).unwrap();
+
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "testpeer".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: peer_project.to_str().unwrap().to_string(),
+                    description: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
+
+        // JSON output should succeed
+        assert!(run_list(&local_wg, true, false, true).is_ok());
     }
 }

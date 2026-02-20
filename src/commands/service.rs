@@ -34,7 +34,7 @@ use workgraph::agency;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task, evaluate_loop_edges};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks;
+use workgraph::query::ready_tasks_with_peers;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive, spawn};
@@ -378,8 +378,9 @@ fn cleanup_and_count_alive(
 fn check_ready_or_return(
     graph: &workgraph::graph::WorkGraph,
     alive_count: usize,
+    dir: &Path,
 ) -> Option<TickResult> {
-    let ready = ready_tasks(graph);
+    let ready = ready_tasks_with_peers(graph, dir);
     if ready.is_empty() {
         let terminal = graph.tasks().filter(|t| t.status.is_terminal()).count();
         let total = graph.tasks().count();
@@ -409,12 +410,12 @@ fn check_ready_or_return(
 /// `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
 ///
 /// Returns `true` if the graph was modified.
-fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Config) -> bool {
+fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Config, dir: &Path) -> bool {
     let mut modified = false;
 
     // Collect task data to avoid holding references while mutating graph
     let ready_task_data: Vec<_> = {
-        let ready = ready_tasks(graph);
+        let ready = ready_tasks_with_peers(graph, dir);
         ready
             .iter()
             .map(|t| {
@@ -901,7 +902,7 @@ fn spawn_agents_for_ready_tasks(
     model: Option<&str>,
     slots_available: usize,
 ) -> usize {
-    let final_ready = ready_tasks(graph);
+    let final_ready = ready_tasks_with_peers(graph, dir);
     let agents_dir = dir.join("agency").join("agents");
     let mut spawned = 0;
 
@@ -994,7 +995,7 @@ pub fn coordinator_tick(
     // create new ready tasks (e.g. evaluate-* tasks) that weren't there before.
     let mut graph_modified = false;
     if config.agency.auto_assign {
-        graph_modified |= build_auto_assign_tasks(&mut graph, &config);
+        graph_modified |= build_auto_assign_tasks(&mut graph, &config, dir);
     }
 
     // Phase 4: Auto-evaluate tasks
@@ -1011,12 +1012,12 @@ pub fn coordinator_tick(
     }
 
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
-    if let Some(early_result) = check_ready_or_return(&graph, alive_count) {
+    if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {
         return Ok(early_result);
     }
 
     // Phase 6: Spawn agents on ready tasks
-    let final_ready = ready_tasks(&graph);
+    let final_ready = ready_tasks_with_peers(&graph, dir);
     let ready_count = final_ready.len();
     drop(final_ready);
     let spawned = spawn_agents_for_ready_tasks(dir, &graph, executor, model, slots_available);
@@ -1654,6 +1655,33 @@ pub enum IpcRequest {
         poll_interval: Option<u64>,
         #[serde(default)]
         model: Option<String>,
+    },
+    /// Create a task in this workgraph (cross-repo dispatch)
+    AddTask {
+        title: String,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        blocked_by: Vec<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        skills: Vec<String>,
+        #[serde(default)]
+        deliverables: Vec<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        verify: Option<String>,
+        /// Who requested this (for provenance)
+        #[serde(default)]
+        origin: Option<String>,
+    },
+    /// Query a task's status (cross-repo query)
+    QueryTask {
+        task_id: String,
     },
 }
 
@@ -2417,6 +2445,45 @@ fn handle_request(
                 logger,
             )
         }
+        IpcRequest::AddTask {
+            title,
+            id,
+            description,
+            blocked_by,
+            tags,
+            skills,
+            deliverables,
+            model,
+            verify,
+            origin,
+        } => {
+            logger.info(&format!(
+                "IPC AddTask: title='{}', origin={:?}",
+                title,
+                origin
+            ));
+            let resp = handle_add_task(
+                dir,
+                &title,
+                id.as_deref(),
+                description.as_deref(),
+                &blocked_by,
+                &tags,
+                &skills,
+                &deliverables,
+                model.as_deref(),
+                verify.as_deref(),
+                origin.as_deref(),
+            );
+            if resp.ok {
+                *wake_coordinator = true;
+            }
+            resp
+        }
+        IpcRequest::QueryTask { task_id } => {
+            logger.info(&format!("IPC QueryTask: task_id={}", task_id));
+            handle_query_task(dir, &task_id)
+        }
     }
 }
 
@@ -2631,6 +2698,169 @@ fn handle_reconfigure(
             "model": daemon_cfg.model,
         }
     }))
+}
+
+/// Handle AddTask IPC request — create a task in this workgraph from a remote peer.
+#[allow(clippy::too_many_arguments)]
+fn handle_add_task(
+    dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    blocked_by: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    verify: Option<&str>,
+    origin: Option<&str>,
+) -> IpcResponse {
+    use workgraph::graph::{Node, Status, Task};
+    use workgraph::parser::{load_graph, save_graph};
+
+    let graph_path = super::graph_path(dir);
+    let mut graph = match load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    // Generate or validate task ID
+    let task_id = match id {
+        Some(id) => {
+            if graph.get_node(id).is_some() {
+                return IpcResponse::error(&format!("Task with ID '{}' already exists", id));
+            }
+            id.to_string()
+        }
+        None => {
+            // Reuse the same slug generation logic as add.rs
+            let slug: String = title
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("-");
+            let base_id = if slug.is_empty() {
+                "task".to_string()
+            } else {
+                slug
+            };
+            if graph.get_node(&base_id).is_none() {
+                base_id
+            } else {
+                let mut found = None;
+                for i in 2..1000 {
+                    let candidate = format!("{}-{}", base_id, i);
+                    if graph.get_node(&candidate).is_none() {
+                        found = Some(candidate);
+                        break;
+                    }
+                }
+                found.unwrap_or_else(|| {
+                    format!(
+                        "task-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    )
+                })
+            }
+        }
+    };
+
+    let task = Task {
+        id: task_id.clone(),
+        title: title.to_string(),
+        description: description.map(String::from),
+        status: Status::Open,
+        assigned: None,
+        estimate: None,
+        blocks: vec![],
+        blocked_by: blocked_by.to_vec(),
+        requires: vec![],
+        tags: tags.to_vec(),
+        skills: skills.to_vec(),
+        inputs: vec![],
+        deliverables: deliverables.to_vec(),
+        artifacts: vec![],
+        exec: None,
+        not_before: None,
+        created_at: Some(chrono::Utc::now().to_rfc3339()),
+        started_at: None,
+        completed_at: None,
+        log: vec![],
+        retry_count: 0,
+        max_retries: None,
+        failure_reason: None,
+        model: model.map(String::from),
+        verify: verify.map(String::from),
+        agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
+        paused: false,
+    };
+
+    graph.add_node(Node::Task(task));
+
+    // Maintain bidirectional blocked_by/blocks consistency
+    for dep in blocked_by {
+        if let Some(blocker) = graph.get_task_mut(dep)
+            && !blocker.blocks.contains(&task_id)
+        {
+            blocker.blocks.push(task_id.clone());
+        }
+    }
+
+    if let Err(e) = save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    // Record provenance
+    let origin_str = origin.unwrap_or("unknown");
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "add_task",
+        Some(&task_id),
+        None,
+        serde_json::json!({ "title": title, "origin": origin_str, "remote": true }),
+        config.log.rotation_threshold,
+    );
+
+    IpcResponse::success(serde_json::json!({
+        "task_id": task_id,
+        "title": title,
+    }))
+}
+
+/// Handle QueryTask IPC request — return a task's status for cross-repo dependency checking.
+fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
+    use workgraph::parser::load_graph;
+
+    let graph_path = super::graph_path(dir);
+    let graph = match load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    match graph.get_task(task_id) {
+        Some(task) => IpcResponse::success(serde_json::json!({
+            "task_id": task.id,
+            "title": task.title,
+            "status": format!("{:?}", task.status),
+            "assigned": task.assigned,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "failure_reason": task.failure_reason,
+        })),
+        None => IpcResponse::error(&format!("Task '{}' not found", task_id)),
+    }
 }
 
 /// Stop the service daemon

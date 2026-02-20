@@ -24,9 +24,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
     let task = graph.get_task_or_err(id)?;
 
-    // Build the blocking chain tree
+    // Build the blocking chain tree (resolves remote deps via federation)
     let mut visited = HashSet::new();
-    let blocking_tree = build_blocking_tree(&graph, id, &mut visited);
+    let blocking_tree = build_blocking_tree(&graph, id, &mut visited, dir);
 
     // Find root blockers (tasks with no blockers of their own, and not done)
     let mut root_blocker_ids = HashSet::new();
@@ -35,8 +35,11 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let root_blockers: Vec<RootBlocker> = root_blocker_ids
         .iter()
         .filter_map(|rid| {
+            // For remote refs, we can't get a &Task, but the blocking tree already
+            // has the status. Root blockers from remote peers are only shown in the
+            // tree; they won't appear here (since graph.get_task won't find them).
             graph.get_task(rid).map(|t| {
-                let is_ready = is_task_ready(&graph, t);
+                let is_ready = is_task_ready(&graph, t, dir);
                 RootBlocker { task: t, is_ready }
             })
         })
@@ -58,6 +61,7 @@ fn build_blocking_tree(
     graph: &WorkGraph,
     task_id: &str,
     visited: &mut HashSet<String>,
+    dir: &Path,
 ) -> BlockingNode {
     let task = graph.get_task(task_id);
     let status = task.map(|t| t.status).unwrap_or(Status::Open);
@@ -79,10 +83,28 @@ fn build_blocking_tree(
             if visited.contains(blocker_id) {
                 continue;
             }
-            if let Some(blocker) = graph.get_task(blocker_id) {
-                // Only include if still actively blocking (not terminal)
+
+            if let Some((_peer_name, _remote_task_id)) =
+                workgraph::federation::parse_remote_ref(blocker_id)
+            {
+                // Cross-repo dependency — resolve remote status
+                let remote = workgraph::federation::resolve_remote_task_status(
+                    _peer_name,
+                    _remote_task_id,
+                    dir,
+                );
+                if !remote.status.is_terminal() {
+                    let child = BlockingNode {
+                        id: blocker_id.clone(),
+                        status: remote.status,
+                        children: vec![], // Don't recurse into remote graphs
+                    };
+                    node.children.push(child);
+                }
+            } else if let Some(blocker) = graph.get_task(blocker_id) {
+                // Local dependency — only include if still actively blocking
                 if !blocker.status.is_terminal() {
-                    let child = build_blocking_tree(graph, blocker_id, visited);
+                    let child = build_blocking_tree(graph, blocker_id, visited, dir);
                     node.children.push(child);
                 }
             }
@@ -108,15 +130,12 @@ fn collect_root_blockers(graph: &WorkGraph, node: &BlockingNode, roots: &mut Has
     }
 }
 
-fn is_task_ready(graph: &WorkGraph, task: &Task) -> bool {
+fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     if task.status != Status::Open {
         return false;
     }
     task.blocked_by.iter().all(|blocker_id| {
-        graph
-            .get_task(blocker_id)
-            .map(|t| t.status.is_terminal())
-            .unwrap_or(true)
+        workgraph::query::is_blocker_satisfied(blocker_id, graph, Some(dir))
     })
 }
 
@@ -285,7 +304,8 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "t1", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "t1", &mut visited, dir);
 
         assert_eq!(tree.id, "t1");
         assert!(tree.children.is_empty());
@@ -303,7 +323,8 @@ mod tests {
         graph.add_node(Node::Task(blocked));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "blocked", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "blocked", &mut visited, dir);
 
         assert_eq!(tree.id, "blocked");
         assert_eq!(tree.children.len(), 1);
@@ -325,7 +346,8 @@ mod tests {
         graph.add_node(Node::Task(t3));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "t3", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "t3", &mut visited, dir);
 
         assert_eq!(tree.id, "t3");
         assert_eq!(tree.children.len(), 1);
@@ -348,7 +370,8 @@ mod tests {
         graph.add_node(Node::Task(blocked));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "blocked", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "blocked", &mut visited, dir);
 
         assert_eq!(tree.id, "blocked");
         assert!(tree.children.is_empty()); // Done blocker excluded
@@ -368,7 +391,8 @@ mod tests {
         graph.add_node(Node::Task(t2));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "t1", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "t1", &mut visited, dir);
 
         // Should not infinite loop - t2 will be a child but t1 won't be repeated
         assert_eq!(tree.id, "t1");
@@ -393,7 +417,8 @@ mod tests {
         graph.add_node(Node::Task(leaf));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "leaf", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "leaf", &mut visited, dir);
 
         let mut roots = HashSet::new();
         collect_root_blockers(&graph, &tree, &mut roots);
@@ -417,7 +442,8 @@ mod tests {
         graph.add_node(Node::Task(t3));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "t3", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "t3", &mut visited, dir);
 
         assert_eq!(count_blockers(&tree), 2);
     }
@@ -435,8 +461,10 @@ mod tests {
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked.clone()));
 
+        let dir = Path::new("/tmp");
+
         // blocked task is ready because blocker is done
-        assert!(is_task_ready(&graph, &blocked));
+        assert!(is_task_ready(&graph, &blocked, dir));
 
         // Now test with an open blocker
         let mut graph2 = WorkGraph::new();
@@ -447,7 +475,7 @@ mod tests {
         graph2.add_node(Node::Task(blocker2));
         graph2.add_node(Node::Task(blocked2.clone()));
 
-        assert!(!is_task_ready(&graph2, &blocked2));
+        assert!(!is_task_ready(&graph2, &blocked2, dir));
     }
 
     #[test]
@@ -463,7 +491,8 @@ mod tests {
         graph.add_node(Node::Task(leaf));
 
         let mut visited = HashSet::new();
-        let tree = build_blocking_tree(&graph, "leaf", &mut visited);
+        let dir = Path::new("/tmp");
+        let tree = build_blocking_tree(&graph, "leaf", &mut visited, dir);
 
         let mut roots = HashSet::new();
         collect_root_blockers(&graph, &tree, &mut roots);

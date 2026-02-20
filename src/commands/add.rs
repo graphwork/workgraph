@@ -87,12 +87,14 @@ pub fn run(
         None => generate_id(title, &graph),
     };
 
-    // Validate blocked_by references
+    // Validate blocked_by references (supports cross-repo peer:task-id syntax)
     for blocker_id in blocked_by {
         if blocker_id == &task_id {
             anyhow::bail!("Task '{}' cannot block itself", task_id);
         }
-        if graph.get_node(blocker_id).is_none() {
+        if workgraph::federation::parse_remote_ref(blocker_id).is_some() {
+            // Cross-repo dependency — validated at resolution time, not here
+        } else if graph.get_node(blocker_id).is_none() {
             eprintln!(
                 "Warning: blocker '{}' does not exist in the graph",
                 blocker_id
@@ -180,7 +182,11 @@ pub fn run(
     graph.add_node(Node::Task(task));
 
     // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
+    // (skip cross-repo refs — those live in a different graph)
     for dep in blocked_by {
+        if workgraph::federation::parse_remote_ref(dep).is_some() {
+            continue; // Cross-repo dep; can't update remote graph's blocks field
+        }
         if let Some(blocker) = graph.get_task_mut(dep)
             && !blocker.blocks.contains(&task_id)
         {
@@ -209,6 +215,199 @@ pub fn run(
     }
     super::print_service_hint(dir);
     Ok(())
+}
+
+/// Add a task to a remote peer workgraph.
+///
+/// Dispatch order (per §3.2 of cross-repo design doc):
+/// 1. Resolve peer to a .workgraph directory
+/// 2. If peer service is running → send AddTask IPC request
+/// 3. If not running → directly modify the peer's graph.jsonl
+/// 4. Print the created task ID with peer prefix
+#[allow(clippy::too_many_arguments)]
+pub fn run_remote(
+    local_workgraph_dir: &Path,
+    peer_ref: &str,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    blocked_by: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    verify: Option<&str>,
+) -> Result<()> {
+    use workgraph::federation::{check_peer_service, resolve_peer};
+
+    if title.trim().is_empty() {
+        anyhow::bail!("Task title cannot be empty");
+    }
+
+    // Resolve peer reference to a concrete .workgraph directory
+    let resolved = resolve_peer(peer_ref, local_workgraph_dir)?;
+
+    // Build origin string for provenance
+    let origin = local_workgraph_dir
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Check if peer service is running
+    let peer_status = check_peer_service(&resolved.workgraph_dir);
+
+    if peer_status.running {
+        // Dispatch via IPC
+        let request = super::service::IpcRequest::AddTask {
+            title: title.to_string(),
+            id: id.map(String::from),
+            description: description.map(String::from),
+            blocked_by: blocked_by.to_vec(),
+            tags: tags.to_vec(),
+            skills: skills.to_vec(),
+            deliverables: deliverables.to_vec(),
+            model: model.map(String::from),
+            verify: verify.map(String::from),
+            origin: Some(origin),
+        };
+
+        let response = super::service::send_request(&resolved.workgraph_dir, &request)?;
+
+        if response.ok {
+            let task_id = response
+                .data
+                .as_ref()
+                .and_then(|d| d.get("task_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            println!(
+                "Added task to '{}': {} ({}:{})",
+                peer_ref, title, peer_ref, task_id
+            );
+        } else {
+            let err = response.error.unwrap_or_else(|| "unknown error".to_string());
+            anyhow::bail!("Remote add failed: {}", err);
+        }
+    } else {
+        // Fallback: directly modify the peer's graph.jsonl
+        let task_id = add_task_directly(
+            &resolved.workgraph_dir,
+            title,
+            id,
+            description,
+            blocked_by,
+            tags,
+            skills,
+            deliverables,
+            model,
+            verify,
+            &origin,
+        )?;
+        println!(
+            "Added task to '{}' (direct): {} ({}:{})",
+            peer_ref, title, peer_ref, task_id
+        );
+    }
+
+    Ok(())
+}
+
+/// Add a task directly to a peer's graph.jsonl (fallback when service is not running).
+#[allow(clippy::too_many_arguments)]
+fn add_task_directly(
+    peer_workgraph_dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    blocked_by: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    verify: Option<&str>,
+    origin: &str,
+) -> Result<String> {
+    use workgraph::graph::{Node, Status, Task};
+    use workgraph::parser::{load_graph, save_graph};
+
+    let graph_path = super::graph_path(peer_workgraph_dir);
+    let mut graph = if graph_path.exists() {
+        load_graph(&graph_path).context("Failed to load peer graph")?
+    } else {
+        anyhow::bail!(
+            "No graph.jsonl at '{}'. Is this a workgraph project?",
+            peer_workgraph_dir.display()
+        );
+    };
+
+    let task_id = match id {
+        Some(id) => {
+            if graph.get_node(id).is_some() {
+                anyhow::bail!("Task with ID '{}' already exists in peer", id);
+            }
+            id.to_string()
+        }
+        None => generate_id(title, &graph),
+    };
+
+    let task = Task {
+        id: task_id.clone(),
+        title: title.to_string(),
+        description: description.map(String::from),
+        status: Status::Open,
+        assigned: None,
+        estimate: None,
+        blocks: vec![],
+        blocked_by: blocked_by.to_vec(),
+        requires: vec![],
+        tags: tags.to_vec(),
+        skills: skills.to_vec(),
+        inputs: vec![],
+        deliverables: deliverables.to_vec(),
+        artifacts: vec![],
+        exec: None,
+        not_before: None,
+        created_at: Some(chrono::Utc::now().to_rfc3339()),
+        started_at: None,
+        completed_at: None,
+        log: vec![],
+        retry_count: 0,
+        max_retries: None,
+        failure_reason: None,
+        model: model.map(String::from),
+        verify: verify.map(String::from),
+        agent: None,
+        loops_to: vec![],
+        loop_iteration: 0,
+        ready_after: None,
+        paused: false,
+    };
+
+    graph.add_node(Node::Task(task));
+
+    // Maintain bidirectional blocked_by/blocks consistency
+    for dep in blocked_by {
+        if let Some(blocker) = graph.get_task_mut(dep)
+            && !blocker.blocks.contains(&task_id)
+        {
+            blocker.blocks.push(task_id.clone());
+        }
+    }
+
+    save_graph(&graph, &graph_path).context("Failed to save peer graph")?;
+
+    // Record provenance in the peer's workgraph
+    let config = workgraph::config::Config::load_or_default(peer_workgraph_dir);
+    let _ = workgraph::provenance::record(
+        peer_workgraph_dir,
+        "add_task",
+        Some(&task_id),
+        None,
+        serde_json::json!({ "title": title, "origin": origin, "remote": true }),
+        config.log.rotation_threshold,
+    );
+
+    Ok(task_id)
 }
 
 fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {

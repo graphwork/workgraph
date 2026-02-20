@@ -24,11 +24,22 @@ pub struct Remote {
     pub last_sync: Option<String>,
 }
 
+/// A peer workgraph instance (another repo with its own .workgraph/).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PeerConfig {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Top-level federation.yaml structure.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FederationConfig {
     #[serde(default)]
     pub remotes: BTreeMap<String, Remote>,
+    /// Peer workgraph instances for cross-repo communication.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub peers: BTreeMap<String, PeerConfig>,
 }
 
 /// Load federation config from .workgraph/federation.yaml.
@@ -213,6 +224,356 @@ pub fn resolve_store(reference: &str) -> Result<LocalStore, anyhow::Error> {
         }
     } else {
         Ok(LocalStore::new(path))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Peer resolution: name → path → .workgraph dir → socket discovery
+// ---------------------------------------------------------------------------
+
+/// Result of resolving a peer reference to a concrete path.
+#[derive(Debug, Clone)]
+pub struct ResolvedPeer {
+    /// The project root (parent of .workgraph/).
+    pub project_path: PathBuf,
+    /// The .workgraph directory.
+    pub workgraph_dir: PathBuf,
+}
+
+/// Resolve a peer reference string to a concrete path.
+///
+/// Resolution order (per §2.3 of cross-repo design doc):
+/// 1. Named peer in federation.yaml → look up `path`
+/// 2. Absolute path or `~/` → filesystem path
+/// 3. Relative path → resolve from CWD
+pub fn resolve_peer(
+    reference: &str,
+    workgraph_dir: &Path,
+) -> Result<ResolvedPeer, anyhow::Error> {
+    let config = load_federation_config(workgraph_dir)?;
+
+    // Check named peers first
+    let raw_path = if let Some(peer) = config.peers.get(reference) {
+        peer.path.clone()
+    } else {
+        reference.to_string()
+    };
+
+    // Expand ~/
+    let expanded = if let Some(suffix) = raw_path.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        home.join(suffix)
+    } else {
+        PathBuf::from(&raw_path)
+    };
+
+    // Make absolute
+    let project_path = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+
+    // Canonicalize if possible
+    let project_path = project_path.canonicalize().unwrap_or(project_path);
+
+    let wg_dir = project_path.join(".workgraph");
+    if !wg_dir.is_dir() {
+        anyhow::bail!(
+            "No .workgraph directory found at '{}'. Is this a workgraph project?",
+            project_path.display()
+        );
+    }
+
+    Ok(ResolvedPeer {
+        project_path,
+        workgraph_dir: wg_dir,
+    })
+}
+
+/// Peer service status information.
+#[derive(Debug, Clone)]
+pub struct PeerServiceStatus {
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub socket_path: Option<String>,
+    pub started_at: Option<String>,
+}
+
+/// Check whether a peer's workgraph service is running.
+///
+/// Reads `<workgraph_dir>/service/state.json` and checks if the PID is alive.
+pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
+    let state_path = workgraph_dir.join("service").join("state.json");
+    if !state_path.exists() {
+        return PeerServiceStatus {
+            running: false,
+            pid: None,
+            socket_path: None,
+            started_at: None,
+        };
+    }
+
+    let content = match std::fs::read_to_string(&state_path) {
+        Ok(c) => c,
+        Err(_) => {
+            return PeerServiceStatus {
+                running: false,
+                pid: None,
+                socket_path: None,
+                started_at: None,
+            }
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct StateJson {
+        pid: u32,
+        socket_path: String,
+        #[serde(default)]
+        started_at: Option<String>,
+    }
+
+    let state: StateJson = match serde_json::from_str(&content) {
+        Ok(s) => s,
+        Err(_) => {
+            return PeerServiceStatus {
+                running: false,
+                pid: None,
+                socket_path: None,
+                started_at: None,
+            }
+        }
+    };
+
+    let alive = is_pid_alive(state.pid);
+
+    PeerServiceStatus {
+        running: alive,
+        pid: Some(state.pid),
+        socket_path: Some(state.socket_path),
+        started_at: state.started_at,
+    }
+}
+
+/// Check if a process with the given PID is alive.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Cross-repo dependency resolution
+// ---------------------------------------------------------------------------
+
+/// Parse a remote reference string like "peer:task-id" into (peer_name, task_id).
+///
+/// Returns `None` if the string doesn't contain a colon or looks like
+/// a local reference. Local task IDs are slug-based (lowercase alphanumeric +
+/// dashes, no colons), so the colon delimiter is unambiguous.
+pub fn parse_remote_ref(dep: &str) -> Option<(&str, &str)> {
+    // Split on the first colon only
+    let (peer, task_id) = dep.split_once(':')?;
+    // Both parts must be non-empty
+    if peer.is_empty() || task_id.is_empty() {
+        return None;
+    }
+    Some((peer, task_id))
+}
+
+/// The status of a remote task, resolved via IPC or direct file access.
+#[derive(Debug, Clone)]
+pub struct RemoteTaskStatus {
+    pub task_id: String,
+    pub status: crate::graph::Status,
+    pub title: Option<String>,
+    pub assigned: Option<String>,
+    /// How the status was resolved
+    pub resolution: RemoteResolution,
+}
+
+/// How the remote task status was resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteResolution {
+    /// Resolved via IPC to a running peer service
+    Ipc,
+    /// Resolved by directly reading the peer's graph.jsonl
+    DirectFileAccess,
+    /// Could not resolve — peer not found or inaccessible
+    Unreachable(String),
+}
+
+/// Resolve the status of a task in a remote peer workgraph.
+///
+/// Resolution order (per §4.4 of cross-repo design doc):
+/// 1. Look up peer path from federation config or parse as path
+/// 2. Check if peer service is running
+/// 3. If running: query via IPC
+/// 4. If not running: load peer's graph.jsonl directly
+/// 5. If peer not found: return error
+pub fn resolve_remote_task_status(
+    peer_name: &str,
+    task_id: &str,
+    local_workgraph_dir: &Path,
+) -> RemoteTaskStatus {
+    // Try to resolve the peer
+    let resolved = match resolve_peer(peer_name, local_workgraph_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            return RemoteTaskStatus {
+                task_id: task_id.to_string(),
+                status: crate::graph::Status::Open, // treat as blocking
+                title: None,
+                assigned: None,
+                resolution: RemoteResolution::Unreachable(format!(
+                    "Cannot resolve peer '{}': {}",
+                    peer_name, e
+                )),
+            };
+        }
+    };
+
+    // Check if the peer's service is running
+    let service_status = check_peer_service(&resolved.workgraph_dir);
+
+    if service_status.running {
+        if let Some(socket_path) = &service_status.socket_path {
+            // Try IPC first
+            match query_task_via_ipc(socket_path, task_id) {
+                Ok(status) => return status,
+                Err(_) => {
+                    // Fall through to direct file access
+                }
+            }
+        }
+    }
+
+    // Fall back to direct graph file read
+    let graph_path = resolved.workgraph_dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        return RemoteTaskStatus {
+            task_id: task_id.to_string(),
+            status: crate::graph::Status::Open,
+            title: None,
+            assigned: None,
+            resolution: RemoteResolution::Unreachable(format!(
+                "No graph.jsonl at peer '{}'",
+                peer_name
+            )),
+        };
+    }
+
+    match crate::parser::load_graph(&graph_path) {
+        Ok(graph) => match graph.get_task(task_id) {
+            Some(task) => RemoteTaskStatus {
+                task_id: task.id.clone(),
+                status: task.status,
+                title: Some(task.title.clone()),
+                assigned: task.assigned.clone(),
+                resolution: RemoteResolution::DirectFileAccess,
+            },
+            None => RemoteTaskStatus {
+                task_id: task_id.to_string(),
+                status: crate::graph::Status::Open,
+                title: None,
+                assigned: None,
+                resolution: RemoteResolution::Unreachable(format!(
+                    "Task '{}' not found in peer '{}'",
+                    task_id, peer_name
+                )),
+            },
+        },
+        Err(e) => RemoteTaskStatus {
+            task_id: task_id.to_string(),
+            status: crate::graph::Status::Open,
+            title: None,
+            assigned: None,
+            resolution: RemoteResolution::Unreachable(format!(
+                "Failed to load peer '{}' graph: {}",
+                peer_name, e
+            )),
+        },
+    }
+}
+
+/// Query a task's status via IPC to a running peer service.
+#[cfg(unix)]
+fn query_task_via_ipc(
+    socket_path: &str,
+    task_id: &str,
+) -> Result<RemoteTaskStatus, anyhow::Error> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let mut stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+
+    let request = serde_json::json!({
+        "QueryTask": { "task_id": task_id }
+    });
+    writeln!(stream, "{}", request)?;
+    stream.flush()?;
+
+    let reader = BufReader::new(&stream);
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if resp.get("ok") == Some(&serde_json::Value::Bool(true)) {
+            let status_str = resp
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Open");
+            let status = parse_status_string(status_str);
+            return Ok(RemoteTaskStatus {
+                task_id: task_id.to_string(),
+                status,
+                title: resp.get("title").and_then(|v| v.as_str()).map(String::from),
+                assigned: resp
+                    .get("assigned")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                resolution: RemoteResolution::Ipc,
+            });
+        } else {
+            let err_msg = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            anyhow::bail!("IPC error: {}", err_msg);
+        }
+    }
+    anyhow::bail!("No response from peer service")
+}
+
+#[cfg(not(unix))]
+fn query_task_via_ipc(
+    _socket_path: &str,
+    _task_id: &str,
+) -> Result<RemoteTaskStatus, anyhow::Error> {
+    anyhow::bail!("IPC is only supported on Unix systems")
+}
+
+/// Parse a status string (from IPC response) into a Status enum.
+fn parse_status_string(s: &str) -> crate::graph::Status {
+    match s.to_lowercase().as_str() {
+        "done" => crate::graph::Status::Done,
+        "open" => crate::graph::Status::Open,
+        "inprogress" | "in-progress" => crate::graph::Status::InProgress,
+        "failed" => crate::graph::Status::Failed,
+        "abandoned" => crate::graph::Status::Abandoned,
+        "blocked" => crate::graph::Status::Blocked,
+        _ => crate::graph::Status::Open,
     }
 }
 
@@ -1023,5 +1384,165 @@ mod tests {
             "error should mention the missing motivation and referential integrity: {}",
             err_msg
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-repo dependency tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_remote_ref_valid() {
+        let result = parse_remote_ref("workgraph:implement-trace");
+        assert_eq!(result, Some(("workgraph", "implement-trace")));
+    }
+
+    #[test]
+    fn parse_remote_ref_multiple_colons() {
+        // Only splits on first colon
+        let result = parse_remote_ref("peer:task:with:colons");
+        assert_eq!(result, Some(("peer", "task:with:colons")));
+    }
+
+    #[test]
+    fn parse_remote_ref_no_colon() {
+        assert_eq!(parse_remote_ref("local-task-id"), None);
+    }
+
+    #[test]
+    fn parse_remote_ref_empty_peer() {
+        assert_eq!(parse_remote_ref(":task-id"), None);
+    }
+
+    #[test]
+    fn parse_remote_ref_empty_task() {
+        assert_eq!(parse_remote_ref("peer:"), None);
+    }
+
+    #[test]
+    fn parse_remote_ref_empty_string() {
+        assert_eq!(parse_remote_ref(""), None);
+    }
+
+    #[test]
+    fn parse_status_string_all_variants() {
+        assert_eq!(parse_status_string("Done"), crate::graph::Status::Done);
+        assert_eq!(parse_status_string("done"), crate::graph::Status::Done);
+        assert_eq!(parse_status_string("Open"), crate::graph::Status::Open);
+        assert_eq!(
+            parse_status_string("InProgress"),
+            crate::graph::Status::InProgress
+        );
+        assert_eq!(
+            parse_status_string("in-progress"),
+            crate::graph::Status::InProgress
+        );
+        assert_eq!(parse_status_string("Failed"), crate::graph::Status::Failed);
+        assert_eq!(
+            parse_status_string("Abandoned"),
+            crate::graph::Status::Abandoned
+        );
+        assert_eq!(
+            parse_status_string("Blocked"),
+            crate::graph::Status::Blocked
+        );
+        // Unknown defaults to Open
+        assert_eq!(parse_status_string("bogus"), crate::graph::Status::Open);
+    }
+
+    #[test]
+    fn resolve_remote_task_status_via_direct_file_access() {
+        let tmp = TempDir::new().unwrap();
+
+        // Set up local workgraph with federation config pointing to a peer
+        let local_wg = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(&local_wg).unwrap();
+
+        // Set up peer workgraph with a task
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg).unwrap();
+
+        // Create a task in the peer's graph
+        let mut peer_graph = crate::graph::WorkGraph::new();
+        let mut task = crate::graph::Task::default();
+        task.id = "remote-task".to_string();
+        task.title = "A remote task".to_string();
+        task.status = crate::graph::Status::Done;
+        peer_graph.add_node(crate::graph::Node::Task(task));
+        crate::parser::save_graph(&peer_graph, &peer_wg.join("graph.jsonl")).unwrap();
+
+        // Configure federation with the peer
+        let config = FederationConfig {
+            remotes: BTreeMap::new(),
+            peers: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "mypeer".to_string(),
+                    PeerConfig {
+                        path: peer_project.to_str().unwrap().to_string(),
+                        description: None,
+                    },
+                );
+                m
+            },
+        };
+        save_federation_config(&local_wg, &config).unwrap();
+
+        // Resolve the remote task
+        let result = resolve_remote_task_status("mypeer", "remote-task", &local_wg);
+        assert_eq!(result.status, crate::graph::Status::Done);
+        assert_eq!(result.title.as_deref(), Some("A remote task"));
+        assert_eq!(result.resolution, RemoteResolution::DirectFileAccess);
+    }
+
+    #[test]
+    fn resolve_remote_task_status_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let local_wg = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(&local_wg).unwrap();
+
+        // Set up peer with empty graph
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg).unwrap();
+        let peer_graph = crate::graph::WorkGraph::new();
+        crate::parser::save_graph(&peer_graph, &peer_wg.join("graph.jsonl")).unwrap();
+
+        let config = FederationConfig {
+            remotes: BTreeMap::new(),
+            peers: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "mypeer".to_string(),
+                    PeerConfig {
+                        path: peer_project.to_str().unwrap().to_string(),
+                        description: None,
+                    },
+                );
+                m
+            },
+        };
+        save_federation_config(&local_wg, &config).unwrap();
+
+        let result = resolve_remote_task_status("mypeer", "nonexistent", &local_wg);
+        // Task not found → treated as open (blocking)
+        assert_eq!(result.status, crate::graph::Status::Open);
+        assert!(
+            matches!(result.resolution, RemoteResolution::Unreachable(_)),
+            "expected Unreachable, got {:?}",
+            result.resolution
+        );
+    }
+
+    #[test]
+    fn resolve_remote_task_status_unknown_peer() {
+        let tmp = TempDir::new().unwrap();
+        let local_wg = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(&local_wg).unwrap();
+
+        // No federation config → empty peers
+        let result = resolve_remote_task_status("unknown-peer", "some-task", &local_wg);
+        assert_eq!(result.status, crate::graph::Status::Open);
+        assert!(matches!(result.resolution, RemoteResolution::Unreachable(_)));
     }
 }

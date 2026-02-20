@@ -56,6 +56,10 @@ enum Commands {
         #[arg(long, short = 'd', alias = "desc")]
         description: Option<String>,
 
+        /// Create the task in a peer workgraph (by name or path)
+        #[arg(long)]
+        repo: Option<String>,
+
         /// This task is blocked by another task (can specify multiple)
         #[arg(long = "blocked-by", value_delimiter = ',', num_args = 1..)]
         blocked_by: Vec<String>,
@@ -305,12 +309,16 @@ enum Commands {
         critical_path: bool,
 
         /// Output Graphviz DOT format
-        #[arg(long, conflicts_with_all = ["mermaid"])]
+        #[arg(long, conflicts_with_all = ["mermaid", "graph"])]
         dot: bool,
 
         /// Output Mermaid diagram format
-        #[arg(long, conflicts_with_all = ["dot"])]
+        #[arg(long, conflicts_with_all = ["dot", "graph"])]
         mermaid: bool,
+
+        /// Output 2D spatial graph with box-drawing characters
+        #[arg(long, conflicts_with_all = ["dot", "mermaid"])]
+        graph: bool,
 
         /// Render directly to file (requires dot installed)
         #[arg(long, short)]
@@ -540,6 +548,12 @@ enum Commands {
     Agency {
         #[command(subcommand)]
         command: AgencyCommands,
+    },
+
+    /// Manage peer workgraph instances for cross-repo communication
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommands,
     },
 
     /// Manage agency roles (what an agent does)
@@ -953,6 +967,14 @@ enum TraceCommands {
         /// Show only provenance log entries for this task
         #[arg(long)]
         ops_only: bool,
+
+        /// Show the full recursive execution tree (all descendant tasks)
+        #[arg(long)]
+        recursive: bool,
+
+        /// Show chronological timeline with parallel execution lanes (requires --recursive)
+        #[arg(long)]
+        timeline: bool,
     },
 
     /// List available trace functions
@@ -961,6 +983,10 @@ enum TraceCommands {
         /// Show input parameters and task templates
         #[arg(long)]
         verbose: bool,
+
+        /// Include functions from federated peer workgraphs
+        #[arg(long)]
+        include_peers: bool,
     },
 
     /// Show details of a trace function
@@ -983,6 +1009,11 @@ enum TraceCommands {
         #[arg(long)]
         subgraph: bool,
 
+        /// Recursively extract the entire spawned subgraph with dependency structure,
+        /// human intervention tracking, and parameterized templates
+        #[arg(long)]
+        recursive: bool,
+
         /// Use LLM to generalize descriptions (not yet wired)
         #[arg(long)]
         generalize: bool,
@@ -1000,6 +1031,10 @@ enum TraceCommands {
     Instantiate {
         /// Function ID (prefix match supported)
         function_id: String,
+
+        /// Load function from a peer workgraph (peer:function-id) or file path
+        #[arg(long)]
+        from: Option<String>,
 
         /// Set an input parameter (repeatable, format: key=value)
         #[arg(long = "input", num_args = 1)]
@@ -1244,6 +1279,40 @@ enum RemoteCommands {
         /// Remote name
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+enum PeerCommands {
+    /// Register a peer workgraph instance
+    Add {
+        /// Peer name (used as shorthand reference)
+        name: String,
+
+        /// Path to the peer project (containing .workgraph/)
+        path: String,
+
+        /// Description of this peer
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+    },
+
+    /// Remove a registered peer
+    Remove {
+        /// Peer name to remove
+        name: String,
+    },
+
+    /// List all configured peers with service status
+    List,
+
+    /// Show detailed info about a peer
+    Show {
+        /// Peer name
+        name: String,
+    },
+
+    /// Quick health check of all peers
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -1809,6 +1878,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
         Commands::Agency { .. } => "agency",
+        Commands::Peer { .. } => "peer",
         Commands::Role { .. } => "role",
         Commands::Motivation { .. } => "motivation",
         Commands::Assign { .. } => "assign",
@@ -1870,6 +1940,7 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Resource { .. }
             | Commands::Skill { .. }
             | Commands::Agency { .. }
+            | Commands::Peer { .. }
             | Commands::Role { .. }
             | Commands::Motivation { .. }
             | Commands::Match { .. }
@@ -1980,6 +2051,7 @@ fn main() -> Result<()> {
             title,
             id,
             description,
+            repo,
             blocked_by,
             assign,
             hours,
@@ -1995,27 +2067,45 @@ fn main() -> Result<()> {
             loop_max,
             loop_guard,
             loop_delay,
-        } => commands::add::run(
-            &workgraph_dir,
-            &title,
-            id.as_deref(),
-            description.as_deref(),
-            &blocked_by,
-            assign.as_deref(),
-            hours,
-            cost,
-            &tag,
-            &skill,
-            &input,
-            &deliverable,
-            max_retries,
-            model.as_deref(),
-            verify.as_deref(),
-            loops_to.as_deref(),
-            loop_max,
-            loop_guard.as_deref(),
-            loop_delay.as_deref(),
-        ),
+        } => {
+            if let Some(ref peer_ref) = repo {
+                commands::add::run_remote(
+                    &workgraph_dir,
+                    peer_ref,
+                    &title,
+                    id.as_deref(),
+                    description.as_deref(),
+                    &blocked_by,
+                    &tag,
+                    &skill,
+                    &deliverable,
+                    model.as_deref(),
+                    verify.as_deref(),
+                )
+            } else {
+                commands::add::run(
+                    &workgraph_dir,
+                    &title,
+                    id.as_deref(),
+                    description.as_deref(),
+                    &blocked_by,
+                    assign.as_deref(),
+                    hours,
+                    cost,
+                    &tag,
+                    &skill,
+                    &input,
+                    &deliverable,
+                    max_retries,
+                    model.as_deref(),
+                    verify.as_deref(),
+                    loops_to.as_deref(),
+                    loop_max,
+                    loop_guard.as_deref(),
+                    loop_delay.as_deref(),
+                )
+            }
+        }
         Commands::Edit {
             id,
             title,
@@ -2082,6 +2172,7 @@ fn main() -> Result<()> {
             critical_path,
             dot,
             mermaid,
+            graph,
             output,
             show_internal,
         } => {
@@ -2089,6 +2180,8 @@ fn main() -> Result<()> {
                 commands::viz::OutputFormat::Dot
             } else if mermaid {
                 commands::viz::OutputFormat::Mermaid
+            } else if graph {
+                commands::viz::OutputFormat::Graph
             } else {
                 commands::viz::OutputFormat::Ascii
             };
@@ -2139,20 +2232,24 @@ fn main() -> Result<()> {
         } => commands::gc::run(&workgraph_dir, dry_run, include_done),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Trace { command } => match command {
-            TraceCommands::Show { id, full, ops_only } => {
-                let mode = if cli.json {
-                    commands::trace::TraceMode::Json
-                } else if full {
-                    commands::trace::TraceMode::Full
-                } else if ops_only {
-                    commands::trace::TraceMode::OpsOnly
+            TraceCommands::Show { id, full, ops_only, recursive, timeline } => {
+                if recursive || timeline {
+                    commands::trace::run_recursive(&workgraph_dir, &id, timeline, cli.json)
                 } else {
-                    commands::trace::TraceMode::Summary
-                };
-                commands::trace::run(&workgraph_dir, &id, mode)
+                    let mode = if cli.json {
+                        commands::trace::TraceMode::Json
+                    } else if full {
+                        commands::trace::TraceMode::Full
+                    } else if ops_only {
+                        commands::trace::TraceMode::OpsOnly
+                    } else {
+                        commands::trace::TraceMode::Summary
+                    };
+                    commands::trace::run(&workgraph_dir, &id, mode)
+                }
             }
-            TraceCommands::ListFunctions { verbose } => {
-                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose)
+            TraceCommands::ListFunctions { verbose, include_peers } => {
+                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers)
             }
             TraceCommands::ShowFunction { id } => {
                 commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
@@ -2161,6 +2258,7 @@ fn main() -> Result<()> {
                 task_id,
                 name,
                 subgraph,
+                recursive,
                 generalize,
                 output,
                 force,
@@ -2168,13 +2266,14 @@ fn main() -> Result<()> {
                 &workgraph_dir,
                 &task_id,
                 name.as_deref(),
-                subgraph,
+                subgraph || recursive,
                 generalize,
                 output.as_deref(),
                 force,
             ),
             TraceCommands::Instantiate {
                 function_id,
+                from,
                 inputs,
                 input_file,
                 prefix,
@@ -2184,6 +2283,7 @@ fn main() -> Result<()> {
             } => commands::trace_instantiate::run(
                 &workgraph_dir,
                 &function_id,
+                from.as_deref(),
                 &inputs,
                 input_file.as_deref(),
                 prefix.as_deref(),
@@ -2363,6 +2463,26 @@ fn main() -> Result<()> {
                     json: cli.json,
                 },
             ),
+        },
+        Commands::Peer { command } => match command {
+            PeerCommands::Add {
+                name,
+                path,
+                description,
+            } => commands::peer::run_add(
+                &workgraph_dir,
+                &name,
+                &path,
+                description.as_deref(),
+            ),
+            PeerCommands::Remove { name } => {
+                commands::peer::run_remove(&workgraph_dir, &name)
+            }
+            PeerCommands::List => commands::peer::run_list(&workgraph_dir, cli.json),
+            PeerCommands::Show { name } => {
+                commands::peer::run_show(&workgraph_dir, &name, cli.json)
+            }
+            PeerCommands::Status => commands::peer::run_status(&workgraph_dir, cli.json),
         },
         Commands::Role { command } => match command {
             RoleCommands::Add {

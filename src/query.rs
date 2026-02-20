@@ -2,6 +2,7 @@ use crate::graph::{Status, Task, WorkGraph};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Check if a task is past its not_before and ready_after timestamps (or has no timestamps)
 pub fn is_time_ready(task: &Task) -> bool {
@@ -267,6 +268,56 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
                     .map(|t| t.status.is_terminal())
                     .unwrap_or(true) // If blocker doesn't exist, treat as unblocked
             })
+        })
+        .collect()
+}
+
+/// Check whether a single blocked_by dependency is satisfied (terminal).
+///
+/// Handles both local and remote (`peer:task-id`) references.
+/// For remote refs, resolves via federation config using IPC or direct file access.
+pub fn is_blocker_satisfied(
+    blocker_id: &str,
+    graph: &WorkGraph,
+    workgraph_dir: Option<&Path>,
+) -> bool {
+    if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
+        // Cross-repo dependency
+        let Some(wg_dir) = workgraph_dir else {
+            return false; // Can't resolve without workgraph dir; treat as blocked
+        };
+        let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
+        remote.status.is_terminal()
+    } else {
+        // Local dependency
+        graph
+            .get_task(blocker_id)
+            .map(|t| t.status.is_terminal())
+            .unwrap_or(true) // If blocker doesn't exist, treat as unblocked
+    }
+}
+
+/// Find all tasks that are ready to work on, resolving cross-repo dependencies.
+///
+/// This is the cross-repo-aware variant of `ready_tasks()`. The coordinator
+/// should use this version so that tasks blocked by remote `peer:task-id`
+/// references are correctly resolved.
+pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) -> Vec<&'a Task> {
+    graph
+        .tasks()
+        .filter(|task| {
+            if task.status != Status::Open {
+                return false;
+            }
+            if task.paused {
+                return false;
+            }
+            if !is_time_ready(task) {
+                return false;
+            }
+            task.blocked_by
+                .iter()
+                .all(|blocker_id| is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)))
         })
         .collect()
 }
@@ -1535,5 +1586,41 @@ mod tests {
             !is_time_ready(&task),
             "Future ready_after should still block"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_blocker_satisfied tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_blocker_satisfied_local_done() {
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("blocker", "Blocker");
+        t.status = Status::Done;
+        graph.add_node(Node::Task(t));
+
+        assert!(is_blocker_satisfied("blocker", &graph, None));
+    }
+
+    #[test]
+    fn is_blocker_satisfied_local_open() {
+        let mut graph = WorkGraph::new();
+        let t = make_task("blocker", "Blocker");
+        graph.add_node(Node::Task(t));
+
+        assert!(!is_blocker_satisfied("blocker", &graph, None));
+    }
+
+    #[test]
+    fn is_blocker_satisfied_local_missing_treated_as_unblocked() {
+        let graph = WorkGraph::new();
+        assert!(is_blocker_satisfied("nonexistent", &graph, None));
+    }
+
+    #[test]
+    fn is_blocker_satisfied_remote_ref_without_dir() {
+        let graph = WorkGraph::new();
+        // Remote ref without workgraph_dir → treated as blocked
+        assert!(!is_blocker_satisfied("peer:task-id", &graph, None));
     }
 }

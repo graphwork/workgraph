@@ -88,24 +88,39 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     // Build reverse index to find what this task blocks
     let reverse_index = build_reverse_index(&graph);
 
-    // Get blocker info with statuses
+    // Get blocker info with statuses (supports cross-repo peer:task-id references)
     let blocked_by_info: Vec<BlockerInfo> = task
         .blocked_by
         .iter()
         .map(|blocker_id| {
-            let status = match graph.get_task(blocker_id) {
-                Some(t) => t.status,
-                None => {
-                    eprintln!(
-                        "Warning: blocker '{}' referenced by '{}' not found in graph",
-                        blocker_id, id
-                    );
-                    Status::Open
+            if let Some((peer_name, remote_task_id)) =
+                workgraph::federation::parse_remote_ref(blocker_id)
+            {
+                // Cross-repo dependency — resolve via federation
+                let remote = workgraph::federation::resolve_remote_task_status(
+                    peer_name,
+                    remote_task_id,
+                    dir,
+                );
+                BlockerInfo {
+                    id: blocker_id.clone(),
+                    status: remote.status,
                 }
-            };
-            BlockerInfo {
-                id: blocker_id.clone(),
-                status,
+            } else {
+                let status = match graph.get_task(blocker_id) {
+                    Some(t) => t.status,
+                    None => {
+                        eprintln!(
+                            "Warning: blocker '{}' referenced by '{}' not found in graph",
+                            blocker_id, id
+                        );
+                        Status::Open
+                    }
+                };
+                BlockerInfo {
+                    id: blocker_id.clone(),
+                    status,
+                }
             }
         })
         .collect();

@@ -1,19 +1,74 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use workgraph::graph::{LoopEdge, Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::trace_function::{
-    self, FunctionInput, InputType, TaskTemplate,
+    self, FunctionInput, InputType, TaskTemplate, TraceFunction,
 };
 
 use super::graph_path;
+
+/// Resolve a `--from` source to a TraceFunction.
+///
+/// Resolution order (per §5.4 of cross-repo design doc):
+/// 1. If source contains `:` → parse as `peer:function-id`, resolve peer, load from peer's functions dir
+/// 2. If source ends in `.yaml` or `.yml` → treat as a file path, load directly
+/// 3. Otherwise → existing behavior (search local `.workgraph/functions/`)
+fn resolve_function_source(
+    source: &str,
+    function_id: &str,
+    workgraph_dir: &Path,
+) -> Result<TraceFunction> {
+    if let Some((peer_name, remote_func_id)) = source.split_once(':') {
+        // peer:function-id syntax
+        let resolved = workgraph::federation::resolve_peer(peer_name, workgraph_dir)?;
+        let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
+        trace_function::find_function_by_prefix(&peer_func_dir, remote_func_id)
+            .map_err(|e| anyhow::anyhow!("From peer '{}': {}", peer_name, e))
+    } else if source.ends_with(".yaml") || source.ends_with(".yml") {
+        // Direct file path
+        let path = resolve_file_path(source)?;
+        trace_function::load_function(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to load function from '{}': {}", source, e))
+    } else {
+        // Treat as a peer name, with function_id as the function to look up
+        let resolved = workgraph::federation::resolve_peer(source, workgraph_dir)?;
+        let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
+        trace_function::find_function_by_prefix(&peer_func_dir, function_id)
+            .map_err(|e| anyhow::anyhow!("From peer '{}': {}", source, e))
+    }
+}
+
+/// Expand `~/` and resolve to an absolute path.
+fn resolve_file_path(path_str: &str) -> Result<PathBuf> {
+    let expanded = if let Some(suffix) = path_str.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        home.join(suffix)
+    } else {
+        PathBuf::from(path_str)
+    };
+
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+
+    if !abs.exists() {
+        anyhow::bail!("File not found: {}", abs.display());
+    }
+
+    Ok(abs)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     dir: &Path,
     function_id: &str,
+    from: Option<&str>,
     inputs: &[String],
     input_file: Option<&str>,
     prefix: Option<&str>,
@@ -22,10 +77,14 @@ pub fn run(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    // 1. Load trace function by ID (prefix match)
-    let func_dir = trace_function::functions_dir(dir);
-    let func = trace_function::find_function_by_prefix(&func_dir, function_id)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    // 1. Load trace function: from --from source or local functions dir
+    let func = if let Some(source) = from {
+        resolve_function_source(source, function_id, dir)?
+    } else {
+        let func_dir = trace_function::functions_dir(dir);
+        trace_function::find_function_by_prefix(&func_dir, function_id)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+    };
 
     // 2. Parse inputs from --input key=value flags and/or --input-file
     let mut provided: HashMap<String, serde_yaml::Value> = HashMap::new();
@@ -567,6 +626,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -594,6 +654,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -622,6 +683,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -649,6 +711,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             Some("my-prefix"),
@@ -674,6 +737,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -712,6 +776,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -743,6 +808,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -773,6 +839,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &[
                 "feature_name=auth".to_string(),
                 "test_command=cargo test auth".to_string(),
@@ -813,6 +880,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -838,6 +906,7 @@ mod tests {
         let result = run(
             dir,
             "impl-feature",
+            None,
             &[], // missing feature_name
             None,
             None,
@@ -859,6 +928,7 @@ mod tests {
         let result = run(
             dir,
             "nonexistent",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -882,6 +952,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -896,6 +967,7 @@ mod tests {
         let result = run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -926,6 +998,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &[],
             Some(input_file.to_str().unwrap()),
             None,
@@ -970,6 +1043,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &[
                 "feature_name=auth".to_string(),
                 format!("spec={}", spec_file.to_str().unwrap()),
@@ -1002,6 +1076,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -1136,6 +1211,7 @@ mod tests {
         run(
             dir,
             "impl-feature",
+            None,
             &["feature_name=auth".to_string()],
             None,
             None,
@@ -1154,5 +1230,182 @@ mod tests {
         assert_eq!(detail["function_id"], "impl-feature");
         let created = detail["created_task_ids"].as_array().unwrap();
         assert_eq!(created.len(), 4);
+    }
+
+    // ── --from flag tests ──
+
+    #[test]
+    fn instantiate_from_file_path() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        // Save the function to a standalone file (not in functions dir)
+        let func = sample_function();
+        let func_file = tmp.path().join("external-func.yaml");
+        let yaml = serde_yaml::to_string(&func).unwrap();
+        std::fs::write(&func_file, yaml).unwrap();
+
+        run(
+            dir,
+            "impl-feature",
+            Some(func_file.to_str().unwrap()),
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        assert!(graph.get_task("auth-plan").is_some());
+        assert!(graph.get_task("auth-implement").is_some());
+        assert!(graph.get_task("auth-validate").is_some());
+        assert!(graph.get_task("auth-refine").is_some());
+    }
+
+    #[test]
+    fn instantiate_from_peer() {
+        let tmp = TempDir::new().unwrap();
+
+        // Set up "local" workgraph
+        let local_dir = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        let graph = WorkGraph::new();
+        save_graph(&graph, &local_dir.join("graph.jsonl")).unwrap();
+
+        // Set up "peer" workgraph with a function
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg_dir = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg_dir).unwrap();
+        let peer_func_dir = peer_wg_dir.join("functions");
+        trace_function::save_function(&sample_function(), &peer_func_dir).unwrap();
+
+        // Add peer to federation config
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "mypeer".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: peer_project.to_str().unwrap().to_string(),
+                    description: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_dir, &config).unwrap();
+
+        // Instantiate from peer
+        run(
+            &local_dir,
+            "impl-feature",
+            Some("mypeer:impl-feature"),
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&local_dir.join("graph.jsonl")).unwrap();
+        assert!(graph.get_task("auth-plan").is_some());
+        assert!(graph.get_task("auth-implement").is_some());
+    }
+
+    #[test]
+    fn instantiate_from_peer_name_only() {
+        let tmp = TempDir::new().unwrap();
+
+        // Set up local workgraph
+        let local_dir = tmp.path().join("local").join(".workgraph");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        let graph = WorkGraph::new();
+        save_graph(&graph, &local_dir.join("graph.jsonl")).unwrap();
+
+        // Set up peer workgraph with a function
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg_dir = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg_dir).unwrap();
+        let peer_func_dir = peer_wg_dir.join("functions");
+        trace_function::save_function(&sample_function(), &peer_func_dir).unwrap();
+
+        // Add peer to federation config
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "mypeer".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: peer_project.to_str().unwrap().to_string(),
+                    description: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_dir, &config).unwrap();
+
+        // Use --from with just the peer name (function_id is the positional arg)
+        run(
+            &local_dir,
+            "impl-feature",
+            Some("mypeer"),
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&local_dir.join("graph.jsonl")).unwrap();
+        assert!(graph.get_task("auth-plan").is_some());
+    }
+
+    #[test]
+    fn instantiate_from_nonexistent_file_fails() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        let result = run(
+            dir,
+            "impl-feature",
+            Some("/nonexistent/path/func.yaml"),
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn instantiate_from_nonexistent_peer_fails() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        let result = run(
+            dir,
+            "impl-feature",
+            Some("no-such-peer:impl-feature"),
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        );
+        assert!(result.is_err());
     }
 }
