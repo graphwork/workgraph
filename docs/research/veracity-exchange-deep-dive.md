@@ -1,723 +1,745 @@
 # Veracity Exchange × Workgraph: Deep Dive
 
+**Last updated:** 2026-02-20 — revised based on nikete's actual design doc (`nikete/main:docs/design-veracity-exchange.md`) and `nikete/vx-adapter` branch code.
+
 ## Executive Summary
 
-Veracity Exchange is a marketplace for private participant repositories (datasets, signals, research) that uses internal markets to objectively measure each participant's marginal value contribution. Workgraph is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems could integrate, answering seven specific research questions about protocol mappings, information boundaries, agent definitions as market goods, and minimizing the need for forking.
+Veracity Exchange is a system for scoring workflow sub-units against real-world outcomes and using those scores to build a peer trust network. Workgraph is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems integrate, based on nikete's actual design documents and code rather than speculation.
 
-**Key finding:** The integration is architecturally natural. Workgraph already has the primitives—task provenance, artifact tracking, agent evaluation, and directed dependency graphs—that map onto Veracity's concepts of portfolio positions, scoring, and information flow control. The gap is primarily in metadata richness (tasks need public/private classification, portfolio position mappings) and in post-completion hooks (no plugin system exists to call `run-day` automatically). Both can be addressed with extensions rather than core forks.
+**Key findings from nikete's actual code and design:**
 
----
+1. **The design doc is comprehensive.** nikete's `design-veracity-exchange.md` (738 lines) defines 8 new data structures (Outcome, Attribution, Sensitivity, Challenge, Suggestion, PeerCredibility, RewardPolicy, DataFlowEvent), a full CLI command set, and a 5-phase implementation plan. This is far more detailed than what we theorized.
 
-## 1. What Veracity Exchange Is
+2. **The vx-adapter branch is research + architecture convergence, not VX implementation.** The branch renames agency→identity, evaluate→reward, motivation→objective, and independently adds provenance logging, model registry, and GC — all converging on our architecture. No actual VX protocol code exists yet.
 
-### Core Model
+3. **Sensitivity, not Visibility.** nikete uses a 4-level `Sensitivity` enum (Public, Interface, Opaque, Private) rather than our proposed 3-level `Visibility`. The `Interface` level — share what a task does but not its data — is a genuinely useful middle ground we missed.
 
-Veracity Exchange operates as a data marketplace where participants contribute private repositories containing datasets, signals, or research. The system:
+4. **Attribution is more sophisticated than expected.** The design includes Ablation, Shapley, Replacement, Manual, and ProportionalToEval methods for attributing outcomes to sub-tasks. We only speculated about Shapley values.
 
-1. **Converts** participant information into daily investment portfolios/forecasts through OpenClaw
-2. **Scores** portfolios using objective measures: P&L (profit and loss) and MSE (mean squared error) on predictions
-3. **Attributes** value using internal markets that measure each participant's *marginal* contribution—not just whether they were right, but whether their signal added information beyond what the market already had
+5. **Canon as suggestion format.** Suggestions from peers ARE Canons (structured knowledge artifacts). This connects the distill/canon system to the exchange — even though canon was removed from the vx-adapter branch, the design doc still builds on it.
 
-### Onboarding Protocol
-
-A 6-step interview protocol structures participant onboarding:
-
-| Step | Purpose | Deliverable |
-|------|---------|-------------|
-| 1. Offer mapping | What's being exchanged, market scope, timing | `candidate_profile.md` |
-| 2. Claim decomposition | Break assertions into testable inputs | Part of profile |
-| 3. Data inventory | Sources, latency, quality, access constraints | `data_inventory.csv` |
-| 4. Signal hypotheses | Translate claims into directional predictions | `edge_hypotheses.md` |
-| 5. Risk/failure modes | Map hypothesis breaks, data drift, confounders | Part of hypotheses |
-| 6. Packaging | Repo structure and daily execution workflow | `participant_repo_plan.md` |
-
-### API Surface
-
-Two endpoints:
-
-- `GET /veracity/v1/healthz` — connectivity check
-- `POST /veracity/v1/run-day` — submit a portfolio (positions with opening/closing prices), receive scoring
-
-### Agent-Native Design
-
-Veracity is explicitly designed for AI agent participation. It ships with:
-
-- `CLAUDE.md` — directs to AGENTS.md for full agent instructions
-- `AGENTS.md` — same content as `agent-guide.md`, covering the full interview protocol
-- `agent-guide.md` — deployed worker version of the guide
-- `interview-template.json` — structured scaffold for the onboarding interview
-
-The deliverables are text-first and deterministic: every claim must link to an observable signal with measurable criteria. This is a good fit for workgraph's evaluation system, which also demands concrete, measurable outcomes.
+6. **He recommends CLI bridge first, not native integration.** More conservative than our Phase 1-4 roadmap. Explicitly advises against native integration until the exchange protocol is stable.
 
 ---
 
-## 2. Research Questions
+## 1. What Veracity Exchange Is (Updated from Design Doc)
 
-### 2.1 Replay + Scoring: Provenance → Veracity Portfolio Positions
+### Core Model (from nikete's design doc)
 
-**Question:** How would wg's provenance system enable replaying a workflow and scoring each sub-unit via Veracity's API? What's the mapping from wg task → veracity portfolio position?
+Veracity Exchange is NOT just an API marketplace. From `design-veracity-exchange.md`:
 
-#### Current State of wg Provenance
+> A workgraph for a measurable task produces **real-world outcomes** (P&L, -MSE). These outcomes can be attributed back to individual work units in the graph. This attribution creates **veracity scores** — ground-truth quality signals grounded in reality, not LLM self-evaluation.
 
-The provenance system (`src/provenance.rs`) maintains an append-only operation log at `.workgraph/log/operations.jsonl` with automatic rotation at 10MB (compressed to `.jsonl.zst`). Each entry has:
+The key insight is that **proper scoring rules** underpin the entire system. A scoring rule is *proper* if the optimal strategy is to report your true belief. When suggestions are scored against real-world outcomes (not self-report or LLM judgment), participants are incentivized to suggest genuinely good improvements — not to game evaluators.
+
+Concretely:
+- **Prediction tasks**: scored by -MSE or log score against realized values (proper scoring rules)
+- **Portfolio tasks**: scored by risk-adjusted returns (Sharpe, P&L over a defined period)
+- **Sub-unit attribution**: marginal contribution measured by ablation or replacement
+
+```
+YOUR NODE                                    PEER NETWORK
+┌──────────────────────────┐                ┌──────────────┐
+│  workgraph               │   public       │  peer nodes  │
+│  ┌──────┐  ┌──────────┐ │  challenges    │              │
+│  │task A│→ │task B     │ │ ──────────→    │  suggest     │
+│  │(priv)│  │(public)   │ │               │  improvements│
+│  └──────┘  └──────────┘ │ ←──────────    │              │
+│       ↓         ↓        │  suggestions   └──────────────┘
+│  ┌──────────────────┐   │                       │
+│  │ outcome measure  │   │   veracity scores     │
+│  │ (P&L, -MSE)      │   │ ──────────────────→   │
+│  └──────────────────┘   │   (ground truth)      │
+│       ↓                  │                       │
+│  attribution → per-task  │   credibility         │
+│  veracity scores         │ ←──────────────────   │
+│       ↓                  │   (accumulated)       │
+│  qualify peers for       │                       │
+│  private tasks           │                       │
+└──────────────────────────┘                       │
+                                                   ↓
+                                          peer network learning:
+                                          who to exchange with,
+                                          for which topics
+```
+*(Diagram from nikete's design doc)*
+
+### Previous Understanding vs. Reality
+
+| What we theorized | What nikete actually designed |
+|-------------------|------------------------------|
+| Simple API bridge to `POST /veracity/v1/run-day` | Full exchange system with Outcomes, Attribution, Challenges, Suggestions, Credibility |
+| 3-level Visibility enum | 4-level Sensitivity enum with graph constraints |
+| Veracity executor as recommended approach | CLI bridge recommended; native integration explicitly deferred |
+| Single scoring metric (P&L + MSE) | Multi-metric, multi-horizon scoring with configurable attribution methods |
+| Vague notion of "peer trust" | Concrete PeerCredibility with Brier scoring for calibration |
+| Portfolio positions as the unit of exchange | Challenges (sanitized task postings) as the unit, with Canon-formatted suggestions |
+
+---
+
+## 2. New Data Structures (from nikete's design doc)
+
+nikete defines 8 new types that form the VX integration layer. These are concrete Rust struct definitions, not speculative.
+
+### A. Outcome
+
+An externally-observed, ground-truth measurement tied to a workgraph or sub-graph:
 
 ```rust
-pub struct OperationEntry {
-    pub timestamp: String,      // RFC 3339
-    pub op: String,             // "add_task", "done", "fail"
-    pub task_id: Option<String>,
-    pub actor: Option<String>,
-    pub detail: serde_json::Value,
+pub struct Outcome {
+    pub id: String,                    // "outcome-{graph_id}-{timestamp}"
+    pub graph_id: String,              // which workgraph (or sub-graph root) this measures
+    pub metric: String,                // "sharpe", "pnl", "neg_mse", "log_score"
+    pub value: f64,
+    pub period: Option<OutcomePeriod>, // time window measured
+    pub source: String,                // "manual", "api:alpaca", "api:databento"
+    pub recorded_at: String,
+    pub metadata: HashMap<String, String>,
 }
 ```
 
-**Current coverage gap:** Only `add_task`, `done`, and `fail` are logged to the provenance system. Task claims, spawns, retries, evaluations, and artifact recordings only update the task's in-graph `log` field (a per-task append-only list). This means replay from provenance alone is incomplete.
+**Surprise:** Outcomes are generic, not tied to a specific API. Multiple outcomes can be recorded per graph (daily P&L, weekly Sharpe, etc.). This is more flexible than our assumption of a single `run-day` score.
 
-#### The Mapping: Task → Portfolio Position
+### B. Attribution
 
-The conceptual mapping is:
-
-| Workgraph concept | Veracity concept |
-|-------------------|------------------|
-| Task | Portfolio position |
-| Task output/artifacts | Position entry (what was bet on) |
-| Task completion timestamp | Position date |
-| Upstream dependency outputs | Input signals used to form the position |
-| `wg evaluate` score | Internal quality metric (complementary to veracity score) |
-| Veracity `run-day` score | Objective external metric (P&L, MSE) |
-
-A workflow that produces a daily forecast would decompose as:
-
-```
-data-collection (task) → signal-extraction (task) → forecast-generation (task) → portfolio-submission (task)
-```
-
-Each intermediate task produces artifacts that are the "positions" of that sub-unit. The final `portfolio-submission` task calls `POST /veracity/v1/run-day` and records the score.
-
-#### What's Needed for Replay
-
-To enable full replay and per-sub-unit scoring:
-
-1. **Expand provenance coverage.** Every lifecycle event needs to be logged to the op-log, not just add/done/fail. At minimum: `claim`, `spawn`, `artifact`, `evaluate`, `retry`, `unclaim`. This is a straightforward code change—each command already records to the task-level log; it just needs a parallel `provenance::record()` call.
-
-2. **Add input/output hashing to artifacts.** Currently artifacts are bare path strings with no content hash. For replay, each artifact needs a content hash so we can verify that replayed inputs match original inputs. Proposed extension to the `Task` struct:
-
-   ```rust
-   pub struct ArtifactRecord {
-       pub path: String,
-       pub content_hash: Option<String>,  // SHA-256
-       pub recorded_at: String,           // RFC 3339
-       pub size_bytes: Option<u64>,
-   }
-   ```
-
-3. **Record veracity scores as a new evaluation dimension.** The existing evaluation system scores on correctness/completeness/efficiency/style. A `veracity_score` dimension (or a separate `ExternalScore` record) would capture the objective market score alongside the LLM-judged quality score. This creates a dual-scoring system: internal quality (did the agent do good work?) and external veracity (did the work produce accurate predictions?).
-
-4. **Replay command.** A `wg replay <workflow-root>` command that reads the provenance log, reconstructs the DAG execution order, and re-runs each task's outputs through the veracity scoring API. This would require:
-   - Reading all `OperationEntry` records for tasks in the subgraph
-   - Resolving artifacts at each step (using content hashes to verify integrity)
-   - Calling `run-day` for scorable positions
-   - Producing a per-task scoring report
-
-#### Concrete Protocol Mapping
-
-For `POST /veracity/v1/run-day`, the request body includes portfolio positions with prices. The mapping from wg artifacts:
-
-```
-wg task artifacts → parse as structured data → extract positions/prices → format as run-day payload
-```
-
-This requires a convention: tasks that produce veracity-scorable output must produce artifacts in a known format (e.g., `portfolio.json` following Veracity's schema). The executor template could enforce this via deliverables:
-
-```bash
-wg add "Generate daily forecast" \
-  --deliverable "portfolio.json" \
-  --tag "veracity:scorable" \
-  --skill forecasting
-```
-
----
-
-### 2.2 Public/Private Boundaries
-
-**Question:** How would task definitions and artifacts be classified as public (shareable on the market) or private? What metadata would tasks need?
-
-#### Current Task Metadata
-
-Tasks currently have these relevant fields:
-- `tags: Vec<String>` — free-form labels
-- `inputs: Vec<String>` — declared input paths
-- `deliverables: Vec<String>` — expected output paths
-- `artifacts: Vec<String>` — actual produced output paths
-- `description: String` — task description (potentially contains sensitive strategy details)
-
-There is **no** arbitrary key-value metadata map (`HashMap<String, Value>`) on the Task struct. Custom metadata must be encoded into existing typed fields.
-
-#### Proposed Classification Scheme
-
-**Option A: Tag-based (minimal change, works today)**
-
-Use tag conventions to classify visibility:
-
-```bash
-wg add "Analyze sentiment data" \
-  --tag "visibility:public" \
-  --tag "veracity:participant-id:abc123"
-
-wg add "Proprietary signal extraction" \
-  --tag "visibility:private" \
-  --tag "veracity:participant-id:abc123"
-```
-
-Advantages: No code changes needed. Tags are already indexed and filterable.
-Disadvantages: No enforcement. Tags are free-form strings with no validation.
-
-**Option B: Structured visibility field (recommended)**
-
-Add a first-class visibility field to the Task struct:
+Maps an outcome to individual tasks, quantifying each task's contribution:
 
 ```rust
-pub enum Visibility {
-    Private,            // Never shared externally
-    PublicDefinition,   // Task definition shareable, artifacts private
-    PublicFull,         // Both definition and artifacts shareable
-}
-
-pub struct Task {
-    pub visibility: Visibility,  // defaults to Private
-    // ...
+pub enum AttributionMethod {
+    Ablation,                              // run without each task, measure delta
+    Shapley,                               // average marginal contribution across orderings
+    Replacement { alternative_run_id: String }, // replace with alternative, measure delta
+    Manual,
+    ProportionalToEval,                    // cheap fallback using existing eval scores
 }
 ```
 
-This provides compile-time safety and makes the public/private boundary explicit in the data model. The executor and any veracity integration hooks can check `task.visibility` before deciding what to share.
+**Surprise:** This is much more rigorous than we expected. The `Replacement` method directly answers "did this suggestion improve outcomes?" — it's the natural method for evaluating peer suggestions. nikete recommends: Replacement for suggestion scoring, Ablation for initial attribution, Shapley only for small sub-graphs where complementarity matters.
 
-#### Artifact-Level Visibility
-
-Some tasks may have a mix: the methodology (task definition) is public, but specific data artifacts are private. This needs per-artifact classification:
+### C. Sensitivity (replaces our proposed Visibility)
 
 ```rust
-pub struct ArtifactRecord {
-    pub path: String,
-    pub visibility: Visibility,
-    pub content_hash: Option<String>,
+pub enum Sensitivity {
+    Public,     // Description, interfaces, verification, evaluation — all shareable
+    Interface,  // Description shareable, inputs/outputs sanitized (what, not data)
+    Opaque,     // Only existence and type visible
+    Private,    // Never leaves the node, not even referenced in public postings
 }
 ```
 
-#### Relationship to wg's Dependency Graph
+**Key difference from our proposal:** The `Interface` level is the important addition. It lets you share *what a task does* without sharing *the data it operates on*. Our 3-level `Visibility` (Private, PublicDefinition, PublicFull) missed this useful middle ground.
 
-The dependency graph already creates natural information boundaries:
+Graph constraints enforce sensitivity:
+- A `Public` task can only depend on `Public` or `Interface` tasks
+- `wg veracity check` validates these constraints
+- Default is `Private` — opt-in to sharing
 
-```
-[Public: methodology] → [Private: data processing] → [Public: forecast submission]
-```
+### D. Challenge
 
-Tasks marked `Private` should not have their descriptions or artifacts included in the `{{task_context}}` of downstream tasks that are `Public`. This requires a visibility-aware version of `build_task_context()` in `spawn.rs`:
+A sanitized, public posting of a task seeking improvement suggestions:
 
 ```rust
-fn build_task_context(task: &Task, graph: &Graph) -> String {
-    for dep_id in &task.blocked_by {
-        let dep = graph.get(dep_id);
-        if task.visibility.is_public() && dep.visibility.is_private() {
-            // Only include sanitized summary, not raw artifacts
-            context.push(format!("From {}: [private dependency, summary only]", dep_id));
-        } else {
-            // Include full context as today
-        }
-    }
+pub struct Challenge {
+    pub id: String,
+    pub task_id: String,
+    pub title: String,
+    pub description: String,         // sanitized per sensitivity
+    pub interface: ChallengeInterface, // inputs/outputs with schemas
+    pub verify: Option<String>,
+    pub baseline_score: Option<f64>,
+    pub metric: String,
+    pub reward_policy: RewardPolicy,
+    pub required_credibility: f64,   // minimum credibility to submit (0.0 = open)
 }
 ```
 
-#### What Would Be Shared on the Market
+Challenges intentionally DO NOT include: the actual solution, private dependencies, raw data.
 
-For Nikete's vision of posting "non-sensitive prompt sections" to a public market:
+### E. Suggestion
 
-1. **Task definitions** (title, description, required skills) — shareable if `visibility >= PublicDefinition`
-2. **Role definitions** (skills, desired outcomes) — shareable (these are methodological, not data-specific)
-3. **Evaluation scores** — shareable as credibility signals
-4. **Artifacts** — only if `visibility == PublicFull`
-5. **Dependency structure** — the DAG topology itself could be shared as a template, showing how work is organized without revealing content
-
----
-
-### 2.3 Agent Definitions as Market Goods
-
-**Question:** Could wg agency definitions (roles, motivations, skills) be the things traded on Veracity Exchange?
-
-#### The Natural Fit
-
-This is perhaps the most compelling integration point. Consider:
-
-1. An agent (role + motivation) is assigned to forecasting tasks
-2. Those tasks produce veracity-scorable portfolios
-3. The agent accumulates a `PerformanceRecord` with objective veracity scores
-4. The agent's role definition (its skills, desired outcome, description) becomes a *proven methodology*
-
-The content-hash ID system makes this especially powerful:
-
-- **Immutable identity:** Role `a3f7c21d` always refers to the exact same skill set and desired outcome. Its track record is tied to its identity.
-- **Reproducibility:** Anyone who obtains role `a3f7c21d`'s definition can instantiate the same agent and expect similar behavior (modulo the underlying LLM).
-- **Verifiable lineage:** The lineage system shows whether a role was evolved from a proven ancestor, adding credibility.
-
-#### What Would Be Traded
-
-| Market good | Veracity Exchange concept | wg representation |
-|-------------|--------------------------|-------------------|
-| Forecasting methodology | Participant's information product | Role definition (YAML) |
-| Behavioral constraints | Quality assurance | Motivation definition (YAML) |
-| Proven agent configuration | Participant with track record | Agent = Role + Motivation (YAML) + PerformanceRecord |
-| Skill documents | Implementation guides | Skill references (file/URL/inline content) |
-| Evolution recipes | Improvement methodology | Evolver skills (`.workgraph/agency/evolver-skills/`) |
-
-#### Scoring Agent Definitions via Veracity
-
-The existing `wg evaluate` scoring (correctness/completeness/efficiency/style) is *internal* quality—LLM-judged. Veracity scores (P&L, MSE) would be *external* quality—market-judged. An agent's full quality profile would combine both:
-
-```yaml
-performance:
-  task_count: 50
-  avg_internal_score: 0.85    # wg evaluate (LLM-judged)
-  avg_veracity_score: 0.72    # run-day scoring (market-judged)
-  evaluations:
-    - task_id: "forecast-2026-02-15"
-      internal_score: 0.88
-      veracity_score: 0.75
-      veracity_pnl: 1234.56
-      veracity_mse: 0.0042
-```
-
-This dual scoring creates a powerful quality signal: an agent might get high internal scores (clean code, follows conventions) but low veracity scores (bad predictions), or vice versa. The evolution system (`wg evolve`) could optimize for the composite metric.
-
-#### Market Dynamics
-
-1. **Price discovery:** A role definition's market value is determined by its veracity track record. Role `a3f7c21d` with 0.85 avg veracity score over 100 tasks is worth more than role `b4e8f32a` with 0.60 over 10 tasks.
-
-2. **Composition:** Buyers could combine purchased roles with their own motivations, creating new agents. The lineage system tracks this, and the new agent's performance feeds back to verify whether the purchased role transfers well.
-
-3. **Skill markets:** Skills attached to roles (especially `File` and `Url` types) are the actual intellectual property. A role's skills might reference private documents with domain expertise. The role definition (public) points to the skill content (private until purchased).
-
-4. **Evolution as improvement R&D:** The `wg evolve` process becomes a form of R&D investment. Evolved roles with better veracity scores justify higher market prices.
-
----
-
-### 2.4 Protocol Bridge: Technical Integration
-
-**Question:** What would the integration look like technically?
-
-#### Option 1: Veracity Executor (Recommended)
-
-Create a new executor type `veracity` that extends the existing executor system:
-
-```toml
-# .workgraph/executors/veracity.toml
-[executor]
-type = "veracity"
-command = "vx"
-args = ["api", "run-day"]
-veracity_api_url = "https://api.veracity.exchange"
-veracity_credentials = "${VX_API_KEY}"
-
-[executor.portfolio_mapping]
-artifact_format = "portfolio.json"   # expected artifact name
-position_field = "positions"         # JSON path in artifact
-
-[executor.scoring]
-record_as_evaluation = true          # create wg evaluation from vx score
-pnl_weight = 0.6
-mse_weight = 0.4
-```
-
-The executor would:
-1. Read the task's `portfolio.json` artifact
-2. Format it as a `run-day` request body
-3. POST to Veracity's API
-4. Record the response score as a wg evaluation
-5. Store the raw Veracity response as an artifact
-
-This fits cleanly into the existing executor pattern. The `spawn.rs` wrapper script already handles post-execution status checking; the veracity executor just adds a scoring step.
-
-#### Option 2: Post-Completion Hook
-
-Currently, wg has **no hook system**. The wrapper script generated by `spawn.rs` is hardcoded bash. Adding a hook system would be valuable beyond just Veracity:
-
-```toml
-# .workgraph/config.toml
-[hooks]
-post_completion = [
-    { command = "vx api run-day --portfolio {{artifact:portfolio.json}}", when = "tag:veracity:scorable" },
-    { command = "notify-slack {{task_id}} {{status}}", when = "always" },
-]
-```
-
-This is more flexible than a dedicated executor but requires building a hook system from scratch.
-
-#### Option 3: Two-Phase Task Pattern (Works Today)
-
-No code changes required. Use wg's existing dependency system:
-
-```bash
-# Phase 1: Generate forecast
-wg add "Generate daily forecast for 2026-02-18" \
-  --skill forecasting \
-  --deliverable "portfolio.json" \
-  --tag "veracity:phase:generate"
-
-# Phase 2: Submit and score via shell executor
-wg add "Submit forecast to Veracity" \
-  --blocked-by "generate-daily-forecast-2026-02-18" \
-  --exec "vx api run-day --input .workgraph/artifacts/portfolio.json" \
-  --tag "veracity:phase:score"
-```
-
-The second task uses the `shell` executor (`--exec`) to call the `vx` CLI. This is the fastest path to a working integration but requires manual wiring for each submission cycle.
-
-#### Recommended Architecture
-
-A layered approach:
-
-1. **Phase 1 (now):** Two-phase task pattern. No code changes. Validates the concept.
-2. **Phase 2 (short-term):** Add a post-completion hook system to wg. Benefits Veracity and all other integrations.
-3. **Phase 3 (medium-term):** Build a veracity executor that handles portfolio formatting, API calls, and score recording natively.
-
-#### CLI Extension
-
-The `vx` CLI already provides `vx api run-day` and `vx api health`. A wg integration could be a `wg veracity` subcommand or a standalone bridge:
-
-```bash
-wg veracity submit <task-id>           # submit task's portfolio artifact to run-day
-wg veracity score <task-id>            # fetch and record veracity score
-wg veracity status                     # check API health
-wg veracity replay <workflow-root>     # replay and score all scorable tasks in subgraph
-```
-
----
-
-### 2.5 Information Flow Control
-
-**Question:** How does wg's dependency graph naturally create information boundaries?
-
-#### Current Information Flow
-
-Workgraph's dependency graph is a DAG with explicit directed edges:
+A peer's proposed improvement — formatted as a Canon:
 
 ```rust
-pub blocked_by: Vec<String>,   // upstream dependencies
-pub blocks: Vec<String>,       // downstream dependents (mirror)
+pub struct Suggestion {
+    pub id: String,
+    pub challenge_id: String,
+    pub peer_id: String,
+    pub canon: Canon,                // the suggested approach
+    pub confidence: Option<f64>,     // peer's self-assessed confidence
+    pub status: SuggestionStatus,    // Pending → Accepted → Tested → Scored
+}
 ```
 
-Information flows downstream through `build_task_context()` in `spawn.rs`: when a task is spawned, it receives context from its direct `blocked_by` dependencies—specifically their artifacts and last 5 log entries.
+**Surprise:** Suggestions ARE Canons. This means the distill/canon system and the exchange system share the same format. A suggestion is injected into agent prompts via `{{task_canon}}` during replay testing. Even though nikete removed canon from the vx-adapter branch code, the design doc still treats Canon as the core exchange format.
 
-Key properties:
-- **Directed:** Information only flows from upstream to downstream
-- **Scoped:** Only *direct* dependencies contribute context (not transitive)
-- **Artifact-mediated:** The mechanism is through artifact paths and log entries, not raw task state
+### F. PeerCredibility
 
-#### Mapping to Veracity's Marketplace Model
-
-Nikete's insight is that the DAG structure already *is* an information flow control system. Making it explicit for Veracity:
-
-```
-┌─────────────────────┐     ┌──────────────────────┐     ┌───────────────────┐
-│  PUBLIC              │     │  PRIVATE               │     │  PUBLIC             │
-│  Market data         │────>│  Proprietary signal    │────>│  Portfolio          │
-│  collection          │     │  extraction            │     │  submission         │
-│                      │     │                        │     │                     │
-│  Methodology visible │     │  Artifacts hidden      │     │  Results scored     │
-│  on market           │     │  from market           │     │  by veracity        │
-└─────────────────────┘     └──────────────────────┘     └───────────────────┘
+```rust
+pub struct CredibilityScore {
+    pub score: f64,
+    pub n_suggestions: u32,
+    pub n_improvements: u32,
+    pub n_degradations: u32,
+    pub avg_delta: f64,
+    pub brier_score: f64,    // calibration: confidence vs actual improvement rate
+}
 ```
 
-The DAG edges define what each node knows. A public node downstream of a private node can share its *outputs* without revealing the private node's *method*.
+**Surprise:** Brier scoring for calibration is more rigorous than we expected. It measures whether peers know when they're right — a proper scoring rule that incentivizes honest confidence reporting.
 
-#### What Needs to Change
+### G. RewardPolicy
 
-1. **Visibility-aware context building.** As described in §2.2, `build_task_context()` needs to respect visibility boundaries. When a public task depends on a private task, it should receive sanitized context.
+Per-challenge incentive structure:
 
-2. **Transitive visibility inference.** If a task is public but all its dependencies are private, the task's outputs are effectively derived from private data. The system should warn or enforce:
+```rust
+pub enum RewardPolicy {
+    ProportionalToImprovement { share_fraction: f64 },
+    Bounty { amount: f64, min_improvement: f64 },
+    CredibilityOnly,
+    Custom { description: String },
+}
+```
 
-   ```
-   WARNING: Task "portfolio-submission" is public but depends on private task
-   "proprietary-signal-extraction". Outputs may leak private information.
-   ```
+### H. DataFlowEvent
 
-3. **Export control.** A `wg export <task-id> --for-market` command that produces a sanitized view of a task and its public subgraph, suitable for posting to Veracity Exchange's marketplace.
+Audit trail for everything crossing the node boundary:
 
-4. **Monitoring what leaves your node.** Nikete mentions "monitor what data leaves your node." This maps to an audit log of all information shared externally:
-
-   ```rust
-   pub struct ExportEntry {
-       pub timestamp: String,
-       pub task_id: String,
-       pub destination: String,      // "veracity-market", "peer:alice"
-       pub content_type: String,     // "task-definition", "artifact", "score"
-       pub content_hash: String,     // what was shared
-   }
-   ```
-
-   Stored in the provenance log with op `"export"`.
+```rust
+pub struct DataFlowEvent {
+    pub direction: FlowDirection,      // Outbound or Inbound
+    pub event_type: FlowEventType,     // ChallengePosted, SuggestionReceived, etc.
+    pub content_hash: String,          // SHA-256 of data that crossed
+    pub sensitivity: Sensitivity,
+}
+```
 
 ---
 
-### 2.6 Forking vs. Extension
+## 3. Protocol Bridge: What nikete Actually Built vs. What We Theorized
 
-**Question:** What changes truly need wg core changes vs. what can be extensions?
+### What We Theorized (Original §2.4)
 
-#### What Can Be Done Without Forking
+We proposed three options and recommended a layered approach:
+1. **Veracity Executor** (recommended) — new executor type handling portfolio submission
+2. **Post-Completion Hook** — general hook system
+3. **Two-Phase Task Pattern** — works today, no code changes
 
-| Capability | Mechanism | Why no fork needed |
-|-----------|-----------|-------------------|
-| Two-phase task pattern | Existing `--exec` + `--blocked-by` | Works today, no changes |
-| Tag-based visibility | Existing `--tag` field | Convention-only, no enforcement |
-| Veracity scoring via shell tasks | `--exec "vx api run-day ..."` | Shell executor exists |
-| Custom executor config | `.workgraph/executors/veracity.toml` | Executor system is extensible |
-| Agent definitions as templates | Export/import YAML files | Standard file operations |
-| Skill content from URLs | `--skill "name:https://..."` | URL skill type exists |
+### What nikete Actually Designed
 
-#### What Requires Core Changes (but not forking)
+nikete evaluated three *different* integration options (from `veracity-exchange-integration.md`):
 
-These are additive features that could be contributed upstream:
-
-| Feature | Scope | Difficulty |
-|---------|-------|-----------|
-| Post-completion hooks | New `[hooks]` config section + hook runner in `spawn.rs` wrapper | Medium |
-| Structured artifact records | Change `Vec<String>` → `Vec<ArtifactRecord>` in Task struct | Medium (migration needed) |
-| Visibility field on tasks | Add `visibility: Visibility` to Task struct | Small |
-| Expanded provenance logging | Add `provenance::record()` calls to existing commands | Small |
-| External score in evaluations | Add `external_scores: HashMap<String, f64>` to Evaluation | Small |
-| Arbitrary task metadata | Add `metadata: HashMap<String, Value>` to Task struct | Small |
-
-#### What Might Require Forking
-
-If Nikete's vision diverges significantly from wg's core assumptions:
-
-| Scenario | Why fork might be needed |
-|----------|------------------------|
-| Fundamentally different task lifecycle | If veracity tasks have states beyond Open/InProgress/Done/Failed |
-| Real-time scoring integration | If tasks need continuous scoring during execution (not just post-completion) |
-| Peer-to-peer DAG sharing | If the graph itself needs to be distributed across participants |
-| Cryptographic verification | If task outputs need zero-knowledge proofs of correctness |
-
-**Recommendation:** Design interfaces for all the "core changes" items above and propose them as PRs to upstream wg. If accepted, no fork is needed. If the interface design requires changing wg's fundamental assumptions (e.g., tasks are local, graphs are single-owner), then fork specific modules while keeping compatibility with the core task lifecycle.
-
-#### Minimizing Fork Surface
-
-The key principle: **extend, don't modify.** Specifically:
-
-1. **New fields, not changed fields.** Add `visibility`, `external_scores`, `metadata` as new optional fields. Never change the semantics of existing fields.
-
-2. **New executors, not modified executors.** The veracity executor is a new type alongside `claude`, `shell`, and `default`. No changes to existing executor logic.
-
-3. **New commands, not modified commands.** `wg veracity submit`, `wg veracity score`, `wg export` are new subcommands. Existing commands (`wg done`, `wg evaluate`) continue to work unchanged.
-
-4. **Hook system as middleware.** Hooks wrap existing behavior rather than replacing it. `post_completion` hooks run *after* the existing wrapper script logic, not instead of it.
-
----
-
-### 2.7 Comparison with Veracity's Existing Agent Setup
-
-**Question:** How do Veracity's CLAUDE.md, AGENTS.md, and agent-guide.md relate to wg's agency system?
-
-#### Veracity's Agent System
-
-Veracity's agent setup is **prompt-centric**: static markdown files that instruct a Claude agent on how to conduct the interview protocol. The files are:
-
-| File | Purpose | Content |
-|------|---------|---------|
-| `CLAUDE.md` | Entry point | Points to AGENTS.md |
-| `AGENTS.md` | Full guide | Complete interview protocol, deliverables, quality standards |
-| `agent-guide.md` | Deployed version | Same as AGENTS.md (for worker agents) |
-| `interview-template.json` | Scaffold | Structured template for interview data |
-
-The agent is expected to:
-1. Conduct a 6-step interview
-2. Produce 4 deliverables (`candidate_profile.md`, `data_inventory.csv`, `edge_hypotheses.md`, `participant_repo_plan.md`)
-3. Follow quality standards (text-first, deterministic, measurable)
-4. Use the API (`healthz`, `run-day`) for validation
-
-#### wg's Agency System
-
-Workgraph's agency system is **identity-centric**: agents have composable identities (role + motivation) that shape behavior, with performance tracking and evolution. Key structural differences:
-
-| Dimension | Veracity agents | wg agents |
-|-----------|----------------|-----------|
-| Identity | Single static role per repo | Composable role + motivation |
-| Configuration | Markdown files in repo root | YAML files in `.workgraph/agency/` |
-| Behavior shaping | Full prompt in CLAUDE.md | Role/motivation injected into executor prompt |
-| Evaluation | Portfolio P&L, MSE (external) | 4-dimension LLM evaluation (internal) |
-| Evolution | Manual guide updates | Automated evolution via `wg evolve` |
-| Task awareness | Single ongoing task (daily run) | Multi-task DAG with dependencies |
-| Skill system | None (all in one guide) | Typed references (name, file, URL, inline) |
-
-#### Overlap and Complementarity
-
-**Overlap:**
-- Both define "what the agent should do" (Veracity's guide ≈ wg role's desired outcome + skills)
-- Both have quality standards (Veracity's "measurable criteria" ≈ wg's `verify` field and evaluation dimensions)
-- Both produce structured deliverables (Veracity's 4 files ≈ wg's `deliverables` and `artifacts`)
-
-**Complementarity (where each system adds what the other lacks):**
-
-| Veracity adds to wg | wg adds to Veracity |
-|---------------------|---------------------|
-| Objective external scoring (P&L, MSE) | Multi-task DAG decomposition |
-| Market-based value attribution | Agent identity composition (role × motivation) |
-| Participant onboarding protocol | Automated performance evolution |
-| Information marketplace | Information flow control via dependency graph |
-| | Content-hash identity for reproducibility |
-| | Lineage tracking for evolved agents |
-
-#### Integration Design
-
-The most natural integration maps Veracity's interview protocol to a wg workflow:
+**Option A: External Service with CLI Bridge (recommended)**
 
 ```
-wg add "Interview: Offer Mapping" --skill veracity-interview --deliverable candidate_profile.md
-wg add "Interview: Claim Decomposition" --blocked-by offer-mapping
-wg add "Interview: Data Inventory" --blocked-by claim-decomposition --deliverable data_inventory.csv
-wg add "Interview: Signal Hypotheses" --blocked-by data-inventory --deliverable edge_hypotheses.md
-wg add "Interview: Risk Analysis" --blocked-by signal-hypotheses
-wg add "Interview: Packaging" --blocked-by risk-analysis --deliverable participant_repo_plan.md
+workgraph (local)           veracity exchange (remote)
+    │                              │
+    ├── wg exchange publish ───────►  publish task outcomes
+    ├── wg exchange suggest ───────►  submit improvement suggestions
+    ├── wg exchange pull ──────────►  receive suggestions
+    ├── wg exchange peers ─────────►  list trusted peers
+    │                              │
+    ◄── wg exchange apply ─────────  apply accepted suggestion
 ```
 
-The Veracity `agent-guide.md` content becomes a wg skill:
+**Option B: Event Hooks** — provenance log as event stream, hooks fire on task transitions.
+
+**Option C: Native Integration** — exchange as first-class module alongside identity system.
+
+**nikete's recommendation:** Start with Option A. Build local features (outcome scoring, sensitivity, credibility) that are useful regardless of exchange protocol. Explicitly: "Do not build native integration (Option C) until the exchange protocol is stable and proven."
+
+### Key Difference from Our Approach
+
+We recommended building toward a Veracity executor (tight integration). nikete recommends keeping the exchange external and only building local foundations first. His reasoning: premature coupling to an unstable protocol is worse than CLI bridge friction. The local features (outcomes, sensitivity, credibility) have value independently.
+
+### Concrete CLI Design (from nikete's design doc)
 
 ```bash
-wg role add "Veracity Interviewer" \
-  --skill "interview-protocol:https://www.veracity.exchange/agent-guide.md" \
-  --outcome "Complete participant onboarding with 4 deliverables" \
-  --description "Conducts structured interviews to onboard participants to Veracity Exchange"
-```
+# Outcome scoring
+wg veracity outcome <graph-root> --metric <metric> --value <value>
+wg veracity outcome <graph-root> --source api:alpaca
+wg veracity attribute <outcome-id> [--method ablation|shapley|eval]
+wg veracity scores [--task <task-id>] [--run <run-id>]
 
-This gives us the best of both worlds:
-- Veracity's domain expertise (the interview protocol, scoring) flows in as skill content
-- wg's operational machinery (DAG coordination, agent evaluation, evolution) manages execution
-- Performance data from both systems feeds into a unified agent quality profile
+# Challenge/suggestion exchange
+wg veracity challenge <task-id> [--reward proportional:0.1]
+wg veracity suggest <challenge-id> --canon <canon-file>
+wg veracity test <suggestion-id>      # replay with suggestion, measure
+wg veracity score <suggestion-id>     # score vs baseline
 
----
+# Peer network
+wg veracity peers [--topic <skill>]
+wg veracity peer <peer-id>
 
-## 3. Proposed Integration Architecture
-
-### High-Level Design
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Workgraph Core                            │
-│                                                               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ Task DAG │  │ Agency   │  │Provenance│  │ Executor │    │
-│  │          │  │ System   │  │   Log    │  │ System   │    │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘    │
-│       │              │              │              │          │
-│       └──────────────┼──────────────┼──────────────┘          │
-│                      │              │                         │
-│              ┌───────┴───────┐      │                         │
-│              │  Veracity     │      │                         │
-│              │  Integration  │      │                         │
-│              │  Layer        │◄─────┘                         │
-│              └───────┬───────┘                                │
-│                      │                                        │
-└──────────────────────┼────────────────────────────────────────┘
-                       │
-              ┌────────┴────────┐
-              │  Veracity       │
-              │  Exchange API   │
-              │  /v1/run-day    │
-              └─────────────────┘
-```
-
-### Integration Layer Components
-
-1. **Veracity Executor** — handles portfolio submission and scoring
-2. **Visibility Module** — enforces public/private boundaries
-3. **Score Bridge** — maps Veracity scores to wg evaluations
-4. **Export Module** — prepares task/agent data for marketplace posting
-5. **Replay Engine** — reconstructs and re-scores historical workflows
-
-### Data Flow for a Daily Forecast Cycle
-
-```
-1. Coordinator dispatches "collect-data" task
-   → Agent collects market data → artifacts: raw-data.csv
-   → Provenance: op="done", detail={artifacts: ["raw-data.csv"]}
-
-2. Coordinator dispatches "extract-signals" task (blocked-by collect-data)
-   → Agent reads raw-data.csv from upstream context
-   → Produces signals.json → visibility: private
-   → Provenance: op="done", detail={artifacts: ["signals.json"]}
-
-3. Coordinator dispatches "generate-forecast" task (blocked-by extract-signals)
-   → Agent reads signals.json from upstream context
-   → Produces portfolio.json → visibility: public (for scoring)
-   → Provenance: op="done", detail={artifacts: ["portfolio.json"]}
-
-4. Post-completion hook (or veracity executor) triggers:
-   → Reads portfolio.json
-   → POST /veracity/v1/run-day with portfolio data
-   → Receives score: {pnl: 1234.56, mse: 0.0042}
-   → Records as wg evaluation with external_scores
-   → Provenance: op="veracity_score", detail={pnl: 1234.56, mse: 0.0042}
-
-5. wg evaluate runs on each completed task:
-   → Internal quality score: 0.88
-   → Combined with veracity score for agent performance record
+# Data governance
+wg veracity sensitivity <task-id> <public|interface|opaque|private>
+wg veracity check                      # validate sensitivity constraints
+wg veracity audit [--outbound] [--inbound]
 ```
 
 ---
 
-## 4. Implementation Roadmap
+## 4. The vx-adapter Branch: What's Actually There
 
-### Phase 1: Proof of Concept (no code changes)
+The `nikete/vx-adapter` branch is **not a VX implementation**. It is:
 
-- Use two-phase task patterns with `--exec` for veracity API calls
-- Use tags for visibility classification (`--tag visibility:public`)
-- Manually run `wg evaluate` and record veracity scores in task logs
-- Create a "Veracity Interviewer" role with the agent-guide.md as a URL skill
-- **Validates:** concept feasibility, scoring integration, agent-as-market-good idea
+### 4.1 Terminology Rename
 
-### Phase 2: Core Extensions (upstream PRs)
+A systematic rename across the entire codebase:
 
-- Add `metadata: HashMap<String, Value>` to Task struct (enables arbitrary veracity metadata without forking)
-- Expand provenance logging to all lifecycle events
-- Add post-completion hook system
-- Add content hashing to artifact records
-- Add external score fields to Evaluation struct
-- **Validates:** production readiness, information flow control
+| Old term | New term | Files affected |
+|----------|----------|---------------|
+| `agency` | `identity` | `src/agency.rs` → `src/identity.rs`, all docs, tests |
+| `evaluate` | `reward` | `src/commands/evaluate.rs` → `src/commands/reward.rs` |
+| `motivation` | `objective` | `src/commands/motivation.rs` → `src/commands/objective.rs` |
+| `EvaluationRef` | `RewardRef` | `identity.rs` (field `score` → `value`) |
+| `PerformanceRecord` | `RewardHistory` | `identity.rs` (field `avg_score` → `mean_reward`) |
+| `evaluate_loop_edges` | `reward_loop_edges` | `graph.rs` |
 
-### Phase 3: Native Integration
+The rename is thorough — it extends into YAML storage directories (`.workgraph/agency/` → `.workgraph/identity/`), doc references, and internal function names.
 
-- Build veracity executor
-- Implement visibility-aware context building
-- Build `wg veracity` subcommand suite
-- Build replay engine
-- Integrate veracity scores into evolution system
-- **Delivers:** full integration as described in this report
+**Assessment:** The terminology shift is considered. "Identity" is arguably more precise than "agency" (agents have an *identity*, not an *agency*). "Reward" is more precise than "evaluate" (the score is a reward signal, not a comprehensive evaluation). "Objective" is more precise than "motivation" (it defines the goal, not the internal drive). However, adopting these renames would touch every file and break all existing deployments.
 
-### Phase 4: Marketplace Features
+### 4.2 Architecture Convergence
 
-- Agent definition export/import for market trading
-- Peer discovery and veracity exchange network
-- Automated portfolio generation from DAG outputs
-- Cross-participant workflow composition
+The vx-adapter branch independently added features we already have:
+
+| Feature | Our implementation | nikete's (vx-adapter) | Notes |
+|---------|-------------------|----------------------|-------|
+| Provenance | `src/provenance.rs` (326 lines) | `src/provenance.rs` (~same) | Nearly identical: append-only JSONL, zstd rotation, same `OperationEntry` struct |
+| Model registry | `src/models.rs` (414 lines) | `src/models.rs` | Similar: model catalog with cost/capability/tier |
+| GC | `src/commands/gc.rs` | `src/commands/gc.rs` | Similar |
+
+**Key insight:** Independent convergence on the same architecture validates our design decisions. Both codebases arrived at append-only JSONL with zstd rotation for provenance, content-hash identity for agents, and separate model registries.
+
+### 4.3 Canon/Distill Removed
+
+The vx-adapter branch deletes `src/canon.rs`, `src/commands/canon_cmd.rs`, and `src/commands/distill.rs`. The LLM-assisted knowledge distillation pipeline is abandoned.
+
+**However:** The design doc still treats Canon as the suggestion format for the exchange. This suggests nikete sees Canon as a *data structure* (spec + tests + interaction_patterns) that's useful for exchange, even if the automated distillation pipeline to produce canons from traces was premature.
+
+### 4.4 Research Documents Added
+
+The branch contains extensive VX-related research:
+
+| Document | Lines | Content |
+|----------|-------|---------|
+| `docs/research/veracity-exchange-deep-dive.md` | 723 | Their version of this analysis (parallel effort) |
+| `docs/research/veracity-exchange-integration.md` | 489 | Integration architecture analysis with 3 options |
+| `docs/research/logging-veracity-gap-analysis.md` | 222 | Gap analysis rating current system 2/5 for outcome tracking |
+| `docs/research/gepa-integration.md` | 426 | GEPA prompt optimization framework integration |
+| `docs/design/provenance-system.md` | 327 | Comprehensive provenance design (3 PRs, storage estimates) |
+| `docs/research/nikete-fork-deep-review.md` | 497 | Self-review of the fork |
+
+### 4.5 What Does NOT Exist on vx-adapter
+
+- No `Outcome`, `Attribution`, `Sensitivity`, `Challenge`, `Suggestion`, `PeerCredibility` structs in code
+- No `wg veracity` subcommand implementation
+- No exchange protocol or network code
+- No sensitivity enforcement in `build_task_context()`
+- No outcome recording or attribution logic
+
+**Bottom line:** The vx-adapter branch is design research + architecture convergence + terminology alignment. The actual VX implementation has not started.
 
 ---
 
-## 5. Open Questions
+## 5. Mapping to Existing Infrastructure (Updated)
 
-1. **Latent payoffs.** Nikete mentions "sub-units may have latent payoffs." How should wg handle evaluations that arrive days or weeks after task completion? The current evaluation system is point-in-time. A deferred evaluation mechanism would need: (a) a `pending_evaluation` state, (b) a polling or webhook system to check for delayed scores, (c) re-computation of agent performance when late scores arrive.
+nikete's design doc maps VX concepts to existing workgraph primitives:
 
-2. **Peer network topology.** "Learn what network of peers to do veracity exchanges with." This implies a social/reputation layer on top of wg. How does peer discovery work? Is it centralized (Veracity Exchange as matchmaker) or decentralized (participants find each other)?
+| VX Concept | Existing Infrastructure | Gap |
+|------------|------------------------|-----|
+| Veracity score | `Evaluation.score` + dimensions | Scored by outcome, not LLM — need external score source |
+| Suggestion format | Canon (spec + tests + patterns) | Canon removed from vx-adapter; needs reimplementation or alternative |
+| A/B comparison | Replay system (snapshot, reset, re-run) | Works, but `parent_run` field is unused — needed for branching |
+| Peer identity | Agent with content-hash ID + PerformanceRecord | Need cross-node identity, not just local |
+| Credibility history | `RewardHistory` (evaluations list) | Same shape, but scoped to peer, not role/objective |
+| Task interface | `Task.inputs` + `Task.deliverables` + `Task.verify` | Need sanitization for public posting |
+| Information boundary | `Task.skills` + DAG structure | Need Sensitivity field |
+| Alternative paths | `RunMeta.parent_run` | Exists but unwired |
 
-3. **Partial portfolio attribution.** When a workflow has 5 tasks and the final portfolio scores well, how is credit distributed to individual sub-tasks? This is the credit assignment problem. Veracity's internal markets solve it for participants, but intra-workflow attribution is a separate problem. Shapley values over sub-task contribution?
+### Key Gaps to Fill (from nikete's analysis)
 
-4. **Schema standardization.** What exactly is the schema for `portfolio.json`? The Veracity API accepts "positions with opening/closing prices" but the exact format isn't publicly documented beyond the API endpoint.
-
-5. **Confidentiality of graph structure.** Is the DAG topology itself sensitive? Knowing that someone runs "sentiment analysis → signal extraction → portfolio generation" reveals strategic information even without seeing the data. Should the graph structure itself have visibility controls?
+1. **Real-world outcome ingestion** — external score source, not LLM-generated
+2. **Attribution from outcome to sub-unit scores** — ablation/Shapley/replacement
+3. **Sensitivity classification on tasks** — 4-level enum with graph constraints
+4. **Sanitization pipeline** — strip private data before posting challenges
+5. **Suggestion submission and tracking** — receive, test, score external suggestions
+6. **Credibility accumulation with proper scoring** — Brier-scored calibration
+7. **Peer registry and trust learning** — topic-specific credibility
+8. **Data flow audit log** — every boundary crossing logged
 
 ---
 
-## 6. Conclusion
+## 6. Updated Analysis: Agent Definitions as Market Goods
 
-Veracity Exchange and workgraph are complementary systems with a natural integration surface. Veracity provides **objective external scoring** (market P&L, prediction MSE) and a **marketplace for information products**. Workgraph provides **task decomposition** (DAGs), **composable agent identities** (role × motivation), **performance evolution**, and **information flow control** (dependency graph + artifact system).
+### What nikete's Design Confirms
 
-The integration can be built incrementally: starting with zero-code-change task patterns, progressing through targeted core extensions, and culminating in a native veracity executor with full marketplace features. The critical design principle is **extend, don't fork**: all necessary changes can be expressed as new optional fields, new executor types, and new subcommands without modifying existing behavior.
+Our original §2.3 theorized that agent definitions (role + motivation) would be natural market goods. nikete's design doc confirms and extends this:
 
-The most novel insight is that **wg agent definitions are natural market goods** for Veracity Exchange. A role with a proven veracity track record is a concrete, transferable, content-hash-identified methodology with verifiable performance history. This is what Veracity's marketplace is designed to price and trade.
+- **Peer identity = agent identity pattern.** External peers use the same content-hash model as agents. `peer_id = SHA-256(public_key)` parallels `agent_id = SHA-256(role_id + objective_id)`.
+- **PeerCredibility parallels RewardHistory.** Both track score history over time. The synergy matrix (role × objective performance) could extend to peer × domain performance.
+- **Lineage provides provenance of capabilities.** If an agent descended from a proven ancestor, that ancestry is verifiable evidence of quality.
+
+### What nikete's Design Adds Beyond Our Theory
+
+1. **Credibility gating.** Challenges can require a minimum credibility score (`required_credibility: f64`). This creates a tiered access model: open challenges for bootstrapping, credibility-gated challenges for valuable work.
+
+2. **Topic-specific credibility.** `PeerCredibility.by_topic: HashMap<String, CredibilityScore>` means a peer trusted for feature engineering isn't automatically trusted for risk management. This is more nuanced than a single trust score.
+
+3. **Brier-scored calibration.** A peer who says "I'm 90% confident" and improves outcomes 90% of the time has a good Brier score. This incentivizes honest confidence reporting — a proper scoring rule.
+
+4. **Trust as earned, not assigned.** The existing `TrustLevel` enum (Verified, Provisional, Unknown) is currently set manually. In the VX model, trust is earned through demonstrated performance: `Unknown → (first accepted suggestion) → Provisional → (sustained track record) → Verified`.
+
+### The GEPA Connection (Surprise Finding)
+
+nikete's `gepa-integration.md` proposes using the GEPA prompt optimization framework as the inner loop inside workgraph's evolutionary system. A role description becomes a GEPA optimization target:
+
+```python
+def evaluate_role(role_description: str) -> tuple[float, dict]:
+    # Deploy role in wg, run N tasks, return mean reward + diagnostics
+    ...
+
+result = optimize_anything(
+    seed_candidate=current_role.description,
+    evaluator=evaluate_role,
+    objective="Optimize this agent role description to maximize task performance",
+)
+```
+
+This replaces our single-shot `wg evolve` LLM call with GEPA's multi-iteration reflective search (Pareto frontier of role variants). Combined with veracity scores as the evaluation metric, this creates a fully grounded optimization loop: evolve roles → measure real-world outcomes → select Pareto-optimal variants.
+
+---
+
+## 7. Information Flow Control (Updated from Design Doc)
+
+### nikete's Framing: "The DAG as Information Flow Controller"
+
+Our original §2.5 identified the DAG as creating natural information boundaries. nikete's design doc goes further, framing the DAG as an explicit *security* boundary:
+
+> The DAG structure already IS an information flow controller. Making it a *security* boundary rather than just a *convenience* boundary requires enforcing sensitivity at the context-building layer.
+
+### Sensitivity Enforcement (nikete's concrete proposal)
+
+Graph constraints prevent information leakage:
+
+```
+Public task → can only blocked_by tasks that are Public or Interface
+Interface task → can blocked_by Public, Interface, or Opaque
+Opaque task → can blocked_by anything
+Private task → can blocked_by anything
+```
+
+Rationale: if a Public task depends on a Private task, completing the Public task potentially reveals information about the Private task's output.
+
+`wg veracity check` validates these constraints and warns on violations.
+
+### Sanitization Pipeline
+
+When posting a challenge:
+1. Strip references to Private task IDs or outputs
+2. Replace specific data paths with schema descriptions
+3. Remove internal identifiers (agent IDs, run IDs)
+4. Optional human review before posting (`require_review_before_post: true` in config)
+
+The sanitized challenge is content-hashed and logged in the audit trail before it leaves the node.
+
+### Boundary Tasks
+
+Designate certain tasks as "boundary tasks" — the interface between private and public work:
+
+```
+[private: data-prep] → [private: model-train] → [boundary: publish-predictions] → [public: evaluate-accuracy]
+```
+
+Everything upstream of a boundary task is private. The boundary task's output is what gets shared. This is a read-only graph-slicing operation for export.
+
+---
+
+## 8. Forking vs. Extension (Updated)
+
+### What nikete's vx-adapter Branch Tells Us
+
+The vx-adapter branch demonstrates that nikete is NOT forking to diverge — he's converging. The branch:
+- Adds the same features we have (provenance, models, GC)
+- Removes premature features (canon/distill)
+- Does a terminology alignment pass (agency→identity)
+- Focuses on research docs, not divergent code
+
+### nikete's Own Classification (from `veracity-exchange-integration.md`)
+
+**Core changes needed (~300-400 lines):**
+
+| Change | Where | Effort |
+|--------|-------|--------|
+| `outcome_spec` field on Task | `graph.rs` | Small — one new optional field |
+| `visibility` (sensitivity) field on Task | `graph.rs` | Small — one new field, default Private |
+| `wg outcome record` command | new `commands/outcome.rs` | Medium |
+| Outcome-aware reward | `identity.rs` | Medium — extend `record_reward()` |
+| Outcome events in provenance | existing `provenance.rs` | Small — one new op type |
+
+**Extensions (no core changes):**
+
+| Extension | Why external |
+|-----------|-------------|
+| Exchange client | Network protocol is exchange-specific |
+| Redaction layer | Read-only operation on existing data |
+| Peer credibility DB | Separate trust model from internal identity |
+| Suggestion-to-task converter | Uses `wg add` CLI |
+
+**Bridge features (start external, may migrate to core):**
+
+| Feature | Migrate when... |
+|---------|-----------------|
+| Credibility tracking | It informs agent assignment decisions |
+| Prompt partitioning | Redaction needs enforcement, not just convention |
+| Trust network | Trust scores affect task routing |
+
+### Updated Assessment
+
+nikete's approach is more conservative than our original roadmap. He explicitly warns against premature native integration:
+
+> "Do not build native integration until the exchange protocol is stable and proven. Premature coupling to an unstable protocol is worse than the friction of a CLI bridge."
+
+This is sound advice. Our original Phase 3 ("Native Integration") assumed the VX protocol was well-defined. In practice, the protocol is still being designed.
+
+---
+
+## 9. Implementation Roadmap (Updated from nikete's Design)
+
+### nikete's 5-Phase Plan
+
+**Phase 1: Outcome Scoring (~400 LOC)**
+- `Outcome`, `Attribution` types
+- `wg veracity outcome` command (record outcomes)
+- `wg veracity attribute` command (ablation and proportional-to-eval methods)
+- `wg veracity scores` command (display)
+- Backfill veracity into evaluation/reward records
+- Config section
+
+**Phase 2: Challenges and Suggestions (~500 LOC)**
+- `Sensitivity` field on tasks, enforcement in `wg check`
+- `Challenge`, `ChallengeInterface`, `Suggestion` types
+- `wg veracity sensitivity` command
+- `wg veracity challenge` command (post)
+- `wg veracity suggest` command (receive)
+- Sanitization pipeline
+- Integration with replay (test suggestion = replay with suggested canon)
+
+**Phase 3: Credibility and Peers (~400 LOC)**
+- `PeerCredibility`, `CredibilityScore`, `CredibilityEvent` types
+- `wg veracity test` and `wg veracity score` commands
+- Credibility accumulation with Brier scoring
+- `wg veracity peers` command
+- Topic-specific credibility
+
+**Phase 4: Data Governance (~200 LOC)**
+- `DataFlowEvent` types
+- `wg veracity audit` command
+- Automatic logging of all boundary crossings
+- Review-before-post workflow
+
+**Phase 5: Network Learning (~300 LOC, future)**
+- Peer recommendation
+- Trust transitivity (weak signals only)
+- Auto-discovery via public challenge participation
+- Bilateral exchange agreements
+
+### Implementation Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1 | **Not started** | Design doc complete, no code |
+| Phase 2 | **Not started** | Sensitivity enum designed but not in code |
+| Phase 3 | **Not started** | PeerCredibility designed but not in code |
+| Phase 4 | **Not started** | DataFlowEvent designed but not in code |
+| Phase 5 | **Not started** | Future work |
+
+### Prerequisites from nikete's Provenance Design
+
+nikete's `docs/design/provenance-system.md` identifies 3 PRs needed before VX work:
+
+1. **PR 1: Complete Operation Log Coverage** — instrument all 9 remaining graph-mutating commands with `provenance::record()` calls (~100 lines). *We have already done this.*
+
+2. **PR 2: Robust Agent Archive** — archive prompt at spawn time (not just completion); archive output on dead-agent detection (~30 lines). *Partially done in our codebase.*
+
+3. **PR 3: Operation Log Filtering CLI** — `--task`, `--actor`, `--since`, `--until`, `--op` filters on `wg log --operations` (~60 lines). *Not yet done in our codebase.*
+
+---
+
+## 10. Design Tradeoffs (from nikete's analysis)
+
+nikete evaluates 6 design tradeoffs with ranked options:
+
+### A. Attribution Method
+**Recommendation:** Default to Replacement for suggestion scoring, Ablation for initial attribution, Shapley for small complementary sub-graphs.
+
+### B. Information Boundary Granularity
+**Recommendation:** Start with task-level sensitivity (B1). Add sub-graph boundary surfaces (B2) as convenience. Never rely on automatic content inference (B3).
+
+### C. Peer Identity Model
+**Recommendation:** Content-hash (like existing agents). Sybil-resistant via credibility — new identity starts at 0. Consistent with existing agent identity patterns.
+
+### D. Market Mechanism
+**Recommendation:** Start with bulletin board (post challenges, receive suggestions asynchronously). Credibility IS the price signal. Add auction for high-value private tasks later.
+
+### E. Outcome Timing
+**Recommendation:** Multi-horizon scoring. Record outcomes at multiple horizons (daily, weekly, quarterly), let queries filter. -MSE can be computed daily; Sharpe is meaningful at weekly+ horizons.
+
+### F. Trust Transitivity
+**Recommendation:** Start with no transitivity (only trust peers you've directly tested). Add weak transitivity later as an optional signal.
+
+---
+
+## 11. Workflow Examples (from nikete's design doc)
+
+### Workflow 1: Score a portfolio workflow
+
+```bash
+# Record outcome after trading period
+wg veracity outcome portfolio-root --metric sharpe --value 1.42 \
+  --period 2025-01-01:2025-03-31 --source manual
+
+# Attribute to sub-tasks
+wg veracity attribute outcome-portfolio-root-20250401 --method ablation
+#   data-ingestion:         0.15
+#   feature-engineering:    0.52  ← biggest contributor
+#   signal-generation:      0.38
+#   portfolio-optimization: 0.28
+#   execution:              0.09
+```
+
+### Workflow 2: Post challenge and receive suggestions
+
+```bash
+# Mark task as public
+wg veracity sensitivity feature-engineering public
+
+# Post challenge
+wg veracity challenge feature-engineering --reward proportional:0.1 --metric sharpe
+# Shares: title, sanitized description, interface, baseline score (0.52)
+
+# Test a received suggestion
+wg veracity test suggestion-abc123-peer7f3a-20250402
+# Replays feature-engineering with suggested canon → runs portfolio → measures outcome
+
+# Score after trading period
+wg veracity score suggestion-abc123-peer7f3a-20250402
+#   baseline sharpe:  1.42
+#   with suggestion:  1.58
+#   delta:           +0.16
+#   peer credibility: peer7f3a now 0.73 (was 0.68)
+```
+
+### Workflow 3: Build peer network
+
+```bash
+wg veracity peers
+#   PEER      CREDIBILITY  SUGGESTIONS  IMPROVEMENTS  AVG_DELTA  BRIER
+#   peer7f3a  0.73         12           9             +0.08      0.18
+#   peera2c1  0.61          8           5             +0.04      0.25
+#   peer9d4e  0.45          6           2             -0.01      0.41
+
+# Peer7f3a: high credibility + good calibration → invite for private work
+# Peer9d4e: poorly calibrated → deprioritize
+```
+
+---
+
+## 12. Storage Layout (from nikete's design)
+
+```
+.workgraph/
+  veracity/
+    outcomes/
+      outcome-{id}.json              # recorded real-world outcomes
+    attributions/
+      attribution-{outcome_id}.json  # per-task score attributions
+    challenges/
+      challenge-{id}.json            # posted public challenges
+    suggestions/
+      suggestion-{id}.json           # received suggestions
+      suggestion-{id}.canon.yaml     # the suggested canon
+    peers/
+      peer-{id}.json                 # PeerCredibility records
+    audit/
+      flow-{timestamp}.jsonl         # append-only data flow audit log
+    config.toml                      # veracity-specific config
+```
+
+---
+
+## 13. Surprises and Changes from Expectations
+
+### Things we got right
+1. **Integration is architecturally natural.** Confirmed by nikete's own mapping table.
+2. **Agent definitions as market goods.** nikete explicitly uses agent identity patterns for peer identity.
+3. **DAG as information flow controller.** nikete goes further, making this a security boundary.
+4. **Content-hash identity is the right foundation.** Both peer and agent identity use the same pattern.
+5. **Provenance log is essential.** nikete's design treats it as a prerequisite.
+
+### Things we got wrong or incomplete
+1. **We over-specified the API bridge.** We focused on `POST /run-day` as the integration point. nikete's design is protocol-agnostic — the exchange protocol is explicitly deferred.
+2. **We under-specified attribution.** We mentioned Shapley values in passing. nikete has 5 attribution methods with concrete tradeoff analysis.
+3. **We missed the Interface sensitivity level.** Our 3-level Visibility missed the crucial middle ground of sharing *what* without sharing *data*.
+4. **We recommended native integration too early.** nikete explicitly warns against this. CLI bridge first.
+5. **We didn't anticipate Canon as suggestion format.** The connection between distill/canon and the exchange system is elegant — even though canon was removed from vx-adapter as premature implementation.
+6. **We didn't anticipate GEPA integration.** Using an external prompt optimization framework as the inner loop of role evolution, with veracity scores as the objective, is a novel combination we missed entirely.
+
+### Open questions resolved
+1. **Latent payoffs** → nikete proposes Pending/Provisional/Final outcome states with multi-horizon scoring and exponential decay weighting.
+2. **Partial portfolio attribution** → nikete specifies 5 attribution methods with recommendations.
+3. **Peer network topology** → Content-hash identity, credibility-gated access, topic-specific trust, no transitivity initially.
+
+### Open questions remaining
+1. **Transport layer.** How do challenges and suggestions actually move between nodes? Options: git-based exchange, HTTP API, Matrix protocol, dedicated P2P protocol. Deliberately unresolved.
+2. **Who measures outcomes.** Self-report vs. third-party verification. System supports both, but third-party carries more credibility weight.
+3. **Privacy of outcome data.** Outcome scores (portfolio P&L) may themselves be sensitive. Needs separate sensitivity treatment from prompt/output privacy.
+4. **Scale of trust network.** RewardHistory works for tens of agents. Thousands of peers may need indexing/summarization.
+5. **Bootstrapping the chicken-and-egg.** Trust market requires both proven public work AND enough private paid tasks to make credibility valuable.
+6. **Adversarial suggestions.** A peer could submit suggestions that look good short-term but are fragile. Multi-horizon scoring and credibility decay help, but targeted defenses may be needed.
+
+---
+
+## 14. Relationship to Identity Reward/Evolution (from VX integration doc)
+
+nikete's `veracity-exchange-integration.md` explicitly maps the VX system to the existing identity reward loop:
+
+### Internal vs. External Veracity
+
+```
+Agent Performance          Task Outcome            Veracity Score
+(did agent follow spec?)  (did spec work?)        (combined measure)
+       │                       │                        │
+  reward.score        outcome.value            veracity_score
+  (0.0–1.0)              (domain metric)           (normalized)
+       │                       │                        │
+       └───────────┬───────────┘                        │
+                   │                                    │
+          composite veracity ────────────────────────────┘
+```
+
+An agent might score 0.95 on internal reward (perfectly followed spec) but 0.3 on outcome (the spec was wrong). Composite veracity distinguishes agents that execute well from agents that also produce good outcomes.
+
+### Evolution with Outcome Data
+
+- **Outcome-weighted evolution:** Roles whose tasks have high outcome scores are favored. High-reward/low-outcome agents (correct-but-useless) deprioritized vs. moderate-reward/high-outcome (imperfect-but-effective).
+- **Outcome-informed gap analysis:** The gap-analysis evolution strategy can identify gaps between rewarded quality and real-world impact.
+- **Latent payoff patience:** The evolver handles incomplete outcome data by weighting available outcome data more heavily as it arrives.
+
+---
+
+## 15. Conclusion (Updated)
+
+nikete's design work is substantially more concrete and rigorous than our original analysis anticipated. The design doc defines 8 new data types, a full CLI, 4 detailed workflows, and a 5-phase ~1,800 LOC implementation plan. The vx-adapter branch shows architecture convergence (provenance, models, GC) but no VX implementation code yet.
+
+**Key strategic implications:**
+
+1. **The design is protocol-agnostic.** All local features (outcomes, sensitivity, attribution, credibility) are useful without any exchange network. Build these first.
+
+2. **Canon is the exchange format** — even though it was removed from vx-adapter as premature implementation. Any exchange integration needs a structured knowledge artifact format. Canon (or something like it) will return.
+
+3. **Attribution methods matter.** The choice between Ablation, Shapley, and Replacement has real computational and accuracy tradeoffs. Replacement is the natural method for suggestion scoring.
+
+4. **Proper scoring rules are the foundation.** The system's incentive alignment rests on scoring against real-world outcomes. Without this, credibility and trust become gameable.
+
+5. **The next concrete step** is implementing Phase 1 (Outcome Scoring, ~400 LOC): Outcome and Attribution types, `wg veracity outcome` and `wg veracity attribute` commands, and backfilling veracity scores into the reward system.

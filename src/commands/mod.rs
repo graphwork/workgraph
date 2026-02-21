@@ -70,6 +70,7 @@ pub mod spawn;
 pub mod status;
 pub mod structure;
 pub mod trace;
+pub mod trace_animate;
 pub mod trace_extract;
 pub mod trace_function_cmd;
 pub mod trace_instantiate;

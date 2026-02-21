@@ -1,49 +1,88 @@
 # Deep Code Review: nikete/workgraph Fork
 
 **Reviewer:** scout (analyst)
-**Date:** 2026-02-19
-**Fork:** https://github.com/nikete/workgraph (now 404 — source recovered from agent-535 output logs)
-**Commits reviewed:** 3 (replay system + FORK.md documentation + VX design document)
-**Source recovery:** All 10 new files + 4 patches fully recovered from prior agent stream-json logs. The `docs/design-veracity-exchange.md` (+737 lines, 3rd commit) is unrecoverable — no agent ever read it and the repo has been deleted.
+**Date:** 2026-02-20 (updated)
+**Original review:** 2026-02-19 (based on code recovered from cached agent logs — repo was 404)
+**This revision:** Based on actual source code via git remote `nikete` with branches `nikete/main` and `nikete/vx-adapter`
+**Fork:** https://github.com/nikete/workgraph
+**Companion report:** [nikete-fork-comparison-feb20.md](nikete-fork-comparison-feb20.md) — structural diff, feature table, merge feasibility
 
 ---
 
-## 1. Full Inventory
+## 1. Full Inventory (Verified)
 
-### New Files (10 files, ~4,084 lines)
+The previous review was reconstructed from agent output logs when the repo was 404. With direct access to the remote, here is the verified inventory.
+
+### New Files in nikete/main (vs origin/main)
+
+| File | Lines | Purpose | Verified |
+|------|-------|---------|----------|
+| `src/trace.rs` | 815 | Core trace module: `TraceEvent` enum, stream-json parser, JSONL I/O, metadata computation, filtering, extraction. 13 tests | Yes — matches prior review |
+| `src/canon.rs` | 627 | Canon (distilled knowledge): `Canon` struct with spec/tests/interaction_patterns/quality_signals, versioned YAML, prompt rendering, distill prompt builder. 14 tests | Yes |
+| `src/runs.rs` | 699 | Run management: snapshots, run ID generation, task reset logic (selective, with keep-done threshold), graph restore. 16 tests | Yes (was 698 in prior review — off by 1, likely trailing newline) |
+| `src/commands/trace_cmd.rs` | ~212 | CLI for `wg trace-extract <agent-id>` and `wg trace <task-id>` | Yes |
+| `src/commands/distill.rs` | ~231 | CLI for `wg distill <task-id>`. Builds distill prompt. LLM call not wired up | Yes |
+| `src/commands/canon_cmd.rs` | ~201 | CLI for `wg canon <task-id>` (view) and `wg canon --list` | Yes |
+| `src/commands/replay.rs` | 392 | CLI for `wg replay` with --failed-only, --below-score, --tasks, --keep-done, --plan-only | Yes |
+| `src/commands/runs_cmd.rs` | ~195 | CLI for `wg runs list/show/restore` | Yes |
+| `FORK.md` | 162 | Fork documentation | Yes |
+| `docs/design-replay-system.md` | 554 | Design doc with 6 tradeoff analyses | Yes |
+| `docs/design-veracity-exchange.md` | ~737 | VX design — **now recoverable** from vx-adapter branch research docs | See §3 |
+
+### New Files in nikete/vx-adapter (vs nikete/main)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `FORK.md` | 162 | Documentation of the fork: capture/distill/replay pipeline, CLI commands, configuration, storage layout, test coverage |
-| `docs/design-replay-system.md` | 554 | Full design document: problem statement, architecture, 6 tradeoff analyses (A–F), implementation plan, future extensions |
-| `docs/design-veracity-exchange.md` | ~737 | **UNRECOVERABLE** — VX design document. Per evaluator notes: outcome-based scoring, peer exchange, credibility accumulation. Typed Rust structs and implementation plan |
-| `src/trace.rs` | 814 | Core trace module: `TraceEvent` enum, stream-json parser, JSONL I/O, metadata computation, filtering, trace extraction. 13 tests |
-| `src/canon.rs` | 626 | Canon (distilled knowledge) module: `Canon` struct with spec/tests/interaction_patterns/quality_signals, versioned YAML persistence, prompt rendering, distill prompt builder. 14 tests |
-| `src/runs.rs` | 698 | Run management: snapshots, run ID generation, recursive directory copy, task reset logic (selective, with keep-done threshold), graph restore. 16 tests |
-| `src/commands/trace_cmd.rs` | 212 | CLI for `wg trace-extract <agent-id>` and `wg trace <task-id>` with filtering |
-| `src/commands/distill.rs` | 231 | CLI for `wg distill <task-id>` and `wg distill --all`. Builds distill prompt. LLM call not wired up |
-| `src/commands/canon_cmd.rs` | 201 | CLI for `wg canon <task-id>` (view) and `wg canon --list` |
-| `src/commands/replay.rs` | 391 | CLI for `wg replay --model <model>` with --failed-only, --below-score, --tasks, --keep-done, --plan-only. 4 tests |
-| `src/commands/runs_cmd.rs` | 195 | CLI for `wg runs list/show/restore`. 5 tests |
+| `src/provenance.rs` | 326 | Append-only JSONL operation log with zstd rotation — nearly identical design to our `provenance.rs` |
+| `src/models.rs` | 414 | Model registry with tier/cost metadata — nearly identical to our `models.rs` |
+| `src/identity.rs` | 3,637 | Renamed from `agency.rs` — agency→identity, motivation→objective, evaluation→reward |
+| `src/commands/gc.rs` | 415 | Garbage collection — functionally identical to our `gc.rs` |
+| `src/commands/models.rs` | 138 | CLI for `wg models list/add/set-default` |
+| `src/commands/trace.rs` | 705 | New trace command built on provenance (replaces `trace_cmd.rs`) |
+| `docs/design/provenance-system.md` | 327 | Comprehensive provenance design doc |
+| `docs/research/veracity-exchange-deep-dive.md` | 723 | VX concept mapping and integration analysis |
+| `docs/research/veracity-exchange-integration.md` | 489 | Gap analysis for VX integration |
+| `docs/research/gepa-integration.md` | 426 | Gepa system integration analysis |
+| `docs/research/logging-veracity-gap-analysis.md` | 222 | Logging coverage vs VX requirements |
+| `docs/research/organizational-economics-review.md` | 765 | Organizational economics applied to workgraph |
+| `docs/research/collaborators-and-perspectives.md` | 356 | External collaborator analysis |
+| `docs/research/file-locking-audit.md` | 327 | File locking safety audit |
+| `docs/IDENTITY.md` | — | Rewritten from AGENCY.md |
+| `docs/LOGGING.md` | 174 | Logging system documentation |
+| `tests/integration_cli_workflows.rs` | 611 | CLI workflow integration tests |
+| `tests/integration_logging.rs` | 894 | Provenance logging tests |
+| `tests/integration_trace_replay.rs` | 672 | End-to-end trace/replay tests |
 
-### Modified Files (4 files, ~350 lines changed)
+### Files Removed in vx-adapter (vs nikete/main)
 
-| File | Changes |
-|------|---------|
-| `src/config.rs` | +91 lines: `DistillConfig` and `ReplayConfig` structs with sensible defaults |
-| `src/lib.rs` | +3 lines: Exports `canon`, `runs`, and `trace` modules |
-| `src/commands/mod.rs` | +5 lines: Registers 5 new command modules |
-| `src/main.rs` | +180 lines: Registers 6 CLI subcommands (trace-extract, trace, distill, canon, replay, runs) with clap parsing. Adds `RunsCommands` enum |
+| File | Lines | Significance |
+|------|-------|-------------|
+| `src/canon.rs` | 627 | Canon/distill system abandoned |
+| `src/trace.rs` | 815 | Stream-json parser removed, replaced by provenance-based trace |
+| `src/commands/canon_cmd.rs` | ~201 | Removed with canon |
+| `src/commands/distill.rs` | ~231 | Removed with canon |
+| `src/commands/trace_cmd.rs` | ~212 | Replaced by new `trace.rs` |
+| `docs/design-replay-system.md` | 554 | Replaced by provenance design |
+| `docs/design-veracity-exchange.md` | ~737 | Superseded by research docs in `docs/research/` |
 
-### Unchanged
-- `Cargo.lock` has +171/-164 changes (dependency updates for `serde_yaml`)
-- No existing types, functions, or behaviors are modified
+### Modified Files (both forks diverged)
+
+| File | Nature of divergence |
+|------|---------------------|
+| `src/agency.rs` | Both ~3,600-3,800 lines. Functionally equivalent. Ours has ~165 more lines (federation-related). vx-adapter renames to `identity.rs`. |
+| `src/config.rs` | Nikete/main: +91 lines (DistillConfig, ReplayConfig). Ours: significantly larger (1,038 lines) with log, models, and more sections. |
+| `src/runs.rs` | Nikete/main: 699 lines (richer snapshots). Ours: 230 lines (focused). vx-adapter: simplified further. |
+| `src/commands/replay.rs` | Nikete/main: 392 lines. Ours: 589 lines (richer). vx-adapter: 594 lines (ReplayOptions struct, reward terminology). |
+| `src/commands/viz.rs` | Nikete: 1,659 lines. Ours: 2,418 lines (added 2D force-directed layout). |
+| `src/main.rs` | Major structural differences — different CLI subcommand sets. |
 
 ---
 
-## 2. Struct Definitions
+## 2. Struct Definitions (Verified Against Actual Code)
 
-### TraceEvent (src/trace.rs:18-54)
+All struct definitions from the prior review have been verified against `nikete/main` source. The prior cache-based recovery was accurate — no corrections needed.
+
+### TraceEvent (src/trace.rs)
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,26 +95,9 @@ pub enum TraceEvent {
     Error { content: String, recoverable: bool, ts: String },
     Outcome { status: String, exit_code: i32, duration_s: f64, artifacts_produced: Vec<String>, ts: String },
 }
-
-pub struct ToolCall { pub name: String, pub args: String, pub id: String }
 ```
 
-### TraceMeta (src/trace.rs:57-67)
-
-```rust
-pub struct TraceMeta {
-    pub task_id: String,
-    pub agent_id: String,
-    pub model: Option<String>,
-    pub duration_s: Option<f64>,
-    pub turn_count: usize,
-    pub user_intervention_count: usize,
-    pub tool_call_count: usize,
-    pub estimated_tokens: usize,
-}
-```
-
-### Canon (src/canon.rs:14-26)
+### Canon (src/canon.rs)
 
 ```rust
 pub struct Canon {
@@ -89,409 +111,348 @@ pub struct Canon {
     pub interaction_patterns: InteractionPatterns,
     pub quality_signals: QualitySignals,
 }
-
-pub struct DistillSource { pub agent_id: String, pub model: Option<String>, pub iteration: u32 }
-pub struct InteractionPatterns { pub corrections: Vec<Correction>, pub sticking_points: Vec<StickingPoint>, pub human_preferences: Vec<String> }
-pub struct Correction { pub context: String, pub correction: String, pub lesson: String }
-pub struct StickingPoint { pub description: String, pub resolution: String, pub iterations_to_resolve: u32 }
-pub struct QualitySignals { pub evaluation_scores: Vec<f64>, pub convergence: bool, pub remaining_issues: Vec<String> }
 ```
 
-### RunMeta (src/runs.rs:11-21)
+### vx-adapter: Reward (src/identity.rs) — replaces Evaluation
 
 ```rust
-pub struct RunMeta {
-    pub id: String,
-    pub model: Option<String>,
-    pub started_at: String,
-    pub completed_at: Option<String>,
-    pub parent_run: Option<String>,
-    pub task_count: usize,
-    pub tasks_reset: usize,
-    pub tasks_kept: usize,
+pub struct Reward {
+    pub task_id: String,
+    pub agent_id: String,
+    pub value: f64,                    // was "score", with #[serde(alias = "score")]
+    pub dimensions: BTreeMap<String, f64>,
+    pub reasoning: String,
+    pub evaluated_by: String,          // unchanged name
+    pub timestamp: String,
+    #[serde(default = "default_reward_source")]
+    pub source: String,                // NEW: "llm", "outcome:<metric>", "manual", etc.
 }
 ```
 
-### Config additions (src/config.rs patch)
-
-```rust
-pub struct DistillConfig {
-    pub auto_distill: bool,           // default: false
-    pub model: String,                // default: "sonnet"
-    pub keep_versions: bool,          // default: true
-    pub include_tool_results: bool,   // default: false
-    pub max_trace_tokens: usize,      // default: 50000
-}
-
-pub struct ReplayConfig {
-    pub auto_distill_before: bool,    // default: true
-    pub keep_done_threshold: f64,     // default: 0.9
-    pub snapshot_traces: bool,        // default: true
-    pub snapshot_canon: bool,         // default: true
-}
-```
+The `source` field is the sole substantive addition in the identity rename — it enables external reward signals (specifically Veracity Exchange portfolio P&L) alongside LLM-generated evaluations.
 
 ---
 
-## 3. The OrchestratorAdapter Trait
+## 3. The VX Design Document — Now Recoverable
 
-**Status: NOT FOUND in recovered source code.**
+The prior review flagged `docs/design-veracity-exchange.md` as "UNRECOVERABLE" since the repo was 404. With the vx-adapter branch accessible, the VX research is now available across multiple documents:
 
-The `OrchestratorAdapter` trait was mentioned in the task description as a feature of the VX design. Since `docs/design-veracity-exchange.md` is unrecoverable, we cannot confirm its existence or definition. The recovered files (trace.rs, canon.rs, runs.rs, all commands, config patch, main patch) contain no trait named `OrchestratorAdapter` and no trait definitions at all. The fork's architecture is purely function-based, not trait-based.
+| Document | Lines | Key Content |
+|----------|-------|-------------|
+| `docs/research/veracity-exchange-deep-dive.md` | 723 | Detailed concept mapping: task → portfolio position, artifacts → position entries, reward score → internal quality metric, VX run-day score → external P&L/MSE metric. Analyzes 7 research questions. |
+| `docs/research/veracity-exchange-integration.md` | 489 | Gap analysis: what workgraph already supports (provenance, rewards, content-hash identity, lineage) vs what's missing for VX. |
+| `docs/research/gepa-integration.md` | 426 | Integration with the Gepa system. |
+| `docs/research/logging-veracity-gap-analysis.md` | 222 | Provenance coverage requirements for VX compliance. |
 
-**What we can infer:** If the VX design proposed an `OrchestratorAdapter` trait, it would logically need methods like:
-- `submit_task(task_id, description, context) -> RunHandle`
-- `get_task_status(task_id) -> Status`
-- `get_task_artifacts(task_id) -> Vec<Artifact>`
-- `replay_task(task_id, model, canon) -> RunHandle`
-- `get_evaluation(task_id) -> Option<Evaluation>`
+### The OrchestratorAdapter Trait
 
-This maps to what our `TemplateVars` + `ExecutorConfig` + coordinator already provide, just not behind a formal trait interface.
+The prior review noted this was "NOT FOUND in recovered source code" and speculated about its interface. With the actual code available: **there is no `OrchestratorAdapter` trait in either branch.** The VX integration surface is minimal — a single `Reward.source` field that allows external systems to contribute reward signals. The research docs describe the conceptual mapping but propose no trait interface. The prior review's speculation about trait methods was reasonable but unnecessary.
 
----
+### Key VX Concepts (from actual docs)
 
-## 4. The VX Design Document
-
-**Status: UNRECOVERABLE.**
-
-`docs/design-veracity-exchange.md` (+737 lines) was the largest new file in the fork and its 3rd (most recent) commit. No agent ever fetched its contents. The repository is now 404 on GitHub, and no web archive captured it.
-
-### What we know (from evaluator notes + task descriptions):
-
-The VX design document covered:
-1. **Outcome-based scoring** — workgraph task sub-units have measurable real-world outcomes (portfolio P&L, prediction MSE) that become veracity scores
-2. **Peer exchange** — public (non-sensitive) prompt sections posted to a market where others suggest improvements; good suggestions build credibility
-3. **Credibility accumulation** — trust network built on demonstrated competence
-4. **Typed Rust structs** — concrete type definitions for the VX protocol
-5. **Implementation plan** — phased approach for integrating VX with workgraph
-
-The evaluator described this as "a distinct conceptual contribution (outcome-based scoring, peer exchange, credibility accumulation) separate from the replay system."
-
-**Recommendation:** Ask nikete directly for this document, or request he re-publish the fork.
+1. **Outcome-based scoring:** Task evaluation scores map to VX "internal quality metrics." Real-world outcomes (portfolio P&L, prediction MSE) become VX "external quality metrics." The `Reward.source` field distinguishes these.
+2. **Peer exchange:** Public (non-sensitive) portions of task specs and agent prompts can be shared on a VX marketplace where others suggest improvements. Good suggestions build credibility.
+3. **Credibility accumulation:** Agent lineage + reward history maps to VX trust scores. The content-hash identity system provides the provenance chain.
+4. **Implementation approach:** Incremental — add `source` to rewards first, then optional VX reporting, then full peer exchange. No big-bang rewrite.
 
 ---
 
-## 5. Architecture: The Three-Stage Pipeline
+## 4. Architecture Comparison: Two Evolutionary Paths
+
+### nikete/main: Capture → Distill → Replay
 
 ```
 CAPTURE → DISTILL → REPLAY
 (traces)   (canons)   (runs)
 ```
 
-### Stage 1: Capture (trace.rs, trace_cmd.rs)
+The original three-stage pipeline. Captures raw LLM conversation, distills knowledge via LLM, replays with enriched context. The distill LLM call was never implemented.
 
-**What it captures:** Post-hoc parsed Claude `--output-format stream-json` output from agent `output.log` files. Converts raw stream-json into typed `TraceEvent` JSONL.
+### nikete/vx-adapter: Provenance → Reward → Replay
 
-**How it works:**
-1. `wg trace-extract <agent-id>` reads `.workgraph/agents/{agent-id}/output.log`
-2. `parse_stream_json()` converts stream-json events into `TraceEvent` variants
-3. Events written to `.workgraph/traces/{agent-id}/trace.jsonl`
-4. Summary metadata (turn count, tool calls, user interventions, token estimate) written to `trace-meta.json`
-5. `wg trace <task-id>` looks up agents via registry, loads traces, displays with filtering (--full, --turns-only, --user-only, --json)
-
-**Key functions:**
-- `parse_stream_json(content: &str) -> Vec<TraceEvent>` (line 78-204)
-- `write_trace(events, path)` / `read_trace(path)` (lines 207-235)
-- `compute_meta(events, task_id, agent_id) -> TraceMeta` (lines 238-297)
-- `extract_trace(workgraph_dir, agent_id, task_id) -> TraceMeta` (lines 320-352)
-- `filter_events(events, user_only, turns_only)` (lines 358-380)
-
-**Design choice:** Capture is post-hoc (after agent completes), not real-time. Simpler but traces are lost if agent crashes before completion.
-
-### Stage 2: Distill (canon.rs, distill.rs, canon_cmd.rs)
-
-**What Canon is:** A normalized knowledge artifact — a YAML file containing refined spec, test expectations, interaction patterns, and quality signals distilled from conversation traces via LLM.
-
-**How distill works:**
-1. `wg distill <task-id>` loads task definition, finds agents via registry
-2. Reads agent output logs as trace content
-3. Loads evaluation scores from `agency/evaluations/`
-4. Loads previous canon if exists (for refinement)
-5. `build_distill_prompt()` constructs structured prompt with all context
-6. **LLM call NOT YET WIRED UP** — prints "LLM integration not yet implemented"
-7. `--dry-run` shows the prompt that would be sent
-
-**Canon injection:** Designed for `{{task_canon}}` template variable in executor prompts, following existing `{{task_identity}}` pattern. `render_canon_for_prompt()` does priority-ordered section truncation within token budget.
-
-**Relation to `wg evolve`:** Both are LLM-powered synthesis steps. Evolve mutates role/motivation definitions based on evaluations. Distill produces per-task knowledge artifacts from conversation traces. They operate at different levels: evolve refines *who does the work*, distill refines *what the work should produce*.
-
-### Stage 3: Replay (runs.rs, replay.rs, runs_cmd.rs)
-
-**What replay does:** Snapshot + in-place reset.
-1. Generate run ID (`run-001`, `run-002`, ...)
-2. Snapshot `.workgraph/` state (graph.jsonl, optionally traces/ and canon/) to `runs/{run-id}/`
-3. Reset selected tasks to Open status (clearing assigned, started_at, completed_at, artifacts, loop_iteration — preserving log entries and blocked_by)
-4. Save graph; coordinator dispatches with new model
-
-**Selective replay options:**
-- `--failed-only` — only reset Failed/Abandoned tasks
-- `--below-score 0.8` — only reset tasks with eval score below threshold
-- `--tasks task-1,task-3` — reset specific tasks + transitive dependents
-- `--keep-done` — preserve high-scoring Done tasks (configurable threshold 0.9)
-- `--plan-only` — dry run showing what would be reset
-
-**Run management:** `wg runs list/show/restore`
-
-**Does it support different models/agents on replay?** Yes — the `--model` flag sets the model for the replay run. The coordinator uses whatever agent assignment logic is configured. Canon from prior runs is injected into prompts to provide accumulated knowledge.
-
-**How are runs tracked?** Each run gets a `RunMeta` JSON file in `runs/{run-id}/run-meta.json` with model, timestamps, task counts, and parent run reference.
-
----
-
-## 6. Config Changes
-
-Two new sections added to `config.toml`:
-
-```toml
-[distill]
-auto_distill = false            # auto-distill on task completion
-model = "sonnet"                # model for distillation LLM calls
-keep_versions = true            # keep versioned canon history
-include_tool_results = false    # include tool results in traces
-max_trace_tokens = 50000        # max trace size for distill prompts
-
-[replay]
-auto_distill_before = true      # auto-distill before replay
-keep_done_threshold = 0.9       # score threshold for --keep-done
-snapshot_traces = true          # include traces in run snapshots
-snapshot_canon = true           # include canons in run snapshots
+```
+PROVENANCE → REWARD → REPLAY
+(operations)  (external)  (runs)
 ```
 
-Both use `#[serde(default)]` throughout, so existing configs work without modification.
+The vx-adapter abandoned the distill pipeline. Instead:
+- **Provenance** replaces conversation-level traces with operation-level logging (like our design)
+- **Reward** replaces LLM-only evaluation with pluggable reward sources (outcome metrics, manual, VX)
+- **Replay** retains snapshot-and-reset but drops canon injection
+
+### Our fork: Provenance → Evaluate → Replay + Trace Functions + Federation
+
+```
+PROVENANCE → EVALUATE → REPLAY
+(operations)  (LLM)      (runs)
+
+TRACE FUNCTIONS → INSTANTIATE
+(patterns)        (new subgraphs)
+
+FEDERATION → PULL/PUSH/MERGE
+(cross-repo)
+```
+
+We have:
+- Operation-level provenance (like vx-adapter)
+- LLM evaluation (same as nikete/main)
+- Richer replay (--subgraph, evaluation-aware keep-done)
+- **Trace functions** — extract structural patterns from completed task graphs into reusable templates
+- **Federation** — share agency entities across repos
+- **Loop convergence** — agents signal when iterative loops should stop
+- **2D graph layout** — force-directed visualization in terminal
+- **Model registry, GC, setup wizard**
 
 ---
 
-## 7. Diff Analysis: Invasiveness
+## 5. Concept Mapping (Updated with vx-adapter Terminology)
 
-### Changes to wg core: **MINIMAL**
-
-The fork is genuinely additive. The 4 modified files are:
-
-1. **src/config.rs** (+91 lines) — Two new structs with defaults. No changes to existing `Config`, `CoordinatorConfig`, or `AgencyConfig` structs. New fields added to root `Config` with `#[serde(default)]`.
-
-2. **src/lib.rs** (+3 lines) — Three `pub mod` declarations. No changes to existing exports.
-
-3. **src/commands/mod.rs** (+5 lines) — Five `pub mod` declarations. No changes to existing modules.
-
-4. **src/main.rs** (+180 lines) — New enum variants in `Commands`, new `RunsCommands` enum, match arms in the dispatch function. All additions at the end of existing match blocks.
-
-**No existing types are modified.** No existing function signatures change. No existing behavior changes. This is the best possible outcome for merge compatibility.
-
-### New dependency: `serde_yaml`
-
-Canon files use YAML via `serde_yaml`. The rest of workgraph uses JSON/JSONL. This adds one dependency and introduces format inconsistency. However, YAML's multiline string support makes canon files more readable (spec and tests fields are typically multi-line).
-
----
-
-## 8. Concept Mapping: nikete → wg → What We'd Need to Change
-
-| nikete Concept | Closest wg Concept | Gap / What We'd Need to Change |
-|----------------|-------------------|-------------------------------|
-| `TraceEvent` enum | `OperationEntry` in `provenance.rs` | Different granularity. OperationEntry records graph mutations. TraceEvent records conversation turns. **Complementary, not overlapping.** We'd add trace.rs alongside provenance.rs. |
-| `TraceMeta` | Agent output in `.workgraph/output/{task_id}/` | Our `capture_task_output()` saves git diff + artifacts + log. TraceMeta adds structured conversation statistics. **We'd add TraceMeta to capture_task_output().** |
-| `Canon` struct | `Role` + `Motivation` (agency.rs) | Different level. Canon captures per-task knowledge. Role/Motivation capture per-agent identity. **We'd add canon.rs as a new module — no overlap with agency.** |
-| `Canon.spec` | Task `description` + `verify` fields | Canon.spec is a refined version informed by execution experience. **We'd inject it via `{{task_canon}}` in executor templates.** |
-| `Canon.interaction_patterns` | Nothing equivalent | Novel concept. Corrections, sticking points, preferences have no wg equivalent. **New module needed.** |
-| `Canon.quality_signals` | `Evaluation.score` + `Evaluation.dimensions` | evaluation_scores in quality_signals are just aggregated eval scores. **Simple mapping from existing evaluations.** |
-| `DistillSource` | `EvaluationRef` in agency.rs | Similar provenance tracking (agent_id, model, iteration). **Could unify.** |
-| `RunMeta` | Nothing equivalent | We have no run/snapshot management. **New module needed (runs.rs).** |
-| `snapshot()` / `restore_run()` | Nothing equivalent | We have provenance log but no graph snapshots. **New functions needed.** |
-| `reset_tasks_for_replay()` | `retry` command (retry.rs) | retry resets one task. reset_tasks_for_replay does selective batch reset with transitive dependents. **Extension of retry logic.** |
-| `collect_transitive_dependents()` | Nothing in graph.rs | Our graph module has no reverse dependency traversal. **Add to graph.rs as utility.** |
-| `load_eval_scores()` | `load_all_evaluations_or_warn()` in agency.rs | load_eval_scores reads the same eval JSON files but returns HashMap<task_id, max_score>. **Factor into shared utility.** |
-| `parse_stream_json()` | Nothing equivalent | We store raw output.log with no parsing. **New parser needed.** |
-| `render_canon_for_prompt()` | `render_identity_prompt()` in agency.rs | Same pattern: render structured data into prompt text with truncation. **Add `{{task_canon}}` to TemplateVars.** |
-| `build_distill_prompt()` | `render_evaluator_prompt()` in agency.rs | Same pattern: build structured prompt for LLM call. **New prompt builder alongside evaluator.** |
-| `DistillConfig` / `ReplayConfig` | `CoordinatorConfig` / `AgencyConfig` | Same config pattern. **Add to Config struct.** |
-| `OrchestratorAdapter` trait (VX) | `TemplateVars` + `ExecutorConfig` | Our executor system is function-based. **An adapter trait would formalize this interface.** |
+| nikete/main Term | nikete/vx-adapter Term | Our Term | Notes |
+|------------------|----------------------|----------|-------|
+| `agency` | `identity` | `agency` | vx-adapter argues "identity" is more precise (role+objective+skills = who you are, not what power you have) |
+| `motivation` | `objective` | `motivation` | vx-adapter: "objective" aligns with BDI agent architecture literature |
+| `evaluation` / `evaluate` | `reward` | `evaluation` / `evaluate` | vx-adapter: "reward" aligns with RL literature and enables non-LLM sources |
+| `Evaluation.score` | `Reward.value` | `Evaluation.score` | Field rename with `#[serde(alias = "score")]` for backward compat |
+| — | `Reward.source` | — | **NEW in vx-adapter.** Distinguishes "llm", "outcome:\<metric\>", "manual", etc. We have no equivalent. |
+| `TraceEvent` | — (removed) | `OperationEntry` | vx-adapter replaced conversation-level traces with operation-level provenance |
+| `TraceMeta` | — (removed) | — | Summary statistics per agent trace. We have `AgentRun` stats in our trace commands. |
+| `Canon` | — (removed) | — | No equivalent in either our codebase or vx-adapter |
+| `distill` | — (removed) | — | No equivalent anywhere now |
+| `trace` (conversation) | `trace` (provenance) | `trace` (provenance + agent archives) | Three different meanings of "trace" across branches |
+| `parse_stream_json()` | — (removed) | `parse_stream_json_stats()` | We have a stats-only parser in `src/commands/trace.rs`; nikete/main had a full event parser |
+| `replay` | `replay` | `replay` | Same concept. vx-adapter adds `ReplayOptions` struct, `subgraph` option, uses `below_reward` |
+| `runs` | `runs` | `runs` | Same concept. vx-adapter simplified RunMeta. |
+| `render_canon_for_prompt()` | — (removed) | — | No prompt injection of historical knowledge |
+| `build_distill_prompt()` | — (removed) | — | No LLM knowledge extraction |
+| — | — | `TraceFunction` | **Ours only.** Parameterized workflow templates extracted from task graphs. |
+| — | — | `Federation` | **Ours only.** Cross-repo agency entity sharing. |
+| — | — | `--converged` | **Ours only.** Loop termination signal. |
 
 ---
 
-## 9. Bugs and Issues Found
+## 6. Bugs and Issues (All 6 Verified Against Actual Code)
 
-### 9.1 Timestamp Bug in parse_stream_json() (CONFIRMED)
+All bugs from the prior review have been verified against the actual source in `nikete/main`. All 6 remain present.
 
-**Location:** `src/trace.rs:79`
+### 6.1 Timestamp Bug in parse_stream_json() — CONFIRMED
+
+**Location:** `src/trace.rs`, `parse_stream_json()` function
 
 ```rust
-let now = chrono::Utc::now().to_rfc3339();
+let now = chrono::Utc::now().to_rfc3339();  // called ONCE
+// ... all events use ts: now.clone() ...
 ```
 
-This is called ONCE at the start of parsing. All events in the trace get the SAME timestamp (the time of parsing, not when events occurred). Claude's stream-json includes timing information (`duration_ms`, timestamps in message objects) that could be extracted instead. The `ts` field is essentially useless for understanding timing within a conversation.
+All events get the identical timestamp — the moment of parsing, not when events occurred. Claude's stream-json includes timing information that could be extracted instead. The `ts` field is misleading.
 
-**Severity:** Medium — doesn't break functionality but makes the trace data misleading.
+**Severity:** Medium. Doesn't break functionality but makes timing analysis impossible.
 
-### 9.2 --plan-only Creates Snapshot Side Effect (CONFIRMED)
+**Status in vx-adapter:** N/A — `parse_stream_json()` was removed entirely. The vx-adapter's provenance system records real timestamps per operation.
 
-**Location:** `src/commands/replay.rs:33-41`
+### 6.2 --plan-only Creates Snapshot Side Effect — CONFIRMED
 
-The snapshot is created at line 36 (before the `if plan_only` check at line 95). A dry run shouldn't create side effects. The snapshot should be gated behind the plan_only check.
+**Location:** `src/commands/replay.rs`
 
-**Severity:** Low — creates an orphan run directory but doesn't modify the graph.
+The snapshot is unconditionally created before the `plan_only` check. A dry run creates an orphan run directory. The test `test_run_replay_plan_only` explicitly asserts "snapshot should be created even for plan-only" — so this is intentional behavior, but surprising.
 
-### 9.3 Duplicated load_eval_scores() Function
+**Severity:** Low. Creates orphan directories but doesn't modify the graph.
 
-**Locations:** `src/runs.rs:277-306` and `src/commands/replay.rs:253-282`
+**Status in vx-adapter:** Replay rewritten with `ReplayOptions` struct. Would need separate verification.
 
-Identical implementations that read evaluation JSON files and extract the highest score per task. Should be factored into a shared utility in agency.rs alongside `load_all_evaluations_or_warn`.
+### 6.3 Duplicated load_eval_scores() — CONFIRMED
+
+**Locations:** `src/runs.rs` (`load_evaluation_scores()`) and `src/commands/replay.rs` (`load_eval_scores()`).
+
+Identical logic reading from `.workgraph/agency/evaluations/*.json`, returning `HashMap<String, f64>` of highest score per task.
 
 **Severity:** Low — code duplication, not a runtime bug.
 
-### 9.4 Duplicated collect_transitive_dependents()
+**Status in vx-adapter:** Both functions renamed to use `reward` terminology. Duplication persists but now uses `load_all_rewards_or_warn` from `identity` module in the replay command, partially addressing the issue.
 
-**Locations:** `src/runs.rs:261-273` and `src/commands/replay.rs:238-250` (labeled `_local`)
+### 6.4 Duplicated collect_transitive_dependents() — CONFIRMED
 
-Identical graph traversal utility. Should be in the core graph module.
+**Locations:** `src/runs.rs` (`collect_transitive_dependents()`) and `src/commands/replay.rs` (`collect_transitive_dependents_local()`). The `_local` suffix is a band-aid to avoid naming conflicts.
 
 **Severity:** Low — code duplication.
 
-### 9.5 No Automatic Trace Extraction
+**Status in vx-adapter:** Not verified separately, likely persists.
 
-Traces must be manually extracted with `wg trace-extract <agent-id>` after an agent completes. There's no integration with the spawn wrapper (`run.sh`) or coordinator to automatically extract traces on completion. This means traces won't exist unless someone runs the extraction command.
+### 6.5 No Automatic Trace Extraction — CONFIRMED
+
+The spawn wrapper in `src/commands/spawn.rs` handles post-agent completion by calling `wg done` or `wg fail` but does not invoke trace extraction. No integration with the coordinator either. Traces must be manually extracted via `wg trace-extract <agent-id>`.
 
 **Severity:** Medium — breaks the capture → distill → replay pipeline in practice.
 
-### 9.6 Distillation LLM Call Not Implemented
+**Status in vx-adapter:** Moot — the stream-json trace system was removed. vx-adapter's provenance logging is automatic (inline `record()` calls in each mutating command).
 
-**Location:** `src/commands/distill.rs:140-168`
+### 6.6 Distillation LLM Call Not Implemented — CONFIRMED
 
-The `wg distill` command builds the prompt but prints "LLM integration not yet implemented." The capture → distill → replay pipeline is functionally 2/3 complete.
+**Location:** `src/commands/distill.rs`
 
-**Severity:** High for the distillation stage, but capture and replay work independently.
+```rust
+println!("\nLLM integration is not yet implemented.");
+println!("Use `wg distill {} --dry-run` to see the prompt that would be sent.", task_id);
+```
 
----
+The prompt construction works. The LLM call is stubbed.
 
-## 10. Test Quality Assessment
+**Severity:** High for the distillation concept, but capture and replay work independently.
 
-**52 new tests total**, well-distributed across modules:
+**Status in vx-adapter:** Moot — `distill.rs` was removed entirely. The canon/distill approach was abandoned.
 
-| Module | Tests | Coverage Quality |
-|--------|-------|-----------------|
-| `src/trace.rs` | 13 | Excellent — parsing, roundtrip I/O, metadata, filtering, extraction from output.log |
-| `src/canon.rs` | 14 | Excellent — serialization, persistence, versioning, prompt rendering, truncation, distill prompt building |
-| `src/runs.rs` | 16 | Excellent — paths, IDs, snapshots, metadata, full/selective/preserving reset, restore |
-| `src/commands/replay.rs` | 4 | Good — basic replay, failed-only, plan-only, specific tasks |
-| `src/commands/runs_cmd.rs` | 5 | Good — list, show, restore, error handling |
+### Bug Summary
 
-Tests use `tempfile::TempDir` for isolation. Test helpers (`make_task`, `make_task_with_status`, `setup_workgraph`) match our `test_helpers` module. Edge cases covered include empty input, missing files, gaps in run IDs, and roundtrip serialization.
+| # | Bug | nikete/main | vx-adapter |
+|---|-----|-------------|------------|
+| 1 | Timestamp bug in parse_stream_json | **Present** | N/A (removed) |
+| 2 | --plan-only snapshot side effect | **Present** | Needs verification |
+| 3 | Duplicated load_eval_scores | **Present** | Partially addressed |
+| 4 | Duplicated collect_transitive_dependents | **Present** | Likely present |
+| 5 | No automatic trace extraction | **Present** | N/A (replaced by inline provenance) |
+| 6 | Distill LLM call not implemented | **Present** | N/A (removed) |
 
-**Missing test coverage:**
-- No tests for `distill.rs` (the unfinished LLM integration)
-- No tests for `trace_cmd.rs` or `canon_cmd.rs` (CLI display functions)
-- No integration test that runs the full capture → distill → replay pipeline
-
----
-
-## 11. Design Document Analysis
-
-The `docs/design-replay-system.md` (554 lines) is thorough and well-structured:
-
-### Tradeoff Analyses (6 decision points)
-
-| Tradeoff | Recommended | Implemented |
-|----------|------------|-------------|
-| **A. Capture method** | A1: Parse stream-json | Yes — `parse_stream_json()` in trace.rs |
-| **B. Capture timing** | B1: Post-hoc | Yes — `extract_trace()` reads completed output.log |
-| **C. Distill granularity** | C1: Per-task | Yes — one canon per task |
-| **D. Distill timing** | D1+D2: Manual + auto | Partial — manual works, auto not wired |
-| **E. Replay isolation** | E4: Snapshot + in-place | Yes — `snapshot()` + `reset_tasks_for_replay()` |
-| **F. Canon injection** | F1: Template variable | Designed but not yet wired — `render_canon_for_prompt()` exists, `{{task_canon}}` not added to TemplateVars |
-
-### Implementation vs. Design
-
-The implementation closely follows the design. Most deviations are incomplete features (distill LLM call, auto-distill, `{{task_canon}}` injection) rather than design-implementation mismatches. The design is honest about what's phase 1 vs. future work.
+**Assessment:** Three of the six bugs (1, 5, 6) are addressed in vx-adapter by removing the problematic code entirely rather than fixing it. This is a legitimate resolution — the vx-adapter's provenance-based approach doesn't have these issues by design.
 
 ---
 
-## 12. Recommendations
+## 7. What We've Built Since the Last Review
 
-### Adopt Wholesale (High Priority)
+Since the prior review (2026-02-19), our codebase has continued to diverge. Here's what we have that nikete doesn't, and how it relates to his work.
 
-1. **TraceEvent enum + parse_stream_json() parser** — Fills a critical gap. Our provenance system records that an agent ran, but not what it said. Structured traces make agent behavior queryable and comparable across models. Port trace.rs with minimal modifications.
+### Trace Functions (src/trace_function.rs — 1,099 lines)
 
-2. **Trace extraction CLI (wg trace-extract, wg trace)** — Useful immediately for debugging agent behavior, even without replay. Port trace_cmd.rs.
+Parameterized workflow templates extracted from completed task graphs. Key structs: `TraceFunction`, `FunctionInput` (8 typed input types with validation), `TaskTemplate`, `FunctionOutput`. Storage in `.workgraph/functions/` as YAML.
 
-3. **Selective task reset logic (reset_tasks_for_replay)** — The --failed-only, --below-score, --tasks, --keep-done options + transitive dependent reset is well-designed. Port from runs.rs. Factor `collect_transitive_dependents()` into graph.rs.
+**Relation to nikete's work:** Where nikete's canon distills *knowledge* from conversations ("what did the agent learn"), our trace functions extract *structure* from task graphs ("what pattern of tasks solved this problem"). Complementary goals — canon is about context enrichment for re-execution, trace functions are about workflow reuse.
 
-### Adopt with Modifications (High Priority)
+### Federation (src/federation.rs — 1,548 lines)
 
-4. **Replay mechanism (snapshot + reset + re-execute)** — Adopt but wire into provenance log. Every snapshot, reset, and restore should be recorded as an OperationEntry. This gives us unified audit trail: "what happened" (provenance) + "what was said" (traces) + "what was reset" (replay ops).
+Cross-repo agency entity sharing: scan, pull, push, merge of roles/motivations/agents. Supports referential integrity (agents carry role+motivation deps), performance record merging, lineage merging. Also includes peer workgraph communication via Unix socket IPC and direct file access fallback.
 
-5. **Run management (wg runs list/show/restore)** — Adopt but add `wg runs diff <a> <b>` for comparing evaluation scores across runs.
+**Relation to nikete's work:** No equivalent in either nikete branch. Federation enables organizational-scale workgraph deployments where teams share proven agent configurations. nikete's VX research docs touch on "peer exchange" at a conceptual level — federation could be the infrastructure layer for that.
 
-6. **Auto trace extraction** — Fix the gap in nikete's implementation. Wire trace extraction into the spawn wrapper (run.sh) or coordinator completion handler so traces are always captured. Without this, the pipeline is manual and unreliable.
+### Loop Convergence (--converged flag)
 
-### Adopt Later (Medium Priority)
+`wg done <id> --converged` adds a `"converged"` tag that prevents loop edges from firing. Checked in `graph.rs:evaluate_loop_edges()`. Cleared by `wg retry`.
 
-7. **Canon/distillation concept** — The idea is compelling but the implementation is incomplete (no LLM call). Depends on traces and replay being in place first. Sequence: traces → replay → distill.
+**Relation to nikete's work:** nikete has no loop termination signal. His loops run to max iterations. Our convergence flag gives agents agency over when to stop iterating.
 
-8. **Canon struct design** — The spec/tests/interaction_patterns/quality_signals structure is well-thought-out. When we implement distillation, use this struct design.
+### 2D Graph Visualization (src/commands/viz.rs — 2,418 lines)
 
-9. **`{{task_canon}}` template variable** — Clean integration with our executor template system. Add when canon is implemented.
+Force-directed 2D box layout in terminal with Unicode box-drawing, ANSI color by status, loop edge annotations, phase annotations. BFS layer assignment with within-layer ordering by average parent position to minimize edge crossings.
 
-10. **Priority truncation in render_canon_for_prompt()** — Generalizable pattern for context window management. Could be applied to our prompt builder more broadly.
+**Relation to nikete's work:** nikete's viz is 1,659 lines with basic graph visualization. Our 2D layout is a significant extension that makes large graphs navigable in the terminal.
 
-### Skip / Reconsider
+### Trace Animation (src/commands/trace_animate.rs — 330 lines)
 
-11. **serde_yaml dependency** — Consider using JSON instead of YAML for canon files. The multiline readability benefit is real but format consistency matters. Alternatively, use YAML only for human-facing canon display and JSON for storage.
+Terminal TUI animation that replays historical execution as a series of graph snapshots. Uses crossterm for raw terminal mode. Controls: pause, step, speed adjustment.
 
-12. **load_eval_scores() duplication** — Don't port the duplicated function. Factor into a shared utility from the start.
+**Relation to nikete's work:** No equivalent. This builds on our provenance system to provide visual replay of execution history.
 
-### Must Investigate (Blocked)
+### Trace Extraction to Functions (src/commands/trace_extract.rs — 973 lines)
 
-13. **VX design document and OrchestratorAdapter trait** — Cannot evaluate without the document. Request from nikete. The evaluator described it as "a distinct conceptual contribution separate from the replay system" — it may define the interface that makes workgraph pluggable into external scoring/exchange systems.
+Extracts completed task subgraphs into reusable `TraceFunction` templates. Detects parameters heuristically (file paths, URLs, commands, numbers). Validates extracted functions for internal consistency.
 
----
+**Relation to nikete's work:** No equivalent. nikete's trace system captures conversation content; our extraction captures task graph structure.
 
-## 13. Integration Effort Estimate
+### Model Registry (src/models.rs — 414 lines)
 
-### Minimal integration (capture + replay only)
-- Port `trace.rs` → `src/trace.rs` (adapted to our module structure)
-- Port `runs.rs` → `src/runs.rs` (wire into provenance)
-- Port trace/replay/runs CLI commands
-- Add `{{task_canon}}` placeholder to `TemplateVars` (empty string for now)
-- Wire trace extraction into coordinator completion
-- Add `DistillConfig` + `ReplayConfig` to config.rs
-- ~1,500 lines of new code + ~200 lines of integration
+Catalog of 12+ AI models with provider, cost, context window, capabilities, and tier (Frontier/Mid/Budget). Persistent storage in `.workgraph/models.yaml`.
 
-### Full integration (capture + distill + replay)
-- All of the above, plus:
-- Port `canon.rs` → `src/canon.rs`
-- Wire distill LLM call (follow the evaluator pattern from agency.rs)
-- Implement `{{task_canon}}` injection in `TemplateVars::from_task()`
-- Add auto-distill to coordinator tick
-- ~2,500 lines of new code + ~400 lines of integration
+**Relation to nikete's work:** vx-adapter independently added an identical module. Same structs, same default catalog, same storage format. Strong convergent evolution.
 
-### What we'd need to change in wg core
-- `src/config.rs`: +91 lines (2 new config structs)
-- `src/lib.rs`: +3 lines (module exports)
-- `src/commands/mod.rs`: +5 lines (command registrations)
-- `src/main.rs`: +180 lines (CLI arg parsing + dispatch)
-- `src/service/executor.rs`: +20 lines (add `{{task_canon}}` to TemplateVars)
-- `src/service/coordinator.rs`: +30 lines (auto trace extraction on completion)
-- `src/graph.rs`: +20 lines (add `collect_transitive_dependents()`)
-- `src/provenance.rs`: +10 lines (add replay operation types)
+### GC (src/commands/gc.rs — 415 lines)
 
-**Total core changes: ~360 lines across 8 existing files.** Non-invasive.
+Garbage collection of terminal tasks. Cascades to internal assign-/evaluate- tasks. Safety checks prevent removing tasks with non-terminal dependents.
+
+**Relation to nikete's work:** vx-adapter independently added a functionally identical module.
+
+### Setup Wizard (src/commands/setup.rs — 463 lines)
+
+Interactive first-time configuration using `dialoguer`. Walks through executor, model, agency, and parallelism settings.
+
+**Relation to nikete's work:** No equivalent in either nikete branch.
+
+### Enhanced Testing (23 test files vs nikete's 14)
+
+9 test files only in our fork, including exhaustive tests for trace, replay, runs, logging, federation, and trace functions. Total of ~11,000+ additional test lines.
 
 ---
 
-## 14. Summary
+## 8. Convergence and Divergence
 
-nikete's fork is substantial, well-designed, and architecturally sound. The three-stage pipeline (capture → distill → replay) addresses real gaps in workgraph's ability to learn from past executions. The code quality is good (52 tests, clean Rust patterns, proper error handling), and the changes are genuinely additive with no breaking changes.
+### Where the codebases are converging naturally
 
-**Key strengths:**
-- Structured trace parsing fills a critical observability gap
-- Selective replay with transitive dependent reset is well-engineered
-- Design document shows careful tradeoff analysis
-- Canon concept provides a novel knowledge synthesis layer
+These areas show independent convergent evolution — both forks arrived at the same (or very similar) solutions without coordination.
 
-**Key weaknesses:**
-- Distillation LLM call is not implemented (the most novel part)
-- No automatic trace extraction (manual step breaks the pipeline)
-- Timestamp bug makes trace timing data useless
-- --plan-only creates snapshot side effect
-- Code duplication (load_eval_scores, collect_transitive_dependents)
-- VX design document is lost (repo deleted)
+| Area | Evidence | Interpretation |
+|------|----------|---------------|
+| **Provenance logging** | Both added `provenance.rs` with append-only JSONL and zstd rotation. Same `OperationEntry` structure (timestamp, op, task_id, actor, detail). | This is the "right" design for operation auditing in a task graph system. The convergence validates our architecture. |
+| **Model registry** | Both added `models.rs` with `ModelEntry` structs, tier classification, cost metadata, YAML persistence, default catalogs of the same models. | Multi-model support is a natural evolution once you're running diverse agents. |
+| **Garbage collection** | Both added `gc.rs` with the same logic: remove terminal tasks, cascade to internal tasks, safety-check against non-terminal dependents. | Natural need once graphs grow large. |
+| **Replay with subgraph filtering** | Our replay has `--subgraph`. vx-adapter's replay added a `subgraph` option in `ReplayOptions`. | Replay of the entire graph is too coarse — subgraph selection is a natural refinement. |
+| **Operation-level over conversation-level** | vx-adapter removed stream-json trace parsing in favor of operation-level provenance. We never implemented conversation-level parsing (beyond stats), going straight to operation provenance. | Operation-level is more reliable (inline recording vs post-hoc parsing), more useful for audit, and doesn't depend on a specific LLM output format. |
 
-**Bottom line:** Adopt the capture and replay systems now. They're production-ready and fill real gaps. Add distillation later once we've validated the trace + replay workflow. Investigate the VX design separately — it represents a different (potentially more ambitious) vision for workgraph's role in a broader ecosystem.
+### Where the codebases have genuinely diverged
+
+These represent different philosophical choices, not one being "ahead" of the other.
+
+| Area | Our approach | nikete's approach | Why they diverge |
+|------|-------------|-------------------|------------------|
+| **Knowledge reuse** | **Structural** — extract task graph patterns as `TraceFunction` templates, instantiate into new subgraphs. Reuse the *shape* of work. | **Contextual** — distill conversation traces into `Canon` knowledge artifacts, inject into agent prompts via `{{task_canon}}`. Reuse the *learnings* from work. (Abandoned in vx-adapter.) | Different theories of what's reusable. We bet on graph structure; nikete bet on conversation knowledge, then pivoted away. |
+| **External feedback** | **None yet** — evaluations are purely LLM-generated. No pluggable reward sources. | **Pluggable** — `Reward.source` field supports "llm", "outcome:\<metric\>", "manual", and custom sources. VX integration as primary external feedback mechanism. | nikete is building toward a broader ecosystem (Veracity Exchange). We're focused on making the standalone system robust. |
+| **Terminology** | `agency` / `motivation` / `evaluation` / `score` | `identity` / `objective` / `reward` / `value` | nikete aligns with RL and multi-agent systems literature. Our terms are more intuitive for newcomers but less precise academically. |
+| **Cross-repo sharing** | **Federation** — full pull/push/merge of agency entities across repos, peer IPC, cross-repo task status queries. | **None** — no cross-repo features. VX peer exchange is conceptual, not implemented. | We're solving the organizational deployment problem. nikete is focused on single-repo with external market integration. |
+| **Visualization** | **Rich terminal UI** — 2D force-directed layout, trace animation, ANSI colors, Unicode box-drawing. | **Basic graph output** — DOT, Mermaid, ASCII. | Different priorities: we invest in developer experience; nikete invests in research docs and integration design. |
+| **Loop control** | **Agent-driven** — `--converged` flag lets agents signal when loops should stop. | **Iteration-based** — loops run to `max_iterations`. No early termination signal. | We trust agents to know when they're done. nikete's design doesn't give agents that agency. |
+| **Documentation** | Code-focused — CLAUDE.md, AGENCY.md, inline comments. | Research-heavy — 7+ research documents totaling ~4,000 lines analyzing VX, organizational economics, Gepa integration, logging gaps. | nikete is doing design research for a future where workgraph integrates with external systems. We're building features for the present. |
+
+### Assessment
+
+The two forks are solving different problems at different time horizons:
+
+- **Our fork** is building a complete, self-contained task orchestration system with strong developer experience (viz, animation, setup wizard), operational robustness (federation, convergence, GC, exhaustive tests), and workflow reuse (trace functions).
+
+- **nikete's fork** is positioning workgraph as a node in a larger ecosystem — specifically one where agent performance is scored by real-world outcomes (not just LLM judgments) and where agents' track records are portable and verifiable across organizational boundaries.
+
+The convergent evolution in provenance, models, and GC suggests the standalone-system problems are well-defined and have obvious solutions. The divergence in knowledge reuse, external feedback, and cross-repo sharing reflects genuinely different visions for what workgraph becomes.
+
+---
+
+## 9. Updated Recommendations
+
+### From nikete/main — Still Valuable
+
+1. **`parse_stream_json()` parser** — Despite the timestamp bug, the structured `TraceEvent` enum and parser are the most immediately useful novel code. Our `parse_stream_json_stats()` in `src/commands/trace.rs` only extracts counts; his parser extracts full conversation structure. **Port with timestamp fix.**
+
+2. **Run snapshot with traces** — His `runs.rs` snapshots optionally copy trace and canon directories. Our snapshots only include graph state. **Add trace/provenance snapshots to our runs system.**
+
+### From nikete/vx-adapter — High Value
+
+3. **`Reward.source` field** — The single most impactful conceptual addition. Enabling non-LLM reward sources (outcome metrics, manual scores, external systems) is a clean, backward-compatible extension. **Adopt the concept: add a `source` field to our `Evaluation` struct.** No need to rename evaluation→reward.
+
+4. **Research documents** — The VX deep-dive (723 lines), integration analysis (489 lines), and provenance design doc (327 lines) are substantial forward-looking research we don't have. **Import the docs to our `docs/research/` directory.**
+
+5. **Provenance design doc** — `docs/design/provenance-system.md` identifies gaps in operation log coverage (which commands record and which don't). **Use as audit checklist for our provenance system.**
+
+### Terminology — Consider but Don't Rush
+
+6. **identity/objective/reward naming** — The RL-aligned terminology is more precise, and the `#[serde(alias)]` backward compatibility is well-done. But renaming touches every file and breaks all existing deployments. **Defer until a major version bump, if ever.** The current names work.
+
+### Skip
+
+7. **Canon/distill system** — nikete himself removed it in vx-adapter. The LLM distillation call was never implemented. The concept is interesting but premature. **Keep in design backlog; don't port.**
+
+8. **Wholesale merge** — 104 files changed, 100K+ lines in the diff. **Cherry-pick only.** See [comparison report](nikete-fork-comparison-feb20.md) §5 for detailed merge feasibility analysis.
+
+---
+
+## 10. Summary
+
+The prior review was accurate despite being reconstructed from cached agent logs — all struct definitions, architecture descriptions, and bug reports have been verified against the actual source. The six identified bugs are all confirmed present on `nikete/main`.
+
+The major new finding is the **vx-adapter branch**, which represents a significant evolution: it removes the incomplete canon/distill system, adds provenance and models (converging with our design), introduces pluggable reward sources for external feedback, and contains extensive research documents on Veracity Exchange integration. The `Reward.source` field is the most important conceptual contribution — it's a minimal change that opens workgraph to external evaluation sources.
+
+Our codebase has grown substantially since the last review with trace functions, federation, loop convergence, 2D visualization, trace animation, and a setup wizard. These features make our fork more complete as a standalone system, while nikete's work positions workgraph for ecosystem integration.
+
+**Bottom line:** The two forks are complementary, not competing. Cherry-pick the `parse_stream_json()` parser (with timestamp fix), add `Evaluation.source` for pluggable rewards, import the VX research docs, and use the provenance design doc as an audit checklist. A wholesale merge remains infeasible and undesirable.

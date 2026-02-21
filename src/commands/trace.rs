@@ -120,7 +120,7 @@ fn parse_stream_json_stats(output: &str) -> (usize, usize) {
     (tool_calls, turns)
 }
 
-fn format_duration(secs: i64) -> String {
+pub fn format_duration(secs: i64) -> String {
     if secs < 60 {
         format!("{}s", secs)
     } else if secs < 3600 {
@@ -497,7 +497,7 @@ struct RecursiveTraceOutput {
 /// Collect the subgraph rooted at `root_id`: the task itself plus all tasks
 /// whose blocked_by chains trace back to it. Filters out internal tasks
 /// (assignment/evaluation tags) for cleaner display.
-fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
+pub fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
     let reverse_index = build_reverse_index(graph);
     let mut visited = HashSet::new();
     let mut queue = vec![root_id.to_string()];
@@ -1150,6 +1150,139 @@ fn render_lanes(
     result
 }
 
+// ── Static graph visualization ───────────────────────────────────────────
+
+/// Render the subgraph involved in a trace as a 2D box layout.
+pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
+    let (graph, _path) = super::load_workgraph(dir)?;
+    let _root = graph.get_task_or_err(root_id)?;
+
+    let descendants = collect_descendants(root_id, &graph);
+    let task_ids: HashSet<&str> = descendants.iter().map(|t| t.id.as_str()).collect();
+    let annotations = HashMap::new();
+
+    let output = super::viz::generate_graph(&graph, &descendants, &task_ids, &annotations);
+    println!("{}", output);
+    Ok(())
+}
+
+// ── Temporal trace reconstruction ────────────────────────────────────────
+
+/// A snapshot of the graph state at a point in time.
+#[derive(Debug, Clone)]
+pub struct GraphSnapshot {
+    pub timestamp: DateTime<Utc>,
+    /// task_id → status at this point in time
+    pub statuses: HashMap<String, Status>,
+    /// task_id → assigned agent at this point
+    pub assignments: HashMap<String, String>,
+    /// task IDs that exist at this point
+    pub task_ids: HashSet<String>,
+}
+
+/// Reconstruct the graph state at each operation timestamp by replaying
+/// the operation log. Returns a Vec of (timestamp, snapshot) pairs
+/// for the tasks in the given subgraph.
+pub fn reconstruct_temporal(
+    dir: &Path,
+    subgraph_ids: &HashSet<&str>,
+) -> Result<Vec<GraphSnapshot>> {
+    let all_ops = provenance::read_all_operations(dir)?;
+
+    // Filter to operations relevant to our subgraph
+    let relevant_ops: Vec<&OperationEntry> = all_ops
+        .iter()
+        .filter(|e| {
+            e.task_id
+                .as_deref()
+                .map(|id| subgraph_ids.contains(id))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if relevant_ops.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build snapshots by replaying operations
+    let mut current_statuses: HashMap<String, Status> = HashMap::new();
+    let mut current_assignments: HashMap<String, String> = HashMap::new();
+    let mut current_task_ids: HashSet<String> = HashSet::new();
+    let mut snapshots = Vec::new();
+
+    // Initialize all subgraph tasks as existing but Open
+    for &id in subgraph_ids {
+        current_task_ids.insert(id.to_string());
+    }
+
+    for op in &relevant_ops {
+        let task_id = match op.task_id.as_deref() {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        let ts = match parse_timestamp(&op.timestamp) {
+            Some(ts) => ts,
+            None => continue,
+        };
+
+        // Apply the operation to our state
+        match op.op.as_str() {
+            "add_task" => {
+                current_task_ids.insert(task_id.clone());
+                current_statuses.insert(task_id.clone(), Status::Open);
+            }
+            "claim" => {
+                current_statuses.insert(task_id.clone(), Status::InProgress);
+                if let Some(actor) = &op.actor {
+                    current_assignments.insert(task_id.clone(), actor.clone());
+                }
+            }
+            "unclaim" => {
+                current_statuses.insert(task_id.clone(), Status::Open);
+                current_assignments.remove(&task_id);
+            }
+            "done" => {
+                current_statuses.insert(task_id.clone(), Status::Done);
+            }
+            "fail" => {
+                current_statuses.insert(task_id.clone(), Status::Failed);
+            }
+            "retry" => {
+                current_statuses.insert(task_id.clone(), Status::Open);
+                current_assignments.remove(&task_id);
+            }
+            "abandon" => {
+                current_statuses.insert(task_id.clone(), Status::Abandoned);
+            }
+            "pause" => {
+                current_statuses.insert(task_id.clone(), Status::Blocked);
+            }
+            "resume" => {
+                // Resume restores to Open (or InProgress if was claimed)
+                if current_assignments.contains_key(&task_id) {
+                    current_statuses.insert(task_id.clone(), Status::InProgress);
+                } else {
+                    current_statuses.insert(task_id.clone(), Status::Open);
+                }
+            }
+            _ => {
+                // Other ops (edit, artifact_add, etc.) don't change status
+                continue;
+            }
+        }
+
+        snapshots.push(GraphSnapshot {
+            timestamp: ts,
+            statuses: current_statuses.clone(),
+            assignments: current_assignments.clone(),
+            task_ids: current_task_ids.clone(),
+        });
+    }
+
+    Ok(snapshots)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1630,5 +1763,111 @@ mod tests {
     fn test_task_duration_secs_no_timestamps() {
         let task = make_task("t1", "Test");
         assert_eq!(task_duration_secs(&task), None);
+    }
+
+    // ── Graph visualization tests ──
+
+    #[test]
+    fn test_run_graph_basic() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_done_task("root", "Root")));
+        let mut child = make_done_task("child", "Child");
+        child.blocked_by = vec!["root".to_string()];
+        graph.add_node(Node::Task(child));
+        setup_graph(&dir, &graph);
+
+        let result = run_graph(&dir, "root");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_graph_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Test")));
+        setup_graph(&dir, &graph);
+
+        let result = run_graph(&dir, "nonexistent");
+        assert!(result.is_err());
+    }
+
+    // ── Temporal reconstruction tests ──
+
+    #[test]
+    fn test_reconstruct_temporal_empty() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let subgraph: HashSet<&str> = ["t1"].into_iter().collect();
+        let snapshots = reconstruct_temporal(&dir, &subgraph).unwrap();
+        assert!(snapshots.is_empty());
+    }
+
+    #[test]
+    fn test_reconstruct_temporal_lifecycle() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Record a task lifecycle
+        provenance::record(
+            &dir, "add_task", Some("t1"), None,
+            serde_json::json!({"title": "Test"}),
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+        provenance::record(
+            &dir, "claim", Some("t1"), Some("agent-1"),
+            serde_json::Value::Null,
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+        provenance::record(
+            &dir, "done", Some("t1"), None,
+            serde_json::Value::Null,
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+
+        let subgraph: HashSet<&str> = ["t1"].into_iter().collect();
+        let snapshots = reconstruct_temporal(&dir, &subgraph).unwrap();
+
+        assert_eq!(snapshots.len(), 3);
+        // After add_task: Open
+        assert_eq!(snapshots[0].statuses["t1"], Status::Open);
+        // After claim: InProgress
+        assert_eq!(snapshots[1].statuses["t1"], Status::InProgress);
+        assert_eq!(snapshots[1].assignments["t1"], "agent-1");
+        // After done: Done
+        assert_eq!(snapshots[2].statuses["t1"], Status::Done);
+    }
+
+    #[test]
+    fn test_reconstruct_temporal_filters_subgraph() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Record ops for two tasks
+        provenance::record(
+            &dir, "add_task", Some("t1"), None,
+            serde_json::json!({"title": "T1"}),
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+        provenance::record(
+            &dir, "add_task", Some("t2"), None,
+            serde_json::json!({"title": "T2"}),
+            provenance::DEFAULT_ROTATION_THRESHOLD,
+        ).unwrap();
+
+        // Only request t1
+        let subgraph: HashSet<&str> = ["t1"].into_iter().collect();
+        let snapshots = reconstruct_temporal(&dir, &subgraph).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots[0].statuses.contains_key("t1"));
+        assert!(!snapshots[0].statuses.contains_key("t2"));
     }
 }

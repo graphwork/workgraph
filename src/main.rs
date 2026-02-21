@@ -975,6 +975,18 @@ enum TraceCommands {
         /// Show chronological timeline with parallel execution lanes (requires --recursive)
         #[arg(long)]
         timeline: bool,
+
+        /// Render the trace subgraph as a 2D box layout
+        #[arg(long)]
+        graph: bool,
+
+        /// Animate the trace: replay graph evolution over time in the terminal
+        #[arg(long)]
+        animate: bool,
+
+        /// Playback speed multiplier for --animate (default: 10)
+        #[arg(long, default_value = "10.0")]
+        speed: f64,
     },
 
     /// List available trace functions
@@ -2232,8 +2244,12 @@ fn main() -> Result<()> {
         } => commands::gc::run(&workgraph_dir, dry_run, include_done),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Trace { command } => match command {
-            TraceCommands::Show { id, full, ops_only, recursive, timeline } => {
-                if recursive || timeline {
+            TraceCommands::Show { id, full, ops_only, recursive, timeline, graph, animate, speed } => {
+                if animate {
+                    commands::trace_animate::run(&workgraph_dir, &id, speed)
+                } else if graph {
+                    commands::trace::run_graph(&workgraph_dir, &id)
+                } else if recursive || timeline {
                     commands::trace::run_recursive(&workgraph_dir, &id, timeline, cli.json)
                 } else {
                     let mode = if cli.json {

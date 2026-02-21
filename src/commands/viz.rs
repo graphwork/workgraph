@@ -957,11 +957,23 @@ fn generate_ascii(
 /// 3. Each node is rendered as a box: ┌─┐ │id│ │status│ └─┘
 /// 4. Vertical lines connect parent layer to child layer
 /// 5. Fan-out uses ┬ splitters, fan-in uses ┴ mergers
-fn generate_graph(
+pub fn generate_graph(
     graph: &WorkGraph,
     tasks: &[&Task],
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
+) -> String {
+    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new())
+}
+
+/// Like generate_graph but allows overriding the displayed status for each task.
+/// Used by trace animation to show historical snapshots.
+pub fn generate_graph_with_overrides(
+    graph: &WorkGraph,
+    tasks: &[&Task],
+    task_ids: &HashSet<&str>,
+    annotations: &HashMap<String, String>,
+    status_overrides: &HashMap<&str, Status>,
 ) -> String {
     if tasks.is_empty() {
         return String::from("(no tasks to display)");
@@ -1102,7 +1114,8 @@ fn generate_graph(
         } else {
             id.to_string()
         };
-        let status = status_label(&task.status);
+        let effective_status = status_overrides.get(id).copied().unwrap_or(task.status);
+        let status = status_label(&effective_status);
         let phase = annotations
             .get(id)
             .map(|a| format!(" {}", a))
@@ -1118,7 +1131,7 @@ fn generate_graph(
         let line2 = format!("{}{}{}", status, phase, loop_info);
         let width = line1.len().max(line2.len());
 
-        let color = status_color(&task.status);
+        let color = status_color(&effective_status);
         let color_line1 = format!("{}{}{}", color, center_str(&line1, width), reset);
         let color_line2 = format!("{}{}{}", color, center_str(&line2, width), reset);
 
