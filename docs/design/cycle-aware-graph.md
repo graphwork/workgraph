@@ -1,16 +1,69 @@
-# Cycle-Aware Graph: Replacing Loop Edges with Structural Cycle Detection
+# Cycle-Aware Graph: Unified Edge Model with Structural Cycle Detection
 
 **Date:** 2026-02-21
-**Status:** Draft
+**Updated:** 2026-02-21
+**Status:** Draft → Revised (edge rename: `blocked_by` → `after`)
 **Depends on:** [Cycle Detection Algorithms Research](../research/cycle-detection-algorithms.md)
 
 ---
 
 ## Executive Summary
 
-This document designs the architecture for replacing workgraph's explicit `loops_to` back-edges with dynamic cycle detection derived from `blocked_by` edges. The core insight: cycles are a *structural property of the graph*, not an *edge-level declaration*. If A depends on B depends on C depends on A, the system should recognize the cycle and manage iteration automatically, rather than requiring the user to separately declare a `loops_to` edge.
+This document designs two coupled changes to workgraph's graph model:
 
-The design follows a four-phase migration path that maintains backward compatibility throughout. Phase 1 adds cycle analysis as a read-only diagnostic. Phase 2 enables natural cycles in `blocked_by` as a parallel mechanism. Phase 3 migrates existing `loops_to` edges. Phase 4 removes `loops_to` entirely.
+1. **Edge rename:** `blocked_by` → `after`, `blocks` → `before`. Edges express temporal ordering, not obstruction. Data flows through context injection, not through the edge itself. "Blocking" becomes a derived runtime state, not a relationship type.
+
+2. **Cycle unification:** Replace explicit `loops_to` back-edges with dynamic cycle detection derived from `after` edges. Cycles are a *structural property of the graph*, not an *edge-level declaration*. If A is after B is after C is after A, the system recognizes the cycle and manages iteration automatically.
+
+The edge rename is the conceptual foundation. Once edges mean "temporal ordering" rather than "hard gate," cycles in those edges become natural — task A is after task C, which is after task B, which is after task A. That's just a process that repeats.
+
+### Why rename the edge?
+
+| Problem with `blocked_by` | How `after` fixes it |
+|---|---|
+| "Blocked" conflates the relationship (ordering) with runtime state (not yet satisfied) | `after` = relationship; "waiting" = runtime state — different words for different things |
+| Implies a gate/obstacle — negative framing | `after` = temporal ordering — neutral framing |
+| Awkward in cycles: "spec is blocked by review" (but review doesn't exist yet on first iteration) | "spec is after review" — true on re-iteration, vacuously satisfied on first iteration |
+| Requires a separate `loops_to` edge type for cycles | Cycles emerge naturally from `after` edges — no special edge type needed |
+| `blocked_by` carries implicit data-dependency meaning | Data flows through context injection (already exists), not through the edge |
+
+### Edge semantics
+
+The `after` field on a task answers: **"what is this task after?"**
+
+```yaml
+id: impl
+after: [spec]        # impl is after spec → spec runs first
+before: [review]     # impl is before review → review runs later (computed inverse)
+```
+
+- `after` is the authoritative field (stored). Equivalent to current `blocked_by`.
+- `before` is the computed inverse (derived). Equivalent to current `blocks`.
+- A task is **waiting** (not "blocked") when something in its `after` list hasn't finished.
+- A task is **ready** when it's open, not paused, past time constraints, and everything in `after` is terminal.
+- **Context injection** (existing coordinator feature) pulls artifacts and logs from completed predecessors. The edge carries ordering; the context system carries data.
+
+### CLI
+
+```bash
+wg add "impl" --after spec
+wg add "review" --after impl
+wg add "spec" --after review --max-iterations 3   # cycle emerges naturally
+```
+
+### Migration
+
+```rust
+#[serde(alias = "blocked_by")]
+pub after: Vec<String>,
+
+#[serde(alias = "blocks")]
+pub before: Vec<String>,   // computed inverse, not serialized
+```
+
+Old graphs deserialize without changes. `--blocked-by` accepted as hidden CLI alias during transition.
+
+The design follows a four-phase migration path that maintains backward compatibility throughout. Phase 1 adds cycle analysis as a read-only diagnostic. Phase 2 enables natural cycles in `after` as a parallel mechanism alongside `loops_to`. Phase 3 migrates existing `loops_to` edges. Phase 4 removes `loops_to` entirely.
 
 ---
 
@@ -21,6 +74,7 @@ The design follows a four-phase migration path that maintains backward compatibi
 ```
 Task {
     blocked_by: Vec<String>       // forward dependency edges (DAG-only by convention)
+    blocks: Vec<String>           // inverse of blocked_by (computed convenience)
     loops_to: Vec<LoopEdge>       // separate back-edges with metadata
     loop_iteration: u32           // per-task iteration counter
 }
@@ -48,10 +102,13 @@ Key properties:
 
 ```
 Task {
-    blocked_by: Vec<String>              // ALL dependency edges, including cycle-forming ones
+    after: Vec<String>                   // ALL ordering edges, including cycle-forming ones
+                                         // serde alias: "blocked_by" for backward compat
+    before: Vec<String>                  // computed inverse (was: blocks)
     cycle_config: Option<CycleConfig>    // only on cycle header tasks
     loop_iteration: u32                  // retained for iteration tracking (per-task)
     // loops_to: Vec<LoopEdge>           // REMOVED (Phase 4)
+    // blocked_by: Vec<String>           // RENAMED to after (Phase 2)
 }
 
 CycleConfig {
@@ -68,7 +125,7 @@ WorkGraph {
 
 ### 1.3 Cycle Analysis (Computed, Not Stored)
 
-The `CycleAnalysis` struct is computed from graph structure and cached. It is never serialized to disk — it's derived data that can be recomputed from `blocked_by` edges at any time.
+The `CycleAnalysis` struct is computed from graph structure and cached. It is never serialized to disk — it's derived data that can be recomputed from `after` edges at any time.
 
 ```rust
 /// Cached cycle analysis, recomputed on graph mutations.
@@ -156,7 +213,7 @@ impl WorkGraph {
 Mutations that invalidate the cache:
 - `add_node()` — new task may create or break cycles.
 - `remove_node()` — removing a task may break cycles.
-- Any modification to a task's `blocked_by` field.
+- Any modification to a task's `after` field.
 
 Mutations that do NOT invalidate the cache:
 - Status changes (Open → InProgress → Done).
@@ -166,9 +223,9 @@ Mutations that do NOT invalidate the cache:
 ### 2.3 Cycle Analysis Pipeline
 
 ```
-1. Build adjacency list from blocked_by edges
+1. Build adjacency list from `after` edges
    - Each task is a node (mapped to numeric NodeId via NamedGraph)
-   - Edge: blocker → dependent (i.e., if task A has blocked_by: [B], edge is B → A)
+   - Edge: predecessor → dependent (i.e., if task A has after: [B], edge is B → A)
 
 2. Run tarjan_scc() from src/cycle.rs
    - Returns Vec<Scc>, each with a members: Vec<NodeId>
@@ -213,7 +270,7 @@ When an irreducible cycle is detected:
 
 ### 2.5 Self-Loops
 
-A task with `blocked_by: ["self"]` is a trivial cycle (SCC of size 1 with a self-edge). This is already rejected by `wg add` (`"Task cannot block itself"`). No change needed.
+A task with `after: ["self"]` is a trivial cycle (SCC of size 1 with a self-edge). This is already rejected by `wg add` (`"Task cannot depend on itself"`). No change needed.
 
 ---
 
@@ -221,22 +278,22 @@ A task with `blocked_by: ["self"]` is a trivial cycle (SCC of size 1 with a self
 
 ### 3.1 The Core Problem
 
-Currently, `ready_tasks()` requires ALL blockers to be terminal:
+Currently, `ready_tasks()` requires ALL predecessors to be terminal:
 
 ```rust
 // src/query.rs:265
-task.blocked_by.iter().all(|blocker_id| {
-    graph.get_task(blocker_id)
+task.after.iter().all(|pred_id| {       // was: blocked_by
+    graph.get_task(pred_id)
         .map(|t| t.status.is_terminal())
         .unwrap_or(true)
 })
 ```
 
-In a cycle `A → B → C → A`, task A has `blocked_by: [C]`. If C is not Done, A is never ready. But C depends on B, which depends on A. Deadlock.
+In a cycle `A → B → C → A`, task A has `after: [C]`. If C is not Done, A is never ready. But C is after B, which is after A. Deadlock.
 
 ### 3.2 Solution: Back-Edge Exemption
 
-The cycle header's back-edge dependencies are exempt from the readiness check. Only the header gets this treatment — non-header tasks in the cycle still wait for their predecessors normally.
+The cycle header's back-edge predecessors are exempt from the readiness check. Only the header gets this treatment — non-header tasks in the cycle still wait for their predecessors normally.
 
 ```rust
 pub fn ready_tasks_cycle_aware(
@@ -248,9 +305,9 @@ pub fn ready_tasks_cycle_aware(
         if task.paused { return false; }
         if !is_time_ready(task) { return false; }
 
-        task.blocked_by.iter().all(|blocker_id| {
-            // Normal check: blocker is terminal
-            if graph.get_task(blocker_id)
+        task.after.iter().all(|pred_id| {
+            // Normal check: predecessor is terminal
+            if graph.get_task(pred_id)
                 .map(|t| t.status.is_terminal())
                 .unwrap_or(true)
             {
@@ -258,9 +315,9 @@ pub fn ready_tasks_cycle_aware(
             }
 
             // Cycle-aware check: if this task is a cycle header and
-            // the blocker is in the same cycle, the back-edge dependency
+            // the predecessor is in the same cycle, the back-edge
             // is satisfied (it will be re-evaluated after the cycle iterates)
-            if analysis.back_edges.contains(&(blocker_id.clone(), task.id.clone())) {
+            if analysis.back_edges.contains(&(pred_id.clone(), task.id.clone())) {
                 return true;
             }
 
@@ -363,20 +420,22 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 - Add `CycleAnalysis` struct and `analyze_cycles()` function to `src/graph.rs` (or new `src/cycle.rs` module).
 - Add `cycle_analysis: Option<CycleAnalysis>` to `WorkGraph`.
 - Add `wg cycles` command (or enhance existing `wg loops`) to display detected cycles.
-- Integrate cycle detection into `wg check` (validate that all `blocked_by` cycles are reducible or intentional).
+- Integrate cycle detection into `wg check` (validate that all cycles in `after` edges are reducible or intentional).
 
 **No behavioral changes.** `loops_to` continues to work exactly as before. Cycle analysis is read-only.
 
 **Effort:** ~300 lines of Rust. 1-2 days.
 
-### Phase 2: Support Natural Cycles in `blocked_by`
+### Phase 2: Rename edges and support natural cycles
 
 **Changes:**
+- Rename `blocked_by` → `after`, `blocks` → `before` with serde aliases for backward compat.
+- Rename CLI flag `--blocked-by` → `--after` (keep `--blocked-by` as hidden alias).
 - Add `CycleConfig` field to `Task` struct (optional, serde skip_serializing_if None).
-- Modify `ready_tasks()` and `ready_tasks_with_peers()` to accept `CycleAnalysis` and exempt back-edge dependencies for cycle headers.
+- Modify `ready_tasks()` and `ready_tasks_with_peers()` to accept `CycleAnalysis` and exempt back-edge predecessors for cycle headers.
 - Add `evaluate_cycle_iteration()` alongside existing `evaluate_loop_edges()`.
 - Add CLI support: `wg add --max-iterations N` to set `CycleConfig.max_iterations` on a task.
-- `wg add --blocked-by` now allows creating cycles (currently produces a warning via `wg check`; this becomes a valid operation when `--max-iterations` is set).
+- `wg add --after` now allows creating cycles (currently produces a warning via `wg check`; this becomes a valid operation when `--max-iterations` is set).
 
 **Both `loops_to` and structural cycles work.** Users can choose either model. This phase runs in parallel with the existing system.
 
@@ -385,11 +444,11 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 ### Phase 3: Migrate `loops_to` to Structural Cycles
 
 **Changes:**
-- Add `wg migrate-loops` command that converts `loops_to` edges to `blocked_by` edges with `CycleConfig`:
+- Add `wg migrate-loops` command that converts `loops_to` edges to `after` edges with `CycleConfig`:
   ```
   For each task with loops_to edges:
     For each LoopEdge { target, guard, max_iterations, delay }:
-      1. Add target to task.blocked_by (creates the back-edge)
+      1. Add target to task.after (creates the back-edge)
       2. Set target.cycle_config = CycleConfig { max_iterations, guard, delay }
       3. Remove the LoopEdge from task.loops_to
   ```
@@ -449,18 +508,18 @@ impl<'de> Deserialize<'de> for Task {
 wg add "review" --blocked-by "write"
 wg add "write" --blocked-by "review"   # warning: creates cycle
 
-# Proposed: cycles are valid when max-iterations is set on the header
+# Proposed: --after replaces --blocked-by, cycles are valid when max-iterations is set
 wg add "write" --max-iterations 5       # this task is a cycle header
-wg add "review" --blocked-by "write"
-wg add "write" --blocked-by "review"    # valid: cycle has a configured header
+wg add "review" --after "write"
+wg add "write" --after "review"         # valid: cycle has a configured header
 ```
 
 Alternatively, set cycle config after the fact:
 
 ```bash
-wg set write --max-iterations 5
-wg set write --cycle-guard "task:review=failed"
-wg set write --cycle-delay "5m"
+wg edit write --max-iterations 5
+wg edit write --cycle-guard "task:review=failed"
+wg edit write --cycle-delay "5m"
 ```
 
 ### 6.2 `wg cycles` Command
@@ -509,7 +568,8 @@ With `--json`:
 
 | Flag | Current | Proposed |
 |------|---------|----------|
-| `--blocked-by` | Can't create cycles (warning) | Can create cycles |
+| `--blocked-by` | Sets blocked_by | Renamed to `--after` (hidden alias kept) |
+| `--after` | N/A | Sets `after` field — can create cycles |
 | `--loops-to` | Creates LoopEdge | Deprecated in Phase 3; removed in Phase 4 |
 | `--loop-max` | Sets LoopEdge.max_iterations | Deprecated; use `--max-iterations` |
 | `--loop-guard` | Sets LoopEdge.guard | Deprecated; use `--cycle-guard` |
@@ -526,7 +586,7 @@ With `--json`:
 
 `wg check` gains new cycle-related checks:
 
-- **Unconfigured cycle:** A cycle exists in `blocked_by` but no member has `CycleConfig`. Report as warning: "Cycle detected but no max_iterations configured — cycle will deadlock."
+- **Unconfigured cycle:** A cycle exists in `after` edges but no member has `CycleConfig`. Report as warning: "Cycle detected but no max_iterations configured — cycle will deadlock."
 - **Irreducible cycle:** Multiple entry points. Report as error.
 - **Conflicting configs:** Multiple tasks in the same cycle have `CycleConfig`. Report as error: "Only the cycle header should have cycle_config."
 
@@ -538,7 +598,7 @@ With `--json`:
 
 | Test | Description | Validates |
 |------|-------------|-----------|
-| `test_detect_simple_cycle` | A→B→A via blocked_by | SCC detection finds 2-node cycle |
+| `test_detect_simple_cycle` | A→B→A via `after` edges | SCC detection finds 2-node cycle |
 | `test_detect_three_node_cycle` | A→B→C→A | SCC detection finds 3-node cycle |
 | `test_no_false_positives` | Linear chain A→B→C | No cycles detected |
 | `test_multiple_independent_cycles` | A→B→A and C→D→C | Two separate cycles detected |
@@ -590,7 +650,7 @@ With `--json`:
 
 | Test | Description | Validates |
 |------|-------------|-----------|
-| `test_migrate_simple_loop` | Task with loops_to → blocked_by cycle | Correct conversion |
+| `test_migrate_simple_loop` | Task with loops_to → `after` cycle | Correct conversion |
 | `test_migrate_preserves_max_iterations` | LoopEdge.max_iterations → CycleConfig | Value preserved |
 | `test_migrate_preserves_guard` | LoopEdge.guard → CycleConfig.guard | Guard preserved |
 | `test_migrate_preserves_delay` | LoopEdge.delay → CycleConfig.delay | Delay preserved |
@@ -601,7 +661,7 @@ With `--json`:
 
 | Test | Description | Validates |
 |------|-------------|-----------|
-| `test_single_task_not_a_cycle` | Task with no blocked_by | No cycles |
+| `test_single_task_not_a_cycle` | Task with no `after` | No cycles |
 | `test_cycle_with_failed_member` | One member is Failed | Cycle does not iterate (not all Done) |
 | `test_convergence_on_non_cycle_task` | --converged on task not in cycle | Tag added, no error |
 | `test_multiple_cycles_share_no_state` | Two cycles, different max_iterations | Independent iteration counters |
@@ -615,21 +675,23 @@ With `--json`:
 
 The research document (Section 5.1) raises valid concerns:
 
-**For structural cycles:**
+**For structural cycles + rename:**
 - Eliminates a special edge type — simpler conceptual model.
 - Cycles are a graph property, not an edge property — more principled.
-- Users create cycles naturally with `blocked_by` without learning `loops_to`.
+- Users create cycles naturally with `--after` without learning `loops_to`.
+- `after`/`before` separates the relationship (ordering) from the runtime state (waiting) — `blocked_by` conflated these.
+- Data flows through context injection, not edges — `after` makes this clear.
 
-**Against (keeping `loops_to`):**
+**Against (keeping `loops_to` and `blocked_by`):**
 - `loops_to` works. 100+ tests, handles all use cases.
-- Explicit is better than implicit. A cycle in `blocked_by` could be accidental.
-- `blocked_by` has one meaning today ("don't start until done"). Overloading it with cycle semantics adds complexity.
+- Explicit is better than implicit. A cycle in `after` could be accidental.
+- Renaming `blocked_by` → `after` across the entire codebase is a large mechanical change.
 
 **Recommendation:** Proceed with the phased approach. Phase 1 (diagnostic only) has no downside. Phase 2 (parallel support) lets us evaluate the model in practice. Phases 3-4 only happen if the structural model proves superior.
 
 ### 8.2 Accidental Cycles
 
-When `blocked_by` can form cycles, users might create them accidentally. The system must distinguish intentional cycles from bugs.
+When `after` edges can form cycles, users might create them accidentally. The system must distinguish intentional cycles from bugs.
 
 **Approach:** A cycle is "configured" (intentional) only if the header task has a `CycleConfig`. An unconfigured cycle is flagged by `wg check` and treated as a deadlock — no iteration, no back-edge exemption. The user must explicitly add `--max-iterations` to opt in.
 
@@ -685,15 +747,15 @@ pub fn ready_tasks_cycle_aware<'a>(
         if task.paused { return false; }
         if !is_time_ready(task) { return false; }
 
-        task.blocked_by.iter().all(|blocker_id| {
-            if graph.get_task(blocker_id)
+        task.after.iter().all(|pred_id| {
+            if graph.get_task(pred_id)
                 .map(|t| t.status.is_terminal())
                 .unwrap_or(true)
             {
                 return true;
             }
             // Back-edge exemption for cycle headers
-            analysis.back_edges.contains(&(blocker_id.clone(), task.id.clone()))
+            analysis.back_edges.contains(&(pred_id.clone(), task.id.clone()))
         })
     }).collect()
 }
