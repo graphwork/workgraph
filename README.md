@@ -688,7 +688,7 @@ wg trace export --visibility peer     # richer detail for trusted peers
 wg trace import peer-export.json      # import a peer's trace as read-only context
 ```
 
-### Trace functions (workflow templates)
+### Functions (workflow templates)
 
 Extract proven workflows into reusable templates. Three layers of increasing sophistication:
 
@@ -698,25 +698,25 @@ Extract proven workflows into reusable templates. Three layers of increasing sop
 
 ```bash
 # Extract a static function from completed work
-wg trace extract impl-auth --name impl-feature --subgraph
+wg func extract impl-auth --name impl-feature --subgraph
 
 # Extract a generative function by comparing multiple traces
-wg trace extract impl-auth impl-caching impl-logging \
+wg func extract impl-auth impl-caching impl-logging \
   --generative --name impl-feature
 
-# Instantiate a function (creates tasks from template)
-wg trace instantiate impl-feature \
+# Apply a function (creates tasks from template)
+wg func apply impl-feature \
   --input feature_name=auth --input description="Add OAuth"
 
 # Upgrade to adaptive (adds learning from past runs)
-wg trace make-adaptive impl-feature
+wg func make-adaptive impl-feature
 
 # Bootstrap the meta-function (extraction as a workflow)
-wg trace bootstrap
+wg func bootstrap
 
 # List and inspect functions
-wg trace list-functions              # list available templates
-wg trace show-function impl-feature  # inspect a template
+wg func list              # list available templates
+wg func show impl-feature  # inspect a template
 ```
 
 ### Trace visualization
@@ -766,10 +766,13 @@ wg analyze            # comprehensive health report (all of the above)
 wg watch              # real-time event stream (for external adapters)
 wg trace show <id>    # execution history of a task
 wg trace export       # export trace data for sharing
-wg trace extract <id> # extract workflow pattern into reusable template
-wg trace extract --generative <id>... # compare traces → generative function
-wg trace make-adaptive <id>  # upgrade to adaptive (adds trace memory)
-wg trace bootstrap    # bootstrap the extraction meta-function
+wg func extract <id>  # extract workflow pattern into reusable template
+wg func extract --generative <id>... # compare traces → generative function
+wg func apply <id>    # create tasks from a function template
+wg func make-adaptive <id>  # upgrade to adaptive (adds trace memory)
+wg func bootstrap     # bootstrap the extraction meta-function
+wg func list          # list available function templates
+wg func show <id>     # inspect a function template
 ```
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference including `viz`, `plan`, `coordinate`, `archive`, `reschedule`, and more.

@@ -7,6 +7,7 @@ Complete reference for all `wg` commands. All commands support `--json` for mach
 - [Task Management](#task-management)
 - [Query Commands](#query-commands)
 - [Analysis Commands](#analysis-commands)
+- [Function Commands](#function-commands)
 - [Trace Commands](#trace-commands)
 - [Agent and Resource Management](#agent-and-resource-management)
 - [Agency Commands](#agency-commands)
@@ -751,9 +752,202 @@ wg coordinate --max-parallel 3
 
 ---
 
+## Function Commands
+
+Function commands manage workflow templates — extracting reusable patterns from completed work, listing and inspecting them, and instantiating them as new task graphs. All function commands are subcommands of `wg func`.
+
+> **Note:** These commands were previously under `wg trace`. The old names (`wg trace extract`, `wg trace instantiate`, `wg trace list-functions`, `wg trace show-function`, `wg trace bootstrap`, `wg trace make-adaptive`) still work as hidden aliases but print a deprecation warning. Use the `wg func` forms going forward.
+
+### `wg func list`
+
+List available functions (workflow templates).
+
+```bash
+wg func list [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--verbose` | Show input parameters and task templates |
+| `--include-peers` | Include functions from federated peer workgraphs |
+| `--visibility <LEVEL>` | Filter by visibility level: `internal`, `peer`, `public` |
+
+**Examples:**
+```bash
+wg func list
+# List all local functions
+
+wg func list --include-peers --visibility peer
+# Include peer functions, show only peer-visible or higher
+```
+
+---
+
+### `wg func show`
+
+Show details of a function.
+
+```bash
+wg func show <ID>
+```
+
+The ID supports prefix matching. Displays version, visibility, planning config, constraints, memory config, inputs, task templates, outputs, and run history.
+
+**Example:**
+```bash
+wg func show impl-feat
+# Shows full details of the impl-feature function (prefix match)
+```
+
+---
+
+### `wg func extract`
+
+Extract a function from completed task(s).
+
+```bash
+wg func extract <TASK-ID>... [OPTIONS]
+```
+
+Supports two modes:
+- **Static extraction** (single task): Extracts a version 1 function with fixed topology from one completed task.
+- **Generative extraction** (`--generative`, multiple tasks): Compares multiple completed traces to produce a version 2 function with a planning node and structural constraints.
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--name <NAME>` | Function name/ID (default: derived from task ID) |
+| `--subgraph` | Include all subtasks (tasks blocked by this one) |
+| `--recursive` | Alias for `--subgraph` |
+| `--generalize` | Use LLM to generalize descriptions (calls executor) |
+| `--generative` | Multi-trace mode: compare multiple traces to produce a version 2 (generative) function |
+| `--output <PATH>` | Write to specific path instead of `.workgraph/functions/` |
+| `--force` | Overwrite existing function with same name |
+
+**Examples:**
+```bash
+# Static extraction from a completed task
+wg func extract impl-auth --name impl-feature --subgraph
+# Extracts the full subgraph as a reusable template
+
+# Generative extraction from multiple traces
+wg func extract impl-auth impl-caching impl-logging --generative --name impl-feature
+# Compares three traces, produces a version 2 function with planning node
+
+# With LLM generalization
+wg func extract fix-login-bug --name bug-fix --generalize
+# LLM replaces instance-specific values with {{input.<name>}} placeholders
+```
+
+---
+
+### `wg func apply`
+
+Create tasks from a function with provided inputs.
+
+```bash
+wg func apply <FUNCTION-ID> [OPTIONS]
+```
+
+The function ID supports prefix matching. For version 2+ (generative) functions, instantiation first runs the planner task; when the planner completes and produces YAML output, re-running apply parses it and creates the planned tasks. For version 3 (adaptive) functions, past run summaries are injected into the planner prompt via `{{memory.run_summaries}}`.
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--from <SOURCE>` | Load function from a peer (`peer:function-id`), file (`.yaml`), or peer name |
+| `--input <KEY=VALUE>` | Set an input parameter (repeatable) |
+| `--input-file <PATH>` | Read inputs from a YAML/JSON file |
+| `--prefix <PREFIX>` | Override the task ID prefix (default: from `feature_name` input or function ID) |
+| `--dry-run` | Show what tasks would be created without creating them |
+| `--after <ID>` | Make root tasks depend on this task (repeatable; alias: `--blocked-by`) |
+| `--model <MODEL>` | Set model for all created tasks |
+
+**Examples:**
+```bash
+# Instantiate a static function
+wg func apply impl-feature \
+  --input feature_name=auth --input description="Add OAuth support"
+# Creates tasks: auth-plan, auth-implement, auth-validate, etc.
+
+# Instantiate from a peer
+wg func apply impl-feature --from alice:impl-feature \
+  --input feature_name=caching
+
+# Instantiate with dependency
+wg func apply bug-fix --input bug_name=login-crash \
+  --after design-phase --model sonnet
+
+# Preview without creating
+wg func apply impl-feature --input feature_name=auth --dry-run
+```
+
+---
+
+### `wg func bootstrap`
+
+Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a workgraph workflow.
+
+```bash
+wg func bootstrap [OPTIONS]
+```
+
+Creates `.workgraph/functions/extract-function.yaml` with a planning node, structural constraints, and a static fallback (analyze → draft → validate → export).
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--force` | Overwrite if `extract-function` already exists |
+
+**Examples:**
+```bash
+# Bootstrap the meta-function
+wg func bootstrap
+
+# Use it to extract a new function via a managed workflow
+wg func apply extract-function \
+  --input source_task_id=impl-auth \
+  --input function_name=impl-feature
+
+# Later, make it adaptive (learns from past extractions)
+wg func make-adaptive extract-function
+```
+
+---
+
+### `wg func make-adaptive`
+
+Upgrade a generative (version 2) function to adaptive (version 3) by adding trace memory.
+
+```bash
+wg func make-adaptive <FUNCTION-ID> [OPTIONS]
+```
+
+Scans provenance for past instantiations of the function, builds run summaries from graph state, stores them, injects `{{memory.run_summaries}}` into the planner template, and bumps the version to 3. Version 1 (static) functions are rejected — extract with `--generative` first.
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--max-runs <N>` | Maximum number of past runs to include in planner memory (default: 10) |
+
+**Examples:**
+```bash
+# Upgrade a generative function to adaptive
+wg func make-adaptive impl-feature
+
+# With custom memory depth
+wg func make-adaptive deploy-pipeline --max-runs 20
+```
+
+---
+
+---
+
 ## Trace Commands
 
-Trace commands cover execution history, trace functions (workflow templates), and trace data export/import. All trace commands are subcommands of `wg trace`.
+Trace commands cover execution history and trace data export/import. All trace commands are subcommands of `wg trace`.
+
+> **Note:** Function management commands (`extract`, `list-functions`, `show-function`, `instantiate`, `bootstrap`, `make-adaptive`) have moved to `wg func`. The old `wg trace` names still work as hidden aliases but print a deprecation warning.
 
 ### `wg trace show`
 
@@ -784,132 +978,6 @@ wg trace show deploy-prod --recursive --timeline
 
 wg trace show deploy-prod --animate --speed 5
 # Animated replay of graph evolution at 5x speed
-```
-
----
-
-### `wg trace list-functions`
-
-List available trace functions (workflow templates).
-
-```bash
-wg trace list-functions [OPTIONS]
-```
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--verbose` | Show input parameters and task templates |
-| `--include-peers` | Include functions from federated peer workgraphs |
-| `--visibility <LEVEL>` | Filter by visibility level: `internal`, `peer`, `public` |
-
-**Examples:**
-```bash
-wg trace list-functions
-# List all local trace functions
-
-wg trace list-functions --include-peers --visibility peer
-# Include peer functions, show only peer-visible or higher
-```
-
----
-
-### `wg trace show-function`
-
-Show details of a trace function.
-
-```bash
-wg trace show-function <ID>
-```
-
-The ID supports prefix matching. Displays version, visibility, planning config, constraints, memory config, inputs, task templates, outputs, and run history.
-
-**Example:**
-```bash
-wg trace show-function impl-feat
-# Shows full details of the impl-feature function (prefix match)
-```
-
----
-
-### `wg trace extract`
-
-Extract a trace function from completed task(s).
-
-```bash
-wg trace extract <TASK-ID>... [OPTIONS]
-```
-
-Supports two modes:
-- **Static extraction** (single task): Extracts a version 1 function with fixed topology from one completed task.
-- **Generative extraction** (`--generative`, multiple tasks): Compares multiple completed traces to produce a version 2 function with a planning node and structural constraints.
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--name <NAME>` | Function name/ID (default: derived from task ID) |
-| `--subgraph` | Include all subtasks (tasks blocked by this one) |
-| `--recursive` | Alias for `--subgraph` |
-| `--generalize` | Use LLM to generalize descriptions (calls executor) |
-| `--generative` | Multi-trace mode: compare multiple traces to produce a version 2 (generative) function |
-| `--output <PATH>` | Write to specific path instead of `.workgraph/functions/` |
-| `--force` | Overwrite existing function with same name |
-
-**Examples:**
-```bash
-# Static extraction from a completed task
-wg trace extract impl-auth --name impl-feature --subgraph
-# Extracts the full subgraph as a reusable template
-
-# Generative extraction from multiple traces
-wg trace extract impl-auth impl-caching impl-logging --generative --name impl-feature
-# Compares three traces, produces a version 2 function with planning node
-
-# With LLM generalization
-wg trace extract fix-login-bug --name bug-fix --generalize
-# LLM replaces instance-specific values with {{input.<name>}} placeholders
-```
-
----
-
-### `wg trace instantiate`
-
-Create tasks from a trace function with provided inputs.
-
-```bash
-wg trace instantiate <FUNCTION-ID> [OPTIONS]
-```
-
-The function ID supports prefix matching. For version 2+ (generative) functions, instantiation first runs the planner task; when the planner completes and produces YAML output, re-running instantiate parses it and creates the planned tasks. For version 3 (adaptive) functions, past run summaries are injected into the planner prompt via `{{memory.run_summaries}}`.
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--from <SOURCE>` | Load function from a peer (`peer:function-id`), file (`.yaml`), or peer name |
-| `--input <KEY=VALUE>` | Set an input parameter (repeatable) |
-| `--input-file <PATH>` | Read inputs from a YAML/JSON file |
-| `--prefix <PREFIX>` | Override the task ID prefix (default: from `feature_name` input or function ID) |
-| `--dry-run` | Show what tasks would be created without creating them |
-| `--after <ID>` | Make root tasks depend on this task (repeatable; alias: `--blocked-by`) |
-| `--model <MODEL>` | Set model for all created tasks |
-
-**Examples:**
-```bash
-# Instantiate a static function
-wg trace instantiate impl-feature \
-  --input feature_name=auth --input description="Add OAuth support"
-# Creates tasks: auth-plan, auth-implement, auth-validate, etc.
-
-# Instantiate from a peer
-wg trace instantiate impl-feature --from alice:impl-feature \
-  --input feature_name=caching
-
-# Instantiate with dependency
-wg trace instantiate bug-fix --input bug_name=login-crash \
-  --after design-phase --model sonnet
-
-# Preview without creating
-wg trace instantiate impl-feature --input feature_name=auth --dry-run
 ```
 
 ---
@@ -974,63 +1042,6 @@ Tasks are namespaced under `imported/<source>/` to avoid ID collisions.
 ```bash
 wg trace import peer-export.json --source "peer:alice" --dry-run
 # Preview what would be imported
-```
-
----
-
-### `wg trace bootstrap`
-
-Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a workgraph workflow.
-
-```bash
-wg trace bootstrap [OPTIONS]
-```
-
-Creates `.workgraph/functions/extract-function.yaml` with a planning node, structural constraints, and a static fallback (analyze → draft → validate → export).
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--force` | Overwrite if `extract-function` already exists |
-
-**Examples:**
-```bash
-# Bootstrap the meta-function
-wg trace bootstrap
-
-# Use it to extract a new function via a managed workflow
-wg trace instantiate extract-function \
-  --input source_task_id=impl-auth \
-  --input function_name=impl-feature
-
-# Later, make it adaptive (learns from past extractions)
-wg trace make-adaptive extract-function
-```
-
----
-
-### `wg trace make-adaptive`
-
-Upgrade a generative (version 2) function to adaptive (version 3) by adding trace memory.
-
-```bash
-wg trace make-adaptive <FUNCTION-ID> [OPTIONS]
-```
-
-Scans provenance for past instantiations of the function, builds run summaries from graph state, stores them, injects `{{memory.run_summaries}}` into the planner template, and bumps the version to 3. Version 1 (static) functions are rejected — extract with `--generative` first.
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--max-runs <N>` | Maximum number of past runs to include in planner memory (default: 10) |
-
-**Examples:**
-```bash
-# Upgrade a generative function to adaptive
-wg trace make-adaptive impl-feature
-
-# With custom memory depth
-wg trace make-adaptive deploy-pipeline --max-runs 20
 ```
 
 ---

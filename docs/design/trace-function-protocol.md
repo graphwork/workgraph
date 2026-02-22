@@ -1,5 +1,7 @@
 # Trace-to-Function Extraction Protocol: Design Document
 
+> **Note:** The CLI for function management has moved from `wg trace` to `wg func`. Commands like `wg trace extract`, `wg trace instantiate`, `wg trace list-functions`, `wg trace show-function`, `wg trace bootstrap`, and `wg trace make-adaptive` are now `wg func extract`, `wg func apply`, `wg func list`, `wg func show`, `wg func bootstrap`, and `wg func make-adaptive` respectively. The old `wg trace` names still work as hidden aliases with a deprecation warning. This document predates the rename and uses the original command names throughout.
+
 ## 1. Current State Analysis
 
 ### 1.1 What Exists Today

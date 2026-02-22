@@ -378,9 +378,9 @@ wg done <task-id>                # complete
 
 ---
 
-## 9. Trace Functions (Workflow Templates)
+## 9. Functions (Workflow Templates)
 
-Trace functions let you extract proven workflows into reusable templates and instantiate them with new inputs. There are three layers, each building on the previous one.
+Functions let you extract proven workflows into reusable templates and apply them with new inputs. All function commands are under `wg func`. There are three layers, each building on the previous one.
 
 ### 9.1 The Three Layers
 
@@ -396,52 +396,52 @@ Extract a template from completed work:
 
 ```bash
 # Static: extract from one completed task
-wg trace extract impl-auth --name impl-feature --subgraph
+wg func extract impl-auth --name impl-feature --subgraph
 
 # Generative: compare multiple completed traces
-wg trace extract impl-auth impl-caching impl-logging \
+wg func extract impl-auth impl-caching impl-logging \
   --generative --name impl-feature
 
 # With LLM generalization (replaces specific values with placeholders)
-wg trace extract fix-login --name bug-fix --generalize
+wg func extract fix-login --name bug-fix --generalize
 ```
 
 Static extraction captures the exact task graph. Generative extraction compares multiple traces, identifies variable topology, and produces a planning node + constraints.
 
-### 9.3 Instantiating Functions
+### 9.3 Applying Functions
 
 Create tasks from a template:
 
 ```bash
-# Basic instantiation
-wg trace instantiate impl-feature \
+# Basic application
+wg func apply impl-feature \
   --input feature_name=auth \
   --input description="Add OAuth support"
 
 # With dependency on existing work
-wg trace instantiate impl-feature \
+wg func apply impl-feature \
   --input feature_name=auth \
   --after design-phase
 
 # Preview without creating tasks
-wg trace instantiate impl-feature \
+wg func apply impl-feature \
   --input feature_name=auth --dry-run
 
 # From a federated peer
-wg trace instantiate impl-feature --from alice:impl-feature \
+wg func apply impl-feature --from alice:impl-feature \
   --input feature_name=caching
 ```
 
-For **generative functions** (version 2+), the first instantiation creates a planner task. Once the planner completes (producing YAML output in its logs or artifacts), re-running instantiate parses the plan, validates it against constraints, and creates the planned tasks.
+For **generative functions** (version 2+), the first application creates a planner task. Once the planner completes (producing YAML output in its logs or artifacts), re-running apply parses the plan, validates it against constraints, and creates the planned tasks.
 
-For **adaptive functions** (version 3), past run summaries are automatically injected into the planner prompt via `{{memory.run_summaries}}`, so the planner can learn from previous instantiations.
+For **adaptive functions** (version 3), past run summaries are automatically injected into the planner prompt via `{{memory.run_summaries}}`, so the planner can learn from previous applications.
 
 ### 9.4 Making Functions Adaptive
 
 Upgrade a generative function to learn from past runs:
 
 ```bash
-wg trace make-adaptive impl-feature
+wg func make-adaptive impl-feature
 # Scans provenance for past instantiations, builds run summaries,
 # injects {{memory.run_summaries}} into planner template, bumps to v3
 ```
@@ -450,40 +450,40 @@ The function must be version 2 (generative) first. If you have a static function
 
 ### 9.5 The Meta-Function (Self-Bootstrapping)
 
-The extraction process itself can be expressed as a trace function:
+The extraction process itself can be expressed as a function:
 
 ```bash
 # Bootstrap the built-in extract-function meta-function
-wg trace bootstrap
+wg func bootstrap
 
 # Use it to extract a new function via a managed workflow
-wg trace instantiate extract-function \
+wg func apply extract-function \
   --input source_task_id=impl-auth \
   --input function_name=impl-feature-v2
 
 # Make the extractor adaptive (learns from past extractions)
-wg trace make-adaptive extract-function
+wg func make-adaptive extract-function
 ```
 
 ### 9.6 Discovering and Sharing Functions
 
 ```bash
 # List local functions
-wg trace list-functions
+wg func list
 
 # Include federated peer functions
-wg trace list-functions --include-peers
+wg func list --include-peers
 
 # Filter by visibility
-wg trace list-functions --visibility peer
+wg func list --visibility peer
 
 # Inspect a function
-wg trace show-function impl-feature
+wg func show impl-feature
 ```
 
 Functions carry a visibility field (`internal`, `peer`, `public`) that controls what crosses organizational boundaries during export.
 
-### 9.7 Trace Function Anti-Patterns
+### 9.7 Function Anti-Patterns
 
 | Anti-pattern | What goes wrong | Fix |
 |--------------|----------------|-----|

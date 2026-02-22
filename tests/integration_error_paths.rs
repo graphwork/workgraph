@@ -376,7 +376,7 @@ fn test_state_persistence_roundtrip_all_statuses() {
     let mut graph = WorkGraph::new();
     for (id, status) in &statuses {
         let mut task = make_task(id);
-        task.status = status.clone();
+        task.status = *status;
         graph.add_node(Node::Task(task));
     }
 

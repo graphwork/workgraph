@@ -540,7 +540,7 @@ fn test_multiple_replays_increment_run_ids() {
         let task = graph.get_task_mut("r1").unwrap();
         task.status = Status::Failed;
         task.failure_reason = Some("err again".to_string());
-        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     }
 
     // Second replay

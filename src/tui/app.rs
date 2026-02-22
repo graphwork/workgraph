@@ -1547,7 +1547,7 @@ mod tests {
             let entry = TaskEntry {
                 id: "x".into(),
                 title: "x".into(),
-                status: status.clone(),
+                status: *status,
                 assigned: None,
             };
             assert_eq!(
@@ -1573,13 +1573,13 @@ mod tests {
             let a = TaskEntry {
                 id: "x".into(),
                 title: "x".into(),
-                status: w[0].clone(),
+                status: w[0],
                 assigned: None,
             };
             let b = TaskEntry {
                 id: "x".into(),
                 title: "x".into(),
-                status: w[1].clone(),
+                status: w[1],
                 assigned: None,
             };
             assert!(

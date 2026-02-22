@@ -148,7 +148,7 @@ fn set_task_failed(wg_dir: &Path, id: &str) {
     task.status = Status::Failed;
     task.failure_reason = Some("err".to_string());
     task.assigned = None;
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 }
 
 // ===========================================================================
@@ -340,7 +340,7 @@ fn test_runs_diff_json_output() {
 
     let changes = json["changes"].as_array().unwrap();
     assert!(
-        changes.len() >= 1,
+        !changes.is_empty(),
         "should have at least one change: {:?}",
         changes
     );
@@ -579,7 +579,7 @@ fn test_runs_diff_with_removed_task() {
     let rm1_task = graph.get_task("rm1").unwrap().clone();
     let mut new_graph = WorkGraph::new();
     new_graph.add_node(Node::Task(rm1_task));
-    save_graph(&new_graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&new_graph, wg_dir.join("graph.jsonl")).unwrap();
 
     // Diff should detect rm2 as removed
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
@@ -614,7 +614,7 @@ fn test_runs_diff_with_added_task() {
     let mut graph = load_wg_graph(&wg_dir);
     let new_task = make_task("ad2", "Added task", Status::Open);
     graph.add_node(Node::Task(new_task));
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     // Diff should detect ad2 as added
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
@@ -1016,7 +1016,7 @@ fn test_snapshot_without_graph_jsonl() {
     let t1 = make_task("t1", "Task 1", Status::Open);
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(t1));
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     // Restore from this snapshot should fail because graph.jsonl is missing
     let (_stdout, stderr) = wg_fail(&wg_dir, &["runs", "restore", "run-001"]);
@@ -1092,7 +1092,7 @@ fn test_runs_diff_only_compares_status() {
     let task = graph.get_task_mut("ds1").unwrap();
     task.title = "Modified title".to_string();
     task.description = Some("Added description".to_string());
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     // Diff should report "No differences" because only status is compared
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);

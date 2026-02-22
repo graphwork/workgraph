@@ -466,10 +466,16 @@ enum Commands {
         id: String,
     },
 
-    /// Trace commands: execution history and trace functions
+    /// Trace commands: execution history, export, import
     Trace {
         #[command(subcommand)]
         command: TraceCommands,
+    },
+
+    /// Function management: extract, apply, list, show, bootstrap
+    Func {
+        #[command(subcommand)]
+        command: FuncCommands,
     },
 
     /// Replay tasks: snapshot graph, selectively reset tasks, re-execute with a different model
@@ -1046,9 +1052,107 @@ enum TraceCommands {
         speed: f64,
     },
 
-    /// List available trace functions
-    #[command(name = "list-functions")]
-    ListFunctions {
+    /// Export trace data filtered by visibility zone
+    Export {
+        /// Root task ID (exports this task and all descendants)
+        #[arg(long)]
+        root: Option<String>,
+        /// Visibility zone filter: "internal" (everything), "public" (sanitized),
+        /// "peer" (richer for credentialed peers). Default: "internal".
+        #[arg(long, default_value = "internal")]
+        visibility: String,
+        /// Output file path (default: stdout)
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
+
+    /// Import a trace export file as read-only context
+    Import {
+        /// Path to the trace export JSON file
+        file: String,
+        /// Source tag for imported data (e.g. "peer:alice", "team:platform")
+        #[arg(long)]
+        source: Option<String>,
+        /// Show what would be imported without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    // Hidden aliases for backward compatibility (wg trace <cmd> → wg func <cmd>)
+    #[command(name = "extract", hide = true)]
+    ExtractAlias {
+        #[arg(required = true, num_args = 1..)]
+        task_ids: Vec<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        subgraph: bool,
+        #[arg(long)]
+        recursive: bool,
+        #[arg(long)]
+        generalize: bool,
+        #[arg(long)]
+        generative: bool,
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        include_evaluations: bool,
+    },
+
+    #[command(name = "instantiate", hide = true)]
+    InstantiateAlias {
+        function_id: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long = "input", num_args = 1)]
+        inputs: Vec<String>,
+        #[arg(long = "input-file")]
+        input_file: Option<String>,
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long = "after", alias = "blocked-by")]
+        after: Vec<String>,
+        #[arg(long)]
+        model: Option<String>,
+    },
+
+    #[command(name = "list-functions", hide = true)]
+    ListFunctionsAlias {
+        #[arg(long)]
+        verbose: bool,
+        #[arg(long)]
+        include_peers: bool,
+        #[arg(long)]
+        visibility: Option<String>,
+    },
+
+    #[command(name = "show-function", hide = true)]
+    ShowFunctionAlias {
+        id: String,
+    },
+
+    #[command(name = "bootstrap", hide = true)]
+    BootstrapAlias {
+        #[arg(long)]
+        force: bool,
+    },
+
+    #[command(name = "make-adaptive", hide = true)]
+    MakeAdaptiveAlias {
+        function_id: String,
+        #[arg(long, default_value = "10")]
+        max_runs: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum FuncCommands {
+    /// List available functions
+    List {
         /// Show input parameters and task templates
         #[arg(long)]
         verbose: bool,
@@ -1062,14 +1166,13 @@ enum TraceCommands {
         visibility: Option<String>,
     },
 
-    /// Show details of a trace function
-    #[command(name = "show-function")]
-    ShowFunction {
+    /// Show details of a function
+    Show {
         /// Function ID (prefix match supported)
         id: String,
     },
 
-    /// Extract a trace function from completed task(s)
+    /// Extract a function from completed task(s)
     Extract {
         /// Task ID(s) to extract from (multiple IDs with --generative)
         #[arg(required = true, num_args = 1..)]
@@ -1083,8 +1186,7 @@ enum TraceCommands {
         #[arg(long)]
         subgraph: bool,
 
-        /// Recursively extract the entire spawned subgraph with dependency structure,
-        /// human intervention tracking, and parameterized templates
+        /// Recursively extract the entire spawned subgraph with dependency structure
         #[arg(long)]
         recursive: bool,
 
@@ -1092,7 +1194,7 @@ enum TraceCommands {
         #[arg(long)]
         generalize: bool,
 
-        /// Multi-trace extraction: compare multiple traces to produce a version 2 (generative) function
+        /// Multi-trace extraction: compare multiple traces to produce a generative function
         #[arg(long)]
         generative: bool,
 
@@ -1103,10 +1205,15 @@ enum TraceCommands {
         /// Overwrite existing function with same name
         #[arg(long)]
         force: bool,
+
+        /// Include coordinator-generated evaluation and assignment tasks
+        /// (evaluate-*, assign-*) that are normally filtered out
+        #[arg(long)]
+        include_evaluations: bool,
     },
 
-    /// Create tasks from a trace function with provided inputs
-    Instantiate {
+    /// Create tasks from a function with provided inputs
+    Apply {
         /// Function ID (prefix match supported)
         function_id: String,
 
@@ -1137,32 +1244,6 @@ enum TraceCommands {
         /// Set model for all created tasks
         #[arg(long)]
         model: Option<String>,
-    },
-
-    /// Export trace data filtered by visibility zone
-    Export {
-        /// Root task ID (exports this task and all descendants)
-        #[arg(long)]
-        root: Option<String>,
-        /// Visibility zone filter: "internal" (everything), "public" (sanitized),
-        /// "peer" (richer for credentialed peers). Default: "internal".
-        #[arg(long, default_value = "internal")]
-        visibility: String,
-        /// Output file path (default: stdout)
-        #[arg(long, short = 'o')]
-        output: Option<String>,
-    },
-
-    /// Import a trace export file as read-only context
-    Import {
-        /// Path to the trace export JSON file
-        file: String,
-        /// Source tag for imported data (e.g. "peer:alice", "team:platform")
-        #[arg(long)]
-        source: Option<String>,
-        /// Show what would be imported without making changes
-        #[arg(long)]
-        dry_run: bool,
     },
 
     /// Bootstrap the extract-function meta-function
@@ -1996,6 +2077,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Gc { .. } => "gc",
         Commands::Show { .. } => "show",
         Commands::Trace { .. } => "trace",
+        Commands::Func { .. } => "func",
         Commands::Replay { .. } => "replay",
         Commands::Runs { .. } => "runs",
         Commands::Log { .. } => "log",
@@ -2059,6 +2141,7 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Gc { .. }
             | Commands::Show { .. }
             | Commands::Trace { .. }
+            | Commands::Func { .. }
             | Commands::Replay { .. }
             | Commands::Runs { .. }
             | Commands::Log { .. }
@@ -2385,63 +2468,6 @@ fn main() -> Result<()> {
                     commands::trace::run(&workgraph_dir, &id, mode)
                 }
             }
-            TraceCommands::ListFunctions { verbose, include_peers, visibility } => {
-                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
-            }
-            TraceCommands::ShowFunction { id } => {
-                commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
-            }
-            TraceCommands::Extract {
-                task_ids,
-                name,
-                subgraph,
-                recursive,
-                generalize,
-                generative,
-                output,
-                force,
-            } => {
-                if generative {
-                    commands::trace_extract::run_generative(
-                        &workgraph_dir,
-                        &task_ids,
-                        name.as_deref(),
-                        output.as_deref(),
-                        force,
-                    )
-                } else {
-                    commands::trace_extract::run(
-                        &workgraph_dir,
-                        &task_ids[0],
-                        name.as_deref(),
-                        subgraph || recursive,
-                        generalize,
-                        output.as_deref(),
-                        force,
-                    )
-                }
-            }
-            TraceCommands::Instantiate {
-                function_id,
-                from,
-                inputs,
-                input_file,
-                prefix,
-                dry_run,
-                after,
-                model,
-            } => commands::trace_instantiate::run(
-                &workgraph_dir,
-                &function_id,
-                from.as_deref(),
-                &inputs,
-                input_file.as_deref(),
-                prefix.as_deref(),
-                dry_run,
-                &after,
-                model.as_deref(),
-                cli.json,
-            ),
             TraceCommands::Export {
                 root,
                 visibility,
@@ -2464,13 +2490,118 @@ fn main() -> Result<()> {
                 dry_run,
                 cli.json,
             ),
-            TraceCommands::Bootstrap { force } => {
+            // Hidden aliases: print deprecation warning then delegate
+            TraceCommands::ExtractAlias {
+                task_ids,
+                name,
+                subgraph,
+                recursive,
+                generalize,
+                generative,
+                output,
+                force,
+                include_evaluations,
+            } => {
+                eprintln!("Warning: 'wg trace extract' is deprecated. Use 'wg func extract' instead.");
+                if generative {
+                    commands::trace_extract::run_generative(
+                        &workgraph_dir,
+                        &task_ids,
+                        name.as_deref(),
+                        output.as_deref(),
+                        force,
+                        include_evaluations,
+                    )
+                } else {
+                    commands::trace_extract::run(
+                        &workgraph_dir,
+                        &task_ids[0],
+                        name.as_deref(),
+                        subgraph || recursive,
+                        generalize,
+                        output.as_deref(),
+                        force,
+                        include_evaluations,
+                    )
+                }
+            }
+            TraceCommands::InstantiateAlias {
+                function_id,
+                from,
+                inputs,
+                input_file,
+                prefix,
+                dry_run,
+                after,
+                model,
+            } => {
+                eprintln!("Warning: 'wg trace instantiate' is deprecated. Use 'wg func apply' instead.");
+                commands::trace_instantiate::run(
+                    &workgraph_dir,
+                    &function_id,
+                    from.as_deref(),
+                    &inputs,
+                    input_file.as_deref(),
+                    prefix.as_deref(),
+                    dry_run,
+                    &after,
+                    model.as_deref(),
+                    cli.json,
+                )
+            }
+            TraceCommands::ListFunctionsAlias { verbose, include_peers, visibility } => {
+                eprintln!("Warning: 'wg trace list-functions' is deprecated. Use 'wg func list' instead.");
+                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
+            }
+            TraceCommands::ShowFunctionAlias { id } => {
+                eprintln!("Warning: 'wg trace show-function' is deprecated. Use 'wg func show' instead.");
+                commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
+            }
+            TraceCommands::BootstrapAlias { force } => {
+                eprintln!("Warning: 'wg trace bootstrap' is deprecated. Use 'wg func bootstrap' instead.");
                 commands::trace_bootstrap::run(&workgraph_dir, force)
             }
-            TraceCommands::MakeAdaptive {
+            TraceCommands::MakeAdaptiveAlias {
                 function_id,
                 max_runs,
-            } => commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs),
+            } => {
+                eprintln!("Warning: 'wg trace make-adaptive' is deprecated. Use 'wg func make-adaptive' instead.");
+                commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
+            }
+        },
+        Commands::Func { command } => match command {
+            FuncCommands::List { verbose, include_peers, visibility } => {
+                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
+            }
+            FuncCommands::Show { id } => {
+                commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
+            }
+            FuncCommands::Extract {
+                task_ids, name, subgraph, recursive, generalize, generative, output, force, include_evaluations,
+            } => {
+                if generative {
+                    commands::trace_extract::run_generative(
+                        &workgraph_dir, &task_ids, name.as_deref(), output.as_deref(), force, include_evaluations,
+                    )
+                } else {
+                    commands::trace_extract::run(
+                        &workgraph_dir, &task_ids[0], name.as_deref(), subgraph || recursive,
+                        generalize, output.as_deref(), force, include_evaluations,
+                    )
+                }
+            }
+            FuncCommands::Apply {
+                function_id, from, inputs, input_file, prefix, dry_run, after, model,
+            } => commands::trace_instantiate::run(
+                &workgraph_dir, &function_id, from.as_deref(), &inputs,
+                input_file.as_deref(), prefix.as_deref(), dry_run, &after, model.as_deref(), cli.json,
+            ),
+            FuncCommands::Bootstrap { force } => {
+                commands::trace_bootstrap::run(&workgraph_dir, force)
+            }
+            FuncCommands::MakeAdaptive { function_id, max_runs } => {
+                commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
+            }
         },
         Commands::Replay {
             model,

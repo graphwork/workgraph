@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{
-    CycleAnalysis, CycleConfig, LoopGuard, Node, Status, Task, WorkGraph,
+    CycleConfig, LoopGuard, Node, Status, Task, WorkGraph,
     evaluate_cycle_iteration,
 };
 use workgraph::parser::{load_graph, save_graph};
@@ -1190,7 +1190,7 @@ fn test_backward_compat_old_loops_to_loads() {
     fs::write(wg_dir.join("graph.jsonl"), old_jsonl).unwrap();
 
     // Should load without error
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task("t1").is_some(), "Task t1 should load");
     assert!(graph.get_task("t2").is_some(), "Task t2 should load");
 }
@@ -1229,7 +1229,7 @@ fn test_cli_add_with_max_iterations() {
         &["add", "Cycle Header", "--id", "header", "--max-iterations", "5"],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("header").unwrap();
     assert!(task.cycle_config.is_some(), "Should have cycle_config");
     let config = task.cycle_config.as_ref().unwrap();
@@ -1260,7 +1260,7 @@ fn test_cli_add_with_cycle_guard() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("guarded").unwrap();
     let config = task.cycle_config.as_ref().unwrap();
     assert_eq!(
@@ -1291,7 +1291,7 @@ fn test_cli_add_with_cycle_delay() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("delayed").unwrap();
     let config = task.cycle_config.as_ref().unwrap();
     assert_eq!(config.delay, Some("5m".to_string()));
@@ -1348,7 +1348,7 @@ fn test_cli_add_with_always_guard() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("always-loop").unwrap();
     let config = task.cycle_config.as_ref().unwrap();
     assert_eq!(config.guard, Some(LoopGuard::Always));
@@ -1479,7 +1479,7 @@ fn test_cli_done_triggers_cycle_iteration() {
     );
 
     // Verify both tasks are re-opened
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task_a = graph.get_task("a").unwrap();
     let task_b = graph.get_task("b").unwrap();
     assert_eq!(task_a.status, Status::Open, "A should be re-opened");
@@ -1519,7 +1519,7 @@ fn test_cli_done_converged_stops_cycle() {
     );
 
     // Both should remain Done
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task_a = graph.get_task("a").unwrap();
     let task_b = graph.get_task("b").unwrap();
     assert_eq!(task_a.status, Status::Done, "A should remain Done");
@@ -1553,7 +1553,7 @@ fn test_cli_done_cycle_three_nodes() {
         output
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     for id in &["a", "b", "c"] {
         let task = graph.get_task(id).unwrap();
         assert_eq!(task.status, Status::Open, "{} should be Open", id);
@@ -1587,7 +1587,7 @@ fn test_cli_done_max_iterations_stops_cli() {
         output
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("b").unwrap().status, Status::Done);
 }
@@ -1608,7 +1608,7 @@ fn test_convergence_on_non_cycle_task() {
     let output = wg_ok(&wg_dir, &["done", "solo", "--converged"]);
     assert!(output.contains("done"), "Should succeed");
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("solo").unwrap();
     assert!(
         task.tags.contains(&"converged".to_string()),

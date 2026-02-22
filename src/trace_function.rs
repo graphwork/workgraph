@@ -219,7 +219,7 @@ pub struct PlanningConfig {
     #[serde(default)]
     pub static_fallback: bool,
 
-    /// Validate planner output against constraints before instantiation.
+    /// Validate planner output against constraints before applying.
     #[serde(default = "default_true")]
     pub validate_plan: bool,
 }
@@ -292,10 +292,11 @@ pub struct MemoryInclusions {
     pub artifacts: bool,
 }
 
-/// Summary of a single past instantiation run (used in trace memory).
+/// Summary of a single past application run (used in trace memory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSummary {
-    pub instantiated_at: String,
+    #[serde(alias = "instantiated_at")]
+    pub applied_at: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub inputs: HashMap<String, serde_yaml::Value>,
     pub prefix: String,
@@ -1719,7 +1720,7 @@ planner_template:
     #[test]
     fn run_summary_round_trip() {
         let summary = RunSummary {
-            instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+            applied_at: "2026-02-20T12:00:00Z".to_string(),
             inputs: {
                 let mut m = HashMap::new();
                 m.insert(

@@ -4283,7 +4283,7 @@ poll_interval = 120
         let status_line = if !agency_agents_defined {
             "Agents: No agents defined — run 'wg agency init' or 'wg agent create'".to_string()
         } else {
-            format!("Agents: 0 alive, 0 idle, 0 total")
+            "Agents: 0 alive, 0 idle, 0 total".to_string()
         };
         assert!(
             status_line.contains("No agents defined"),
@@ -4309,7 +4309,7 @@ poll_interval = 120
         let status_line = if !agency_agents_defined {
             "Agents: No agents defined — run 'wg agency init' or 'wg agent create'".to_string()
         } else {
-            format!("Agents: 0 alive, 0 idle, 0 total")
+            "Agents: 0 alive, 0 idle, 0 total".to_string()
         };
         assert!(
             !status_line.contains("No agents defined"),

@@ -429,6 +429,11 @@ You MUST use these commands to track your work:
 
 **After code changes:** Run `cargo install --path .` to update the global binary.
 
+## Reusable Workflow Functions
+- `wg func list` — discover reusable workflow patterns extracted from past tasks
+- `wg func apply <id> --input key=value` — instantiate a function to create pre-wired tasks
+- `wg func show <id>` — view function details and required inputs
+
 ## CRITICAL: Use wg CLI, NOT built-in tools
 - You MUST use `wg` CLI commands for ALL task management
 - NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools — they are a completely separate system that does NOT interact with workgraph
@@ -523,6 +528,11 @@ You MUST use these commands to track your work:
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation
 - Focus only on this specific task
+
+## Reusable Workflow Functions
+- `wg func list` — discover reusable workflow patterns extracted from past tasks
+- `wg func apply <id> --input key=value` — instantiate a function to create pre-wired tasks
+- `wg func show <id>` — view function details and required inputs
 
 ## CRITICAL: Use wg CLI, NOT built-in tools
 - You MUST use `wg` CLI commands for ALL task management

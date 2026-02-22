@@ -9,7 +9,7 @@
 //! Both formats are supported. The per-run JSON approach (`save_run_summary` /
 //! `load_recent_summaries`) is the protocol-specified storage for §4.3 MAKE_ADAPTIVE.
 //! The JSONL approach (`append_run_summary` / `load_run_summaries`) is the existing
-//! integration point used by `trace_instantiate` and `trace_make_adaptive`.
+//! integration point used by `func_apply` and `trace_make_adaptive`.
 
 use crate::agency::{load_all_evaluations, Evaluation};
 use crate::graph::WorkGraph;
@@ -36,7 +36,7 @@ pub fn memory_dir(workgraph_dir: &Path, func_id: &str) -> PathBuf {
 
 /// Save a run summary as JSON to `.workgraph/functions/<func_id>.memory/<timestamp>.json`.
 ///
-/// The timestamp is derived from `summary.instantiated_at`, sanitized for use as a filename
+/// The timestamp is derived from `summary.applied_at`, sanitized for use as a filename
 /// (colons replaced with dashes).
 pub fn save_run_summary(
     func_id: &str,
@@ -46,7 +46,7 @@ pub fn save_run_summary(
     let dir = memory_dir(workgraph_dir, func_id);
     fs::create_dir_all(&dir).context("Failed to create memory directory")?;
 
-    let safe_ts = summary.instantiated_at.replace(':', "-");
+    let safe_ts = summary.applied_at.replace(':', "-");
     let filename = format!("{}.json", safe_ts);
     let path = dir.join(filename);
 
@@ -60,7 +60,7 @@ pub fn save_run_summary(
 /// Load the most recent N run summaries for a function, sorted newest-first.
 ///
 /// Reads all `.json` files from the `.memory/` directory, parses them, sorts by
-/// `instantiated_at` descending, and returns at most `max_runs` entries.
+/// `applied_at` descending, and returns at most `max_runs` entries.
 pub fn load_recent_summaries(
     func_id: &str,
     max_runs: usize,
@@ -84,8 +84,8 @@ pub fn load_recent_summaries(
         }
     }
 
-    // Sort newest-first by instantiated_at (ISO 8601 strings sort lexicographically)
-    summaries.sort_by(|a, b| b.instantiated_at.cmp(&a.instantiated_at));
+    // Sort newest-first by applied_at (ISO 8601 strings sort lexicographically)
+    summaries.sort_by(|a, b| b.applied_at.cmp(&a.applied_at));
     summaries.truncate(max_runs);
 
     Ok(summaries)
@@ -96,15 +96,15 @@ pub fn load_recent_summaries(
 /// Reads task statuses and timestamps from the graph, evaluation scores from the
 /// evaluations directory, and detects interventions (retries, edits) from provenance ops.
 ///
-/// `task_ids` should be the task IDs created by a single instantiation (e.g. all tasks
-/// under a common prefix). The `instantiated_at` and `prefix` fields must be provided
+/// `task_ids` should be the task IDs created by a single application (e.g. all tasks
+/// under a common prefix). The `applied_at` and `prefix` fields must be provided
 /// since they cannot be reliably inferred from task data alone.
 pub fn build_run_summary(
     task_ids: &[String],
     graph: &WorkGraph,
     evaluations_dir: &Path,
     provenance_path: &Path,
-    instantiated_at: &str,
+    applied_at: &str,
     prefix: &str,
 ) -> Result<RunSummary> {
     // Load evaluations keyed by task_id (use most recent per task)
@@ -190,7 +190,7 @@ pub fn build_run_summary(
     };
 
     Ok(RunSummary {
-        instantiated_at: instantiated_at.to_string(),
+        applied_at: applied_at.to_string(),
         inputs: HashMap::new(), // Caller should set inputs if available
         prefix: prefix.to_string(),
         task_outcomes,
@@ -218,7 +218,7 @@ pub fn render_summaries_text(summaries: &[RunSummary]) -> String {
         lines.push(format!(
             "--- Run {} ({}){} ---",
             i + 1,
-            summary.instantiated_at,
+            summary.applied_at,
             if summary.all_succeeded {
                 " [SUCCESS]"
             } else {
@@ -438,7 +438,7 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
     for (i, summary) in summaries.iter().enumerate() {
         lines.push(String::new());
         lines.push(format!("--- Run {} (prefix: {}) ---", i + 1, summary.prefix));
-        lines.push(format!("  Instantiated: {}", summary.instantiated_at));
+        lines.push(format!("  Applied: {}", summary.applied_at));
 
         if !summary.inputs.is_empty() {
             let input_strs: Vec<String> = summary
@@ -549,7 +549,7 @@ mod tests {
 
     fn sample_run_summary() -> RunSummary {
         RunSummary {
-            instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+            applied_at: "2026-02-20T12:00:00Z".to_string(),
             inputs: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -793,22 +793,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
 
         let mut s1 = sample_run_summary();
-        s1.instantiated_at = "2026-02-18T10:00:00Z".to_string();
+        s1.applied_at = "2026-02-18T10:00:00Z".to_string();
         save_run_summary("func-a", &s1, dir.path()).unwrap();
 
         let mut s2 = sample_run_summary();
-        s2.instantiated_at = "2026-02-20T12:00:00Z".to_string();
+        s2.applied_at = "2026-02-20T12:00:00Z".to_string();
         save_run_summary("func-a", &s2, dir.path()).unwrap();
 
         let mut s3 = sample_run_summary();
-        s3.instantiated_at = "2026-02-19T08:00:00Z".to_string();
+        s3.applied_at = "2026-02-19T08:00:00Z".to_string();
         save_run_summary("func-a", &s3, dir.path()).unwrap();
 
         let loaded = load_recent_summaries("func-a", 10, dir.path()).unwrap();
         assert_eq!(loaded.len(), 3);
-        assert_eq!(loaded[0].instantiated_at, "2026-02-20T12:00:00Z");
-        assert_eq!(loaded[1].instantiated_at, "2026-02-19T08:00:00Z");
-        assert_eq!(loaded[2].instantiated_at, "2026-02-18T10:00:00Z");
+        assert_eq!(loaded[0].applied_at, "2026-02-20T12:00:00Z");
+        assert_eq!(loaded[1].applied_at, "2026-02-19T08:00:00Z");
+        assert_eq!(loaded[2].applied_at, "2026-02-18T10:00:00Z");
     }
 
     #[test]
@@ -816,13 +816,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         for i in 0..5u32 {
             let mut s = sample_run_summary();
-            s.instantiated_at = format!("2026-02-{:02}T12:00:00Z", 15 + i);
+            s.applied_at = format!("2026-02-{:02}T12:00:00Z", 15 + i);
             save_run_summary("func-b", &s, dir.path()).unwrap();
         }
 
         let loaded = load_recent_summaries("func-b", 3, dir.path()).unwrap();
         assert_eq!(loaded.len(), 3);
-        assert_eq!(loaded[0].instantiated_at, "2026-02-19T12:00:00Z");
+        assert_eq!(loaded[0].applied_at, "2026-02-19T12:00:00Z");
     }
 
     #[test]
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
 
         let s = &loaded[0];
-        assert_eq!(s.instantiated_at, original.instantiated_at);
+        assert_eq!(s.applied_at, original.applied_at);
         assert_eq!(s.prefix, original.prefix);
         assert_eq!(s.all_succeeded, original.all_succeeded);
         assert_eq!(s.avg_score, original.avg_score);
@@ -889,7 +889,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(summary.instantiated_at, "2026-02-20T12:00:00Z");
+        assert_eq!(summary.applied_at, "2026-02-20T12:00:00Z");
         assert_eq!(summary.prefix, "pfx/");
         assert!(!summary.all_succeeded);
         assert_eq!(summary.task_outcomes.len(), 2);
@@ -990,8 +990,7 @@ mod tests {
 
     #[test]
     fn detect_interventions_from_ops() {
-        let ops = vec![
-            OperationEntry {
+        let ops = [OperationEntry {
                 timestamp: "2026-02-20T12:01:00Z".to_string(),
                 op: "done".to_string(),
                 task_id: Some("pfx/build".to_string()),
@@ -1011,8 +1010,7 @@ mod tests {
                 task_id: Some("pfx/test".to_string()),
                 actor: Some("human".to_string()),
                 detail: serde_json::json!({"detail": "Updated description"}),
-            },
-        ];
+            }];
 
         let op_refs: Vec<&OperationEntry> = ops.iter().collect();
         let interventions = detect_interventions(&op_refs);
@@ -1032,8 +1030,7 @@ mod tests {
 
     #[test]
     fn detect_interventions_ignores_normal_ops() {
-        let ops = vec![
-            OperationEntry {
+        let ops = [OperationEntry {
                 timestamp: "2026-02-20T12:01:00Z".to_string(),
                 op: "add_task".to_string(),
                 task_id: Some("task-1".to_string()),
@@ -1046,8 +1043,7 @@ mod tests {
                 task_id: Some("task-1".to_string()),
                 actor: None,
                 detail: serde_json::Value::Null,
-            },
-        ];
+            }];
 
         let op_refs: Vec<&OperationEntry> = ops.iter().collect();
         let interventions = detect_interventions(&op_refs);
@@ -1056,7 +1052,7 @@ mod tests {
 
     #[test]
     fn detect_interventions_null_detail() {
-        let ops = vec![OperationEntry {
+        let ops = [OperationEntry {
             timestamp: "2026-02-20T12:01:00Z".to_string(),
             op: "retry".to_string(),
             task_id: Some("task-1".to_string()),
@@ -1102,7 +1098,7 @@ mod tests {
     fn render_text_multiple_summaries() {
         let s1 = sample_run_summary();
         let mut s2 = sample_run_summary();
-        s2.instantiated_at = "2026-02-19T08:00:00Z".to_string();
+        s2.applied_at = "2026-02-19T08:00:00Z".to_string();
         s2.all_succeeded = false;
         s2.task_outcomes[1].status = "Failed".to_string();
 
@@ -1117,7 +1113,7 @@ mod tests {
     #[test]
     fn render_text_without_optional_fields() {
         let summary = RunSummary {
-            instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+            applied_at: "2026-02-20T12:00:00Z".to_string(),
             inputs: HashMap::new(),
             prefix: "test/".to_string(),
             task_outcomes: vec![TaskOutcome {

@@ -1,8 +1,8 @@
-//! Integration tests for trace functions: extraction, instantiation, storage,
+//! Integration tests for func commands: extraction, application, storage,
 //! input validation, template substitution, and full round-trips.
 //!
 //! Storage, validation, and substitution tests use library APIs directly.
-//! Extraction and instantiation tests invoke the `wg` binary (CLI).
+//! Extraction and application tests invoke the `wg` binary (CLI).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,12 +31,12 @@ fn make_task(id: &str, title: &str) -> Task {
 fn setup_workgraph(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     let graph = WorkGraph::new();
-    save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 }
 
 fn setup_graph(dir: &Path, graph: &WorkGraph) {
     std::fs::create_dir_all(dir).unwrap();
-    save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(graph, dir.join("graph.jsonl")).unwrap();
 }
 
 fn setup_function(dir: &Path, func: &TraceFunction) {
@@ -773,7 +773,7 @@ fn extract_single_done_task_produces_valid_function() {
     graph.add_node(Node::Task(task));
     setup_graph(&dir, &graph);
 
-    wg_ok(&dir, &["trace", "extract", "impl-config", "--name", "config-func"]);
+    wg_ok(&dir, &["func", "extract", "impl-config", "--name", "config-func"]);
 
     let func_path = dir.join("functions").join("config-func.yaml");
     assert!(func_path.exists());
@@ -818,7 +818,7 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
 
     wg_ok(
         &dir,
-        &["trace", "extract", "feature", "--name", "my-workflow", "--subgraph"],
+        &["func", "extract", "feature", "--name", "my-workflow", "--subgraph"],
     );
 
     let func_path = dir.join("functions").join("my-workflow.yaml");
@@ -850,7 +850,7 @@ fn extract_from_non_done_task_errors() {
     }));
     setup_graph(&dir, &graph);
 
-    let output = wg_cmd(&dir, &["trace", "extract", "open-task"]);
+    let output = wg_cmd(&dir, &["func", "extract", "open-task"]);
     assert!(
         !output.status.success(),
         "Should fail for non-done task"
@@ -876,11 +876,12 @@ fn extract_detects_file_paths_and_commands() {
                 .to_string(),
         ),
         status: Status::Done,
+        artifacts: vec!["src/auth.rs".to_string(), "src/main.rs".to_string()],
         ..Task::default()
     }));
     setup_graph(&dir, &graph);
 
-    wg_ok(&dir, &["trace", "extract", "impl-auth", "--name", "auth-func"]);
+    wg_ok(&dir, &["func", "extract", "impl-auth", "--name", "auth-func"]);
 
     let func_path = dir.join("functions").join("auth-func.yaml");
     let func = trace_function::load_function(&func_path).unwrap();
@@ -891,11 +892,11 @@ fn extract_detects_file_paths_and_commands() {
 }
 
 // ===========================================================================
-// 5. Instantiation tests (via CLI)
+// 5. Application tests (via CLI — `wg func apply`)
 // ===========================================================================
 
 #[test]
-fn instantiate_single_task_function_creates_task() {
+fn apply_single_task_function_creates_task() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -944,10 +945,10 @@ fn instantiate_single_task_function_creates_task() {
 
     wg_ok(
         dir,
-        &["trace", "instantiate", "simple-func", "--input", "feature_name=auth"],
+        &["func", "apply", "simple-func", "--input", "feature_name=auth"],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("auth-do-thing").unwrap();
     assert_eq!(task.title, "Do auth");
     assert_eq!(task.status, Status::Open);
@@ -955,7 +956,7 @@ fn instantiate_single_task_function_creates_task() {
 }
 
 #[test]
-fn instantiate_multi_task_function_correct_after() {
+fn apply_multi_task_function_correct_after() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -963,10 +964,10 @@ fn instantiate_multi_task_function_correct_after() {
 
     wg_ok(
         dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
+        &["func", "apply", "impl-feature", "--input", "feature_name=auth"],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     assert!(graph.get_task("auth-plan").is_some());
     assert!(graph.get_task("auth-implement").is_some());
@@ -988,7 +989,7 @@ fn instantiate_multi_task_function_correct_after() {
 
 
 #[test]
-fn instantiate_dry_run_does_not_modify_graph() {
+fn apply_dry_run_does_not_modify_graph() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -997,19 +998,19 @@ fn instantiate_dry_run_does_not_modify_graph() {
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input", "feature_name=auth",
             "--dry-run",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task("auth-plan").is_none());
     assert!(graph.get_task("auth-implement").is_none());
 }
 
 #[test]
-fn instantiate_after_wires_root_tasks_to_external() {
+fn apply_after_wires_root_tasks_to_external() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1017,25 +1018,25 @@ fn instantiate_after_wires_root_tasks_to_external() {
 
     // Add an external prerequisite task
     {
-        let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
         graph.add_node(Node::Task(Task {
             id: "prerequisite".to_string(),
             title: "Prerequisite".to_string(),
             ..Task::default()
         }));
-        save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
     }
 
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input", "feature_name=auth",
             "--after", "prerequisite",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
     assert!(plan.after.contains(&"prerequisite".to_string()));
@@ -1046,7 +1047,7 @@ fn instantiate_after_wires_root_tasks_to_external() {
 }
 
 #[test]
-fn instantiate_duplicate_task_id_errors() {
+fn apply_duplicate_task_id_errors() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1055,13 +1056,13 @@ fn instantiate_duplicate_task_id_errors() {
     // First instantiation
     wg_ok(
         dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
+        &["func", "apply", "impl-feature", "--input", "feature_name=auth"],
     );
 
     // Second with same prefix should fail
     let output = wg_cmd(
         dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
+        &["func", "apply", "impl-feature", "--input", "feature_name=auth"],
     );
     assert!(!output.status.success());
     let combined = format!(
@@ -1073,7 +1074,7 @@ fn instantiate_duplicate_task_id_errors() {
 }
 
 #[test]
-fn instantiate_with_prefix_override() {
+fn apply_with_prefix_override() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1082,13 +1083,13 @@ fn instantiate_with_prefix_override() {
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input", "feature_name=auth",
             "--prefix", "custom-prefix",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task("custom-prefix-plan").is_some());
     assert!(graph.get_task("custom-prefix-implement").is_some());
     assert!(graph.get_task("custom-prefix-validate").is_some());
@@ -1096,7 +1097,7 @@ fn instantiate_with_prefix_override() {
 }
 
 #[test]
-fn instantiate_substitutes_template_values() {
+fn apply_substitutes_template_values() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1105,13 +1106,13 @@ fn instantiate_substitutes_template_values() {
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input", "feature_name=auth",
             "--input", "test_command=cargo test auth",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
     assert_eq!(plan.title, "Plan auth");
@@ -1123,13 +1124,13 @@ fn instantiate_substitutes_template_values() {
 }
 
 #[test]
-fn instantiate_missing_required_input_errors() {
+fn apply_missing_required_input_errors() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
     setup_function(dir, &sample_function());
 
-    let output = wg_cmd(dir, &["trace", "instantiate", "impl-feature"]);
+    let output = wg_cmd(dir, &["func", "apply", "impl-feature"]);
     assert!(!output.status.success());
     let combined = format!(
         "{}{}",
@@ -1140,14 +1141,14 @@ fn instantiate_missing_required_input_errors() {
 }
 
 #[test]
-fn instantiate_function_not_found_errors() {
+fn apply_function_not_found_errors() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
 
     let output = wg_cmd(
         dir,
-        &["trace", "instantiate", "nonexistent", "--input", "feature_name=auth"],
+        &["func", "apply", "nonexistent", "--input", "feature_name=auth"],
     );
     assert!(!output.status.success());
     let combined = format!(
@@ -1159,7 +1160,7 @@ fn instantiate_function_not_found_errors() {
 }
 
 #[test]
-fn instantiate_with_input_file() {
+fn apply_with_input_file() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1175,18 +1176,18 @@ fn instantiate_with_input_file() {
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input-file", input_file.to_str().unwrap(),
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     let plan = graph.get_task("login-plan").unwrap();
     assert_eq!(plan.title, "Plan login");
 }
 
 #[test]
-fn instantiate_maintains_blocks_symmetry() {
+fn apply_maintains_blocks_symmetry() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1194,10 +1195,10 @@ fn instantiate_maintains_blocks_symmetry() {
 
     wg_ok(
         dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
+        &["func", "apply", "impl-feature", "--input", "feature_name=auth"],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
     assert!(plan.before.contains(&"auth-implement".to_string()));
@@ -1207,7 +1208,7 @@ fn instantiate_maintains_blocks_symmetry() {
 }
 
 #[test]
-fn instantiate_applies_model() {
+fn apply_applies_model() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1216,13 +1217,13 @@ fn instantiate_applies_model() {
     wg_ok(
         dir,
         &[
-            "trace", "instantiate", "impl-feature",
+            "func", "apply", "impl-feature",
             "--input", "feature_name=auth",
             "--model", "sonnet",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     for task_id in &["auth-plan", "auth-implement", "auth-validate", "auth-refine"] {
         let task = graph.get_task(task_id).unwrap();
         assert_eq!(task.model, Some("sonnet".to_string()));
@@ -1230,7 +1231,7 @@ fn instantiate_applies_model() {
 }
 
 #[test]
-fn instantiate_adds_skill_and_role_tags() {
+fn apply_adds_skill_and_role_tags() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1238,10 +1239,10 @@ fn instantiate_adds_skill_and_role_tags() {
 
     wg_ok(
         dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
+        &["func", "apply", "impl-feature", "--input", "feature_name=auth"],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
     assert!(plan.tags.contains(&"skill:analysis".to_string()));
@@ -1295,7 +1296,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
     // Step 2: Extract
     wg_ok(
         &dir,
-        &["trace", "extract", "proj-design", "--name", "project-workflow", "--subgraph"],
+        &["func", "extract", "proj-design", "--name", "project-workflow", "--subgraph"],
     );
 
     // Step 3: Verify extraction
@@ -1308,7 +1309,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
     wg_ok(
         &dir,
         &[
-            "trace", "instantiate", "project-workflow",
+            "func", "apply", "project-workflow",
             "--input", "feature_name=new-proj",
             "--prefix", "new-proj",
         ],
@@ -1318,7 +1319,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
     // Note: template IDs from extraction keep the root's own ID as-is
     // (strip_prefix doesn't strip when task_id == root_id), so the
     // instantiated IDs are prefix + "-" + template_id.
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
 
     // Find the created task IDs based on the function's template IDs
     let func_path = dir.join("functions").join("project-workflow.yaml");
@@ -1371,13 +1372,13 @@ fn round_trip_multiple_instantiations_different_prefixes() {
     setup_graph(&dir, &graph);
 
     // Extract
-    wg_ok(&dir, &["trace", "extract", "tmpl", "--name", "reusable"]);
+    wg_ok(&dir, &["func", "extract", "tmpl", "--name", "reusable"]);
 
     // Instantiate twice
     wg_ok(
         &dir,
         &[
-            "trace", "instantiate", "reusable",
+            "func", "apply", "reusable",
             "--input", "feature_name=first",
             "--prefix", "first",
         ],
@@ -1385,13 +1386,13 @@ fn round_trip_multiple_instantiations_different_prefixes() {
     wg_ok(
         &dir,
         &[
-            "trace", "instantiate", "reusable",
+            "func", "apply", "reusable",
             "--input", "feature_name=second",
             "--prefix", "second",
         ],
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task("first-tmpl").is_some());
     assert!(graph.get_task("second-tmpl").is_some());
 }
@@ -1446,4 +1447,414 @@ fn validate_function_with_duplicate_template_ids() {
 fn validate_function_valid_passes() {
     let func = sample_function();
     trace_function::validate_function(&func).unwrap();
+}
+
+// ===========================================================================
+// 8. Extraction filtering tests (via CLI)
+// ===========================================================================
+
+#[test]
+fn extract_filters_evaluate_tasks_from_subgraph() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "root".to_string(),
+        title: "Root task".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    graph.add_node(Node::Task(Task {
+        id: "root-impl".to_string(),
+        title: "Implement feature".to_string(),
+        status: Status::Done,
+        after: vec!["root".to_string()],
+        ..Task::default()
+    }));
+    // Coordinator-generated evaluate task (should be filtered)
+    graph.add_node(Node::Task(Task {
+        id: "evaluate-root-impl".to_string(),
+        title: "Evaluate root-impl".to_string(),
+        status: Status::Done,
+        after: vec!["root-impl".to_string()],
+        ..Task::default()
+    }));
+    // Coordinator-generated assign task (should be filtered)
+    graph.add_node(Node::Task(Task {
+        id: "assign-root-impl".to_string(),
+        title: "Assign root-impl".to_string(),
+        status: Status::Done,
+        after: vec!["root".to_string()],
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    // Default extraction: evaluate-*/assign-* tasks should be filtered out
+    wg_ok(
+        &dir,
+        &["func", "extract", "root", "--name", "filtered-func", "--subgraph"],
+    );
+
+    let func_path = dir.join("functions").join("filtered-func.yaml");
+    let func = trace_function::load_function(&func_path).unwrap();
+
+    // Only root + root-impl; evaluate-root-impl and assign-root-impl filtered
+    assert_eq!(
+        func.tasks.len(),
+        2,
+        "Should filter out evaluate-* and assign-* tasks, got {} tasks: {:?}",
+        func.tasks.len(),
+        func.tasks.iter().map(|t| &t.template_id).collect::<Vec<_>>()
+    );
+    assert!(func.tasks.iter().all(|t| !t.template_id.starts_with("evaluate")));
+    assert!(func.tasks.iter().all(|t| !t.template_id.starts_with("assign")));
+}
+
+#[test]
+fn extract_include_evaluations_keeps_all_tasks() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "root".to_string(),
+        title: "Root task".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    graph.add_node(Node::Task(Task {
+        id: "root-impl".to_string(),
+        title: "Implement".to_string(),
+        status: Status::Done,
+        after: vec!["root".to_string()],
+        ..Task::default()
+    }));
+    graph.add_node(Node::Task(Task {
+        id: "evaluate-root-impl".to_string(),
+        title: "Evaluate root-impl".to_string(),
+        status: Status::Done,
+        after: vec!["root-impl".to_string()],
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    // With --include-evaluations: keeps all tasks
+    wg_ok(
+        &dir,
+        &[
+            "func", "extract", "root",
+            "--name", "unfiltered-func",
+            "--subgraph",
+            "--include-evaluations",
+        ],
+    );
+
+    let func_path = dir.join("functions").join("unfiltered-func.yaml");
+    let func = trace_function::load_function(&func_path).unwrap();
+    assert_eq!(func.tasks.len(), 3, "Should include all tasks with --include-evaluations");
+}
+
+// ===========================================================================
+// 9. Parameter detection tests
+// ===========================================================================
+
+#[test]
+fn extract_does_not_detect_random_numbers_as_params() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "impl-feature".to_string(),
+        title: "Implement feature with 5 components".to_string(),
+        description: Some(
+            "This task has 3 subtasks. The implementation took 42 lines of code across 7 files."
+                .to_string(),
+        ),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    wg_ok(
+        &dir,
+        &["func", "extract", "impl-feature", "--name", "no-random-nums"],
+    );
+
+    let func_path = dir.join("functions").join("no-random-nums.yaml");
+    let func = trace_function::load_function(&func_path).unwrap();
+
+    // Should NOT extract random numbers (5, 3, 42, 7) as numeric parameters
+    let numeric_inputs: Vec<_> = func
+        .inputs
+        .iter()
+        .filter(|i| i.input_type == InputType::Number)
+        .collect();
+    assert!(
+        numeric_inputs.is_empty(),
+        "Should not extract random numbers without keyword context, got: {:?}",
+        numeric_inputs.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn extract_detects_contextual_numbers_as_params() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "impl-config".to_string(),
+        title: "Implement config".to_string(),
+        description: Some(
+            "Set max retries to 3 and timeout threshold to 0.8 seconds.".to_string(),
+        ),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    wg_ok(
+        &dir,
+        &["func", "extract", "impl-config", "--name", "contextual-nums"],
+    );
+
+    let func_path = dir.join("functions").join("contextual-nums.yaml");
+    let func = trace_function::load_function(&func_path).unwrap();
+
+    // Should detect numbers that appear near parameterizable keywords
+    let numeric_inputs: Vec<_> = func
+        .inputs
+        .iter()
+        .filter(|i| i.input_type == InputType::Number)
+        .collect();
+    assert!(
+        !numeric_inputs.is_empty(),
+        "Should detect contextual numbers (retries, threshold)"
+    );
+}
+
+// ===========================================================================
+// 10. FuncCommands CLI parsing tests
+// ===========================================================================
+
+#[test]
+fn func_list_succeeds_on_empty() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+    setup_workgraph(&dir);
+
+    // wg func list should succeed even with no functions
+    let output = wg_cmd(&dir, &["func", "list"]);
+    assert!(
+        output.status.success(),
+        "wg func list should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn func_show_on_existing_function() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+    setup_workgraph(&dir);
+    setup_function(&dir, &sample_function());
+
+    let stdout = wg_ok(&dir, &["func", "show", "impl-feature"]);
+    assert!(stdout.contains("impl-feature"));
+    assert!(stdout.contains("Implement Feature"));
+}
+
+#[test]
+fn func_show_not_found_errors() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+    setup_workgraph(&dir);
+
+    let output = wg_cmd(&dir, &["func", "show", "nonexistent"]);
+    assert!(!output.status.success(), "Should fail for nonexistent function");
+}
+
+#[test]
+fn func_extract_creates_function() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "done-task".to_string(),
+        title: "A done task".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    wg_ok(&dir, &["func", "extract", "done-task", "--name", "cli-extract-test"]);
+
+    let func_path = dir.join("functions").join("cli-extract-test.yaml");
+    assert!(func_path.exists(), "Function file should be created by wg func extract");
+}
+
+#[test]
+fn func_apply_creates_tasks() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+    setup_function(dir, &sample_function());
+
+    wg_ok(dir, &["func", "apply", "impl-feature", "--input", "feature_name=test"]);
+
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+    assert!(graph.get_task("test-plan").is_some());
+    assert!(graph.get_task("test-implement").is_some());
+    assert!(graph.get_task("test-validate").is_some());
+    assert!(graph.get_task("test-refine").is_some());
+}
+
+#[test]
+fn func_bootstrap_creates_meta_function() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+
+    wg_ok(dir, &["func", "bootstrap"]);
+
+    let func_path = dir.join("functions").join("extract-function.yaml");
+    assert!(func_path.exists(), "Bootstrap should create extract-function");
+}
+
+// ===========================================================================
+// 11. Backward-compatibility alias tests (wg trace → wg func)
+// ===========================================================================
+
+#[test]
+fn trace_extract_alias_works_with_deprecation_warning() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(".workgraph");
+
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "alias-task".to_string(),
+        title: "Alias test".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    setup_graph(&dir, &graph);
+
+    let output = wg_cmd(
+        &dir,
+        &["trace", "extract", "alias-task", "--name", "alias-extract"],
+    );
+    assert!(
+        output.status.success(),
+        "wg trace extract should still work as alias; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("Use 'wg func extract'"),
+        "Should show deprecation warning; stderr: {}",
+        stderr
+    );
+
+    let func_path = dir.join("functions").join("alias-extract.yaml");
+    assert!(func_path.exists(), "Alias should create function file");
+}
+
+#[test]
+fn trace_instantiate_alias_works_with_deprecation_warning() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+    setup_function(dir, &sample_function());
+
+    let output = wg_cmd(
+        dir,
+        &["trace", "instantiate", "impl-feature", "--input", "feature_name=alias-test"],
+    );
+    assert!(
+        output.status.success(),
+        "wg trace instantiate should still work as alias; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("Use 'wg func apply'"),
+        "Should show deprecation warning; stderr: {}",
+        stderr
+    );
+
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+    assert!(graph.get_task("alias-test-plan").is_some());
+}
+
+#[test]
+fn trace_list_functions_alias_works() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+    setup_function(dir, &sample_function());
+
+    let output = wg_cmd(dir, &["trace", "list-functions"]);
+    assert!(
+        output.status.success(),
+        "wg trace list-functions should still work as alias; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("Use 'wg func list'"),
+        "Should show deprecation warning"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("impl-feature"), "Should list the function");
+}
+
+#[test]
+fn trace_show_function_alias_works() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+    setup_function(dir, &sample_function());
+
+    let output = wg_cmd(dir, &["trace", "show-function", "impl-feature"]);
+    assert!(
+        output.status.success(),
+        "wg trace show-function should still work as alias; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("Use 'wg func show'"),
+        "Should show deprecation warning"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Implement Feature"), "Should show function details");
+}
+
+#[test]
+fn trace_bootstrap_alias_works() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    setup_workgraph(dir);
+
+    let output = wg_cmd(dir, &["trace", "bootstrap"]);
+    assert!(
+        output.status.success(),
+        "wg trace bootstrap should still work as alias; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated") || stderr.contains("Use 'wg func bootstrap'"),
+        "Should show deprecation warning"
+    );
 }

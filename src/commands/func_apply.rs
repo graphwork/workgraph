@@ -319,7 +319,7 @@ pub fn run(
 
     let _ = workgraph::provenance::record(
         dir,
-        "instantiate",
+        "apply",
         None,
         None,
         serde_json::json!({
@@ -336,7 +336,7 @@ pub fn run(
         dir,
         &func.id,
         &serde_json::json!({
-            "instantiated_at": Utc::now().to_rfc3339(),
+            "applied_at": Utc::now().to_rfc3339(),
             "inputs": input_summary,
             "prefix": prefix,
             "task_ids": created_ids,
@@ -737,7 +737,7 @@ mod tests {
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         let graph = WorkGraph::new();
-        save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
     }
 
     fn setup_function(dir: &Path, func: &TraceFunction) {
@@ -766,7 +766,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_some());
         assert!(graph.get_task("auth-implement").is_some());
         assert!(graph.get_task("auth-validate").is_some());
@@ -794,7 +794,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let implement = graph.get_task("auth-implement").unwrap();
         assert_eq!(implement.after, vec!["auth-plan"]);
 
@@ -823,7 +823,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("my-prefix-plan").is_some());
         assert!(graph.get_task("my-prefix-implement").is_some());
     }
@@ -849,7 +849,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         for task_id in &["auth-plan", "auth-implement", "auth-validate", "auth-refine"] {
             let task = graph.get_task(task_id).unwrap();
             assert_eq!(task.model, Some("sonnet".to_string()));
@@ -865,13 +865,13 @@ mod tests {
 
         // Add an external task to block on
         {
-            let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+            let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
             graph.add_node(Node::Task(Task {
                 id: "prerequisite".to_string(),
                 title: "Prerequisite".to_string(),
                 ..Task::default()
             }));
-            save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+            save_graph(&graph, dir.join("graph.jsonl")).unwrap();
         }
 
         run(
@@ -888,7 +888,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         // Root task (plan) should be blocked by the external prerequisite
         let plan = graph.get_task("auth-plan").unwrap();
         assert!(plan.after.contains(&"prerequisite".to_string()));
@@ -920,7 +920,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         assert!(plan.tags.contains(&"skill:analysis".to_string()));
         assert!(plan.tags.contains(&"role:analyst".to_string()));
@@ -954,7 +954,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         assert_eq!(plan.title, "Plan auth");
         assert!(plan
@@ -992,7 +992,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_none());
         assert!(graph.get_task("auth-implement").is_none());
     }
@@ -1110,7 +1110,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_some());
     }
 
@@ -1158,7 +1158,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         assert!(plan
             .description
@@ -1188,7 +1188,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         assert!(plan.before.contains(&"auth-implement".to_string()));
 
@@ -1324,10 +1324,10 @@ mod tests {
         .unwrap();
 
         let ops = workgraph::provenance::read_all_operations(dir).unwrap();
-        let instantiate_ops: Vec<_> = ops.iter().filter(|e| e.op == "instantiate").collect();
-        assert_eq!(instantiate_ops.len(), 1);
+        let apply_ops: Vec<_> = ops.iter().filter(|e| e.op == "apply").collect();
+        assert_eq!(apply_ops.len(), 1);
 
-        let detail = &instantiate_ops[0].detail;
+        let detail = &apply_ops[0].detail;
         assert_eq!(detail["function_id"], "impl-feature");
         let created = detail["created_task_ids"].as_array().unwrap();
         assert_eq!(created.len(), 4);
@@ -1361,7 +1361,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_some());
         assert!(graph.get_task("auth-implement").is_some());
         assert!(graph.get_task("auth-validate").is_some());
@@ -1376,7 +1376,7 @@ mod tests {
         let local_dir = tmp.path().join("local").join(".workgraph");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
-        save_graph(&graph, &local_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
         // Set up "peer" workgraph with a function
         let peer_project = tmp.path().join("peer-project");
@@ -1413,7 +1413,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&local_dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(local_dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_some());
         assert!(graph.get_task("auth-implement").is_some());
     }
@@ -1426,7 +1426,7 @@ mod tests {
         let local_dir = tmp.path().join("local").join(".workgraph");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
-        save_graph(&graph, &local_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
         // Set up peer workgraph with a function
         let peer_project = tmp.path().join("peer-project");
@@ -1463,7 +1463,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&local_dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(local_dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task("auth-plan").is_some());
     }
 
@@ -1542,7 +1542,7 @@ mod tests {
 
         let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(record["prefix"], "auth");
-        assert!(record["instantiated_at"].is_string());
+        assert!(record["applied_at"].is_string());
         assert!(record["task_ids"].is_array());
         assert_eq!(record["task_ids"].as_array().unwrap().len(), 4);
     }
@@ -1631,7 +1631,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         let desc = plan.description.as_ref().unwrap();
 
@@ -1673,7 +1673,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         let desc = plan.description.as_ref().unwrap();
 
@@ -1740,7 +1740,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         // Static fallback tasks should be created
         assert!(graph.get_task("auth-plan").is_some());
         assert!(graph.get_task("auth-implement").is_some());
@@ -1793,7 +1793,7 @@ mod tests {
   after: [design]
 ```"#;
 
-        let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
         graph.add_node(Node::Task(Task {
             id: "auth-planner".to_string(),
             title: "Plan it".to_string(),
@@ -1805,7 +1805,7 @@ mod tests {
             }],
             ..Task::default()
         }));
-        save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
         // Run instantiation
         run(
@@ -1822,7 +1822,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         // Should use planner output, not static tasks
         assert!(
             graph.get_task("auth-design").is_some(),

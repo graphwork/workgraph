@@ -1,7 +1,7 @@
 //! Integration tests for the trace-function protocol layers.
 //!
 //! Layer 1 — Static functions: extraction with visibility, YAML round-trip
-//!   including new fields (visibility, redacted_fields), instantiation with
+//!   including new fields (visibility, redacted_fields), application with
 //!   task creation.
 //!
 //! Layer 2 — Generative functions: PlanningConfig, StructuralConstraints,
@@ -35,7 +35,7 @@ use workgraph::trace_memory;
 fn setup_workgraph(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     let graph = WorkGraph::new();
-    save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 }
 
 fn setup_function(dir: &Path, func: &TraceFunction) {
@@ -84,7 +84,7 @@ fn default_inclusions() -> MemoryInclusions {
 
 fn sample_run_summary() -> RunSummary {
     RunSummary {
-        instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+        applied_at: "2026-02-20T12:00:00Z".to_string(),
         inputs: {
             let mut m = HashMap::new();
             m.insert(
@@ -355,7 +355,7 @@ fn layer1_save_load_preserves_visibility_fields() {
 }
 
 #[test]
-fn layer1_instantiate_v1_with_visibility_creates_tasks() {
+fn layer1_apply_v1_with_visibility_creates_tasks() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -363,11 +363,11 @@ fn layer1_instantiate_v1_with_visibility_creates_tasks() {
     let func = sample_v1_with_visibility(FunctionVisibility::Internal);
     setup_function(dir, &func);
 
-    // Use CLI-style instantiation via the library
+    // Use CLI-style application via the library
     let graph_file = dir.join("graph.jsonl");
     let mut graph = load_graph(&graph_file).unwrap();
 
-    // Simulate instantiation: substitute templates & create tasks
+    // Simulate application: substitute templates & create tasks
     let mut inputs = HashMap::new();
     inputs.insert(
         "feature_name".to_string(),
@@ -764,22 +764,22 @@ fn layer3_load_recent_summaries_sorted_newest_first() {
     let tmp = TempDir::new().unwrap();
 
     let mut s1 = sample_run_summary();
-    s1.instantiated_at = "2026-02-18T10:00:00Z".to_string();
+    s1.applied_at = "2026-02-18T10:00:00Z".to_string();
     trace_memory::save_run_summary("func-a", &s1, tmp.path()).unwrap();
 
     let mut s2 = sample_run_summary();
-    s2.instantiated_at = "2026-02-20T12:00:00Z".to_string();
+    s2.applied_at = "2026-02-20T12:00:00Z".to_string();
     trace_memory::save_run_summary("func-a", &s2, tmp.path()).unwrap();
 
     let mut s3 = sample_run_summary();
-    s3.instantiated_at = "2026-02-19T08:00:00Z".to_string();
+    s3.applied_at = "2026-02-19T08:00:00Z".to_string();
     trace_memory::save_run_summary("func-a", &s3, tmp.path()).unwrap();
 
     let loaded = trace_memory::load_recent_summaries("func-a", 10, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 3);
-    assert_eq!(loaded[0].instantiated_at, "2026-02-20T12:00:00Z");
-    assert_eq!(loaded[1].instantiated_at, "2026-02-19T08:00:00Z");
-    assert_eq!(loaded[2].instantiated_at, "2026-02-18T10:00:00Z");
+    assert_eq!(loaded[0].applied_at, "2026-02-20T12:00:00Z");
+    assert_eq!(loaded[1].applied_at, "2026-02-19T08:00:00Z");
+    assert_eq!(loaded[2].applied_at, "2026-02-18T10:00:00Z");
 }
 
 #[test]
@@ -787,15 +787,15 @@ fn layer3_load_recent_respects_max_runs() {
     let tmp = TempDir::new().unwrap();
     for i in 0..5u32 {
         let mut s = sample_run_summary();
-        s.instantiated_at = format!("2026-02-{:02}T12:00:00Z", 15 + i);
+        s.applied_at = format!("2026-02-{:02}T12:00:00Z", 15 + i);
         trace_memory::save_run_summary("func-b", &s, tmp.path()).unwrap();
     }
 
     let loaded = trace_memory::load_recent_summaries("func-b", 2, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 2);
     // Should be the two newest
-    assert_eq!(loaded[0].instantiated_at, "2026-02-19T12:00:00Z");
-    assert_eq!(loaded[1].instantiated_at, "2026-02-18T12:00:00Z");
+    assert_eq!(loaded[0].applied_at, "2026-02-19T12:00:00Z");
+    assert_eq!(loaded[1].applied_at, "2026-02-18T12:00:00Z");
 }
 
 #[test]
@@ -842,7 +842,7 @@ fn layer3_render_summaries_text_single_run() {
 fn layer3_render_summaries_text_multiple_runs() {
     let s1 = sample_run_summary();
     let mut s2 = sample_run_summary();
-    s2.instantiated_at = "2026-02-19T08:00:00Z".to_string();
+    s2.applied_at = "2026-02-19T08:00:00Z".to_string();
     s2.all_succeeded = false;
     s2.task_outcomes[1].status = "Failed".to_string();
 
@@ -859,7 +859,7 @@ fn layer3_render_run_summaries_config_aware() {
     let summary = sample_run_summary();
 
     // With all inclusions
-    let text = trace_memory::render_run_summaries(&[summary.clone()], &default_inclusions());
+    let text = trace_memory::render_run_summaries(std::slice::from_ref(&summary), &default_inclusions());
     assert!(text.contains("SUCCESS"));
     assert!(text.contains("2/2 succeeded"));
     assert!(text.contains("0.88"));
@@ -894,7 +894,7 @@ fn layer3_render_run_summaries_with_retries() {
 
 #[test]
 fn layer3_memory_injection_into_template_substitution() {
-    // Simulate what trace_instantiate does for v3 functions:
+    // Simulate what func_apply does for v3 functions:
     // 1. Load run summaries → render to text
     // 2. Substitute inputs in template
     // 3. Replace {{memory.run_summaries}} with rendered text
@@ -1310,13 +1310,13 @@ fn cross_layer_v3_function_with_runs_full_cycle() {
 
     // Write some past run summaries
     let mut s1 = sample_run_summary();
-    s1.instantiated_at = "2026-02-18T10:00:00Z".to_string();
+    s1.applied_at = "2026-02-18T10:00:00Z".to_string();
     s1.all_succeeded = false;
     s1.task_outcomes[1].status = "Failed".to_string();
     trace_memory::append_run_summary(dir, &func.id, &s1).unwrap();
 
     let mut s2 = sample_run_summary();
-    s2.instantiated_at = "2026-02-19T10:00:00Z".to_string();
+    s2.applied_at = "2026-02-19T10:00:00Z".to_string();
     trace_memory::append_run_summary(dir, &func.id, &s2).unwrap();
 
     // Load run summaries through the config

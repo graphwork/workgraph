@@ -871,7 +871,7 @@ fn test_runs_diff_json_output() {
     // Change t1 to Open
     let mut graph = load_wg_graph(&wg_dir);
     graph.get_task_mut("t1").unwrap().status = Status::Open;
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
     assert_eq!(json["run_id"], "run-001");
@@ -909,7 +909,7 @@ fn test_runs_list_json() {
         let mut graph = load_wg_graph(&wg_dir);
         graph.get_task_mut("t1").unwrap().status = Status::Failed;
         graph.get_task_mut("t1").unwrap().failure_reason = Some("err".to_string());
-        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     }
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
@@ -1189,7 +1189,7 @@ fn test_runs_diff_removed_task() {
     // Remove t2 from graph
     let mut graph = load_wg_graph(&wg_dir);
     graph.remove_node("t2");
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
     let changes = json["changes"].as_array().unwrap();
@@ -1218,7 +1218,7 @@ fn test_runs_diff_added_task() {
     // Add t2
     let mut graph = load_wg_graph(&wg_dir);
     graph.add_node(Node::Task(make_task("t2", "Task 2", Status::Open)));
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
     let changes = json["changes"].as_array().unwrap();
@@ -1253,7 +1253,7 @@ fn test_runs_list_three_runs_chronological() {
         let mut graph = load_wg_graph(&wg_dir);
         graph.get_task_mut("t1").unwrap().status = Status::Failed;
         graph.get_task_mut("t1").unwrap().failure_reason = Some("err".to_string());
-        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     }
 
     let json = wg_json(&wg_dir, &["runs", "list"]);
@@ -1951,7 +1951,7 @@ fn test_multiple_replay_cycles_preserve_all_archives() {
         let mut graph = load_wg_graph(&wg_dir);
         graph.get_task_mut("t1").unwrap().status = Status::Failed;
         graph.get_task_mut("t1").unwrap().failure_reason = Some("err again".to_string());
-        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     }
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 

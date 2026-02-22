@@ -80,7 +80,7 @@ mod tests {
         let result = run(dir.path(), "t1");
         assert!(result.is_ok());
 
-        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(!task.paused);
     }
@@ -114,7 +114,7 @@ mod tests {
 
         run(dir.path(), "t1").unwrap();
 
-        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.log.len(), 1);
         assert!(task.log[0].message.contains("resumed"));

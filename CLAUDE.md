@@ -19,8 +19,12 @@ to update the global binary. Forgetting this step is a common source of "why isn
 
 Configure the coordinator's executor and model with `wg config coordinator.executor <type>` and `wg config coordinator.model <model>`. Supported executors: `claude` (default), `amplifier` (provides bundles and multi-agent delegation). Spawned agents receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars indicating their runtime context.
 
-## For Spawned Agents
+## For All Agents (Including the Orchestrating Agent)
 
 CRITICAL: Do NOT use built-in TaskCreate/TaskUpdate/TaskList/TaskGet tools.
 These are a separate system that does NOT interact with workgraph.
 Always use `wg` CLI commands for all task management.
+
+ALL tasks — including research, exploration, and planning — should be workgraph tasks.
+The only things that happen at the orchestrating agent level are conversation and interactive CLI.
+Everything else gets dispatched through `wg add` and `wg service start`.

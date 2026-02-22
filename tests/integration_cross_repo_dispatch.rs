@@ -261,11 +261,10 @@ fn direct_add_task_with_after() {
     graph.add_node(Node::Task(task));
 
     // Update the blocker's blocks field (same as add.rs logic)
-    if let Some(blocker) = graph.get_task_mut("prereq-task") {
-        if !blocker.before.contains(&"dependent-task".to_string()) {
+    if let Some(blocker) = graph.get_task_mut("prereq-task")
+        && !blocker.before.contains(&"dependent-task".to_string()) {
             blocker.before.push("dependent-task".to_string());
         }
-    }
     save_graph(&graph, &graph_path).unwrap();
 
     // Verify both tasks and the bidirectional relationship
@@ -388,7 +387,7 @@ fn cli_add_with_repo_flag_direct_fallback() {
     assert!(stdout.contains("remote:"), "Expected 'remote:' prefix in output: {}", stdout);
 
     // Verify the task was created in the remote graph
-    let remote_graph = load_graph(&remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = remote_graph.tasks().collect();
     assert_eq!(tasks.len(), 1, "Expected 1 task in remote graph");
     assert_eq!(tasks[0].title, "Cross-repo test task");
@@ -432,7 +431,7 @@ fn cli_add_with_repo_flag_by_path() {
     );
 
     // Verify the task was created in the remote graph
-    let remote_graph = load_graph(&remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = remote_graph.tasks().collect();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].title, "Path-based remote task");
@@ -515,7 +514,7 @@ fn cli_add_with_repo_and_task_options() {
     );
 
     // Verify all fields were set correctly
-    let remote_graph = load_graph(&remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
     let task = remote_graph.get_task("custom-id").unwrap();
     assert_eq!(task.title, "Task with options");
     assert_eq!(task.description.as_deref(), Some("Detailed description"));
@@ -555,7 +554,7 @@ fn cli_add_without_repo_flag_adds_locally() {
     );
 
     // Should have been added to the local graph
-    let local_graph = load_graph(&local_wg.join("graph.jsonl")).unwrap();
+    let local_graph = load_graph(local_wg.join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = local_graph.tasks().collect();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].title, "Local task");
@@ -809,7 +808,7 @@ fn cli_add_with_cross_repo_after() {
     );
 
     // Verify after was stored with the peer:task-id reference
-    let graph = load_graph(&local_wg.join("graph.jsonl")).unwrap();
+    let graph = load_graph(local_wg.join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = graph.tasks().collect();
     assert_eq!(tasks.len(), 1);
     assert!(
@@ -1010,7 +1009,7 @@ fn end_to_end_cross_repo_all_four_subsystems() {
     );
 
     // Verify the task landed in project B's graph
-    let graph_b = load_graph(&wg_b.join("graph.jsonl")).unwrap();
+    let graph_b = load_graph(wg_b.join("graph.jsonl")).unwrap();
     let dispatched = graph_b.get_task("build-lib").unwrap();
     assert_eq!(dispatched.title, "Build shared library");
     assert_eq!(

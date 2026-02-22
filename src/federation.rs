@@ -1468,7 +1468,7 @@ mod tests {
         task.title = "A remote task".to_string();
         task.status = crate::graph::Status::Done;
         peer_graph.add_node(crate::graph::Node::Task(task));
-        crate::parser::save_graph(&peer_graph, &peer_wg.join("graph.jsonl")).unwrap();
+        crate::parser::save_graph(&peer_graph, peer_wg.join("graph.jsonl")).unwrap();
 
         // Configure federation with the peer
         let config = FederationConfig {
@@ -1505,7 +1505,7 @@ mod tests {
         let peer_wg = peer_project.join(".workgraph");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let peer_graph = crate::graph::WorkGraph::new();
-        crate::parser::save_graph(&peer_graph, &peer_wg.join("graph.jsonl")).unwrap();
+        crate::parser::save_graph(&peer_graph, peer_wg.join("graph.jsonl")).unwrap();
 
         let config = FederationConfig {
             remotes: BTreeMap::new(),

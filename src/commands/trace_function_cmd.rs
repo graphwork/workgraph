@@ -4,7 +4,7 @@ use workgraph::trace_function::{
     self, FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
 };
 
-/// List all available trace functions.
+/// List all available functions.
 pub fn run_list(
     dir: &Path,
     json: bool,
@@ -54,8 +54,8 @@ pub fn run_list(
         if json {
             println!("[]");
         } else {
-            println!("No trace functions found.");
-            println!("  Extract one with: wg trace extract <task-id>");
+            println!("No functions found.");
+            println!("  Extract one with: wg func extract <task-id>");
             if !include_peers {
                 println!("  Use --include-peers to search federated workgraphs.");
             }
@@ -200,7 +200,7 @@ fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: O
     }
 }
 
-/// Show details of a single trace function.
+/// Show details of a single function.
 pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
     let func_dir = trace_function::functions_dir(dir);
     let func =
@@ -373,7 +373,7 @@ fn print_function_details(func: &TraceFunction, func_dir: &Path) {
         println!();
         println!("Runs: {} recorded", runs.len());
         if let Some(last) = runs.last() {
-            println!("  Last run: {}", last.instantiated_at);
+            println!("  Last run: {}", last.applied_at);
             if let Some(score) = last.avg_score {
                 print!("  Last score: {:.2}", score);
             }
@@ -1046,7 +1046,7 @@ mod tests {
 
         // Write a .runs.jsonl file
         let run = RunSummary {
-            instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+            applied_at: "2026-02-20T12:00:00Z".to_string(),
             inputs: HashMap::new(),
             prefix: "impl-feature/".to_string(),
             task_outcomes: vec![],

@@ -72,7 +72,7 @@ fn load_with_sources_custom(
     let config: Config = merged.try_into().expect("deserialize merged config");
 
     // Fill in defaults for keys present in neither file
-    let default_val: toml::Value = toml::Value::try_from(&Config::default())
+    let default_val: toml::Value = toml::Value::try_from(Config::default())
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let mut default_sources = BTreeMap::new();
     record_sources(&default_val, "", &ConfigSource::Default, &mut default_sources);

@@ -872,7 +872,7 @@ fn test_eval_task_routes_to_inline_spawn() {
     // Verify that evaluation tasks with "evaluation" tag and exec field
     // would be detected by the routing logic in spawn_agents_for_ready_tasks
     let tmp = TempDir::new().unwrap();
-    let (wg_dir, graph_path) = setup_workgraph(&tmp);
+    let (_wg_dir, graph_path) = setup_workgraph(&tmp);
 
     let mut graph = WorkGraph::new();
 

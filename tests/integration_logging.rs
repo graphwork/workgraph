@@ -667,14 +667,13 @@ fn check_coherency(wg_dir: &Path) -> Vec<String> {
                 .iter()
                 .rev()
                 .find(|e| e.task_id.as_deref() == Some(archived_id.as_str()));
-            if let Some(last_op) = last_op_for_task {
-                if last_op.op == "archive" || last_op.op == "gc" {
+            if let Some(last_op) = last_op_for_task
+                && (last_op.op == "archive" || last_op.op == "gc") {
                     issues.push(format!(
                         "Task '{}' was {}'d but still in graph",
                         archived_id, last_op.op
                     ));
                 }
-            }
         }
     }
 

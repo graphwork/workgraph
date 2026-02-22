@@ -7,7 +7,7 @@ use workgraph::trace_function::{
     StructuralConstraints, TaskTemplate, TraceFunction, FunctionVisibility,
 };
 
-/// Run the `wg trace bootstrap` command.
+/// Run the `wg func bootstrap` command.
 ///
 /// Creates or re-extracts the `extract-function` meta-function — a built-in
 /// generative function that describes the extraction process itself as a
@@ -39,7 +39,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
             run_id: None,
             timestamp: now.clone(),
         }],
-        extracted_by: Some("wg trace bootstrap".to_string()),
+        extracted_by: Some("wg func bootstrap".to_string()),
         extracted_at: Some(now),
         tags: vec!["meta".to_string(), "extraction".to_string()],
         inputs: vec![
@@ -196,12 +196,12 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
     println!("  Saved to: {}", saved_path.display());
     println!();
     println!("  Usage:");
-    println!("    wg trace instantiate extract-function \\");
+    println!("    wg func apply extract-function \\");
     println!("      --input source_task_id=my-task \\");
     println!("      --input function_name=my-function");
     println!();
     println!("  To make it adaptive (learns from past extractions):");
-    println!("    wg trace make-adaptive extract-function");
+    println!("    wg func make-adaptive extract-function");
 
     Ok(())
 }
@@ -215,7 +215,7 @@ mod tests {
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        workgraph::parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
     }
 
     #[test]

@@ -8,11 +8,11 @@ use workgraph::trace_function::{
 };
 use workgraph::trace_memory;
 
-/// Run the `wg trace make-adaptive <function-id>` command.
+/// Run the `wg func make-adaptive <function-id>` command.
 ///
 /// Upgrades a generative function (version >= 2) to an adaptive function
 /// (version 3) by adding TraceMemoryConfig and scanning provenance for
-/// past instantiation runs.
+/// past application runs.
 pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
     let func_dir = trace_function::functions_dir(dir);
     let mut func = trace_function::find_function_by_prefix(&func_dir, function_id)
@@ -23,7 +23,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
         bail!(
             "Function '{}' is version {} (static). Only generative functions (version >= 2) \
              can be made adaptive. First upgrade to generative with: \
-             wg trace extract --generative",
+             wg func extract --generative",
             func.id,
             func.version
         );
@@ -36,12 +36,12 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
         );
     }
 
-    // Scan provenance for past instantiations of this function
+    // Scan provenance for past applications of this function
     let all_ops = provenance::read_all_operations(dir).unwrap_or_default();
-    let instantiations: Vec<_> = all_ops
+    let applications: Vec<_> = all_ops
         .iter()
         .filter(|op| {
-            op.op == "instantiate"
+            (op.op == "apply" || op.op == "instantiate")
                 && op
                     .detail
                     .get("function_id")
@@ -51,12 +51,12 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
         })
         .collect();
 
-    // Build RunSummary for each past instantiation
+    // Build RunSummary for each past application
     let mut summaries = Vec::new();
     let graph_result = super::load_workgraph(dir);
 
     if let Ok((graph, _path)) = graph_result {
-        for inst_op in &instantiations {
+        for inst_op in &applications {
             let created_ids: Vec<String> = inst_op
                 .detail
                 .get("created_task_ids")
@@ -137,7 +137,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
             }
 
             let summary = RunSummary {
-                instantiated_at: inst_op.timestamp.clone(),
+                applied_at: inst_op.timestamp.clone(),
                 inputs,
                 prefix,
                 task_outcomes,
@@ -200,7 +200,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
             summaries.len()
         );
     } else {
-        println!("  No past instantiations found in provenance");
+        println!("  No past applications found in provenance");
     }
     let runs_path = trace_memory::runs_path(dir, &func.id);
     println!("  Runs file: {}", runs_path.display());
@@ -219,7 +219,7 @@ mod tests {
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         let graph = WorkGraph::new();
-        save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
     }
 
     fn sample_generative_function() -> TraceFunction {
