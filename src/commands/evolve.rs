@@ -980,8 +980,8 @@ fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Resul
         status: Status::Open,
         assigned: None,
         estimate: None,
-        blocks: vec![],
-        blocked_by: vec![],
+        before: vec![],
+        after: vec![],
         requires: vec![],
         tags: vec!["evolution".to_string(), "agency".to_string()],
         skills: vec![],
@@ -1000,11 +1000,11 @@ fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Resul
         model: None,
         verify: Some("Human must approve evolver self-mutation before applying.".to_string()),
         agent: None,
-        loops_to: vec![],
         loop_iteration: 0,
         ready_after: None,
         paused: false,
         visibility: "internal".to_string(),
+        cycle_config: None,
     };
 
     graph.add_node(Node::Task(task));

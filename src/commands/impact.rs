@@ -225,7 +225,7 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -241,9 +241,9 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -263,11 +263,11 @@ mod tests {
         // t1 -> t2 -> t3 -> t4
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t3".to_string()];
+        t4.after = vec!["t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -291,11 +291,11 @@ mod tests {
         // Diamond: t1 -> t2, t3 -> t4
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t2".to_string(), "t3".to_string()];
+        t4.after = vec!["t2".to_string(), "t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -323,14 +323,14 @@ mod tests {
         });
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.estimate = Some(Estimate {
             hours: Some(16.0),
             cost: None,
         });
 
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         t3.estimate = Some(Estimate {
             hours: Some(4.0),
             cost: None,

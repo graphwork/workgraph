@@ -5,7 +5,7 @@
 
 use tempfile::TempDir;
 use workgraph::check::check_all;
-use workgraph::graph::{LoopEdge, LoopGuard, Node, Resource, Status, Task, WorkGraph};
+use workgraph::graph::{Node, Resource, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
 /// Helper: create a minimal open task.
@@ -42,9 +42,9 @@ fn setup_graph_with_nodes(nodes: Vec<Node>) -> (TempDir, std::path::PathBuf) {
 // ── check: orphan references ────────────────────────────────────────
 
 #[test]
-fn check_detects_orphan_blocked_by() {
+fn check_detects_orphan_after() {
     let mut task = make_task("t1", "Depends on missing");
-    task.blocked_by.push("nonexistent".to_string());
+    task.after.push("nonexistent".to_string());
     let (_dir, path) = setup_graph(vec![task]);
 
     let graph = load_graph(&path).unwrap();
@@ -52,7 +52,7 @@ fn check_detects_orphan_blocked_by() {
 
     assert!(
         !result.orphan_refs.is_empty(),
-        "Should detect orphan blocked_by reference"
+        "Should detect orphan after reference"
     );
     assert!(result.orphan_refs.iter().any(|o| o.to == "nonexistent"));
 }
@@ -83,7 +83,7 @@ fn check_clean_graph_passes() {
     let mut parent = make_task("parent", "Parent");
     parent.status = Status::Done;
     let mut child = make_task("child", "Child");
-    child.blocked_by.push("parent".to_string());
+    child.after.push("parent".to_string());
     let (_dir, path) = setup_graph(vec![parent, child]);
 
     let graph = load_graph(&path).unwrap();
@@ -91,72 +91,6 @@ fn check_clean_graph_passes() {
 
     assert!(result.orphan_refs.is_empty());
     assert!(result.cycles.is_empty());
-    assert!(result.loop_edge_issues.is_empty());
-}
-
-#[test]
-fn check_loop_edge_target_not_found() {
-    let mut task = make_task("t1", "Looper");
-    task.loops_to.push(LoopEdge {
-        target: "nonexistent".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    });
-    let (_dir, path) = setup_graph(vec![task]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        !result.loop_edge_issues.is_empty(),
-        "Should detect loop edge to nonexistent target"
-    );
-}
-
-#[test]
-fn check_loop_edge_zero_max_iterations() {
-    let mut source = make_task("source", "Source");
-    source.loops_to.push(LoopEdge {
-        target: "target".to_string(),
-        guard: None,
-        max_iterations: 0,
-        delay: None,
-    });
-    let target = make_task("target", "Target");
-    let (_dir, path) = setup_graph(vec![source, target]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        !result.loop_edge_issues.is_empty(),
-        "Should flag zero max_iterations"
-    );
-}
-
-#[test]
-fn check_loop_edge_guard_task_not_found() {
-    let mut source = make_task("source", "Source");
-    source.loops_to.push(LoopEdge {
-        target: "target".to_string(),
-        guard: Some(LoopGuard::TaskStatus {
-            task: "missing-guard".to_string(),
-            status: Status::Done,
-        }),
-        max_iterations: 3,
-        delay: None,
-    });
-    let target = make_task("target", "Target");
-    let (_dir, path) = setup_graph(vec![source, target]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        !result.loop_edge_issues.is_empty(),
-        "Should detect guard task not found"
-    );
 }
 
 // ── check: resource references ────────────────────────────────────────
@@ -192,7 +126,7 @@ fn context_collects_artifacts_from_dependencies() {
     dep.artifacts = vec!["output.json".to_string(), "report.md".to_string()];
 
     let mut child = make_task("child", "Dependent");
-    child.blocked_by.push("dep".to_string());
+    child.after.push("dep".to_string());
     child.inputs = vec!["output.json".to_string()];
 
     let (_dir, path) = setup_graph(vec![dep, child]);
@@ -202,7 +136,7 @@ fn context_collects_artifacts_from_dependencies() {
 
     // Collect artifacts from dependencies
     let mut all_artifacts = std::collections::HashSet::new();
-    for dep_id in &task.blocked_by {
+    for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id) {
             for artifact in &dep_task.artifacts {
                 all_artifacts.insert(artifact.clone());
@@ -229,7 +163,7 @@ fn context_identifies_missing_inputs() {
     dep.artifacts = vec!["output.json".to_string()];
 
     let mut child = make_task("child", "Dependent");
-    child.blocked_by.push("dep".to_string());
+    child.after.push("dep".to_string());
     child.inputs = vec!["output.json".to_string(), "missing.csv".to_string()];
 
     let (_dir, path) = setup_graph(vec![dep, child]);
@@ -238,7 +172,7 @@ fn context_identifies_missing_inputs() {
     let task = graph.get_task("child").unwrap();
 
     let mut all_artifacts = std::collections::HashSet::new();
-    for dep_id in &task.blocked_by {
+    for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id) {
             for artifact in &dep_task.artifacts {
                 all_artifacts.insert(artifact.clone());
@@ -263,7 +197,7 @@ fn context_empty_when_no_dependencies() {
     let graph = load_graph(&path).unwrap();
     let task = graph.get_task("standalone").unwrap();
 
-    assert!(task.blocked_by.is_empty());
+    assert!(task.after.is_empty());
     assert!(task.inputs.is_empty());
 }
 
@@ -362,17 +296,17 @@ fn check_diamond_dependency_no_cycle() {
     // A -> B, A -> C, B -> D, C -> D (diamond)
     let mut a = make_task("a", "A");
     let mut b = make_task("b", "B");
-    b.blocked_by.push("a".to_string());
+    b.after.push("a".to_string());
     let mut c = make_task("c", "C");
-    c.blocked_by.push("a".to_string());
+    c.after.push("a".to_string());
     let mut d = make_task("d", "D");
-    d.blocked_by.push("b".to_string());
-    d.blocked_by.push("c".to_string());
+    d.after.push("b".to_string());
+    d.after.push("c".to_string());
 
     // Set up blocks (reverse edges)
-    a.blocks = vec!["b".to_string(), "c".to_string()];
-    b.blocks = vec!["d".to_string()];
-    c.blocks = vec!["d".to_string()];
+    a.before = vec!["b".to_string(), "c".to_string()];
+    b.before = vec!["d".to_string()];
+    c.before = vec!["d".to_string()];
 
     let (_dir, path) = setup_graph(vec![a, b, c, d]);
 
@@ -383,72 +317,3 @@ fn check_diamond_dependency_no_cycle() {
     assert!(result.orphan_refs.is_empty());
 }
 
-#[test]
-fn check_valid_loop_edge() {
-    let mut source = make_task("source", "Source");
-    source.loops_to.push(LoopEdge {
-        target: "target".to_string(),
-        guard: None,
-        max_iterations: 5,
-        delay: Some("30s".to_string()),
-    });
-    let target = make_task("target", "Target");
-    let (_dir, path) = setup_graph(vec![source, target]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        result.loop_edge_issues.is_empty(),
-        "Valid loop edge should have no issues"
-    );
-}
-
-#[test]
-fn check_self_loop_with_delay_allowed() {
-    // Self-loops WITH delay are a valid polling pattern and should not be flagged
-    let mut task = make_task("poll", "Poller");
-    task.loops_to.push(LoopEdge {
-        target: "poll".to_string(),
-        guard: None,
-        max_iterations: 10,
-        delay: Some("5m".to_string()),
-    });
-    let (_dir, path) = setup_graph(vec![task]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        result.loop_edge_issues.is_empty(),
-        "Self-loops with delay should not be flagged"
-    );
-}
-
-#[test]
-fn check_self_loop_no_delay_flagged() {
-    // Self-loops WITHOUT delay would immediately re-open on done — should be flagged
-    let mut task = make_task("poll", "Poller");
-    task.loops_to.push(LoopEdge {
-        target: "poll".to_string(),
-        guard: None,
-        max_iterations: 10,
-        delay: None,
-    });
-    let (_dir, path) = setup_graph(vec![task]);
-
-    let graph = load_graph(&path).unwrap();
-    let result = check_all(&graph);
-
-    assert!(
-        !result.loop_edge_issues.is_empty(),
-        "Self-loops without delay should be flagged"
-    );
-    assert!(
-        result
-            .loop_edge_issues
-            .iter()
-            .any(|i| i.kind == workgraph::check::LoopEdgeIssueKind::SelfLoop),
-        "Should flag as SelfLoop issue"
-    );
-}

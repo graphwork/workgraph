@@ -60,7 +60,7 @@ pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
 
             // Check if inputs are available from dependencies
             let mut available_artifacts: HashSet<String> = HashSet::new();
-            for dep_id in &task.blocked_by {
+            for dep_id in &task.after {
                 if let Some(dep_task) = graph.get_task(dep_id) {
                     for artifact in &dep_task.artifacts {
                         available_artifacts.insert(artifact.clone());

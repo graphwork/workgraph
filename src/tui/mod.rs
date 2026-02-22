@@ -987,14 +987,14 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
     }
 
     // Blockers
-    if !task.blocked_by.is_empty() {
+    if !task.after.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Blocked by:",
+            "After:",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )));
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             lines.push(Line::from(Span::styled(
                 format!("  - {}", blocker),
                 Style::default().fg(Color::Red),
@@ -1004,14 +1004,14 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
     }
 
     // Blocks
-    if !task.blocks.is_empty() {
+    if !task.before.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Blocks:",
+            "Before:",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )));
-        for blocked in &task.blocks {
+        for blocked in &task.before {
             lines.push(Line::from(Span::styled(
                 format!("  - {}", blocked),
                 Style::default().fg(Color::Yellow),
@@ -1054,16 +1054,16 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
         lines.push(Line::from(""));
     }
 
-    // Loop info
-    if !task.loops_to.is_empty() || task.loop_iteration > 0 {
+    // Cycle info
+    if task.cycle_config.is_some() || task.loop_iteration > 0 {
         lines.push(Line::from(Span::styled(
-            "Loops:",
+            "Cycle:",
             Style::default()
                 .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
         )));
-        for edge in &task.loops_to {
-            let guard_str = match &edge.guard {
+        if let Some(ref cc) = task.cycle_config {
+            let guard_str = match &cc.guard {
                 Some(workgraph::graph::LoopGuard::TaskStatus { task: t, status: s }) => {
                     format!(", guard: {}={:?}", t, s)
                 }
@@ -1073,14 +1073,14 @@ fn draw_graph_detail_overlay(frame: &mut Frame, explorer: &app::GraphExplorer) {
                 Some(workgraph::graph::LoopGuard::Always) => ", guard: always".to_string(),
                 None => String::new(),
             };
-            let delay_str = match &edge.delay {
+            let delay_str = match &cc.delay {
                 Some(d) => format!(", delay: {}", d),
                 None => String::new(),
             };
             lines.push(Line::from(Span::styled(
                 format!(
-                    "  -> {} (max: {}{}{})",
-                    edge.target, edge.max_iterations, guard_str, delay_str
+                    "  max_iterations: {}{}{}",
+                    cc.max_iterations, guard_str, delay_str
                 ),
                 Style::default().fg(Color::LightMagenta),
             )));

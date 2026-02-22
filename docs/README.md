@@ -79,7 +79,7 @@ Resources represent consumable or limited assets:
 
 ### Dependencies (The Graph)
 
-Tasks form a directed graph through `blocked_by` relationships (forward dependencies) and `loops_to` edges (iterative cycles for review loops, retries, recurring work).
+Tasks form a directed graph through `blocked_by` relationships. Repeating workflows (review loops, retries, recurring work) are modeled as structural cycles — `blocked_by` back-edges with `CycleConfig` controlling iteration limits. Use `wg cycles` to inspect them.
 
 Key graph concepts:
 

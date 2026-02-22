@@ -600,73 +600,66 @@ For most projects:
 
 5. **Ship**: When `wg ready` is empty and everything important is done, you're there.
 
-## Loop edges (cyclic processes)
+## Cycles (repeating workflows)
 
-Some workflows repeat: write → review → revise → write again. Loop edges let you model this. A `loops_to` edge on a task fires when that task completes, resetting a target task back to `open` and incrementing its `loop_iteration` counter.
+Some workflows repeat: write → review → revise → write again. Workgraph models these as **structural cycles** — `after` back-edges with a `CycleConfig` that controls iteration limits and behavior. Cycles are detected automatically from the graph structure using Tarjan's SCC algorithm. Use `wg cycles` to inspect detected cycles.
 
-### How it works
-
-When the source task completes (via `wg done`), each of its loop edges is evaluated:
-
-1. **Guard check** — if a guard condition is set, it must be true for the loop to fire.
-2. **Iteration check** — the target's `loop_iteration` must be below `max_iterations`.
-3. **Re-activate** — the target is reset to `open`, its `loop_iteration` is incremented, and any `assigned`/`started_at`/`completed_at` fields are cleared.
-4. **Propagate** — intermediate tasks between the target and source in the dependency chain are also re-opened. This happens through the dependency system, not the loop edge itself — resetting the target breaks the `blocked_by` chain downstream, so tasks that were `done` from a previous iteration get re-opened to run again.
-5. **Delay** — if `--loop-delay` is set, the target gets a `ready_after` timestamp so it won't be dispatched until the delay elapses.
-6. **Convergence** — an agent can signal `wg done <task> --converged` to prevent the loop from firing, even if iterations remain. Useful when the work has reached a stable state before hitting `max_iterations`.
-
-### Creating loop edges
+### Creating cycles
 
 ```bash
-# write → review → revise, with revise looping back to write (max 3 iterations)
-wg add "Write draft" --id write
-wg add "Review draft" --blocked-by write --id review
-wg add "Revise draft" --blocked-by review --id revise \
-  --loops-to write --loop-max 3
+# write → review cycle, max 3 iterations
+wg add "Write draft" --id write --after review --max-iterations 3
+wg add "Review draft" --after write --id review
 
-# With a delay (wait 5 minutes between iterations)
-wg add "Poll status" --loops-to poll-status --loop-max 10 --loop-delay 5m
-
-# With a guard condition (only loop if another task has a specific status)
-wg add "Retry upload" --loops-to retry-upload --loop-max 5 \
-  --loop-guard "task:check-connection=done"
-
-# Self-loops are allowed
-wg add "Periodic check" --loops-to periodic-check --loop-max 20 --loop-delay 1h
-
-# Edit existing tasks to add/remove loop edges
-wg edit my-task --add-loops-to target-task --loop-max 5
-wg edit my-task --remove-loops-to target-task
+# Inspect detected cycles
+wg cycles
 ```
 
-`--loop-max` is required — every loop must have a hard iteration cap.
+The `--max-iterations` flag sets a `CycleConfig` on the task, making it the **cycle header** — the entry point that controls iteration. The cycle is detected automatically from the `after` edges. Without `--max-iterations`, a cycle in the graph is treated as an unconfigured deadlock (flagged by `wg check`).
 
-### Example: write → review → revise cycle
-
-```
-Iteration 0: write(open) → review(blocked) → revise(blocked)
-             write completes → review becomes ready
-             review completes → revise becomes ready
-             revise completes → loop fires → write reset to open (iteration 1)
-
-Iteration 1: write(open, iter=1) → review(re-opened) → revise(re-opened)
-             Same cycle repeats...
-
-Iteration 2: write(open, iter=2) → review(re-opened) → revise(re-opened)
-             revise completes → loop fires → write reset to open (iteration 3)
-             iteration 3 >= max 3 → loop stops
-```
-
-### How agents see loops
-
-When an agent is spawned on a task inside a loop, it can read `loop_iteration` from `wg show` to know which pass it's on. Previous iterations' logs and artifacts are preserved, so the agent can review what happened before and build on it rather than starting from scratch.
-
-### Inspecting loops
+Optional cycle configuration:
 
 ```bash
-wg loops               # List all loop edges, their status, and iteration counts
-wg show <task-id>      # Shows loop edges and current iteration on a task
-wg viz                 # Loop edges appear as dashed lines in graph output
+# Guard: only iterate if review failed
+wg add "Write draft" --id write --after review \
+  --max-iterations 5 --cycle-guard "task:review=failed"
+
+# Delay between iterations
+wg edit write --cycle-delay "5m"
+```
+
+When a cycle completes an iteration (all members reach `done`), the cycle header and all members are reset to `open` with `loop_iteration` incremented.
+
+### Convergence
+
+Any agent working on a cycle member can signal early termination when the work has converged:
+
+```bash
+wg done <task-id> --converged   # stops the cycle even if iterations remain
+```
+
+The `--converged` flag adds a `"converged"` tag to the **cycle header** (regardless of which member you complete). This stops the cycle from iterating further. Using plain `wg done` allows the next iteration to proceed. Use `--converged` when no more iterations are needed.
+
+### How agents see cycles
+
+When an agent is spawned on a task inside a cycle, it can read `loop_iteration` from `wg show` to know which pass it's on. Previous iterations' logs and artifacts are preserved, so the agent can review what happened before and build on it rather than starting from scratch.
+
+### Inspecting cycles
+
+```bash
+wg cycles              # List detected cycles, their status, and iteration counts
+wg cycles --json       # Machine-readable cycle information
+wg show <task-id>      # Shows cycle membership and current iteration on a task
+wg viz                 # Cycle edges appear as dashed lines in graph output
+```
+
+### Migrating from loops_to
+
+If you have existing graphs using the old `loops_to` edge system, migrate them:
+
+```bash
+wg migrate-loops --dry-run   # Preview what would change
+wg migrate-loops             # Convert loops_to edges to structural cycles
 ```
 
 ## Trace & sharing

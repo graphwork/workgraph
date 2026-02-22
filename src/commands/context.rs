@@ -29,11 +29,11 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
     let task = graph.get_task_or_err(task_id)?;
 
-    // Collect all artifacts from dependencies (blocked_by)
+    // Collect all artifacts from dependencies (after)
     let mut available_context = Vec::new();
     let mut all_artifacts: HashSet<String> = HashSet::new();
 
-    for dep_id in &task.blocked_by {
+    for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id) {
             for artifact in &dep_task.artifacts {
                 all_artifacts.insert(artifact.clone());
@@ -119,11 +119,11 @@ pub fn run_dependents(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
     let task = graph.get_task_or_err(task_id)?;
 
-    // Find tasks that list this task in their blocked_by
+    // Find tasks that list this task in their after
     let mut dependents: Vec<(String, String, Vec<String>)> = Vec::new();
 
     for other in graph.tasks() {
-        if other.blocked_by.contains(&task_id.to_string()) {
+        if other.after.contains(&task_id.to_string()) {
             // Check which of our artifacts this task needs
             let needed: Vec<String> = other
                 .inputs
@@ -219,7 +219,7 @@ mod tests {
 
         // Task 2 depends on t1 and needs output.txt
         let mut t2 = make_task("t2", "Consumer Task");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["output.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -265,7 +265,7 @@ mod tests {
         // No artifacts produced
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["missing.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -294,16 +294,16 @@ mod tests {
 
         let mut t2 = make_task("t2", "Middle 1");
         t2.status = Status::Done;
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.artifacts = vec!["middle-output.txt".to_string()];
 
         let mut t3 = make_task("t3", "Middle 2");
         t3.status = Status::Done;
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         t3.artifacts = vec!["final-input.txt".to_string()];
 
         let mut t4 = make_task("t4", "Consumer");
-        t4.blocked_by = vec!["t3".to_string()];
+        t4.after = vec!["t3".to_string()];
         t4.inputs = vec!["final-input.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -366,7 +366,7 @@ mod tests {
         t2.artifacts = vec!["c.txt".to_string()];
 
         let mut t3 = make_task("t3", "Consumer");
-        t3.blocked_by = vec!["t1".to_string(), "t2".to_string()];
+        t3.after = vec!["t1".to_string(), "t2".to_string()];
         t3.inputs = vec![
             "a.txt".to_string(),
             "c.txt".to_string(),
@@ -395,7 +395,7 @@ mod tests {
         // No artifacts
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -417,7 +417,7 @@ mod tests {
         t1.artifacts = vec!["output.txt".to_string()];
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["output.txt".to_string(), "missing.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -468,11 +468,11 @@ mod tests {
         t1.deliverables = vec!["shared.txt".to_string()];
 
         let mut t2 = make_task("t2", "Consumer 1");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["shared.txt".to_string()];
 
         let mut t3 = make_task("t3", "Consumer 2");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         t3.inputs = vec!["shared.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -500,7 +500,7 @@ mod tests {
         t1.deliverables = vec!["data.json".to_string()];
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["data.json".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -537,7 +537,7 @@ mod tests {
 
         // t1 depends on a task that doesn't exist in the graph
         let mut t1 = make_task("t1", "Has missing dependency");
-        t1.blocked_by = vec!["nonexistent".to_string()];
+        t1.after = vec!["nonexistent".to_string()];
         t1.inputs = vec!["file.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -574,7 +574,7 @@ mod tests {
         t1.artifacts = vec!["extra.txt".to_string()];
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["expected.txt".to_string(), "extra.txt".to_string()];
 
         graph.add_node(Node::Task(t1));

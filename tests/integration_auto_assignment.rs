@@ -217,8 +217,8 @@ fn build_assign_subgraph(dir: &Path) {
             status: Status::Open,
             assigned: None,
             estimate: None,
-            blocks: vec![ready_task.id.clone()],
-            blocked_by: vec![],
+            before: vec![ready_task.id.clone()],
+            after: vec![],
             requires: vec![],
             tags: vec!["assignment".to_string(), "agency".to_string()],
             skills: vec![],
@@ -237,19 +237,19 @@ fn build_assign_subgraph(dir: &Path) {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));
 
         if let Some(t) = mutable_graph.get_task_mut(&ready_task.id)
-            && !t.blocked_by.contains(&assign_task_id)
+            && !t.after.contains(&assign_task_id)
         {
-            t.blocked_by.push(assign_task_id.clone());
+            t.after.push(assign_task_id.clone());
         }
 
         graph_modified = true;
@@ -305,14 +305,14 @@ fn test_assign_subgraph_blocks_original_task() {
     // The assign task should have blocks = [task-1]
     let assign = graph.get_task("assign-task-1").unwrap();
     assert!(
-        assign.blocks.contains(&"task-1".to_string()),
+        assign.before.contains(&"task-1".to_string()),
         "assign task should block the original task"
     );
 
-    // The original task should have blocked_by = [assign-task-1]
+    // The original task should have after = [assign-task-1]
     let original = graph.get_task("task-1").unwrap();
     assert!(
-        original.blocked_by.contains(&"assign-task-1".to_string()),
+        original.after.contains(&"assign-task-1".to_string()),
         "original task should be blocked by assign task"
     );
 
@@ -520,7 +520,7 @@ fn test_assign_subgraph_multiple_ready_tasks() {
         let task = graph.get_task(id).unwrap();
         let assign_id = format!("assign-{}", id);
         assert!(
-            task.blocked_by.contains(&assign_id),
+            task.after.contains(&assign_id),
             "task {} should be blocked by {}",
             id,
             assign_id
@@ -535,9 +535,9 @@ fn test_assign_subgraph_skips_blocked_tasks() {
 
     // task-b is blocked by task-a, so only task-a is ready
     let mut task_a = make_task("task-a", "Prerequisite");
-    task_a.blocks = vec!["task-b".to_string()];
+    task_a.before = vec!["task-b".to_string()];
     let mut task_b = make_task("task-b", "Depends on A");
-    task_b.blocked_by = vec!["task-a".to_string()];
+    task_b.after = vec!["task-a".to_string()];
 
     setup_workgraph(dir, vec![task_a, task_b]);
     write_config_auto_assign(dir, true);
@@ -654,7 +654,7 @@ fn test_full_assignment_pipeline() {
     // Verify assign task was created
     let assign = graph.get_task("assign-feature-1").unwrap();
     assert_eq!(assign.status, Status::Open);
-    assert!(assign.blocks.contains(&"feature-1".to_string()));
+    assert!(assign.before.contains(&"feature-1".to_string()));
 
     let desc = assign.description.as_ref().unwrap();
     assert!(desc.contains("Add authentication"));
@@ -697,8 +697,8 @@ fn test_assignment_pipeline_with_mixed_tasks() {
     let mut assigned_task = make_task("already-assigned", "Already has agent");
     assigned_task.agent = Some("existing-agent".to_string());
 
-    let mut blocked_task = make_task("blocked-one", "Blocked by other");
-    blocked_task.blocked_by = vec!["already-assigned".to_string()];
+    let mut blocked_task = make_task("blocked-one", "After other");
+    blocked_task.after = vec!["already-assigned".to_string()];
 
     let ready_task = make_task("needs-assignment", "Needs an agent");
 
@@ -1113,8 +1113,8 @@ Begin working on the task now.
             status: Status::Open,
             assigned: None,
             estimate: None,
-            blocks: vec!["rust-feature".to_string()],
-            blocked_by: vec![],
+            before: vec!["rust-feature".to_string()],
+            after: vec![],
             requires: vec![],
             tags: vec!["assignment".to_string(), "agency".to_string()],
             skills: vec![],
@@ -1133,14 +1133,15 @@ Begin working on the task now.
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
+            visibility: "internal".to_string(),
+            cycle_config: None,
         };
 
         // Wire up: assign-rust-feature blocks rust-feature
-        task.blocked_by = vec!["assign-rust-feature".to_string()];
+        task.after = vec!["assign-rust-feature".to_string()];
         setup_workgraph(&wg_dir, vec![task, assign_task]);
 
         // Spawn a real Claude agent on the assign task

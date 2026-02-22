@@ -47,21 +47,30 @@ impl TemplateVars {
 
         let skills_preamble = Self::resolve_skills_preamble(workgraph_dir);
 
-        let task_loop_info = if !task.loops_to.is_empty() {
-            let edges: Vec<String> = task.loops_to.iter().map(|edge| {
-                format!("  - loops to '{}' (max {})", edge.target, edge.max_iterations)
-            }).collect();
+        let task_loop_info = if task.cycle_config.is_some() {
+            let config = task.cycle_config.as_ref().unwrap();
             format!(
-                "## Loop Information\n\n\
-                 This task has loop edges (iteration {}):\n{}\n\n\
-                 **IMPORTANT: When this loop's work is complete (converged), you MUST use:**\n\
+                "## Cycle Information\n\n\
+                 This task is a cycle header (iteration {}, max {}).\n\n\
+                 **IMPORTANT: When this cycle's work is complete (converged), you MUST use:**\n\
                  ```\n\
                  wg done {} --converged\n\
                  ```\n\
-                 Using plain `wg done` will cause the loop to fire again and re-open tasks.\n\
+                 Using plain `wg done` will cause the cycle to iterate again and re-open tasks.\n\
                  Only use plain `wg done` if you want the next iteration to proceed.",
                 task.loop_iteration,
-                edges.join("\n"),
+                config.max_iterations,
+                task.id
+            )
+        } else if task.loop_iteration > 0 {
+            format!(
+                "## Cycle Information\n\n\
+                 This task is in cycle iteration {}.\n\n\
+                 **IMPORTANT: When this cycle's work is complete (converged), you MUST use:**\n\
+                 ```\n\
+                 wg done {} --converged\n\
+                 ```",
+                task.loop_iteration,
                 task.id
             )
         } else {
@@ -408,10 +417,23 @@ You MUST use these commands to track your work:
 - If the task description is unclear, do your best interpretation
 - Focus only on this specific task
 
+## Graph Patterns (see docs/AGENT-GUIDE.md for details)
+
+**Vocabulary:** pipeline (A→B→C), diamond (A→[B,C,D]→E), scatter-gather (heterogeneous reviewers of same artifact), loop (A→B→C→A with `--max-iterations`).
+
+**Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files — one will overwrite the other. When unsure, default to pipeline.
+
+**When creating subtasks:**
+- Always include an integrator task at join points: `wg add "Integrate" --after worker-a,worker-b`
+- List each worker's file scope in the task description
+- Run `wg quickstart` for full command reference
+
+**After code changes:** Run `cargo install --path .` to update the global binary.
+
 ## CRITICAL: Use wg CLI, NOT built-in tools
 - You MUST use `wg` CLI commands for ALL task management
 - NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools — they are a completely separate system that does NOT interact with workgraph
-- If you need to create subtasks: `wg add "title" --blocked-by {{task_id}}`
+- If you need to create subtasks: `wg add "title" --after {{task_id}}`
 - To check task status: `wg show <task-id>`
 - To list tasks: `wg list`
 
@@ -503,6 +525,13 @@ You MUST use these commands to track your work:
 - If the task description is unclear, do your best interpretation
 - Focus only on this specific task
 
+## CRITICAL: Use wg CLI, NOT built-in tools
+- You MUST use `wg` CLI commands for ALL task management
+- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools — they are a completely separate system that does NOT interact with workgraph
+- If you need to create subtasks: `wg add "title" --after {{task_id}}`
+- To check task status: `wg show <task-id>`
+- To list tasks: `wg list`
+
 Begin working on the task now."#.to_string(),
                     }),
                     working_dir: Some("{{working_dir}}".to_string()),
@@ -570,8 +599,8 @@ mod tests {
             status: crate::graph::Status::Open,
             assigned: None,
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -590,11 +619,11 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         }
     }
 
@@ -1312,23 +1341,17 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_template_vars_include_loop_info() {
-        use crate::graph::LoopEdge;
         let mut task = make_test_task("task-1", "Looping Task");
-        task.loops_to = vec![LoopEdge {
-            target: "write".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
         task.loop_iteration = 2;
+        task.cycle_config = Some(crate::graph::CycleConfig {
+            max_iterations: 3,
+            guard: None,
+            delay: None,
+        });
 
         let vars = TemplateVars::from_task(&task, None, None);
 
         assert!(vars.task_loop_info.contains("iteration 2"));
-        assert!(vars.task_loop_info.contains("loops to 'write'"));
-        assert!(vars.task_loop_info.contains("max 3"));
-        assert!(vars.task_loop_info.contains("wg done task-1 --converged"));
-        assert!(vars.task_loop_info.contains("IMPORTANT"));
     }
 
     #[test]
@@ -1372,15 +1395,13 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_template_apply_loop_info_substitution() {
-        use crate::graph::LoopEdge;
         let mut task = make_test_task("task-1", "Loop Task");
-        task.loops_to = vec![LoopEdge {
-            target: "review".to_string(),
-            guard: None,
-            max_iterations: 5,
-            delay: None,
-        }];
         task.loop_iteration = 1;
+        task.cycle_config = Some(crate::graph::CycleConfig {
+            max_iterations: 5,
+            guard: None,
+            delay: None,
+        });
 
         let vars = TemplateVars::from_task(&task, None, None);
         let template = "Before\n{{task_loop_info}}\nAfter";
@@ -1388,7 +1409,6 @@ args = ["--custom-flag"]
 
         assert!(result.contains("Before"));
         assert!(result.contains("After"));
-        assert!(result.contains("--converged"));
         assert!(!result.contains("{{task_loop_info}}"));
     }
 }

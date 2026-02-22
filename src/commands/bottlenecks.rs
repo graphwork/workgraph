@@ -13,7 +13,7 @@ struct BottleneckInfo {
     id: String,
     title: String,
     direct_blocks: usize,
-    transitive_blocks: usize,
+    transitive_before: usize,
     status: Status,
     assigned: Option<String>,
     recommendation: Option<String>,
@@ -43,18 +43,18 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         // Count transitive dependents
         let mut transitive: HashSet<String> = HashSet::new();
         collect_transitive_dependents(&reverse_index, &task.id, &mut transitive);
-        let transitive_blocks = transitive.len();
+        let transitive_before = transitive.len();
 
         // Only include tasks that block at least one other task
-        if transitive_blocks > 0 {
+        if transitive_before > 0 {
             let recommendation =
-                generate_recommendation(&task.status, transitive_blocks, total_tasks);
+                generate_recommendation(&task.status, transitive_before, total_tasks);
 
             bottlenecks.push(BottleneckInfo {
                 id: task.id.clone(),
                 title: task.title.clone(),
                 direct_blocks,
-                transitive_blocks,
+                transitive_before,
                 status: task.status,
                 assigned: task.assigned.clone(),
                 recommendation,
@@ -63,7 +63,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     }
 
     // Sort by transitive impact (highest first)
-    bottlenecks.sort_by(|a, b| b.transitive_blocks.cmp(&a.transitive_blocks));
+    bottlenecks.sort_by(|a, b| b.transitive_before.cmp(&a.transitive_before));
 
     // Take top 10
     let top_bottlenecks: Vec<BottleneckInfo> = bottlenecks.into_iter().take(10).collect();
@@ -84,10 +84,10 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
         for (i, bottleneck) in top_bottlenecks.iter().enumerate() {
             println!("{}. {}", i + 1, bottleneck.id);
-            println!("   Directly blocks: {} tasks", bottleneck.direct_blocks);
+            println!("   Directly before: {} tasks", bottleneck.direct_blocks);
             println!(
-                "   Transitively blocks: {} tasks",
-                bottleneck.transitive_blocks
+                "   Transitively before: {} tasks",
+                bottleneck.transitive_before
             );
 
             let status_str = match bottleneck.status {
@@ -120,14 +120,14 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 /// Generate a recommendation based on status and impact
 fn generate_recommendation(
     status: &Status,
-    transitive_blocks: usize,
+    transitive_before: usize,
     total_tasks: usize,
 ) -> Option<String> {
     if total_tasks == 0 {
         return None;
     }
 
-    let percentage = (transitive_blocks as f64 / total_tasks as f64 * 100.0).round() as usize;
+    let percentage = (transitive_before as f64 / total_tasks as f64 * 100.0).round() as usize;
 
     match status {
         Status::Done => None, // No recommendation for done tasks
@@ -181,7 +181,7 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -198,11 +198,11 @@ mod tests {
         // t1 -> t2 -> t3 -> t4
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t3".to_string()];
+        t4.after = vec!["t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -226,11 +226,11 @@ mod tests {
         // Diamond: t1 -> t2, t3 -> t4
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t2".to_string(), "t3".to_string()];
+        t4.after = vec!["t2".to_string(), "t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));

@@ -38,10 +38,10 @@ pub struct ExportedTask {
     pub visibility: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocked_by")]
+    pub after: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocks")]
+    pub before: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -119,8 +119,8 @@ pub fn run(
                 status: t.status.clone(),
                 visibility: t.visibility.clone(),
                 skills: t.skills.clone(),
-                blocked_by: t.blocked_by.clone(),
-                blocks: t.blocks.clone(),
+                after: t.after.clone(),
+                before: t.before.clone(),
                 tags: t.tags.clone(),
                 artifacts: t.artifacts.clone(),
                 created_at: t.created_at.clone(),
@@ -227,14 +227,14 @@ pub fn run(
     Ok(())
 }
 
-/// Collect all descendants of a task (tasks that are blocked_by it, transitively).
+/// Collect all descendants of a task (tasks that are after it, transitively).
 fn collect_descendants(
     graph: &workgraph::graph::WorkGraph,
     root_id: &str,
     collected: &mut HashSet<String>,
 ) {
     for task in graph.tasks() {
-        if task.blocked_by.iter().any(|dep| dep == root_id) && collected.insert(task.id.clone()) {
+        if task.after.iter().any(|dep| dep == root_id) && collected.insert(task.id.clone()) {
             collect_descendants(graph, &task.id, collected);
         }
     }

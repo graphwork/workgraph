@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{LoopEdge, Node, Status, Task, WorkGraph};
+use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::trace_function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, InputType, LoopEdgeTemplate,
@@ -130,7 +130,7 @@ fn sample_function() -> TraceFunction {
                 title: "Plan {{input.feature_name}}".to_string(),
                 description: "Plan the implementation of {{input.feature_name}}".to_string(),
                 skills: vec!["analysis".to_string()],
-                blocked_by: vec![],
+                after: vec![],
                 loops_to: vec![],
                 role_hint: Some("analyst".to_string()),
                 deliverables: vec![],
@@ -142,7 +142,7 @@ fn sample_function() -> TraceFunction {
                 title: "Implement {{input.feature_name}}".to_string(),
                 description: "Implement the feature. Run: {{input.test_command}}".to_string(),
                 skills: vec!["implementation".to_string()],
-                blocked_by: vec!["plan".to_string()],
+                after: vec!["plan".to_string()],
                 loops_to: vec![],
                 role_hint: Some("programmer".to_string()),
                 deliverables: vec![],
@@ -154,7 +154,7 @@ fn sample_function() -> TraceFunction {
                 title: "Validate {{input.feature_name}}".to_string(),
                 description: "Validate the implementation".to_string(),
                 skills: vec!["review".to_string()],
-                blocked_by: vec!["implement".to_string()],
+                after: vec!["implement".to_string()],
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
@@ -166,7 +166,7 @@ fn sample_function() -> TraceFunction {
                 title: "Refine {{input.feature_name}}".to_string(),
                 description: "Address issues found during validation".to_string(),
                 skills: vec![],
-                blocked_by: vec!["validate".to_string()],
+                after: vec!["validate".to_string()],
                 loops_to: vec![LoopEdgeTemplate {
                     target: "validate".to_string(),
                     max_iterations: 3,
@@ -214,7 +214,7 @@ fn storage_round_trip_yaml() {
 
     // Verify task template details survived
     assert_eq!(loaded.tasks[0].template_id, "plan");
-    assert_eq!(loaded.tasks[1].blocked_by, vec!["plan"]);
+    assert_eq!(loaded.tasks[1].after, vec!["plan"]);
     assert_eq!(loaded.tasks[3].loops_to.len(), 1);
     assert_eq!(loaded.tasks[3].loops_to[0].target, "validate");
     assert_eq!(loaded.tasks[3].loops_to[0].max_iterations, 3);
@@ -714,7 +714,7 @@ fn substitution_task_template_all_fields() {
         title: "Plan {{input.feature_name}}".to_string(),
         description: "Plan {{input.feature_name}} using {{input.test_command}}".to_string(),
         skills: vec!["analysis".to_string(), "{{input.language}}".to_string()],
-        blocked_by: vec!["prereq".to_string()],
+        after: vec!["prereq".to_string()],
         loops_to: vec![],
         role_hint: Some("analyst".to_string()),
         deliverables: vec!["docs/{{input.feature_name}}.md".to_string()],
@@ -747,7 +747,7 @@ fn substitution_task_template_all_fields() {
 
     // Preserved fields (not substituted)
     assert_eq!(result.template_id, "plan");
-    assert_eq!(result.blocked_by, vec!["prereq"]);
+    assert_eq!(result.after, vec!["prereq"]);
     assert_eq!(result.role_hint, Some("analyst".to_string()));
     assert_eq!(result.tags, vec!["impl"]);
 }
@@ -799,14 +799,14 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
         id: "feature-plan".to_string(),
         title: "Plan feature".to_string(),
         status: Status::Done,
-        blocked_by: vec!["feature".to_string()],
+        after: vec!["feature".to_string()],
         ..Task::default()
     }));
     graph.add_node(Node::Task(Task {
         id: "feature-build".to_string(),
         title: "Build feature".to_string(),
         status: Status::Done,
-        blocked_by: vec!["feature-plan".to_string()],
+        after: vec!["feature-plan".to_string()],
         ..Task::default()
     }));
     setup_graph(&dir, &graph);
@@ -820,63 +820,16 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
     let func = trace_function::load_function(&func_path).unwrap();
     assert_eq!(func.tasks.len(), 3);
 
-    // Check blocked_by edges remapped to template IDs
+    // Check after edges remapped to template IDs
     let plan_tmpl = func.tasks.iter().find(|t| t.template_id == "plan").unwrap();
-    assert_eq!(plan_tmpl.blocked_by, vec!["feature"]);
+    assert_eq!(plan_tmpl.after, vec!["feature"]);
 
     let build_tmpl = func.tasks.iter().find(|t| t.template_id == "build").unwrap();
-    assert_eq!(build_tmpl.blocked_by, vec!["plan"]);
+    assert_eq!(build_tmpl.after, vec!["plan"]);
 
     trace_function::validate_function(&func).unwrap();
 }
 
-#[test]
-fn extract_preserves_loop_edges() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
-
-    let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(Task {
-        id: "flow".to_string(),
-        title: "Flow root".to_string(),
-        status: Status::Done,
-        ..Task::default()
-    }));
-    graph.add_node(Node::Task(Task {
-        id: "flow-validate".to_string(),
-        title: "Validate".to_string(),
-        status: Status::Done,
-        blocked_by: vec!["flow".to_string()],
-        ..Task::default()
-    }));
-    graph.add_node(Node::Task(Task {
-        id: "flow-refine".to_string(),
-        title: "Refine".to_string(),
-        status: Status::Done,
-        blocked_by: vec!["flow-validate".to_string()],
-        loops_to: vec![LoopEdge {
-            target: "flow-validate".to_string(),
-            guard: None,
-            max_iterations: 5,
-            delay: None,
-        }],
-        ..Task::default()
-    }));
-    setup_graph(&dir, &graph);
-
-    wg_ok(
-        &dir,
-        &["trace", "extract", "flow", "--name", "loop-func", "--subgraph"],
-    );
-
-    let func_path = dir.join("functions").join("loop-func.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
-
-    let refine_tmpl = func.tasks.iter().find(|t| t.template_id == "refine").unwrap();
-    assert_eq!(refine_tmpl.loops_to.len(), 1);
-    assert_eq!(refine_tmpl.loops_to[0].target, "validate");
-    assert_eq!(refine_tmpl.loops_to[0].max_iterations, 5);
-}
 
 #[test]
 fn extract_from_non_done_task_errors() {
@@ -968,7 +921,7 @@ fn instantiate_single_task_function_creates_task() {
             title: "Do {{input.feature_name}}".to_string(),
             description: "Do the thing for {{input.feature_name}}".to_string(),
             skills: vec![],
-            blocked_by: vec![],
+            after: vec![],
             loops_to: vec![],
             role_hint: None,
             deliverables: vec![],
@@ -992,7 +945,7 @@ fn instantiate_single_task_function_creates_task() {
 }
 
 #[test]
-fn instantiate_multi_task_function_correct_blocked_by() {
+fn instantiate_multi_task_function_correct_after() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1011,36 +964,18 @@ fn instantiate_multi_task_function_correct_blocked_by() {
     assert!(graph.get_task("auth-refine").is_some());
 
     let plan = graph.get_task("auth-plan").unwrap();
-    assert!(plan.blocked_by.is_empty());
+    assert!(plan.after.is_empty());
 
     let implement = graph.get_task("auth-implement").unwrap();
-    assert_eq!(implement.blocked_by, vec!["auth-plan"]);
+    assert_eq!(implement.after, vec!["auth-plan"]);
 
     let validate = graph.get_task("auth-validate").unwrap();
-    assert_eq!(validate.blocked_by, vec!["auth-implement"]);
+    assert_eq!(validate.after, vec!["auth-implement"]);
 
     let refine = graph.get_task("auth-refine").unwrap();
-    assert_eq!(refine.blocked_by, vec!["auth-validate"]);
+    assert_eq!(refine.after, vec!["auth-validate"]);
 }
 
-#[test]
-fn instantiate_with_loop_edges_creates_correct_loops_to() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    setup_workgraph(dir);
-    setup_function(dir, &sample_function());
-
-    wg_ok(
-        dir,
-        &["trace", "instantiate", "impl-feature", "--input", "feature_name=auth"],
-    );
-
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
-    let refine = graph.get_task("auth-refine").unwrap();
-    assert_eq!(refine.loops_to.len(), 1);
-    assert_eq!(refine.loops_to[0].target, "auth-validate");
-    assert_eq!(refine.loops_to[0].max_iterations, 3);
-}
 
 #[test]
 fn instantiate_dry_run_does_not_modify_graph() {
@@ -1064,7 +999,7 @@ fn instantiate_dry_run_does_not_modify_graph() {
 }
 
 #[test]
-fn instantiate_blocked_by_wires_root_tasks_to_external() {
+fn instantiate_after_wires_root_tasks_to_external() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     setup_workgraph(dir);
@@ -1086,18 +1021,18 @@ fn instantiate_blocked_by_wires_root_tasks_to_external() {
         &[
             "trace", "instantiate", "impl-feature",
             "--input", "feature_name=auth",
-            "--blocked-by", "prerequisite",
+            "--after", "prerequisite",
         ],
     );
 
     let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
-    assert!(plan.blocked_by.contains(&"prerequisite".to_string()));
+    assert!(plan.after.contains(&"prerequisite".to_string()));
 
     let implement = graph.get_task("auth-implement").unwrap();
-    assert!(!implement.blocked_by.contains(&"prerequisite".to_string()));
-    assert!(implement.blocked_by.contains(&"auth-plan".to_string()));
+    assert!(!implement.after.contains(&"prerequisite".to_string()));
+    assert!(implement.after.contains(&"auth-plan".to_string()));
 }
 
 #[test]
@@ -1255,10 +1190,10 @@ fn instantiate_maintains_blocks_symmetry() {
     let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
 
     let plan = graph.get_task("auth-plan").unwrap();
-    assert!(plan.blocks.contains(&"auth-implement".to_string()));
+    assert!(plan.before.contains(&"auth-implement".to_string()));
 
     let implement = graph.get_task("auth-implement").unwrap();
-    assert!(implement.blocks.contains(&"auth-validate".to_string()));
+    assert!(implement.before.contains(&"auth-validate".to_string()));
 }
 
 #[test]
@@ -1331,7 +1266,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
         title: "Implement the project".to_string(),
         description: Some("Write the code".to_string()),
         status: Status::Done,
-        blocked_by: vec!["proj-design".to_string()],
+        after: vec!["proj-design".to_string()],
         skills: vec!["coding".to_string()],
         artifacts: vec!["src/main.rs".to_string()],
         ..Task::default()
@@ -1341,7 +1276,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
         title: "Test the project".to_string(),
         description: Some("Run cargo test".to_string()),
         status: Status::Done,
-        blocked_by: vec!["proj-implement".to_string()],
+        after: vec!["proj-implement".to_string()],
         skills: vec!["testing".to_string()],
         ..Task::default()
     }));
@@ -1402,77 +1337,19 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
 
     let new_implement = graph.get_task(&format!("new-proj-{}", implement_tid.template_id)).unwrap();
     assert!(
-        new_implement.blocked_by.contains(&format!("new-proj-{}", design_tid.template_id)),
+        new_implement.after.contains(&format!("new-proj-{}", design_tid.template_id)),
         "implement should be blocked by design: {:?}",
-        new_implement.blocked_by
+        new_implement.after
     );
 
     let new_test = graph.get_task(&format!("new-proj-{}", test_tid.template_id)).unwrap();
     assert!(
-        new_test.blocked_by.contains(&format!("new-proj-{}", implement_tid.template_id)),
+        new_test.after.contains(&format!("new-proj-{}", implement_tid.template_id)),
         "test should be blocked by implement: {:?}",
-        new_test.blocked_by
+        new_test.after
     );
 }
 
-#[test]
-fn round_trip_with_loop_edges() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
-
-    // Create workflow with loop
-    let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(Task {
-        id: "loop-root".to_string(),
-        title: "Root".to_string(),
-        status: Status::Done,
-        ..Task::default()
-    }));
-    graph.add_node(Node::Task(Task {
-        id: "loop-root-check".to_string(),
-        title: "Check".to_string(),
-        status: Status::Done,
-        blocked_by: vec!["loop-root".to_string()],
-        ..Task::default()
-    }));
-    graph.add_node(Node::Task(Task {
-        id: "loop-root-fix".to_string(),
-        title: "Fix".to_string(),
-        status: Status::Done,
-        blocked_by: vec!["loop-root-check".to_string()],
-        loops_to: vec![LoopEdge {
-            target: "loop-root-check".to_string(),
-            guard: None,
-            max_iterations: 5,
-            delay: None,
-        }],
-        ..Task::default()
-    }));
-    setup_graph(&dir, &graph);
-
-    // Extract
-    wg_ok(
-        &dir,
-        &["trace", "extract", "loop-root", "--name", "loop-workflow", "--subgraph"],
-    );
-
-    // Instantiate
-    wg_ok(
-        &dir,
-        &[
-            "trace", "instantiate", "loop-workflow",
-            "--input", "feature_name=retry-flow",
-            "--prefix", "retry-flow",
-        ],
-    );
-
-    // Verify
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
-    let new_fix = graph.get_task("retry-flow-fix").unwrap();
-    assert_eq!(new_fix.loops_to.len(), 1);
-    assert_eq!(new_fix.loops_to[0].target, "retry-flow-check");
-    assert_eq!(new_fix.loops_to[0].max_iterations, 5);
-}
 
 #[test]
 fn round_trip_multiple_instantiations_different_prefixes() {
@@ -1514,9 +1391,9 @@ fn round_trip_multiple_instantiations_different_prefixes() {
 // ===========================================================================
 
 #[test]
-fn validate_function_with_bad_blocked_by_reference() {
+fn validate_function_with_bad_after_reference() {
     let mut func = sample_function();
-    func.tasks[1].blocked_by = vec!["nonexistent-task".to_string()];
+    func.tasks[1].after = vec!["nonexistent-task".to_string()];
 
     let err = trace_function::validate_function(&func).unwrap_err();
     match err {

@@ -1,26 +1,29 @@
 # Research: Organizational Patterns & Formal Models for Workgraph
 
-**Date**: 2026-02-18
+**Date**: 2026-02-18 (updated 2026-02-21)
 **Task**: research-org-patterns
 **Audience**: Workgraph users designing agencies, roles, and task decompositions
+**Cross-references**: [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md), [Cycle-Aware Graph Design](../design/cycle-aware-graph.md), [Agent Guide](../AGENT-GUIDE.md)
 
 ---
 
 ## Executive Summary
 
-Workgraph's primitives — tasks, dependency edges, roles, motivations, agents, a coordinator, evaluations, and an evolve loop — are not arbitrary design choices. They map precisely onto well-established concepts from organizational theory, cybernetics, workflow science, and distributed systems. This document develops a vocabulary and framework — a "mathematics of organizations" — that helps users think rigorously about how to structure work in workgraph.
+Workgraph's primitives — tasks, dependency edges (`after`/`before`), roles, motivations, agents, a coordinator, evaluations, and an evolve loop — are not arbitrary design choices. They map precisely onto well-established concepts from organizational theory, cybernetics, workflow science, and distributed systems. This document develops a vocabulary and framework — a "mathematics of organizations" — that helps users think rigorously about how to structure work in workgraph.
+
+The [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md) distills this research into four actionable categories: **structure** (pipeline, diamond, scatter-gather, loop), **agency** (planner-workers-synthesizer, specialist, stream-aligned, platform), **control** (stigmergic, requisite variety, evolve, double-loop), and **shorthands** (one-word terms for conversations). This research document provides the theoretical foundations for that vocabulary.
 
 **Key findings:**
 
-1. **The task graph is a stigmergic medium.** Agents coordinate indirectly by reading and writing task state, exactly as ants coordinate via pheromone trails. No agent-to-agent communication is needed — the graph *is* the communication channel.
+1. **The task graph is a stigmergic medium.** Agents coordinate indirectly by reading and writing task state, exactly as ants coordinate via pheromone trails. No agent-to-agent communication is needed — the graph *is* the communication channel. *(→ Control pattern: stigmergic, spec §3.1)*
 
-2. **`blocked_by` edges natively express the five basic workflow patterns** (Sequence, Parallel Split, Synchronization, Exclusive Choice, Simple Merge). `loops_to` back-edges add structured loops and arbitrary cycles. Advanced patterns (discriminators, cancellation, milestones) require coordinator logic.
+2. **`after` edges natively express the five basic workflow patterns** (Sequence, Parallel Split, Synchronization, Exclusive Choice, Simple Merge). Structural cycles (back-edges in `after` edges with `CycleConfig`) add structured loops and arbitrary cycles. Advanced patterns (discriminators, cancellation, milestones) require coordinator logic. *(→ Structure patterns: pipeline, diamond, scatter-gather, loop, spec §1)*
 
-3. **The execute→evaluate→evolve loop is autopoietic.** The system literally produces the components (agent definitions) that produce the system (task completions that trigger evaluations that trigger evolution). This is Maturana & Varela's self-producing network, Luhmann's operationally closed social system, and Argyris & Schön's double-loop learning — all at once.
+3. **The execute→evaluate→evolve loop is autopoietic.** The system literally produces the components (agent definitions) that produce the system (task completions that trigger evaluations that trigger evolution). This is Maturana & Varela's self-producing network, Luhmann's operationally closed social system, and Argyris & Schön's double-loop learning — all at once. *(→ Control pattern: evolve, spec §3.3)*
 
-4. **Fork-Join is the natural topology of `blocked_by` graphs.** The planner→N workers→synthesizer pattern is workgraph's most fundamental parallel decomposition. It maps to MapReduce, scatter-gather, and WCP2+WCP3.
+4. **Fork-Join is the natural topology of `after` graphs.** The planner→N workers→synthesizer pattern is workgraph's most fundamental parallel decomposition. It maps to MapReduce, scatter-gather, and WCP2+WCP3. *(→ Structure pattern: diamond, spec §1.2; Agency pattern: planner-workers-synthesizer, spec §2.1)*
 
-5. **The coordinator is a cybernetic regulator** operating an OODA loop, subject to Ashby's Law of Requisite Variety: the number of distinct roles must match or exceed the variety of task types, or the system becomes under-regulated.
+5. **The coordinator is a cybernetic regulator** operating an OODA loop, subject to Ashby's Law of Requisite Variety: the number of distinct roles must match or exceed the variety of task types, or the system becomes under-regulated. *(→ Control pattern: requisite variety, spec §3.2)*
 
 6. **Evaluations solve the principal-agent problem.** The human principal delegates to autonomous agents under information asymmetry. Evaluations are the monitoring mechanism; motivations are the bonding mechanism; evolution is the incentive-alignment mechanism.
 
@@ -30,17 +33,17 @@ Workgraph's primitives — tasks, dependency edges, roles, motivations, agents, 
 
 ## Table of Contents
 
-1. [Stigmergy: The Task Graph as Coordination Medium](#1-stigmergy-the-task-graph-as-coordination-medium)
-2. [Workflow Patterns: What blocked_by and loops_to Can Express](#2-workflow-patterns-what-blocked_by-and-loops_to-can-express)
-3. [Fork-Join, MapReduce, and Scatter-Gather](#3-fork-join-mapreduce-and-scatter-gather)
-4. [Pipeline and Assembly Line Patterns](#4-pipeline-and-assembly-line-patterns)
-5. [Autopoiesis: The Self-Producing Agency](#5-autopoiesis-the-self-producing-agency)
-6. [Cybernetics and Control Theory](#6-cybernetics-and-control-theory)
-7. [The Viable System Model](#7-the-viable-system-model)
-8. [The Principal-Agent Problem](#8-the-principal-agent-problem)
-9. [Conway's Law and the Inverse Conway Maneuver](#9-conways-law-and-the-inverse-conway-maneuver)
-10. [Team Topologies](#10-team-topologies)
-11. [Organizational Theory Primitives](#11-organizational-theory-primitives)
+1. [Stigmergy: The Task Graph as Coordination Medium](#1-stigmergy-the-task-graph-as-coordination-medium) *(control)*
+2. [Workflow Patterns: What `after` Edges and Structural Cycles Can Express](#2-workflow-patterns-what-after-edges-and-structural-cycles-can-express) *(structure)*
+3. [Fork-Join, MapReduce, and Scatter-Gather](#3-fork-join-mapreduce-and-scatter-gather) *(structure)*
+4. [Pipeline and Assembly Line Patterns](#4-pipeline-and-assembly-line-patterns) *(structure)*
+5. [Autopoiesis: The Self-Producing Agency](#5-autopoiesis-the-self-producing-agency) *(control)*
+6. [Cybernetics and Control Theory](#6-cybernetics-and-control-theory) *(control)*
+7. [The Viable System Model](#7-the-viable-system-model) *(control)*
+8. [The Principal-Agent Problem](#8-the-principal-agent-problem) *(agency/control)*
+9. [Conway's Law and the Inverse Conway Maneuver](#9-conways-law-and-the-inverse-conway-maneuver) *(agency)*
+10. [Team Topologies](#10-team-topologies) *(agency)*
+11. [Organizational Theory Primitives](#11-organizational-theory-primitives) *(cross-cutting)*
 12. [Synthesis: Cross-Cutting Connections](#12-synthesis-cross-cutting-connections)
 13. [Practical Recommendations](#13-practical-recommendations)
 14. [Appendix: Comparative Tables](#14-appendix-comparative-tables)
@@ -48,7 +51,7 @@ Workgraph's primitives — tasks, dependency edges, roles, motivations, agents, 
 
 ---
 
-## 1. Stigmergy: The Task Graph as Coordination Medium
+## 1. Stigmergy: The Task Graph as Coordination Medium *(→ spec §3.1: Stigmergic)*
 
 ### 1.1 What is Stigmergy?
 
@@ -73,10 +76,10 @@ A workgraph task graph is a stigmergic medium. Agents do not communicate with ea
 | **Sematectonic trace** | A completed task's artifacts — the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
-| **Stigmergic coordination** | The coordinator polls the graph for "ready" tasks (all `blocked_by` satisfied) — it reads the markers |
+| **Stigmergic coordination** | The coordinator polls the graph for "ready" tasks (all `after` predecessors terminal) — it reads the markers |
 | **Self-reinforcing trails** | Tasks with good evaluation scores reinforce the role/motivation patterns that produced them (via evolve) |
 
-This is not a metaphor. It is a precise structural correspondence. The defining characteristic of stigmergy — that agents coordinate through a shared medium rather than through direct communication — is exactly how workgraph agents operate. Agent A completes task X, modifying the graph (setting status to `Done`, recording artifacts). Agent B, working on task Y with `blocked_by = [X]`, is now unblocked. B never spoke to A. The graph mediated the coordination.
+This is not a metaphor. It is a precise structural correspondence. The defining characteristic of stigmergy — that agents coordinate through a shared medium rather than through direct communication — is exactly how workgraph agents operate. Agent A completes task X, modifying the graph (setting status to `Done`, recording artifacts). Agent B, working on task Y with `after = [X]`, is now unblocked. B never spoke to A. The graph mediated the coordination.
 
 ### 1.3 Real-World Stigmergic Systems
 
@@ -92,7 +95,7 @@ The theoretical literature connects stigmergy to self-organization, emergence, a
 
 ---
 
-## 2. Workflow Patterns: What `blocked_by` and `loops_to` Can Express
+## 2. Workflow Patterns: What `after` Edges and Structural Cycles Can Express *(→ spec §1: Structure Patterns)*
 
 ### 2.1 The Workflow Patterns Catalog
 
@@ -100,24 +103,26 @@ The Workflow Patterns Initiative, established by Wil van der Aalst, Arthur ter H
 
 These patterns provide a precise vocabulary for what any workflow system can and cannot express.
 
-### 2.2 Patterns Natively Supported by `blocked_by`
+### 2.2 Patterns Natively Supported by `after`
 
-| Pattern | ID | Workgraph Expression | Example |
-|---------|----|---------------------|---------|
-| **Sequence** | WCP1 | `B.blocked_by = [A]` | `write-code → review-code` |
-| **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.blocked_by = [A]`, `C.blocked_by = [A]` | `plan → {implement-frontend, implement-backend}` |
-| **Synchronization** (AND-join) | WCP3 | `D.blocked_by = [B, C]` | `{frontend, backend} → integration-test` |
-| **Simple Merge** | WCP5 | Single successor of multiple predecessors, where only one fires | `{hotfix, feature} → deploy` (only one path active) |
-| **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph |
+| Pattern | ID | Workgraph Expression | Example | Spec Pattern |
+|---------|----|---------------------|---------|--------------|
+| **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` | **pipeline** (§1.1) |
+| **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` | **diamond** (§1.2) |
+| **Synchronization** (AND-join) | WCP3 | `D.after = [B, C]` | `{frontend, backend} → integration-test` | **diamond** (§1.2) |
+| **Simple Merge** | WCP5 | Single successor of multiple predecessors, where only one fires | `{hotfix, feature} → deploy` (only one path active) | — |
+| **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph | — |
 
-These five patterns — the DAG patterns — are the bread and butter of `blocked_by` graphs.
+These five patterns — the basic directed-graph patterns — are the bread and butter of `after` edges. (Note: workgraph is a directed graph, not necessarily a DAG — structural cycles are intentional.)
 
-### 2.3 Patterns Added by `loops_to`
+### 2.3 Patterns Added by Structural Cycles
 
 | Pattern | ID | Workgraph Expression |
 |---------|----|---------------------|
-| **Arbitrary Cycles** | WCP10 | `loops_to` edges create back-edges with guards and max iterations |
-| **Structured Loop** | WCP21 | `loops_to` with a guard condition (pre-test or post-test) |
+| **Arbitrary Cycles** | WCP10 | `after` edges forming a cycle, detected by Tarjan's SCC algorithm, with `CycleConfig` on the cycle header (`--max-iterations`, optional guard and delay) |
+| **Structured Loop** | WCP21 | Structural cycle with a guard condition on the `CycleConfig` |
+
+These map to the **loop** structure pattern (spec §1.4). The old `loops_to` mechanism has been replaced by structural cycles — cycles detected automatically from `after` edges. See the [Cycle-Aware Graph Design](../design/cycle-aware-graph.md) for full details.
 
 ### 2.4 Patterns Requiring Coordinator Logic (Idioms)
 
@@ -133,23 +138,23 @@ These patterns cannot be expressed with static edges alone but can be achieved t
 | **Cancel Task/Region** | WCP19/25 | `wg abandon <task-id>` — terminal status that unblocks dependents |
 | **Milestone** | WCP18 | A task checks the status of a non-predecessor ("is task X done?") before proceeding |
 
-### 2.5 Resource Patterns and the Agency
+### 2.5 Resource Patterns and the Agency *(→ spec §2: Agency Patterns)*
 
-Beyond control-flow, Van der Aalst's Resource Patterns describe how work is distributed to agents. Several map directly:
+Beyond control-flow, Van der Aalst's Resource Patterns describe how work is distributed to agents. Several map directly to agency patterns:
 
-| Resource Pattern | Workgraph Equivalent |
-|------------------|----------------------|
-| **Role-Based Distribution** (WRP2) | Tasks matched to agents by role |
-| **Capability-Based Distribution** (WRP8) | Task `skills` matched against role capabilities |
-| **Automatic Execution** (WRP11) | `wg service start` — the coordinator auto-assigns and spawns agents |
-| **History-Based Distribution** (WRP6) | Evaluation-informed agent selection in auto-assign tasks |
-| **Organizational Distribution** (WRP9) | The agency structure (roles, motivations) determines the distribution |
+| Resource Pattern | Workgraph Equivalent | Spec Pattern |
+|------------------|----------------------|--------------|
+| **Role-Based Distribution** (WRP2) | Tasks matched to agents by role | **specialist** (§2.2) |
+| **Capability-Based Distribution** (WRP8) | Task `skills` matched against role capabilities | **specialist** (§2.2) |
+| **Automatic Execution** (WRP11) | `wg service start` — the coordinator auto-assigns and spawns agents | — |
+| **History-Based Distribution** (WRP6) | Evaluation-informed agent selection in auto-assign tasks | **evolve** (§3.3) |
+| **Organizational Distribution** (WRP9) | The agency structure (roles, motivations) determines the distribution | **planner-workers-synthesizer** (§2.1) |
 
 ### 2.6 Summary: Expressiveness Hierarchy
 
 ```
-blocked_by alone:        WCP1-3, WCP5, WCP11 (basic DAG patterns)
-+ loops_to:              + WCP10, WCP21 (cycles and structured loops)
+after edges alone:       WCP1-3, WCP5, WCP11 (basic directed-graph patterns)
++ structural cycles:     + WCP10, WCP21 (cycles and structured loops)
 + coordinator logic:     + WCP4, WCP6, WCP9, WCP14-16, WCP18-20, WCP25
 + resource patterns:     + WRP2, WRP6, WRP8, WRP9, WRP11
 ```
@@ -158,7 +163,7 @@ The design principle: **edges express structure; the coordinator expresses polic
 
 ---
 
-## 3. Fork-Join, MapReduce, and Scatter-Gather
+## 3. Fork-Join, MapReduce, and Scatter-Gather *(→ spec §1.2: Diamond, §1.3: Scatter-Gather)*
 
 ### 3.1 The Three Parallel Decomposition Patterns
 
@@ -170,9 +175,9 @@ These three patterns represent variations of the same fundamental idea — paral
 | **MapReduce** | A map phase applies a function to each element in parallel; a reduce phase aggregates results | Dean & Ghemawat 2004, functional programming | Data-parallel. Decomposition driven by data partitioning, not task structure. Includes shuffle/sort between map and reduce. |
 | **Scatter-Gather** | A request is scattered to N recipients; responses are gathered by an aggregator | Enterprise Integration Patterns (Hohpe & Woolf 2003) | Message-oriented. Recipients may be heterogeneous. Aggregation may accept partial results. |
 
-### 3.2 Fork-Join in Workgraph
+### 3.2 Fork-Join (Diamond) in Workgraph
 
-Fork-Join is the natural topology of `blocked_by` graphs:
+Fork-Join — called **diamond** in the canonical pattern vocabulary — is the natural topology of `after` graphs:
 
 ```
            ┌─── worker-1 ───┐
@@ -182,27 +187,27 @@ planner ───┼─── worker-2 ───┼─── synthesizer
 
 ```bash
 wg add "Plan the work" --id planner
-wg add "Worker 1" --id worker-1 --blocked-by planner
-wg add "Worker 2" --id worker-2 --blocked-by planner
-wg add "Worker 3" --id worker-3 --blocked-by planner
-wg add "Synthesize results" --id synthesizer --blocked-by worker-1 worker-2 worker-3
+wg add "Worker 1" --id worker-1 --after planner
+wg add "Worker 2" --id worker-2 --after planner
+wg add "Worker 3" --id worker-3 --after planner
+wg add "Synthesize results" --id synthesizer --after worker-1,worker-2,worker-3
 ```
 
-This is WCP2 (Parallel Split) composed with WCP3 (Synchronization). It is workgraph's most fundamental parallel pattern. Every fan-out from a single task is a fork; every convergence point with multiple `blocked_by` entries is a join.
+This is WCP2 (Parallel Split) composed with WCP3 (Synchronization). It is workgraph's most fundamental parallel pattern. Every fan-out from a single task is a fork; every convergence point with multiple `after` entries is a join. When staffed with a planner, specialist workers, and a synthesizer, it becomes the **"diamond with specialists"** compound pattern (spec §4).
 
 ### 3.3 MapReduce in Workgraph
 
 MapReduce adds data-parallel semantics to fork-join. In workgraph, this is expressed as:
 
 1. A **planner** task that analyzes input data and produces a decomposition
-2. N **map** tasks (one per data partition), each `blocked_by` the planner
-3. A **reduce** task that `blocked_by` all map tasks and aggregates results
+2. N **map** tasks (one per data partition), each `after` the planner
+3. A **reduce** task that is `after` all map tasks and aggregates results
 
 The coordinator creates the N map tasks dynamically based on the planner's output. The "shuffle" phase is implicit — each reduce task's description specifies which map outputs it consumes.
 
-This is workgraph's most common pattern for parallelizable research, analysis, and implementation tasks.
+This is workgraph's most common pattern for parallelizable research, analysis, and implementation tasks. Called **map-reduce** in the shorthand vocabulary (spec §4).
 
-### 3.4 Scatter-Gather in Workgraph
+### 3.4 Scatter-Gather in Workgraph *(→ spec §1.3)*
 
 Scatter-Gather differs from fork-join in two ways: recipients may be heterogeneous (different roles), and the aggregator may not require all responses. In workgraph:
 
@@ -215,7 +220,7 @@ Doug Lea's Fork/Join framework introduced work-stealing: idle threads steal task
 
 ---
 
-## 4. Pipeline and Assembly Line Patterns
+## 4. Pipeline and Assembly Line Patterns *(→ spec §1.1: Pipeline)*
 
 ### 4.1 The Pipeline Pattern
 
@@ -229,7 +234,7 @@ Each stage transforms inputs into outputs consumed by the next stage. This maps 
 
 | Manufacturing Concept | Workgraph Expression |
 |-----------------------|----------------------|
-| **Assembly line** | A chain of tasks with sequential `blocked_by` edges, each assigned to a different specialized role |
+| **Assembly line** | A chain of tasks with sequential `after` edges, each assigned to a different specialized role |
 | **Work station** | A role — the specialized capability at each pipeline stage |
 | **Work-in-progress (WIP)** | Tasks in `InProgress` status — the items currently being processed |
 | **Throughput** | Rate of task completion — how many tasks move through the pipeline per unit time |
@@ -245,7 +250,7 @@ These two patterns are complementary, not competing:
 | **Parallelism type** | Task-level (different stages run concurrently on different work items) | Data-level (same operation applied to multiple items simultaneously) |
 | **Role assignment** | Different role per stage | Same role for all workers |
 | **When to use** | Work requires sequential specialized transformation | Work is decomposable into independent parallel units |
-| **Workgraph shape** | Long chain | Wide diamond |
+| **Workgraph shape** | Long chain (**pipeline**) | Wide fan-out/fan-in (**diamond**) |
 
 ### 4.3 Combined Patterns
 
@@ -281,7 +286,7 @@ In workgraph terms: if the `reviewer` role is the bottleneck, either assign more
 
 ---
 
-## 5. Autopoiesis: The Self-Producing Agency
+## 5. Autopoiesis: The Self-Producing Agency *(→ spec §3.3: Evolve)*
 
 ### 5.1 The Concept
 
@@ -326,20 +331,20 @@ execute (cycle repeats)
 | **Operational closure** | Agents interact only through the task graph. All "communication" is mediated by task state changes. The internal logic (role definitions, motivation constraints, evaluation rubrics) is self-referential. |
 | **Structural coupling** | The task graph is coupled to the external codebase/project. Changes in the environment (new bugs, new requirements) perturb the system by adding new tasks, but the system's internal structure determines how it responds. |
 | **Cognition** | Maturana and Varela argued that *living is cognition* — the capacity to maintain autopoiesis in a changing environment is a form of knowing. The evaluation system is the agency's cognition — its capacity to sense whether autopoiesis is being maintained (are tasks being completed successfully?) and adapt accordingly. |
-| **Temporalization** | Tasks are momentary events. Once completed, they are consumed. The system must continuously produce new tasks (or loop back via `loops_to`) to maintain itself. A workgraph with no open tasks has ceased its autopoiesis. |
+| **Temporalization** | Tasks are momentary events. Once completed, they are consumed. The system must continuously produce new tasks (or iterate via structural cycles) to maintain itself. A workgraph with no open tasks has ceased its autopoiesis. |
 
 ### 5.4 Practical Implications
 
 The autopoietic framing suggests several design principles:
 
-1. **The agency is alive only while tasks flow.** An idle agency with no open tasks is a dead system. The `loops_to` mechanism keeps the agency alive by re-activating tasks.
+1. **The agency is alive only while tasks flow.** An idle agency with no open tasks is a dead system. Structural cycles (the **loop** pattern) keep the agency alive by re-activating tasks.
 2. **Evolution is not optional — it is survival.** An agency that does not evolve in response to evaluation feedback will become structurally coupled to an environment that has moved on. The evolve step is the autopoietic system's metabolism.
 3. **Perturbations enter through tasks, not through agents.** New requirements, bug reports, and changing priorities are perturbations that enter the system as new tasks. The system's response is determined by its current structure (which agents exist, what roles they have, what motivations constrain them).
 4. **Self-reference is a feature, not a bug.** The evolve step modifying the very agents that will execute the next cycle is self-referential. This is what makes the system autopoietic. The self-mutation safety guard (evolver cannot modify its own role without human approval) is the autopoietic system's immune response — preventing pathological self-modification.
 
 ---
 
-## 6. Cybernetics and Control Theory
+## 6. Cybernetics and Control Theory *(→ spec §3.2: Requisite Variety, §3.4: Double-Loop)*
 
 ### 6.1 Core Concepts
 
@@ -443,7 +448,7 @@ The critical homeostatic balance is the **S3-S4 homeostat**: S3 wants stability 
 | VSM System | Workgraph Equivalent |
 |------------|----------------------|
 | **S1 (Operations)** | **Agents** executing tasks. Each agent (role + motivation) is a semi-autonomous operational unit. |
-| **S2 (Coordination)** | **`blocked_by` dependency edges** and **task status transitions**. These protocols prevent agents from clashing — an agent cannot start a task until dependencies are satisfied. The coordinator's scheduling logic is S2. |
+| **S2 (Coordination)** | **`after` dependency edges** and **task status transitions**. These protocols prevent agents from clashing — an agent cannot start a task until its `after` predecessors are terminal. The coordinator's scheduling logic is S2. |
 | **S3 (Control)** | **The coordinator** (`wg service start`). It allocates agents to tasks, monitors throughput, detects dead agents, and optimizes resource utilization across all S1 units. |
 | **S3\* (Audit)** | **Evaluations**. Sporadic, independent assessment of agent performance that bypasses normal task-completion reporting. The evaluation system provides a check that cannot be gamed by the agent reporting its own success. |
 | **S4 (Intelligence)** | **The `evolve` mechanism**. It scans performance data (the "environment" of evaluation scores) for patterns and generates adaptations (new roles, modified motivations). Also: any human operator reviewing the graph and adding tasks based on environmental scanning. |
@@ -506,7 +511,7 @@ Agency theory suggests specific design principles for workgraph:
 
 ---
 
-## 9. Conway's Law and the Inverse Conway Maneuver
+## 9. Conway's Law and the Inverse Conway Maneuver *(→ spec §2: Agency Patterns)*
 
 ### 9.1 Conway's Law
 
@@ -524,7 +529,7 @@ Coined by Jonny LeRoy and Matt Simons (2010): if org structure shapes system arc
 | Conway's Law Concept | Workgraph Equivalent |
 |----------------------|----------------------|
 | **Organization structure** | The set of roles and how they are assigned to agents |
-| **Communication channels** | `blocked_by` edges between tasks assigned to different roles |
+| **Communication channels** | `after` edges between tasks assigned to different roles |
 | **System architecture** | The task graph structure — how work is decomposed and connected |
 | **Conway's constraint** | The task decomposition will mirror the role decomposition. If you have "frontend" and "backend" roles, you get tasks that split along that boundary, producing a system with that split. |
 | **Inverse Conway Maneuver** | Deliberately designing roles and motivations to produce the desired task decomposition (and therefore system architecture) |
@@ -552,7 +557,7 @@ The profound implication: **in workgraph, the role ontology IS the org chart, an
 
 ---
 
-## 10. Team Topologies
+## 10. Team Topologies *(→ spec §2.2: Specialist, §2.3: Stream-Aligned, §2.4: Platform)*
 
 ### 10.1 The Framework
 
@@ -580,11 +585,11 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 | Team Topologies Concept | Workgraph Equivalent |
 |-------------------------|----------------------|
 | **Stream-aligned team** | A role assigned to a stream of related tasks. The "default" role type. |
-| **Platform team** | A role whose tasks produce shared infrastructure that unblocks other agents' tasks. Platform tasks appear as `blocked_by` dependencies for stream-aligned tasks. |
+| **Platform team** | A role whose tasks produce shared infrastructure that unblocks other agents' tasks. Platform tasks appear as `after` dependencies for stream-aligned tasks. Called **scaffold** in the shorthand vocabulary. |
 | **Enabling team** | A role whose tasks improve other roles/agents — writing documentation, creating templates, establishing patterns. Maps naturally to the evolve mechanism. |
 | **Complicated-subsystem team** | A role with specialized capabilities, assigned to tasks that other agents should not attempt. |
-| **Collaboration mode** | Two agents sharing `blocked_by` edges on overlapping tasks during a discovery phase. |
-| **X-as-a-Service mode** | Clean `blocked_by` edges: platform tasks complete, stream-aligned tasks consume their outputs. |
+| **Collaboration mode** | Two agents sharing `after` edges on overlapping tasks during a discovery phase. |
+| **X-as-a-Service mode** | Clean `after` edges: platform tasks complete, stream-aligned tasks consume their outputs (the **scaffold** pattern). |
 | **Facilitating mode** | An enabling agent's tasks are prerequisites for another agent's improvement. |
 | **Cognitive load** | The number and complexity of tasks assigned to a single agent. Overload signals the need for role decomposition. |
 | **Team API** | The interface between roles — defined by what outputs one role produces that another role's tasks consume. |
@@ -609,7 +614,7 @@ Adam Smith's pin factory (1776): splitting work into specialized steps increases
 - **Role specialization**: Defining roles with narrow skill sets (analyst, implementer, reviewer) rather than one generalist role
 - **The pipeline pattern**: Sequential stages of specialized work (Section 4)
 
-The tradeoff: over-specialization increases coordination costs (more `blocked_by` edges, more handoffs, more potential for misalignment). This is the fundamental tension in organizational design, and it applies directly to workgraph agency design.
+The tradeoff: over-specialization increases coordination costs (more `after` edges, more handoffs, more potential for misalignment). This is the fundamental tension in organizational design, and it applies directly to workgraph agency design.
 
 ### 11.2 Span of Control
 
@@ -619,7 +624,7 @@ Research suggests 5-9 direct reports as optimal for human managers (Urwick, 1956
 
 ### 11.3 Coordination Costs
 
-Every dependency edge (`blocked_by`) is a coordination point. The total coordination cost of a task graph scales with the number of edges, not the number of tasks. This connects to Brooks's Law: "Adding manpower to a late software project makes it later" — because the number of communication channels grows as n(n-1)/2 with n participants.
+Every dependency edge (`after`) is a coordination point. The total coordination cost of a task graph scales with the number of edges, not the number of tasks. This connects to Brooks's Law: "Adding manpower to a late software project makes it later" — because the number of communication channels grows as n(n-1)/2 with n participants.
 
 In workgraph terms: adding more agents (higher `max_agents`) only helps if the task graph has enough parallelism to exploit. If the graph is a serial chain, more agents are wasted. If the graph is a wide diamond (fork-join), more agents directly increase throughput — up to the point where coordination overhead dominates.
 
@@ -654,7 +659,7 @@ Conway's Law ───── Role ontology ─────────── Inv
                        │                            │
 Team Topologies ── Team types ────────────── Interaction mode evolution
                        │                            │
-Workflow Patterns ─ blocked_by edges ────── Coordinator dispatch logic
+Workflow Patterns ─ after edges ────────── Coordinator dispatch logic
                        │                            │
 Division of Labor ─ Task decomposition ──── Pipeline & Fork-Join
                        │                            │
@@ -680,13 +685,13 @@ Several deep identities connect these frameworks:
 
 2. **Stigmergy + Autopoiesis**: Both describe systems that maintain themselves without central control. Stigmergy is the *mechanism* (indirect coordination through traces); autopoiesis is the *property* (self-production). A stigmergic system that produces its own traces is autopoietic.
 
-3. **Conway's Law + Team Topologies + Resource Patterns**: Conway's Law is the theoretical prediction; Team Topologies is the practical prescription; Workflow Resource Patterns are the formal specification. All three say: *how you assign people to work determines the structure of what gets built.*
+3. **Conway's Law + Team Topologies + Resource Patterns**: Conway's Law is the theoretical prediction; Team Topologies is the practical prescription; Workflow Resource Patterns are the formal specification. All three say: *how you assign people to work determines the structure of what gets built.* In the canonical vocabulary, these map to the **agency patterns** (specialist, stream-aligned, platform).
 
-4. **Principal-Agent + Evaluations + Cybernetics**: Agency theory identifies the *problem* (misaligned incentives under information asymmetry); cybernetics provides the *solution architecture* (feedback loops); evaluations are the *implementation* of both monitoring (agency theory) and negative feedback (cybernetics).
+4. **Principal-Agent + Evaluations + Cybernetics**: Agency theory identifies the *problem* (misaligned incentives under information asymmetry); cybernetics provides the *solution architecture* (feedback loops); evaluations are the *implementation* of both monitoring (agency theory) and negative feedback (cybernetics). In the canonical vocabulary, this is the **evolve** control pattern.
 
-5. **Fork-Join + Workflow Patterns + `blocked_by`**: Fork-Join is the computational realization of WCP2+WCP3, which are the two most fundamental `blocked_by` graph topologies.
+5. **Fork-Join + Workflow Patterns + `after`**: Fork-Join is the computational realization of WCP2+WCP3, which are the two most fundamental `after`-edge graph topologies. In the canonical vocabulary, this is the **diamond** structure pattern.
 
-6. **Autopoiesis + Evolve + Double-Loop Learning**: The execute→evaluate→evolve→execute cycle is simultaneously autopoietic (self-producing), double-loop (questioning governing variables), and cybernetic (feedback-driven regulation). This is the single most theoretically dense primitive in workgraph.
+6. **Autopoiesis + Evolve + Double-Loop Learning**: The execute→evaluate→evolve→execute cycle is simultaneously autopoietic (self-producing), double-loop (questioning governing variables), and cybernetic (feedback-driven regulation). This is the single most theoretically dense primitive in workgraph. In the canonical vocabulary, this spans the **evolve** and **double-loop** control patterns.
 
 ---
 
@@ -708,16 +713,24 @@ Based on the theoretical frameworks above, here is a checklist for designing a w
 
 ### 13.2 Pattern Selection Guide
 
-| Situation | Pattern | Workgraph Expression |
-|-----------|---------|---------------------|
-| Sequential specialized stages | Pipeline (Section 4) | Serial `blocked_by` chain, different roles per stage |
-| Independent parallelizable work | Fork-Join (Section 3) | Fan-out from planner, fan-in to synthesizer |
-| Data-parallel analysis | MapReduce (Section 3) | Planner decomposes → N workers → reducer aggregates |
-| Heterogeneous parallel review | Scatter-Gather (Section 3) | Multiple reviewer roles examine same artifact |
-| Iterative refinement | Structured Loop (Section 2) | `loops_to` with guard and max_iterations |
-| Recurring process | Autopoietic cycle (Section 5) | `loops_to` chain forming a full cycle |
+See also the comprehensive Pattern Selection Guide in the [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md#7-pattern-selection-guide).
+
+| Situation | Canonical Pattern | Workgraph Expression |
+|-----------|-------------------|---------------------|
+| Sequential specialized stages | **pipeline** (structure §1.1) | Serial `after` chain, different roles per stage |
+| Independent parallelizable work | **diamond** (structure §1.2) | Fan-out from planner, fan-in to synthesizer |
+| Data-parallel analysis | **map-reduce** (shorthand §4) | Planner decomposes → N workers → reducer aggregates |
+| Heterogeneous parallel review | **scatter-gather** (structure §1.3) | Multiple reviewer roles examine same artifact |
+| Iterative refinement | **loop** (structure §1.4) | Structural cycle with `CycleConfig` (`--max-iterations`, guard, delay) |
+| One thinker, many doers | **planner-workers-synthesizer** (agency §2.1) | Diamond staffed with decomposer, workers, integrator |
+| Deep domain expertise needed | **specialist** (agency §2.2) | Role per domain |
+| Shared infrastructure first | **scaffold** (shorthand §4) | Platform tasks as `after` for all others |
+| System self-improvement | **evolve** (control §3.3) | evaluate → evolve → execute cycle |
+| Failed pattern not working | **double-loop** (control §3.4) | Change the role, not just the agent |
 
 ### 13.3 Anti-Patterns
+
+See also the Anti-Patterns table in the [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md#8-anti-patterns).
 
 | Anti-Pattern | Theory Violated | Symptom | Fix |
 |--------------|----------------|---------|-----|
@@ -725,9 +738,10 @@ Based on the theoretical frameworks above, here is a checklist for designing a w
 | Too many roles | Parsimony / coordination cost | Roles with zero tasks; confusion in assignment | Retire unused roles |
 | No evaluations | Agency Theory (no monitoring) | Quality drift; no evolution signal | Enable auto-evaluate |
 | Evolving every cycle | VSM S3-S4 imbalance | Instability; roles changing faster than agents can adapt | Evolve periodically, not continuously |
-| Serial pipeline where fork-join fits | Division of Labor mismatch | Slow throughput on parallelizable work | Decompose into parallel tasks |
+| Serial pipeline where fork-join fits | Division of Labor mismatch | Slow throughput on parallelizable work | Decompose into parallel tasks (diamond) |
 | Monolithic tasks | No division of labor | Single agent bottleneck; no parallelism | Break into subtasks with dependencies |
-| Circular `blocked_by` without `loops_to` | Workflow Patterns (unbounded cycle) | Deadlock or infinite loop | Use `loops_to` with guards and max_iterations |
+| Unconfigured structural cycle | Workflow Patterns (unbounded cycle) | Deadlock (no `CycleConfig`) or infinite loop | Add `--max-iterations` on cycle header |
+| **Parallel file conflict** | — | Two concurrent tasks edit the same file → overwrites | Serialize with `--after` or split files |
 
 ---
 
@@ -735,8 +749,8 @@ Based on the theoretical frameworks above, here is a checklist for designing a w
 
 ### Framework-to-Primitive Mapping
 
-| Framework | Tasks | `blocked_by` | `loops_to` | Roles | Motivations | Agents | Coordinator | Evaluations | Evolve |
-|-----------|-------|-------------|-----------|-------|-------------|--------|-------------|-------------|--------|
+| Framework | Tasks | `after` edges | Structural cycles | Roles | Motivations | Agents | Coordinator | Evaluations | Evolve |
+|-----------|-------|--------------|-------------------|-------|-------------|--------|-------------|-------------|--------|
 | Stigmergy | Traces in environment | Sematectonic coordination | Feedback trail | — | — | Stimulated actors | — | Marker traces | Self-reinforcing trails |
 | Workflow Patterns | Activities | Control-flow edges | Back-edges (WCP10/21) | Resource roles (WRP2) | — | Resources | Engine | — | — |
 | Fork-Join/MapReduce | Map/fork units | Join barriers | — | — | — | Worker threads | Scheduler | — | — |
@@ -753,8 +767,8 @@ Based on the theoretical frameworks above, here is a checklist for designing a w
 | Primitive | Frameworks That Map To It | Theoretical "Load" |
 |-----------|--------------------------|-------------------|
 | **Tasks** | All 10 frameworks | The universal unit of work |
-| **`blocked_by`** | Workflow Patterns, Fork-Join, Stigmergy, Conway's Law, Coordination Costs | The structural backbone |
-| **`loops_to`** | Workflow Patterns (WCP10/21), Cybernetics (feedback), Autopoiesis (self-production), Agency Theory (repeated games) | Enables dynamics |
+| **`after` edges** | Workflow Patterns, Fork-Join, Stigmergy, Conway's Law, Coordination Costs | The structural backbone |
+| **Structural cycles** | Workflow Patterns (WCP10/21), Cybernetics (feedback), Autopoiesis (self-production), Agency Theory (repeated games) | Enables dynamics |
 | **Roles** | Team Topologies, Conway's Law, Resource Patterns, VSM (S1), Requisite Variety, Division of Labor | The competency model |
 | **Motivations** | Agency Theory (bonding), VSM (S5 policy), Cybernetics (constraints) | The value system |
 | **Agents** | Agency Theory (literally), Stigmergy (stimulated actors), VSM (S1 units), Team Topologies (teams) | The executing entity |

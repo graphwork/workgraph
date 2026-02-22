@@ -60,9 +60,9 @@ enum Commands {
         #[arg(long)]
         repo: Option<String>,
 
-        /// This task is blocked by another task (can specify multiple)
-        #[arg(long = "blocked-by", value_delimiter = ',', num_args = 1..)]
-        blocked_by: Vec<String>,
+        /// This task comes after another task (can specify multiple)
+        #[arg(long = "after", alias = "blocked-by", value_delimiter = ',', num_args = 1..)]
+        after: Vec<String>,
 
         /// Assign to an actor
         #[arg(long)]
@@ -104,21 +104,17 @@ enum Commands {
         #[arg(long)]
         verify: Option<String>,
 
-        /// Create a loop edge back to target task (re-activates on completion)
-        #[arg(long = "loops-to")]
-        loops_to: Option<String>,
+        /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
+        #[arg(long = "max-iterations")]
+        max_iterations: Option<u32>,
 
-        /// Maximum loop iterations (required with --loops-to)
-        #[arg(long = "loop-max")]
-        loop_max: Option<u32>,
+        /// Guard condition for cycle iteration: 'task:<id>=<status>' or 'always'
+        #[arg(long = "cycle-guard")]
+        cycle_guard: Option<String>,
 
-        /// Guard condition for loop: 'task:<id>=<status>' or 'always'
-        #[arg(long = "loop-guard")]
-        loop_guard: Option<String>,
-
-        /// Delay between loop iterations (e.g., 30s, 5m, 1h, 24h, 7d)
-        #[arg(long = "loop-delay")]
-        loop_delay: Option<String>,
+        /// Delay between cycle iterations (e.g., 30s, 5m, 1h)
+        #[arg(long = "cycle-delay")]
+        cycle_delay: Option<String>,
 
         /// Task visibility zone for trace exports (internal, public, peer)
         #[arg(long, default_value = "internal")]
@@ -138,13 +134,13 @@ enum Commands {
         #[arg(long, short = 'd')]
         description: Option<String>,
 
-        /// Add a blocked-by dependency
-        #[arg(long = "add-blocked-by")]
-        add_blocked_by: Vec<String>,
+        /// Add an after dependency
+        #[arg(long = "add-after", alias = "add-blocked-by")]
+        add_after: Vec<String>,
 
-        /// Remove a blocked-by dependency
-        #[arg(long = "remove-blocked-by")]
-        remove_blocked_by: Vec<String>,
+        /// Remove an after dependency
+        #[arg(long = "remove-after", alias = "remove-blocked-by")]
+        remove_after: Vec<String>,
 
         /// Add a tag
         #[arg(long = "add-tag")]
@@ -166,29 +162,17 @@ enum Commands {
         #[arg(long = "remove-skill")]
         remove_skill: Vec<String>,
 
-        /// Add a loop edge back to target task (re-activates on completion)
-        #[arg(long = "add-loops-to")]
-        add_loops_to: Option<String>,
+        /// Set maximum iterations for structural cycle (sets cycle_config)
+        #[arg(long = "max-iterations")]
+        max_iterations: Option<u32>,
 
-        /// Maximum loop iterations (used with --add-loops-to)
-        #[arg(long = "loop-max")]
-        loop_max: Option<u32>,
+        /// Set guard condition for cycle iteration: 'task:<id>=<status>' or 'always'
+        #[arg(long = "cycle-guard")]
+        cycle_guard: Option<String>,
 
-        /// Guard condition for loop: 'task:<id>=<status>' or 'always'
-        #[arg(long = "loop-guard")]
-        loop_guard: Option<String>,
-
-        /// Delay between loop iterations (e.g., 30s, 5m, 1h, 24h, 7d)
-        #[arg(long = "loop-delay")]
-        loop_delay: Option<String>,
-
-        /// Remove a loop edge to target task
-        #[arg(long = "remove-loops-to")]
-        remove_loops_to: Option<String>,
-
-        /// Manually override the loop iteration counter on this task
-        #[arg(long = "loop-iteration")]
-        loop_iteration: Option<u32>,
+        /// Set delay between cycle iterations (e.g., 30s, 5m, 1h)
+        #[arg(long = "cycle-delay")]
+        cycle_delay: Option<String>,
 
         /// Set task visibility zone (internal, public, peer)
         #[arg(long)]
@@ -290,6 +274,9 @@ enum Commands {
 
     /// Check the graph for issues (cycles, orphan references)
     Check,
+
+    /// Analyze structural cycles in after edges (Tarjan's SCC)
+    Cycles,
 
     /// List all tasks
     List {
@@ -399,8 +386,15 @@ enum Commands {
         id: String,
     },
 
-    /// Analyze cycles in the graph with classification
+    /// [Deprecated] Use 'cycles' instead. Redirects to cycles command.
     Loops,
+
+    /// Migrate loops_to edges to structural cycles (after edges + cycle_config)
+    MigrateLoops {
+        /// Show what would be migrated without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Analyze graph structure: entry points (no dependencies), dead ends
     /// (nothing depends on them), fan-out (tasks blocking many others),
@@ -1128,8 +1122,8 @@ enum TraceCommands {
         dry_run: bool,
 
         /// Make all root tasks depend on this task (repeatable)
-        #[arg(long = "blocked-by")]
-        blocked_by: Vec<String>,
+        #[arg(long = "after", alias = "blocked-by")]
+        after: Vec<String>,
 
         /// Set model for all created tasks
         #[arg(long)]
@@ -1951,6 +1945,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Blocked { .. } => "blocked",
         Commands::WhyBlocked { .. } => "why-blocked",
         Commands::Check => "check",
+        Commands::Cycles => "cycles",
         Commands::List { .. } => "list",
         Commands::Viz { .. } => "viz",
         Commands::GraphExport { .. } => "graph-export",
@@ -1960,6 +1955,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Reschedule { .. } => "reschedule",
         Commands::Impact { .. } => "impact",
         Commands::Loops => "loops",
+        Commands::MigrateLoops { .. } => "migrate-loops",
         Commands::Structure => "structure",
         Commands::Bottlenecks => "bottlenecks",
         Commands::Velocity { .. } => "velocity",
@@ -2062,6 +2058,7 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Service { .. }
             | Commands::Cost { .. }
             | Commands::Check
+            | Commands::Cycles
             | Commands::Quickstart
             | Commands::Status
     ) || {
@@ -2155,7 +2152,7 @@ fn main() -> Result<()> {
             id,
             description,
             repo,
-            blocked_by,
+            after,
             assign,
             hours,
             cost,
@@ -2166,10 +2163,9 @@ fn main() -> Result<()> {
             max_retries,
             model,
             verify,
-            loops_to,
-            loop_max,
-            loop_guard,
-            loop_delay,
+            max_iterations,
+            cycle_guard,
+            cycle_delay,
             visibility,
         } => {
             if let Some(ref peer_ref) = repo {
@@ -2179,7 +2175,7 @@ fn main() -> Result<()> {
                     &title,
                     id.as_deref(),
                     description.as_deref(),
-                    &blocked_by,
+                    &after,
                     &tag,
                     &skill,
                     &deliverable,
@@ -2192,7 +2188,7 @@ fn main() -> Result<()> {
                     &title,
                     id.as_deref(),
                     description.as_deref(),
-                    &blocked_by,
+                    &after,
                     assign.as_deref(),
                     hours,
                     cost,
@@ -2203,10 +2199,9 @@ fn main() -> Result<()> {
                     max_retries,
                     model.as_deref(),
                     verify.as_deref(),
-                    loops_to.as_deref(),
-                    loop_max,
-                    loop_guard.as_deref(),
-                    loop_delay.as_deref(),
+                    max_iterations,
+                    cycle_guard.as_deref(),
+                    cycle_delay.as_deref(),
                     &visibility,
                 )
             }
@@ -2215,38 +2210,32 @@ fn main() -> Result<()> {
             id,
             title,
             description,
-            add_blocked_by,
-            remove_blocked_by,
+            add_after,
+            remove_after,
             add_tag,
             remove_tag,
             model,
             add_skill,
             remove_skill,
-            add_loops_to,
-            loop_max,
-            loop_guard,
-            loop_delay,
-            remove_loops_to,
-            loop_iteration,
+            max_iterations,
+            cycle_guard,
+            cycle_delay,
             visibility,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
             title.as_deref(),
             description.as_deref(),
-            &add_blocked_by,
-            &remove_blocked_by,
+            &add_after,
+            &remove_after,
             &add_tag,
             &remove_tag,
             model.as_deref(),
             &add_skill,
             &remove_skill,
-            add_loops_to.as_deref(),
-            loop_max,
-            loop_guard.as_deref(),
-            loop_delay.as_deref(),
-            remove_loops_to.as_deref(),
-            loop_iteration,
+            max_iterations,
+            cycle_guard.as_deref(),
+            cycle_delay.as_deref(),
             visibility.as_deref(),
         ),
         Commands::Done { id, converged } => commands::done::run(&workgraph_dir, &id, converged),
@@ -2270,6 +2259,7 @@ fn main() -> Result<()> {
         Commands::Blocked { id } => commands::blocked::run(&workgraph_dir, &id, cli.json),
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir, cli.json),
+        Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
         Commands::List { status, paused } => {
             commands::list::run(&workgraph_dir, status.as_deref(), paused, cli.json)
         }
@@ -2318,7 +2308,13 @@ fn main() -> Result<()> {
             commands::reschedule::run(&workgraph_dir, &id, after, at.as_deref())
         }
         Commands::Impact { id } => commands::impact::run(&workgraph_dir, &id, cli.json),
-        Commands::Loops => commands::loops::run(&workgraph_dir, cli.json),
+        Commands::Loops => {
+            eprintln!("Warning: 'wg loops' is deprecated. Use 'wg cycles' instead.");
+            commands::cycles::run(&workgraph_dir, cli.json)
+        }
+        Commands::MigrateLoops { dry_run } => {
+            commands::migrate_loops::run(&workgraph_dir, dry_run)
+        }
         Commands::Structure => commands::structure::run(&workgraph_dir, cli.json),
         Commands::Bottlenecks => commands::bottlenecks::run(&workgraph_dir, cli.json),
         Commands::Velocity { weeks } => commands::velocity::run(&workgraph_dir, cli.json, weeks),
@@ -2389,7 +2385,7 @@ fn main() -> Result<()> {
                 input_file,
                 prefix,
                 dry_run,
-                blocked_by,
+                after,
                 model,
             } => commands::trace_instantiate::run(
                 &workgraph_dir,
@@ -2399,7 +2395,7 @@ fn main() -> Result<()> {
                 input_file.as_deref(),
                 prefix.as_deref(),
                 dry_run,
-                &blocked_by,
+                &after,
                 model.as_deref(),
                 cli.json,
             ),

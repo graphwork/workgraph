@@ -1,4 +1,4 @@
-use crate::graph::{LoopGuard, WorkGraph};
+use crate::graph::WorkGraph;
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -7,7 +7,6 @@ use std::collections::HashSet;
 pub struct CheckResult {
     pub cycles: Vec<Vec<String>>,
     pub orphan_refs: Vec<OrphanRef>,
-    pub loop_edge_issues: Vec<LoopEdgeIssue>,
     pub stale_assignments: Vec<StaleAssignment>,
     pub stuck_blocked: Vec<StuckBlocked>,
     pub ok: bool,
@@ -28,33 +27,12 @@ pub struct StaleAssignment {
     pub assigned: String,
 }
 
-/// A task with status=Blocked where all blocked_by tasks have terminal status
+/// A task with status=Blocked where all after tasks have terminal status
 /// (done/failed/abandoned). These tasks should have been transitioned to Open but weren't.
 #[derive(Debug, Clone, Serialize)]
 pub struct StuckBlocked {
     pub task_id: String,
-    pub blocked_by_ids: Vec<String>,
-}
-
-/// An issue with a loop edge
-#[derive(Debug, Clone, Serialize)]
-pub struct LoopEdgeIssue {
-    pub from: String,
-    pub target: String,
-    pub kind: LoopEdgeIssueKind,
-}
-
-/// Types of loop edge issues
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub enum LoopEdgeIssueKind {
-    /// Target task does not exist
-    TargetNotFound,
-    /// max_iterations is 0 (loop will never fire)
-    ZeroMaxIterations,
-    /// Guard references a task that does not exist
-    GuardTaskNotFound(String),
-    /// Self-loop: a task loops_to itself (immediate re-open on done)
-    SelfLoop,
+    pub after_ids: Vec<String>,
 }
 
 /// Check for cycles in task dependencies
@@ -93,8 +71,8 @@ fn find_cycles(
     path.push(node_id.to_string());
 
     if let Some(task) = graph.get_task(node_id) {
-        // Follow blocked_by edges (A blocked_by B means A depends on B)
-        for dep_id in &task.blocked_by {
+        // Follow after edges (A after B means A depends on B)
+        for dep_id in &task.after {
             if !visited.contains(dep_id) {
                 find_cycles(graph, dep_id, visited, rec_stack, path, cycles);
             } else if rec_stack.contains(dep_id) {
@@ -109,63 +87,6 @@ fn find_cycles(
 
     path.pop();
     rec_stack.remove(node_id);
-}
-
-/// Check loop edges for validity and safety issues
-pub fn check_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeIssue> {
-    let mut issues = Vec::new();
-
-    for task in graph.tasks() {
-        // Skip validation for terminal tasks — their loop edges are inert
-        if task.status.is_terminal() {
-            continue;
-        }
-
-        for edge in &task.loops_to {
-            // Self-loop without delay: would immediately re-open on done.
-            // Self-loops WITH delay are a valid polling pattern.
-            if edge.target == task.id && edge.delay.is_none() {
-                issues.push(LoopEdgeIssue {
-                    from: task.id.clone(),
-                    target: edge.target.clone(),
-                    kind: LoopEdgeIssueKind::SelfLoop,
-                });
-            }
-
-            // Target must exist
-            if graph.get_task(&edge.target).is_none() {
-                issues.push(LoopEdgeIssue {
-                    from: task.id.clone(),
-                    target: edge.target.clone(),
-                    kind: LoopEdgeIssueKind::TargetNotFound,
-                });
-            }
-
-            // max_iterations must be > 0
-            if edge.max_iterations == 0 {
-                issues.push(LoopEdgeIssue {
-                    from: task.id.clone(),
-                    target: edge.target.clone(),
-                    kind: LoopEdgeIssueKind::ZeroMaxIterations,
-                });
-            }
-
-            // Guard task references must exist
-            if let Some(LoopGuard::TaskStatus {
-                task: guard_task, ..
-            }) = &edge.guard
-                && graph.get_task(guard_task).is_none()
-            {
-                issues.push(LoopEdgeIssue {
-                    from: task.id.clone(),
-                    target: edge.target.clone(),
-                    kind: LoopEdgeIssueKind::GuardTaskNotFound(guard_task.clone()),
-                });
-            }
-        }
-    }
-
-    issues
 }
 
 /// Check for tasks with status=open but an agent assigned (stale assignments)
@@ -186,7 +107,7 @@ pub fn check_stale_assignments(graph: &WorkGraph) -> Vec<StaleAssignment> {
     stale
 }
 
-/// Check for tasks with status=Blocked where all blocked_by tasks have terminal status.
+/// Check for tasks with status=Blocked where all after tasks have terminal status.
 /// These tasks should have been transitioned to Open but weren't — they're stuck.
 pub fn check_stuck_blocked(graph: &WorkGraph) -> Vec<StuckBlocked> {
     let mut stuck = Vec::new();
@@ -195,10 +116,10 @@ pub fn check_stuck_blocked(graph: &WorkGraph) -> Vec<StuckBlocked> {
         if task.status != crate::graph::Status::Blocked {
             continue;
         }
-        if task.blocked_by.is_empty() {
+        if task.after.is_empty() {
             continue;
         }
-        let all_terminal = task.blocked_by.iter().all(|dep_id| {
+        let all_terminal = task.after.iter().all(|dep_id| {
             graph
                 .get_task(dep_id)
                 .is_some_and(|dep| dep.status.is_terminal())
@@ -206,7 +127,7 @@ pub fn check_stuck_blocked(graph: &WorkGraph) -> Vec<StuckBlocked> {
         if all_terminal {
             stuck.push(StuckBlocked {
                 task_id: task.id.clone(),
-                blocked_by_ids: task.blocked_by.clone(),
+                after_ids: task.after.clone(),
             });
         }
     }
@@ -219,22 +140,22 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
     let mut orphans = Vec::new();
 
     for task in graph.tasks() {
-        for blocked_by in &task.blocked_by {
-            if graph.get_node(blocked_by).is_none() {
+        for after in &task.after {
+            if graph.get_node(after).is_none() {
                 orphans.push(OrphanRef {
                     from: task.id.clone(),
-                    to: blocked_by.clone(),
-                    relation: "blocked_by".to_string(),
+                    to: after.clone(),
+                    relation: "after".to_string(),
                 });
             }
         }
 
-        for blocks in &task.blocks {
+        for blocks in &task.before {
             if graph.get_node(blocks).is_none() {
                 orphans.push(OrphanRef {
                     from: task.id.clone(),
                     to: blocks.clone(),
-                    relation: "blocks".to_string(),
+                    relation: "before".to_string(),
                 });
             }
         }
@@ -257,18 +178,16 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
 pub fn check_all(graph: &WorkGraph) -> CheckResult {
     let cycles = check_cycles(graph);
     let orphan_refs = check_orphans(graph);
-    let loop_edge_issues = check_loop_edges(graph);
     let stale_assignments = check_stale_assignments(graph);
     let stuck_blocked = check_stuck_blocked(graph);
 
     // Cycles, stale assignments, and stuck blocked are warnings, not errors —
-    // only orphan refs and loop edge issues make the graph invalid
-    let ok = orphan_refs.is_empty() && loop_edge_issues.is_empty();
+    // only orphan refs make the graph invalid
+    let ok = orphan_refs.is_empty();
 
     CheckResult {
         cycles,
         orphan_refs,
-        loop_edge_issues,
         stale_assignments,
         stuck_blocked,
         ok,
@@ -294,9 +213,9 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -311,10 +230,10 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -328,13 +247,13 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t3".to_string()];
+        t1.after = vec!["t3".to_string()];
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -357,7 +276,7 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -367,18 +286,18 @@ mod tests {
     }
 
     #[test]
-    fn test_detects_orphan_blocked_by() {
+    fn test_detects_orphan_after() {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t1", "Task 1");
-        task.blocked_by = vec!["nonexistent".to_string()];
+        task.after = vec!["nonexistent".to_string()];
 
         graph.add_node(Node::Task(task));
 
         let orphans = check_orphans(&graph);
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].to, "nonexistent");
-        assert_eq!(orphans[0].relation, "blocked_by");
+        assert_eq!(orphans[0].relation, "after");
     }
 
     #[test]
@@ -397,10 +316,10 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -408,235 +327,6 @@ mod tests {
         let result = check_all(&graph);
         assert!(result.ok);
         assert!(!result.cycles.is_empty());
-    }
-
-    // --- Loop edge validation tests ---
-
-    use crate::graph::LoopEdge;
-
-    #[test]
-    fn test_no_loop_issues_for_valid_edges() {
-        let mut graph = WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let mut t2 = make_task("t2", "Task 2");
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-
-        let issues = check_loop_edges(&graph);
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn test_loop_target_not_found() {
-        let mut graph = WorkGraph::new();
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "nonexistent".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-
-        let issues = check_loop_edges(&graph);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, LoopEdgeIssueKind::TargetNotFound);
-    }
-
-    #[test]
-    fn test_loop_zero_max_iterations() {
-        let mut graph = WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let mut t2 = make_task("t2", "Task 2");
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 0,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-
-        let issues = check_loop_edges(&graph);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, LoopEdgeIssueKind::ZeroMaxIterations);
-    }
-
-    #[test]
-    fn test_loop_guard_task_not_found() {
-        let mut graph = WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let mut t2 = make_task("t2", "Task 2");
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: Some(crate::graph::LoopGuard::TaskStatus {
-                task: "nonexistent".to_string(),
-                status: Status::Done,
-            }),
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-
-        let issues = check_loop_edges(&graph);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(
-            issues[0].kind,
-            LoopEdgeIssueKind::GuardTaskNotFound("nonexistent".to_string())
-        );
-    }
-
-    #[test]
-    fn test_loop_self_loop_no_delay() {
-        let mut graph = WorkGraph::new();
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-
-        let issues = check_loop_edges(&graph);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, LoopEdgeIssueKind::SelfLoop);
-    }
-
-    #[test]
-    fn test_loop_self_loop_with_delay_is_ok() {
-        // Self-loops with delay are a valid polling pattern
-        let mut graph = WorkGraph::new();
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 100,
-            delay: Some("30s".to_string()),
-        }];
-
-        graph.add_node(Node::Task(t1));
-
-        let issues = check_loop_edges(&graph);
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn test_loop_edges_skipped_for_terminal_tasks() {
-        // Terminal tasks (done/failed/abandoned) should not be validated
-        let mut graph = WorkGraph::new();
-
-        // Done task with a self-loop (no delay) — should be skipped
-        let mut t1 = make_task("t1", "Done task");
-        t1.status = Status::Done;
-        t1.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 100,
-            delay: None,
-        }];
-
-        // Failed task with missing target — should be skipped
-        let mut t2 = make_task("t2", "Failed task");
-        t2.status = Status::Failed;
-        t2.loops_to = vec![LoopEdge {
-            target: "nonexistent".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        // Abandoned task — should be skipped
-        let mut t3 = make_task("t3", "Abandoned task");
-        t3.status = Status::Abandoned;
-        t3.loops_to = vec![LoopEdge {
-            target: "t3".to_string(),
-            guard: None,
-            max_iterations: 0,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Task(t3));
-
-        let issues = check_loop_edges(&graph);
-        assert!(
-            issues.is_empty(),
-            "Terminal tasks should not produce loop edge issues, got: {:?}",
-            issues
-        );
-    }
-
-    #[test]
-    fn test_loop_multiple_issues_same_edge() {
-        let mut graph = WorkGraph::new();
-        // Self-loop with zero max_iterations — should report both issues
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 0,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-
-        let issues = check_loop_edges(&graph);
-        assert_eq!(issues.len(), 2);
-        let kinds: Vec<&LoopEdgeIssueKind> = issues.iter().map(|i| &i.kind).collect();
-        assert!(kinds.contains(&&LoopEdgeIssueKind::SelfLoop));
-        assert!(kinds.contains(&&LoopEdgeIssueKind::ZeroMaxIterations));
-    }
-
-    #[test]
-    fn test_check_all_ok_with_valid_loop_edges() {
-        let mut graph = WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let mut t2 = make_task("t2", "Task 2");
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-
-        let result = check_all(&graph);
-        assert!(result.ok);
-        assert!(result.loop_edge_issues.is_empty());
-    }
-
-    #[test]
-    fn test_check_all_not_ok_with_loop_edge_issues() {
-        let mut graph = WorkGraph::new();
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "nonexistent".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-
-        let result = check_all(&graph);
-        assert!(!result.ok);
-        assert!(!result.loop_edge_issues.is_empty());
     }
 
     // --- Orphan detection tests for blocks, requires, and edge cases ---
@@ -648,7 +338,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t1", "Task 1");
-        task.blocks = vec!["nonexistent".to_string()];
+        task.before = vec!["nonexistent".to_string()];
 
         graph.add_node(Node::Task(task));
 
@@ -656,7 +346,7 @@ mod tests {
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].from, "t1");
         assert_eq!(orphans[0].to, "nonexistent");
-        assert_eq!(orphans[0].relation, "blocks");
+        assert_eq!(orphans[0].relation, "before");
     }
 
     #[test]
@@ -665,7 +355,7 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocks = vec!["t1".to_string()];
+        t2.before = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -736,8 +426,8 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t1", "Task 1");
-        task.blocked_by = vec!["ghost-a".to_string()];
-        task.blocks = vec!["ghost-b".to_string()];
+        task.after = vec!["ghost-a".to_string()];
+        task.before = vec!["ghost-b".to_string()];
         task.requires = vec!["ghost-resource".to_string()];
 
         graph.add_node(Node::Task(task));
@@ -746,8 +436,8 @@ mod tests {
         assert_eq!(orphans.len(), 3);
 
         let relations: Vec<&str> = orphans.iter().map(|o| o.relation.as_str()).collect();
-        assert!(relations.contains(&"blocked_by"));
-        assert!(relations.contains(&"blocks"));
+        assert!(relations.contains(&"after"));
+        assert!(relations.contains(&"before"));
         assert!(relations.contains(&"requires"));
 
         // All orphans come from t1
@@ -756,14 +446,14 @@ mod tests {
 
     #[test]
     fn test_bidirectional_orphans() {
-        // t1 blocks nonexistent, t2 blocked_by nonexistent — both are orphans
+        // t1 blocks nonexistent, t2 after nonexistent — both are orphans
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocks = vec!["phantom".to_string()];
+        t1.before = vec!["phantom".to_string()];
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["phantom".to_string()];
+        t2.after = vec!["phantom".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -782,7 +472,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t1", "Task 1");
-        task.blocks = vec!["budget".to_string()];
+        task.before = vec!["budget".to_string()];
 
         let resource = Resource {
             id: "budget".to_string(),
@@ -797,30 +487,6 @@ mod tests {
 
         let orphans = check_orphans(&graph);
         assert!(orphans.is_empty());
-    }
-
-    #[test]
-    fn test_valid_guard_task_reference() {
-        let mut graph = WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let t2 = make_task("t2", "Task 2");
-        let mut t3 = make_task("t3", "Task 3");
-        t3.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: Some(crate::graph::LoopGuard::TaskStatus {
-                task: "t2".to_string(),
-                status: Status::Done,
-            }),
-            max_iterations: 5,
-            delay: None,
-        }];
-
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-        graph.add_node(Node::Task(t3));
-
-        let issues = check_loop_edges(&graph);
-        assert!(issues.is_empty());
     }
 
     // --- Stale assignment tests ---
@@ -906,7 +572,7 @@ mod tests {
         dep.status = Status::Done;
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
-        blocked.blocked_by = vec!["dep".to_string()];
+        blocked.after = vec!["dep".to_string()];
 
         graph.add_node(Node::Task(dep));
         graph.add_node(Node::Task(blocked));
@@ -914,7 +580,7 @@ mod tests {
         let stuck = check_stuck_blocked(&graph);
         assert_eq!(stuck.len(), 1);
         assert_eq!(stuck[0].task_id, "blocked");
-        assert_eq!(stuck[0].blocked_by_ids, vec!["dep".to_string()]);
+        assert_eq!(stuck[0].after_ids, vec!["dep".to_string()]);
     }
 
     #[test]
@@ -928,7 +594,7 @@ mod tests {
         dep3.status = Status::Abandoned;
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
-        blocked.blocked_by = vec!["dep1".to_string(), "dep2".to_string(), "dep3".to_string()];
+        blocked.after = vec!["dep1".to_string(), "dep2".to_string(), "dep3".to_string()];
 
         graph.add_node(Node::Task(dep1));
         graph.add_node(Node::Task(dep2));
@@ -948,7 +614,7 @@ mod tests {
         dep2.status = Status::Done;
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
-        blocked.blocked_by = vec!["dep1".to_string(), "dep2".to_string()];
+        blocked.after = vec!["dep1".to_string(), "dep2".to_string()];
 
         graph.add_node(Node::Task(dep1));
         graph.add_node(Node::Task(dep2));
@@ -964,7 +630,7 @@ mod tests {
         let mut dep = make_task("dep", "Done dep");
         dep.status = Status::Done;
         let mut task = make_task("task", "Open task");
-        task.blocked_by = vec!["dep".to_string()];
+        task.after = vec!["dep".to_string()];
         // status is Open (default), not Blocked
 
         graph.add_node(Node::Task(dep));
@@ -981,7 +647,7 @@ mod tests {
         dep.status = Status::Done;
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
-        blocked.blocked_by = vec!["dep".to_string()];
+        blocked.after = vec!["dep".to_string()];
 
         graph.add_node(Node::Task(dep));
         graph.add_node(Node::Task(blocked));

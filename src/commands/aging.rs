@@ -86,7 +86,7 @@ struct OldTaskJson {
     title: String,
     age_days: i64,
     assigned: Option<String>,
-    blocked_by: Vec<String>,
+    after: Vec<String>,
 }
 
 /// JSON output structure for a stale task
@@ -306,10 +306,10 @@ fn output_text(
                 .map(|a| format!("@{}", a))
                 .unwrap_or_else(|| "unassigned".to_string());
 
-            let blocked_by = if task_info.task.blocked_by.is_empty() {
+            let after = if task_info.task.after.is_empty() {
                 "nothing".to_string()
             } else {
-                task_info.task.blocked_by.join(", ")
+                task_info.task.after.join(", ")
             };
 
             println!(
@@ -318,7 +318,7 @@ fn output_text(
                 task_info.task.id,
                 task_info.age_days,
                 assigned,
-                blocked_by
+                after
             );
         }
     }
@@ -364,7 +364,7 @@ fn output_json(
             title: task_info.task.title.clone(),
             age_days: task_info.age_days,
             assigned: task_info.task.assigned.clone(),
-            blocked_by: task_info.task.blocked_by.clone(),
+            after: task_info.task.after.clone(),
         })
         .collect();
 

@@ -97,15 +97,15 @@ fn load_wg_graph(wg_dir: &Path) -> WorkGraph {
 fn test_trace_returns_structured_data() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("build", "Build project", Status::Done);
-    t1.blocks = vec!["test".to_string(), "lint".to_string()];
+    t1.before = vec!["test".to_string(), "lint".to_string()];
     let mut t2 = make_task("test", "Run tests", Status::Done);
-    t2.blocked_by = vec!["build".to_string()];
-    t2.blocks = vec!["deploy".to_string()];
+    t2.after = vec!["build".to_string()];
+    t2.before = vec!["deploy".to_string()];
     let mut t3 = make_task("lint", "Lint code", Status::Failed);
-    t3.blocked_by = vec!["build".to_string()];
+    t3.after = vec!["build".to_string()];
     t3.failure_reason = Some("lint errors".to_string());
     let mut t4 = make_task("deploy", "Deploy app", Status::Open);
-    t4.blocked_by = vec!["test".to_string()];
+    t4.after = vec!["test".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2, t3, t4]);
 
     // Trace each task and verify output is non-empty
@@ -156,13 +156,13 @@ fn test_trace_json_is_parseable() {
 fn test_replay_failed_only_resets_and_preserves() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("root", "Root task", Status::Done);
-    t1.blocks = vec!["mid".to_string()];
+    t1.before = vec!["mid".to_string()];
     let mut t2 = make_task("mid", "Middle task", Status::Failed);
-    t2.blocked_by = vec!["root".to_string()];
-    t2.blocks = vec!["leaf".to_string()];
+    t2.after = vec!["root".to_string()];
+    t2.before = vec!["leaf".to_string()];
     t2.failure_reason = Some("compile error".to_string());
     let mut t3 = make_task("leaf", "Leaf task", Status::Done);
-    t3.blocked_by = vec!["mid".to_string()];
+    t3.after = vec!["mid".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2, t3]);
 
     // Run replay --failed-only --model different-model
@@ -315,9 +315,9 @@ fn test_replay_plan_only_no_side_effects() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("x1", "Failed task", Status::Failed);
     t1.failure_reason = Some("err".to_string());
-    t1.blocks = vec!["x2".to_string()];
+    t1.before = vec!["x2".to_string()];
     let mut t2 = make_task("x2", "Dependent", Status::Done);
-    t2.blocked_by = vec!["x1".to_string()];
+    t2.after = vec!["x1".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     // Run with --plan-only
@@ -478,10 +478,10 @@ fn test_replay_subgraph_scopes_correctly() {
     // Subgraph: root -> child (both failed)
     // Outside: unrelated (also failed, but should NOT be reset)
     let mut root = make_task("sg-root", "Root", Status::Failed);
-    root.blocks = vec!["sg-child".to_string()];
+    root.before = vec!["sg-child".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut child = make_task("sg-child", "Child", Status::Failed);
-    child.blocked_by = vec!["sg-root".to_string()];
+    child.after = vec!["sg-root".to_string()];
     child.failure_reason = Some("err".to_string());
     let mut unrelated = make_task("outside", "Outside subgraph", Status::Failed);
     unrelated.failure_reason = Some("err".to_string());
@@ -596,9 +596,9 @@ fn test_trace_full_mode() {
 fn test_replay_explicit_tasks() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("e1", "Task E1", Status::Done);
-    t1.blocks = vec!["e2".to_string()];
+    t1.before = vec!["e2".to_string()];
     let mut t2 = make_task("e2", "Task E2", Status::Done);
-    t2.blocked_by = vec!["e1".to_string()];
+    t2.after = vec!["e1".to_string()];
     let t3 = make_task("e3", "Task E3", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2, t3]);
 

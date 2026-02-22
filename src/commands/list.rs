@@ -35,7 +35,7 @@ pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, json: boo
                     "title": t.title,
                     "status": t.status,
                     "assigned": t.assigned,
-                    "blocked_by": t.blocked_by,
+                    "after": t.after,
                 });
                 if let Some(ref ra) = t.ready_after {
                     obj["ready_after"] = serde_json::json!(ra);
@@ -314,7 +314,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut task = make_task("t1", "JSON task", Status::Open);
         task.assigned = Some("agent-1".to_string());
-        task.blocked_by = vec!["dep-1".to_string()];
+        task.after = vec!["dep-1".to_string()];
         setup_workgraph(dir.path(), vec![task]);
 
         let result = run(dir.path(), None, false, true);
@@ -326,7 +326,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut task = make_task("t1", "Structured", Status::Open);
         task.assigned = Some("agent-x".to_string());
-        task.blocked_by = vec!["dep-a".to_string()];
+        task.after = vec!["dep-a".to_string()];
         let future = Utc::now() + Duration::hours(1);
         let future_str = future.to_rfc3339();
         task.ready_after = Some(future_str.clone());
@@ -342,7 +342,7 @@ mod tests {
             "title": t.title,
             "status": t.status,
             "assigned": t.assigned,
-            "blocked_by": t.blocked_by,
+            "after": t.after,
         });
         if let Some(ref ra) = t.ready_after {
             obj["ready_after"] = serde_json::json!(ra);
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(obj["title"], "Structured");
         assert_eq!(obj["status"], "open");
         assert_eq!(obj["assigned"], "agent-x");
-        assert_eq!(obj["blocked_by"][0], "dep-a");
+        assert_eq!(obj["after"][0], "dep-a");
         assert_eq!(obj["ready_after"], future_str);
     }
 
@@ -370,7 +370,7 @@ mod tests {
             "title": t.title,
             "status": t.status,
             "assigned": t.assigned,
-            "blocked_by": t.blocked_by,
+            "after": t.after,
         });
         if let Some(ref ra) = t.ready_after {
             obj["ready_after"] = serde_json::json!(ra);

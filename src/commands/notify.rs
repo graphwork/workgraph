@@ -229,8 +229,8 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
     }
 
     // Show blockers for blocked/failed tasks
-    if !task.blocked_by.is_empty() {
-        plain.push_str(&format!("\nBlocked by: {}\n", task.blocked_by.join(", ")));
+    if !task.after.is_empty() {
+        plain.push_str(&format!("\nAfter: {}\n", task.after.join(", ")));
     }
 
     if let Some(ref reason) = task.failure_reason {
@@ -276,14 +276,14 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
     }
 
     // Show blockers
-    if !task.blocked_by.is_empty() {
+    if !task.after.is_empty() {
         let blockers: Vec<String> = task
-            .blocked_by
+            .after
             .iter()
             .map(|b| format!("<code>{}</code>", escape_html(b)))
             .collect();
         html.push_str(&format!(
-            "<p><strong>Blocked by:</strong> {}</p>",
+            "<p><strong>After:</strong> {}</p>",
             blockers.join(", ")
         ));
     }
@@ -322,8 +322,8 @@ mod tests {
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec!["blocker-1".to_string()],
+            before: vec![],
+            after: vec!["blocker-1".to_string()],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -342,11 +342,11 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         }
     }
 

@@ -89,7 +89,7 @@ fn agent_output_dir(workgraph_dir: &Path, agent_id: &str) -> PathBuf {
 fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Task) -> String {
     let mut context_parts = Vec::new();
 
-    for dep_id in &task.blocked_by {
+    for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id) {
             if !dep_task.artifacts.is_empty() {
                 context_parts.push(format!(
@@ -111,17 +111,14 @@ fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Tas
         }
     }
 
-    // Inject loop metadata if this task has loops_to edges
-    if !task.loops_to.is_empty() {
+    // Inject cycle metadata if this task has cycle_config
+    if let Some(ref cc) = task.cycle_config {
         context_parts.push(format!(
-            "Loop status: iteration {} of this task",
-            task.loop_iteration
+            "Cycle status: iteration {} of this task (max {})",
+            task.loop_iteration, cc.max_iterations
         ));
-        for edge in &task.loops_to {
-            context_parts.push(format!(
-                "  loops_to: '{}', max {}",
-                edge.target, edge.max_iterations
-            ));
+        if let Some(ref delay) = cc.delay {
+            context_parts.push(format!("  cycle delay: {}", delay));
         }
     }
 
@@ -739,7 +736,7 @@ mod tests {
 
         // Create main task blocked by dependency
         let mut main_task = make_task("main", "Main Task");
-        main_task.blocked_by = vec!["dep-1".to_string()];
+        main_task.after = vec!["dep-1".to_string()];
         graph.add_node(Node::Task(main_task.clone()));
 
         let context = build_task_context(&graph, &main_task);
@@ -917,39 +914,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_task_context_includes_loop_metadata() {
-        use workgraph::graph::{LoopEdge, Node};
-
-        let mut graph = WorkGraph::new();
-        let mut task = make_task("review", "Review Task");
-        task.loops_to = vec![LoopEdge {
-            target: "write".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-        task.loop_iteration = 2;
-        graph.add_node(Node::Task(task.clone()));
-
-        let context = build_task_context(&graph, &task);
-        assert!(
-            context.contains("Loop status: iteration 2"),
-            "Context should include loop iteration, got: {}",
-            context
-        );
-        assert!(
-            context.contains("loops_to: 'write', max 3"),
-            "Context should include loop edge info, got: {}",
-            context
-        );
-    }
-
-    #[test]
     fn test_build_task_context_no_loop_metadata_for_normal_tasks() {
         let graph = WorkGraph::new();
         let task = make_task("t1", "Normal Task");
         let context = build_task_context(&graph, &task);
         assert!(!context.contains("Loop status"));
-        assert!(!context.contains("loops_to"));
     }
 }

@@ -46,26 +46,34 @@ Each tick does:
 1. Reap zombie child processes (waitpid for exited agents)
 2. Clean up dead agents (process exited or heartbeat stale)
 3. Count alive agents → if >= max_agents, stop here
-4. Get ready tasks (open, all blockers done, not_before passed)
+4. Compute cycle analysis (Tarjan SCC) for back-edge exemption
+5. Get ready tasks (open, all blockers done, not_before passed)
+   - Cycle headers get back-edge exemption: predecessors within the
+     same cycle that form back-edges are exempt from readiness checks
+     (only when the header has a CycleConfig)
 
-5. [IF auto_assign enabled]
+6. [IF auto_assign enabled]
    For each unassigned ready task (no agent field):
      Skip meta-tasks (tagged assignment/evaluation/evolution)
      Create assign-{task-id} blocker task
      Set assigner_model and assigner_agent on the new task
      The assigner runs: wg agent list, wg role list, then wg assign <task> <agent-hash>
 
-6. [IF auto_evaluate enabled]
+7. [IF auto_evaluate enabled]
    For each completed task without an existing evaluate-{task-id}:
      Skip meta-tasks (tagged evaluation/assignment/evolution)
      Create evaluate-{task-id} blocked by the original task
      Set evaluator_model and evaluator_agent on the new task
      Unblock eval tasks whose source task is Failed (so failures get evaluated too)
 
-7. Spawn agents on ready tasks:
+8. Spawn agents on ready tasks:
      Resolve effective model: task.model > coordinator.model > agent.model
      Register agent in AgentRegistry
      Detach with setsid()
+
+9. Evaluate cycle iteration on completed tasks:
+     If all members of a cycle are Done and cycle hasn't converged
+     or hit max_iterations → re-open all members for next iteration
 ```
 
 ## Service Commands
@@ -152,7 +160,11 @@ When the coordinator spawns an agent for a task:
 1. **Claim**: The task is claimed (status → `in-progress`)
 2. **Model resolution**: task.model > coordinator.model > agent.model
 3. **Identity injection**: If the task has an `agent` field, the agent's role and motivation are loaded from `.workgraph/agency/` and rendered into an identity prompt section
-4. **Wrapper script**: A bash script is generated at `.workgraph/agents/agent-N/run.sh`:
+4. **Cycle context injection**: If the task is part of a structural cycle, the prompt includes:
+   - The current `loop_iteration` (which pass this is)
+   - A note about `--converged`: the agent can signal `wg done <task-id> --converged` to stop the cycle when work has stabilized
+   - The `"converged"` tag is placed on the cycle header regardless of which member the agent completes
+5. **Wrapper script**: A bash script is generated at `.workgraph/agents/agent-N/run.sh`:
    - Runs the executor command (e.g., `claude --model opus --print "..."`)
    - Captures stdout/stderr to `output.log`
    - Sends heartbeats periodically

@@ -587,7 +587,7 @@ impl GraphExplorer {
 /// Build the flattened tree representation of the task dependency graph.
 ///
 /// Strategy: DFS from root nodes, then render tasks as an indented tree.
-/// Root nodes are tasks with no `blocked_by`. Each task is shown indented
+/// Root nodes are tasks with no `after`. Each task is shown indented
 /// under its last blocker. Tasks with multiple blockers get a back-reference
 /// marker under earlier blockers.
 fn build_graph_tree(
@@ -598,15 +598,15 @@ fn build_graph_tree(
 ) -> Vec<GraphRow> {
     // Collect all tasks and build adjacency
     let tasks: HashMap<String, &Task> = graph.tasks().map(|t| (t.id.clone(), t)).collect();
-    // children[parent_id] = list of task IDs that are blocked_by parent_id
+    // children[parent_id] = list of task IDs that are after parent_id
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();
 
     for task in tasks.values() {
-        if task.blocked_by.is_empty() {
+        if task.after.is_empty() {
             roots.push(task.id.clone());
         }
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             children
                 .entry(blocker_id.clone())
                 .or_default()
@@ -784,10 +784,10 @@ fn compute_critical_path(graph: &WorkGraph) -> HashSet<String> {
     let mut roots: Vec<String> = Vec::new();
 
     for task in tasks.values() {
-        if task.blocked_by.is_empty() {
+        if task.after.is_empty() {
             roots.push(task.id.clone());
         }
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             children
                 .entry(blocker_id.clone())
                 .or_default()

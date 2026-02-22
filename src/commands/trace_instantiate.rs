@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use workgraph::graph::{LoopEdge, Node, Status, Task};
+use workgraph::graph::{Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::trace_function::{
     self, FunctionInput, InputType, TaskTemplate, TraceFunction,
@@ -73,7 +73,7 @@ pub fn run(
     input_file: Option<&str>,
     prefix: Option<&str>,
     dry_run: bool,
-    blocked_by: &[String],
+    after: &[String],
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -130,7 +130,7 @@ pub fn run(
     };
 
     // Validate external blocked-by references exist
-    for dep in blocked_by {
+    for dep in after {
         if graph.get_node(dep).is_none() {
             eprintln!(
                 "Warning: external blocker '{}' does not exist in the graph",
@@ -159,48 +159,23 @@ pub fn run(
         let rendered = trace_function::substitute_task_template(template, &final_inputs);
         let task_id = id_map[&template.template_id].clone();
 
-        // Remap blocked_by from template_ids to real task_ids
-        let mut real_blocked_by: Vec<String> = Vec::new();
-        for dep in &template.blocked_by {
+        // Remap after from template_ids to real task_ids
+        let mut real_after: Vec<String> = Vec::new();
+        for dep in &template.after {
             if let Some(real_id) = id_map.get(dep) {
-                real_blocked_by.push(real_id.clone());
+                real_after.push(real_id.clone());
             } else {
                 eprintln!(
-                    "Warning: blocked_by '{}' in template '{}' not found in function",
+                    "Warning: after '{}' in template '{}' not found in function",
                     dep, template.template_id
                 );
             }
         }
 
-        // Add external --blocked-by for root tasks (those with no internal blocked_by)
-        if template.blocked_by.is_empty() {
-            real_blocked_by.extend(blocked_by.iter().cloned());
+        // Add external --after for root tasks (those with no internal after)
+        if template.after.is_empty() {
+            real_after.extend(after.iter().cloned());
         }
-
-        // Remap loops_to from template_ids to real task_ids
-        let real_loops_to: Vec<LoopEdge> = template
-            .loops_to
-            .iter()
-            .filter_map(|edge| {
-                if let Some(real_target) = id_map.get(&edge.target) {
-                    Some(LoopEdge {
-                        target: real_target.clone(),
-                        guard: edge.guard.as_ref().and_then(|g| {
-                            // Parse guard string into LoopGuard
-                            super::add::parse_guard_expr(g).ok()
-                        }),
-                        max_iterations: edge.max_iterations,
-                        delay: edge.delay.clone(),
-                    })
-                } else {
-                    eprintln!(
-                        "Warning: loops_to target '{}' in template '{}' not found in function",
-                        edge.target, template.template_id
-                    );
-                    None
-                }
-            })
-            .collect();
 
         // Build tags: include role_hint as role:<name> tag, plus template tags and skills
         let mut tags = rendered.tags.clone();
@@ -218,7 +193,7 @@ pub fn run(
 
         if dry_run {
             // Show plan without creating tasks
-            print_dry_run_task(&task_id, &rendered, &real_blocked_by, &real_loops_to, &tags, task_model.as_deref());
+            print_dry_run_task(&task_id, &rendered, &real_after, &tags, task_model.as_deref());
         } else {
             let task = Task {
                 id: task_id.clone(),
@@ -227,8 +202,8 @@ pub fn run(
                 status: Status::Open,
                 assigned: None,
                 estimate: None,
-                blocks: vec![],
-                blocked_by: real_blocked_by.clone(),
+                before: vec![],
+                after: real_after.clone(),
                 requires: vec![],
                 tags,
                 skills: rendered.skills.clone(),
@@ -247,21 +222,21 @@ pub fn run(
                 model: task_model,
                 verify: rendered.verify.clone(),
                 agent: None,
-                loops_to: real_loops_to.clone(),
                 loop_iteration: 0,
                 ready_after: None,
                 paused: false,
                 visibility: "internal".to_string(),
+                cycle_config: None,
             };
 
             graph.add_node(Node::Task(task));
 
             // Maintain bidirectional consistency: update blocks on blocker tasks
-            for dep in &real_blocked_by {
+            for dep in &real_after {
                 if let Some(blocker) = graph.get_task_mut(dep)
-                    && !blocker.blocks.contains(&task_id)
+                    && !blocker.before.contains(&task_id)
                 {
-                    blocker.blocks.push(task_id.clone());
+                    blocker.before.push(task_id.clone());
                 }
             }
         }
@@ -337,18 +312,12 @@ pub fn run(
         );
         for task_id in &created_ids {
             let task = graph.get_task(task_id).unwrap();
-            let blocked_str = if task.blocked_by.is_empty() {
+            let blocked_str = if task.after.is_empty() {
                 String::new()
             } else {
-                format!(" (blocked by {})", task.blocked_by.join(", "))
+                format!(" (blocked by {})", task.after.join(", "))
             };
-            let loops_str = if task.loops_to.is_empty() {
-                String::new()
-            } else {
-                let targets: Vec<&str> = task.loops_to.iter().map(|e| e.target.as_str()).collect();
-                format!(", loops to {}", targets.join(", "))
-            };
-            println!("  {} (Open{}{})", task_id, blocked_str, loops_str);
+            println!("  {} (Open{})", task_id, blocked_str);
         }
         println!();
         super::print_service_hint(dir);
@@ -463,22 +432,14 @@ fn resolve_file_contents(
 fn print_dry_run_task(
     task_id: &str,
     rendered: &TaskTemplate,
-    blocked_by: &[String],
-    loops_to: &[LoopEdge],
+    after: &[String],
     tags: &[String],
     model: Option<&str>,
 ) {
     println!("  Task: {} (Open)", task_id);
     println!("    Title: {}", rendered.title);
-    if !blocked_by.is_empty() {
-        println!("    Blocked by: {}", blocked_by.join(", "));
-    }
-    if !loops_to.is_empty() {
-        let targets: Vec<String> = loops_to
-            .iter()
-            .map(|e| format!("{} (max {})", e.target, e.max_iterations))
-            .collect();
-        println!("    Loops to: {}", targets.join(", "));
+    if !after.is_empty() {
+        println!("    After: {}", after.join(", "));
     }
     if !rendered.skills.is_empty() {
         println!("    Skills: {}", rendered.skills.join(", "));
@@ -552,7 +513,7 @@ mod tests {
                     title: "Plan {{input.feature_name}}".to_string(),
                     description: "Plan the implementation of {{input.feature_name}}".to_string(),
                     skills: vec!["analysis".to_string()],
-                    blocked_by: vec![],
+                    after: vec![],
                     loops_to: vec![],
                     role_hint: Some("analyst".to_string()),
                     deliverables: vec![],
@@ -565,7 +526,7 @@ mod tests {
                     description:
                         "Implement the feature. Run: {{input.test_command}}".to_string(),
                     skills: vec!["implementation".to_string()],
-                    blocked_by: vec!["plan".to_string()],
+                    after: vec!["plan".to_string()],
                     loops_to: vec![],
                     role_hint: Some("programmer".to_string()),
                     deliverables: vec![],
@@ -577,7 +538,7 @@ mod tests {
                     title: "Validate {{input.feature_name}}".to_string(),
                     description: "Validate the implementation".to_string(),
                     skills: vec!["review".to_string()],
-                    blocked_by: vec!["implement".to_string()],
+                    after: vec!["implement".to_string()],
                     loops_to: vec![],
                     role_hint: None,
                     deliverables: vec![],
@@ -589,7 +550,7 @@ mod tests {
                     title: "Refine {{input.feature_name}}".to_string(),
                     description: "Address issues found during validation".to_string(),
                     skills: vec![],
-                    blocked_by: vec!["validate".to_string()],
+                    after: vec!["validate".to_string()],
                     loops_to: vec![LoopEdgeTemplate {
                         target: "validate".to_string(),
                         max_iterations: 3,
@@ -646,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_remaps_blocked_by() {
+    fn instantiate_remaps_after() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         setup_workgraph(dir);
@@ -668,38 +629,10 @@ mod tests {
 
         let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
         let implement = graph.get_task("auth-implement").unwrap();
-        assert_eq!(implement.blocked_by, vec!["auth-plan"]);
+        assert_eq!(implement.after, vec!["auth-plan"]);
 
         let validate = graph.get_task("auth-validate").unwrap();
-        assert_eq!(validate.blocked_by, vec!["auth-implement"]);
-    }
-
-    #[test]
-    fn instantiate_remaps_loops_to() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        setup_workgraph(dir);
-        setup_function(dir, &sample_function());
-
-        run(
-            dir,
-            "impl-feature",
-            None,
-            &["feature_name=auth".to_string()],
-            None,
-            None,
-            false,
-            &[],
-            None,
-            false,
-        )
-        .unwrap();
-
-        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
-        let refine = graph.get_task("auth-refine").unwrap();
-        assert_eq!(refine.loops_to.len(), 1);
-        assert_eq!(refine.loops_to[0].target, "auth-validate");
-        assert_eq!(refine.loops_to[0].max_iterations, 3);
+        assert_eq!(validate.after, vec!["auth-implement"]);
     }
 
     #[test]
@@ -757,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_applies_external_blocked_by() {
+    fn instantiate_applies_external_after() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         setup_workgraph(dir);
@@ -791,12 +724,12 @@ mod tests {
         let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
         // Root task (plan) should be blocked by the external prerequisite
         let plan = graph.get_task("auth-plan").unwrap();
-        assert!(plan.blocked_by.contains(&"prerequisite".to_string()));
+        assert!(plan.after.contains(&"prerequisite".to_string()));
 
-        // Non-root tasks should NOT have the external blocked_by
+        // Non-root tasks should NOT have the external after
         let implement = graph.get_task("auth-implement").unwrap();
-        assert!(!implement.blocked_by.contains(&"prerequisite".to_string()));
-        assert!(implement.blocked_by.contains(&"auth-plan".to_string()));
+        assert!(!implement.after.contains(&"prerequisite".to_string()));
+        assert!(implement.after.contains(&"auth-plan".to_string()));
     }
 
     #[test]
@@ -1090,10 +1023,10 @@ mod tests {
 
         let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
-        assert!(plan.blocks.contains(&"auth-implement".to_string()));
+        assert!(plan.before.contains(&"auth-implement".to_string()));
 
         let implement = graph.get_task("auth-implement").unwrap();
-        assert!(implement.blocks.contains(&"auth-validate".to_string()));
+        assert!(implement.before.contains(&"auth-validate".to_string()));
     }
 
     #[test]

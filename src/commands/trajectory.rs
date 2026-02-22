@@ -28,12 +28,12 @@ pub struct Trajectory {
     pub claim_order: Vec<String>,
 }
 
-/// Build reverse index: task_id -> tasks that depend on it (have it in blocked_by)
+/// Build reverse index: task_id -> tasks that depend on it (have it in after)
 fn build_dependents_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
 
     for task in graph.tasks() {
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             index
                 .entry(blocker.clone())
                 .or_default()
@@ -187,7 +187,7 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
         .tasks()
         .filter(|t| {
             t.status == Status::Open
-                && t.blocked_by.iter().all(|b| {
+                && t.after.iter().all(|b| {
                     graph
                         .get_task(b)
                         .map(|bt| bt.status.is_terminal())
@@ -297,7 +297,7 @@ mod tests {
         t1.deliverables = vec!["output.txt".to_string()];
 
         let mut t2 = make_task("t2", "Consumer");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["output.txt".to_string()];
 
         graph.add_node(Node::Task(t1));
@@ -334,12 +334,12 @@ mod tests {
         t1.deliverables = vec!["a.txt".to_string()];
 
         let mut t2 = make_task("t2", "Step 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.inputs = vec!["a.txt".to_string()];
         t2.deliverables = vec!["b.txt".to_string()];
 
         let mut t3 = make_task("t3", "Step 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         t3.inputs = vec!["b.txt".to_string()];
 
         graph.add_node(Node::Task(t1));

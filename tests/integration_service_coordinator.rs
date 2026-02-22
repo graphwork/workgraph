@@ -97,7 +97,7 @@ fn test_coordinator_identifies_ready_tasks() {
     )));
     // Blocked task -> not ready
     let mut blocked = make_task("blocked-1", "Blocked Task", Status::Open);
-    blocked.blocked_by = vec!["ready-1".to_string()];
+    blocked.after = vec!["ready-1".to_string()];
     graph.add_node(Node::Task(blocked));
 
     save_test_graph(&wg_dir, &graph);
@@ -129,7 +129,7 @@ fn test_coordinator_unblocks_when_blocker_done() {
     graph.add_node(Node::Task(make_task("blocker", "Blocker", Status::Done)));
     // Blocked task should now be ready
     let mut task = make_task("downstream", "Downstream", Status::Open);
-    task.blocked_by = vec!["blocker".to_string()];
+    task.after = vec!["blocker".to_string()];
     graph.add_node(Node::Task(task));
 
     save_test_graph(&wg_dir, &graph);
@@ -599,7 +599,7 @@ auto_evaluate = true
             Status::Open,
         );
         let mut eval_task_with_deps = eval_task;
-        eval_task_with_deps.blocked_by = vec![task_id.clone()];
+        eval_task_with_deps.after = vec![task_id.clone()];
         eval_task_with_deps.tags = vec!["evaluation".to_string(), "agency".to_string()];
         mutable_graph.add_node(Node::Task(eval_task_with_deps));
         graph_modified = true;
@@ -614,12 +614,12 @@ auto_evaluate = true
 
     // evaluate-task-1 should exist and be blocked by task-1
     let eval1 = final_graph.get_task("evaluate-task-1").unwrap();
-    assert_eq!(eval1.blocked_by, vec!["task-1".to_string()]);
+    assert_eq!(eval1.after, vec!["task-1".to_string()]);
     assert!(eval1.tags.contains(&"evaluation".to_string()));
 
     // evaluate-task-2 should exist and be blocked by task-2
     let eval2 = final_graph.get_task("evaluate-task-2").unwrap();
-    assert_eq!(eval2.blocked_by, vec!["task-2".to_string()]);
+    assert_eq!(eval2.after, vec!["task-2".to_string()]);
 }
 
 #[test]
@@ -712,7 +712,7 @@ fn test_auto_evaluate_idempotent() {
     )));
     // Pre-create the eval task
     let mut eval_task = make_task("evaluate-task-1", "Evaluate: Regular Task", Status::Open);
-    eval_task.blocked_by = vec!["task-1".to_string()];
+    eval_task.after = vec!["task-1".to_string()];
     eval_task.tags = vec!["evaluation".to_string()];
     graph.add_node(Node::Task(eval_task));
     save_graph(&graph, &graph_path).unwrap();
@@ -755,7 +755,7 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
         Status::Failed,
     )));
     let mut eval_task = make_task("evaluate-source-task", "Evaluate: Source", Status::Open);
-    eval_task.blocked_by = vec!["source-task".to_string()];
+    eval_task.after = vec!["source-task".to_string()];
     eval_task.tags = vec!["evaluation".to_string()];
     graph.add_node(Node::Task(eval_task));
     save_graph(&graph, &graph_path).unwrap();
@@ -766,8 +766,8 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
         .tasks()
         .filter(|t| t.id.starts_with("evaluate-") && t.status == Status::Open)
         .filter_map(|t| {
-            if t.blocked_by.len() == 1 {
-                let source_id = &t.blocked_by[0];
+            if t.after.len() == 1 {
+                let source_id = &t.after[0];
                 if let Some(source) = mutable_graph.get_task(source_id)
                     && source.status == Status::Failed
                 {
@@ -784,7 +784,7 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
 
     for (eval_id, source_id) in &eval_fixups {
         if let Some(t) = mutable_graph.get_task_mut(eval_id) {
-            t.blocked_by.retain(|b| b != source_id);
+            t.after.retain(|b| b != source_id);
         }
     }
     save_graph(&mutable_graph, &graph_path).unwrap();
@@ -793,7 +793,7 @@ fn test_auto_evaluate_unblocks_on_failed_source() {
     let final_graph = load_graph(&graph_path).unwrap();
     let eval = final_graph.get_task("evaluate-source-task").unwrap();
     assert!(
-        eval.blocked_by.is_empty(),
+        eval.after.is_empty(),
         "Eval task should be unblocked after source task failed"
     );
 
@@ -847,7 +847,7 @@ evaluator_model = "sonnet"
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),
             status: Status::Open,
-            blocked_by: vec![task_id.clone()],
+            after: vec![task_id.clone()],
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             exec: Some(format!("wg evaluate {}", task_id)),
             model: config.agency.evaluator_model.clone(),
@@ -1101,12 +1101,12 @@ fn test_coordinator_dependency_chain() {
 
     // task-b blocked by task-a -> not ready
     let mut task_b = make_task("task-b", "Task B", Status::Open);
-    task_b.blocked_by = vec!["task-a".to_string()];
+    task_b.after = vec!["task-a".to_string()];
     graph.add_node(Node::Task(task_b));
 
     // task-c blocked by task-b -> not ready
     let mut task_c = make_task("task-c", "Task C", Status::Open);
-    task_c.blocked_by = vec!["task-b".to_string()];
+    task_c.after = vec!["task-b".to_string()];
     graph.add_node(Node::Task(task_c));
 
     save_graph(&graph, &graph_path).unwrap();

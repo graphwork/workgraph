@@ -180,7 +180,7 @@ fn find_blocked_task_ids(graph: &WorkGraph) -> HashSet<String> {
         }
 
         // Check if any blocker is still active (not terminal)
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             if let Some(blocker) = graph.get_task(blocker_id)
                 && !blocker.status.is_terminal()
             {
@@ -312,7 +312,7 @@ fn find_critical_path(graph: &WorkGraph) -> Option<CriticalPath> {
         }
 
         // Check if all blockers are resolved (terminal or nonexistent)
-        let all_blockers_done = task.blocked_by.iter().all(|bid| {
+        let all_blockers_done = task.after.iter().all(|bid| {
             graph
                 .get_task(bid)
                 .map(|t| t.status.is_terminal())
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_by_incomplete_dependency() {
+    fn test_after_incomplete_dependency() {
         let mut graph = WorkGraph::new();
 
         // Blocker task (not done)
@@ -602,7 +602,7 @@ mod tests {
 
         // Dependent task (status=Open but has incomplete blocker)
         let mut dependent = make_task_with_hours("t2", "Dependent", 4.0);
-        dependent.blocked_by = vec!["t1".to_string()];
+        dependent.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(dependent));
 
         let forecast = calculate_forecast(&graph);
@@ -675,7 +675,7 @@ mod tests {
         // Tasks that depend on root
         for i in 1..=5 {
             let mut task = make_task_with_hours(&format!("t{}", i), &format!("Task {}", i), 4.0);
-            task.blocked_by = vec!["root".to_string()];
+            task.after = vec!["root".to_string()];
             graph.add_node(Node::Task(task));
         }
 
@@ -695,11 +695,11 @@ mod tests {
         graph.add_node(Node::Task(make_task_with_hours("t1", "Task 1", 8.0)));
 
         let mut t2 = make_task_with_hours("t2", "Task 2", 4.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t2));
 
         let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         graph.add_node(Node::Task(t3));
 
         let forecast = calculate_forecast(&graph);
@@ -719,11 +719,11 @@ mod tests {
         graph.add_node(Node::Task(make_task_with_hours("t1", "Task 1", 4.0)));
 
         let mut t2 = make_task_with_hours("t2", "Task 2", 2.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t2));
 
         let mut t3 = make_task_with_hours("t3", "Task 3", 10.0);
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t3));
 
         let forecast = calculate_forecast(&graph);
@@ -771,7 +771,7 @@ mod tests {
         graph.add_node(Node::Task(make_task_with_hours("root", "Root", 8.0)));
 
         let mut t1 = make_task_with_hours("t1", "Task 1", 4.0);
-        t1.blocked_by = vec!["root".to_string()];
+        t1.after = vec!["root".to_string()];
         graph.add_node(Node::Task(t1));
 
         let forecast = calculate_forecast(&graph);
@@ -786,15 +786,15 @@ mod tests {
 
         // Cycle: t1 -> t2 -> t3 -> t1
         let mut t1 = make_task_with_hours("t1", "Task 1", 4.0);
-        t1.blocked_by = vec!["t3".to_string()];
+        t1.after = vec!["t3".to_string()];
         graph.add_node(Node::Task(t1));
 
         let mut t2 = make_task_with_hours("t2", "Task 2", 8.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t2));
 
         let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         graph.add_node(Node::Task(t3));
 
         // Should not stack overflow - just completes without crashing

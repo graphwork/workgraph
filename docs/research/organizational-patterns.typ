@@ -15,9 +15,9 @@ about how to structure work in workgraph.
   coordinate via pheromone trails. No agent-to-agent communication is
   needed—the graph #emph[is] the communication channel.
 
-+ #strong[`blocked_by` edges natively express the five basic workflow
++ #strong[`after` edges natively express the five basic workflow
   patterns] (Sequence, Parallel Split, Synchronization, Exclusive
-  Choice, Simple Merge). `loops_to` back-edges add structured loops and
+  Choice, Simple Merge). Structural cycles (back-edges in `after` edges with `CycleConfig`) add structured loops and
   arbitrary cycles. Advanced patterns (discriminators, cancellation,
   milestones) require coordinator logic.
 
@@ -28,7 +28,7 @@ about how to structure work in workgraph.
   Luhmann’s operationally closed social system, and Argyris & Schön’s
   double-loop learning—all at once.
 
-+ #strong[Fork-Join is the natural topology of `blocked_by` graphs.] The
++ #strong[Fork-Join is the natural topology of `after` graphs.] The
   planner→N workers→synthesizer pattern is workgraph’s most fundamental
   parallel decomposition. It maps to MapReduce, scatter-gather, and
   WCP2+WCP3.
@@ -124,8 +124,8 @@ the graph’s state stimulates their actions.
   [#strong[Pheromone decay]],
   [Stale assignment detection (dead agent checks), task expiration],
   [#strong[Stigmergic coordination]],
-  [The coordinator polls the graph for "ready" tasks (all `blocked_by`
-  satisfied)—it reads the markers],
+  [The coordinator polls the graph for "ready" tasks (all `after`
+  predecessors terminal)—it reads the markers],
   [#strong[Self-reinforcing trails]],
   [Tasks with good evaluation scores reinforce the role/motivation
   patterns that produced them (via evolve)],
@@ -137,7 +137,7 @@ defining characteristic of stigmergy—that agents coordinate through a
 shared medium rather than through direct communication—is exactly how
 workgraph agents operate. Agent A completes task X, modifying the graph
 (setting status to `Done`, recording artifacts). Agent B, working on
-task Y with `blocked_by = [X]`, is now unblocked. B never spoke to A.
+task Y with `after = [X]`, is now unblocked. B never spoke to A.
 The graph mediated the coordination.
 
 === 1.3 Real-World Stigmergic Systems
@@ -171,8 +171,8 @@ medium.
 
 #line(length: 100%, stroke: 0.5pt + luma(180))
 
-== 2. Workflow Patterns: What `blocked_by` and `loops_to` Can Express
-<workflow-patterns-what-blocked_by-and-loops_to-can-express>
+== 2. Workflow Patterns: What `after` Edges and Structural Cycles Can Express
+<workflow-patterns-what-after-edges-and-structural-cycles-can-express>
 === 2.1 The Workflow Patterns Catalog
 <the-workflow-patterns-catalog>
 The Workflow Patterns Initiative, established by Wil van der Aalst,
@@ -185,8 +185,8 @@ and 40 Data Patterns.
 These patterns provide a precise vocabulary for what any workflow system
 can and cannot express.
 
-=== 2.2 Patterns Natively Supported by `blocked_by`
-<patterns-natively-supported-by-blocked_by>
+=== 2.2 Patterns Natively Supported by `after`
+<patterns-natively-supported-by-after>
 #align(center)[#table(
   columns: 4,
   align: (col, row) => (auto,auto,auto,auto,).at(col),
@@ -194,16 +194,16 @@ can and cannot express.
   [Pattern], [ID], [Workgraph Expression], [Example],
   [#strong[Sequence]],
   [WCP1],
-  [`B.blocked_by = [A]`],
+  [`B.after = [A]`],
   [`write-code → review-code`],
   [#strong[Parallel Split]],
   [WCP2],
-  [Multiple tasks sharing the same predecessor: `B.blocked_by = [A]`,
-  `C.blocked_by = [A]`],
+  [Multiple tasks sharing the same predecessor: `B.after = [A]`,
+  `C.after = [A]`],
   [`plan → {implement-frontend, implement-backend}`],
   [#strong[Synchronization] (AND-join)],
   [WCP3],
-  [`D.blocked_by = [B, C]`],
+  [`D.after = [B, C]`],
   [`{frontend, backend} → integration-test`],
   [#strong[Simple Merge]],
   [WCP5],
@@ -216,11 +216,11 @@ can and cannot express.
 )
 ]
 
-These five patterns—the DAG patterns—are the bread and butter of
-`blocked_by` graphs.
+These five patterns—the basic directed-graph patterns—are the bread and butter of
+`after` graphs. (Note: workgraph is a directed graph, not necessarily a DAG — structural cycles are intentional.)
 
-=== 2.3 Patterns Added by `loops_to`
-<patterns-added-by-loops_to>
+=== 2.3 Patterns Added by Structural Cycles
+<patterns-added-by-structural-cycles>
 #align(center)[#table(
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
@@ -228,10 +228,10 @@ These five patterns—the DAG patterns—are the bread and butter of
   [Pattern], [ID], [Workgraph Expression],
   [#strong[Arbitrary Cycles]],
   [WCP10],
-  [`loops_to` edges create back-edges with guards and max iterations],
+  [`after` edges forming a cycle, detected by Tarjan's SCC algorithm, with `CycleConfig` on the cycle header (`--max-iterations`, optional guard and delay)],
   [#strong[Structured Loop]],
   [WCP21],
-  [`loops_to` with a guard condition (pre-test or post-test)],
+  [Structural cycle with a guard condition on the `CycleConfig`],
 )
 ]
 
@@ -300,8 +300,8 @@ is distributed to agents. Several map directly:
 === 2.6 Summary: Expressiveness Hierarchy
 <summary-expressiveness-hierarchy>
 ```
-blocked_by alone:        WCP1-3, WCP5, WCP11 (basic DAG patterns)
-+ loops_to:              + WCP10, WCP21 (cycles and structured loops)
+after edges alone:       WCP1-3, WCP5, WCP11 (basic directed-graph patterns)
++ structural cycles:     + WCP10, WCP21 (cycles and structured loops)
 + coordinator logic:     + WCP4, WCP6, WCP9, WCP14-16, WCP18-20, WCP25
 + resource patterns:     + WRP2, WRP6, WRP8, WRP9, WRP11
 ```
@@ -346,7 +346,7 @@ different fields:
 
 === 3.2 Fork-Join in Workgraph
 <fork-join-in-workgraph>
-Fork-Join is the natural topology of `blocked_by` graphs:
+Fork-Join is the natural topology of `after` graphs:
 
 ```
            ┌─── worker-1 ───┐
@@ -365,7 +365,7 @@ wg add "Synthesize results" --id synthesizer --blocked-by worker-1 worker-2 work
 This is WCP2 (Parallel Split) composed with WCP3 (Synchronization). It
 is workgraph’s most fundamental parallel pattern. Every fan-out from a
 single task is a fork; every convergence point with multiple
-`blocked_by` entries is a join.
+`after` entries is a join.
 
 === 3.3 MapReduce in Workgraph
 <mapreduce-in-workgraph>
@@ -374,9 +374,9 @@ is expressed as:
 
 + A #strong[planner] task that analyzes input data and produces a
   decomposition
-+ N #strong[map] tasks (one per data partition), each `blocked_by` the
++ N #strong[map] tasks (one per data partition), each `after` the
   planner
-+ A #strong[reduce] task that `blocked_by` all map tasks and aggregates
++ A #strong[reduce] task that is `after` all map tasks and aggregates
   results
 
 The coordinator creates the N map tasks dynamically based on the
@@ -429,7 +429,7 @@ This maps directly to manufacturing and operations concepts:
   inset: 6pt,
   [Manufacturing Concept], [Workgraph Expression],
   [#strong[Assembly line]],
-  [A chain of tasks with sequential `blocked_by` edges, each assigned to
+  [A chain of tasks with sequential `after` edges, each assigned to
   a different specialized role],
   [#strong[Work station]],
   [A role—the specialized capability at each pipeline stage],
@@ -615,8 +615,8 @@ execute (cycle repeats)
   being completed successfully?) and adapt accordingly.],
   [#strong[Temporalization]],
   [Tasks are momentary events. Once completed, they are consumed. The
-  system must continuously produce new tasks (or loop back via
-  `loops_to`) to maintain itself. A workgraph with no open tasks has
+  system must continuously produce new tasks (or iterate via structural
+  cycles) to maintain itself. A workgraph with no open tasks has
   ceased its autopoiesis.],
 )
 ]
@@ -626,7 +626,7 @@ execute (cycle repeats)
 The autopoietic framing suggests several design principles:
 
 + #strong[The agency is alive only while tasks flow.] An idle agency
-  with no open tasks is a dead system. The `loops_to` mechanism keeps
+  with no open tasks is a dead system. Structural cycles keep
   the agency alive by re-activating tasks.
 + #strong[Evolution is not optional—it is survival.] An agency that
   does not evolve in response to evaluation feedback will become
@@ -1392,9 +1392,9 @@ exploration and adaptation. S5 mediates this tension.
   [#strong[Agents] executing tasks. Each agent (role + motivation) is a
   semi-autonomous operational unit.],
   [#strong[S2 (Coordination)]],
-  [#strong[`blocked_by` dependency edges] and #strong[task status
+  [#strong[`after` dependency edges] and #strong[task status
   transitions]. These protocols prevent agents from clashing—an agent
-  cannot start a task until dependencies are satisfied. The
+  cannot start a task until its `after` predecessors are terminal. The
   coordinator’s scheduling logic is S2.],
   [#strong[S3 (Control)]],
   [#strong[The coordinator] (`wg service start`). It allocates agents to
@@ -1575,7 +1575,7 @@ architecture you want.
   [#strong[Organization structure]],
   [The set of roles and how they are assigned to agents],
   [#strong[Communication channels]],
-  [`blocked_by` edges between tasks assigned to different roles],
+  [`after` edges between tasks assigned to different roles],
   [#strong[System architecture]],
   [The task graph structure—how work is decomposed and connected],
   [#strong[Conway’s constraint]],
@@ -1685,7 +1685,7 @@ load theory.
   type.],
   [#strong[Platform team]],
   [A role whose tasks produce shared infrastructure that unblocks other
-  agents’ tasks. Platform tasks appear as `blocked_by` dependencies for
+  agents’ tasks. Platform tasks appear as `after` dependencies for
   stream-aligned tasks.],
   [#strong[Enabling team]],
   [A role whose tasks improve other roles/agents—writing
@@ -1695,10 +1695,10 @@ load theory.
   [A role with specialized capabilities, assigned to tasks that other
   agents should not attempt.],
   [#strong[Collaboration mode]],
-  [Two agents sharing `blocked_by` edges on overlapping tasks during a
+  [Two agents sharing `after` edges on overlapping tasks during a
   discovery phase.],
   [#strong[X-as-a-Service mode]],
-  [Clean `blocked_by` edges: platform tasks complete, stream-aligned
+  [Clean `after` edges: platform tasks complete, stream-aligned
   tasks consume their outputs.],
   [#strong[Facilitating mode]],
   [An enabling agent’s tasks are prerequisites for another agent’s
@@ -1746,7 +1746,7 @@ increases productivity. In workgraph, this maps to:
   (Section 4)
 
 The tradeoff: over-specialization increases coordination costs (more
-`blocked_by` edges, more handoffs, more potential for misalignment).
+`after` edges, more handoffs, more potential for misalignment).
 This is the fundamental tension in organizational design, and it applies
 directly to workgraph agency design.
 
@@ -1763,7 +1763,7 @@ oversight quality.
 
 === 14.3 Coordination Costs
 <coordination-costs>
-Every dependency edge (`blocked_by`) is a coordination point. The total
+Every dependency edge (`after`) is a coordination point. The total
 coordination cost of a task graph scales with the number of edges, not
 the number of tasks. This connects to Brooks’s Law: "Adding manpower to
 a late software project makes it later"—because the number of
@@ -1822,7 +1822,7 @@ Conway's Law ───── Role ontology ──────── Inverse Conw
                        │                            │
 Team Topologies ── Team types ─────────── Interaction mode evolution
                        │                            │
-Workflow Patterns ─ blocked_by edges ──── Coordinator dispatch logic
+Workflow Patterns ─ after edges ─────────── Coordinator dispatch logic
                        │                            │
 Division of Labor ─ Task decomposition ── Pipeline & Fork-Join
                        │                            │
@@ -1871,9 +1871,9 @@ Several deep identities connect these frameworks:
   (feedback loops); evaluations are the #emph[implementation] of both
   monitoring (agency theory) and negative feedback (cybernetics).
 
-+ #strong[Fork-Join + Workflow Patterns + `blocked_by`]: Fork-Join is
++ #strong[Fork-Join + Workflow Patterns + `after`]: Fork-Join is
   the computational realization of WCP2+WCP3, which are the two most
-  fundamental `blocked_by` graph topologies.
+  fundamental `after`-edge graph topologies.
 
 + #strong[Autopoiesis + Evolve + Double-Loop Learning]: The
   execute→evaluate→evolve→execute cycle is simultaneously autopoietic
@@ -1963,7 +1963,7 @@ designing a workgraph agency:
   [Situation], [Pattern], [Workgraph Expression],
   [Sequential specialized stages],
   [Pipeline (Section 4)],
-  [Serial `blocked_by` chain, different roles per stage],
+  [Serial `after` chain, different roles per stage],
   [Independent parallelizable work],
   [Fork-Join (Section 3)],
   [Fan-out from planner, fan-in to synthesizer],
@@ -1975,10 +1975,10 @@ designing a workgraph agency:
   [Multiple reviewer roles examine same artifact],
   [Iterative refinement],
   [Structured Loop (Section 2)],
-  [`loops_to` with guard and max\_iterations],
+  [Structural cycle with `CycleConfig` (`--max-iterations`, guard, delay)],
   [Recurring process],
   [Autopoietic cycle (Section 5)],
-  [`loops_to` chain forming a full cycle],
+  [Structural cycle forming a full cycle],
 )
 ]
 
@@ -2013,10 +2013,10 @@ designing a workgraph agency:
   [No division of labor],
   [Single agent bottleneck; no parallelism],
   [Break into subtasks with dependencies],
-  [Circular `blocked_by` without `loops_to`],
+  [Unconfigured structural cycle],
   [Workflow Patterns (unbounded cycle)],
-  [Deadlock or infinite loop],
-  [Use `loops_to` with guards and max\_iterations],
+  [Deadlock (no `CycleConfig`) or infinite loop],
+  [Add `--max-iterations` on cycle header],
 )
 ]
 
@@ -2030,7 +2030,7 @@ designing a workgraph agency:
   columns: 13,
   align: (col, row) => (auto,auto,auto,auto,auto,auto,auto,auto,auto,auto,auto,auto,auto,).at(col),
   inset: 6pt,
-  [Framework], [Tasks], [`blocked_by`], [`loops_to`], [Roles],
+  [Framework], [Tasks], [`after`], [Structural Cycles], [Roles],
   [Motivations], [Agents], [Coordinator], [Evaluations], [Evolve],
   [Trace], [Replay], [Runs],
   [Stigmergy],
@@ -2202,11 +2202,11 @@ designing a workgraph agency:
   [#strong[Tasks]],
   [All 10 frameworks],
   [The universal unit of work],
-  [#strong[`blocked_by`]],
+  [#strong[`after` edges]],
   [Workflow Patterns, Fork-Join, Stigmergy, Conway’s Law, Coordination
   Costs],
   [The structural backbone],
-  [#strong[`loops_to`]],
+  [#strong[Structural cycles]],
   [Workflow Patterns (WCP10/21), Cybernetics (feedback), Autopoiesis
   (self-production), Agency Theory (repeated games)],
   [Enables dynamics],

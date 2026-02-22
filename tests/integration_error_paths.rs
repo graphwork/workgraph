@@ -8,12 +8,10 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::{NamedTempFile, TempDir};
-use workgraph::check::{
-    LoopEdgeIssueKind, check_all, check_cycles, check_loop_edges, check_orphans,
-};
-use workgraph::graph::{LoopEdge, LoopGuard, Node, Status, Task, WorkGraph, evaluate_loop_edges};
+use workgraph::check::{check_all, check_cycles, check_orphans};
+use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{ParseError, load_graph, save_graph};
-use workgraph::query::{blocked_by, ready_tasks};
+use workgraph::query::{after, ready_tasks};
 
 /// Helper: create a minimal open task.
 fn make_task(id: &str) -> Task {
@@ -280,7 +278,7 @@ fn test_done_task_treated_as_done_by_blockers() {
     t1.status = Status::Done;
 
     let mut t2 = make_task("t2");
-    t2.blocked_by = vec!["t1".to_string()];
+    t2.after = vec!["t1".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -299,7 +297,7 @@ fn test_abandoned_task_unblocks_dependents() {
     t1.status = Status::Abandoned;
 
     let mut t2 = make_task("t2");
-    t2.blocked_by = vec!["t1".to_string()];
+    t2.after = vec!["t1".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -311,7 +309,7 @@ fn test_abandoned_task_unblocks_dependents() {
         "Task blocked by Abandoned task should be ready (terminal state)"
     );
 
-    let blockers = blocked_by(&graph, "t2");
+    let blockers = after(&graph, "t2");
     assert!(
         blockers.is_empty(),
         "Abandoned task should not appear as blocker"
@@ -328,7 +326,7 @@ fn test_failed_task_unblocks_dependents() {
     t1.failure_reason = Some("Test failure".to_string());
 
     let mut t2 = make_task("t2");
-    t2.blocked_by = vec!["t1".to_string()];
+    t2.after = vec!["t1".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -348,7 +346,7 @@ fn test_in_progress_task_blocks_dependents() {
     t1.status = Status::InProgress;
 
     let mut t2 = make_task("t2");
-    t2.blocked_by = vec!["t1".to_string()];
+    t2.after = vec!["t1".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -360,58 +358,6 @@ fn test_in_progress_task_blocks_dependents() {
     );
 }
 
-#[test]
-fn test_done_to_open_via_loop_edge_is_valid() {
-    // Done->Open transition is legitimate when triggered by a loop edge
-    let mut graph = WorkGraph::new();
-
-    let mut t1 = make_task("t1");
-    t1.loops_to = vec![LoopEdge {
-        target: "t1".to_string(),
-        guard: None,
-        max_iterations: 5,
-        delay: None,
-    }];
-    t1.status = Status::Done;
-
-    graph.add_node(Node::Task(t1));
-
-    let reactivated = evaluate_loop_edges(&mut graph, "t1");
-    assert!(reactivated.contains(&"t1".to_string()));
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open);
-    assert_eq!(graph.get_task("t1").unwrap().loop_iteration, 1);
-}
-
-#[test]
-fn test_loop_does_not_fire_from_non_done_status() {
-    // Loop edges should only fire when the source transitions to Done.
-    // If we call evaluate_loop_edges on a task that isn't Done, nothing happens
-    // because the function doesn't check source status — it's the caller's
-    // responsibility. But the target check (iteration < max) still works.
-    let mut graph = WorkGraph::new();
-
-    let mut t1 = make_task("t1");
-    t1.loops_to = vec![LoopEdge {
-        target: "t1".to_string(),
-        guard: None,
-        max_iterations: 5,
-        delay: None,
-    }];
-    // Leave t1 as Open — it hasn't actually completed
-    graph.add_node(Node::Task(t1));
-
-    // Even though we call evaluate_loop_edges, the target is Open and iteration=0,
-    // so it would "re-activate" it (setting it to Open, which it already is).
-    // This tests the idempotent behavior.
-    let reactivated = evaluate_loop_edges(&mut graph, "t1");
-
-    let t1 = graph.get_task("t1").unwrap();
-    assert_eq!(t1.status, Status::Open);
-    // The iteration counter gets incremented even in this case because
-    // evaluate_loop_edges doesn't check source status
-    assert_eq!(t1.loop_iteration, 1);
-    assert!(reactivated.contains(&"t1".to_string()));
-}
 
 #[test]
 fn test_state_persistence_roundtrip_all_statuses() {
@@ -550,7 +496,7 @@ fn test_self_dependency_detected_as_cycle() {
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("self-dep");
-    t.blocked_by = vec!["self-dep".to_string()];
+    t.after = vec!["self-dep".to_string()];
     graph.add_node(Node::Task(t));
 
     let cycles = check_cycles(&graph);
@@ -570,7 +516,7 @@ fn test_self_dependency_makes_task_permanently_blocked() {
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("self-dep");
-    t.blocked_by = vec!["self-dep".to_string()];
+    t.after = vec!["self-dep".to_string()];
     graph.add_node(Node::Task(t));
 
     // A task that depends on itself can never be ready
@@ -586,7 +532,7 @@ fn test_self_dependency_detected_by_check_all() {
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("self-dep");
-    t.blocked_by = vec!["self-dep".to_string()];
+    t.after = vec!["self-dep".to_string()];
     graph.add_node(Node::Task(t));
 
     let result = check_all(&graph);
@@ -604,7 +550,7 @@ fn test_self_dependency_persists_through_save_load() {
 
     let mut graph = WorkGraph::new();
     let mut t = make_task("self-dep");
-    t.blocked_by = vec!["self-dep".to_string()];
+    t.after = vec!["self-dep".to_string()];
     graph.add_node(Node::Task(t));
 
     save_graph(&graph, file.path()).unwrap();
@@ -612,7 +558,7 @@ fn test_self_dependency_persists_through_save_load() {
 
     let task = loaded.get_task("self-dep").unwrap();
     assert_eq!(
-        task.blocked_by,
+        task.after,
         vec!["self-dep".to_string()],
         "Self-dependency should survive save/load"
     );
@@ -622,7 +568,7 @@ fn test_self_dependency_persists_through_save_load() {
 }
 
 // ===========================================================================
-// 6. Multi-level cycles in blocked_by
+// 6. Multi-level cycles in after
 // ===========================================================================
 
 #[test]
@@ -630,9 +576,9 @@ fn test_two_node_cycle() {
     let mut graph = WorkGraph::new();
 
     let mut t1 = make_task("a");
-    t1.blocked_by = vec!["b".to_string()];
+    t1.after = vec!["b".to_string()];
     let mut t2 = make_task("b");
-    t2.blocked_by = vec!["a".to_string()];
+    t2.after = vec!["a".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -658,11 +604,11 @@ fn test_three_node_cycle() {
     let mut graph = WorkGraph::new();
 
     let mut t1 = make_task("a");
-    t1.blocked_by = vec!["c".to_string()];
+    t1.after = vec!["c".to_string()];
     let mut t2 = make_task("b");
-    t2.blocked_by = vec!["a".to_string()];
+    t2.after = vec!["a".to_string()];
     let mut t3 = make_task("c");
-    t3.blocked_by = vec!["b".to_string()];
+    t3.after = vec!["b".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -682,12 +628,12 @@ fn test_three_node_cycle() {
 fn test_five_node_cycle() {
     let mut graph = WorkGraph::new();
 
-    // a -> b -> c -> d -> e -> a (all blocked_by their predecessor)
+    // a -> b -> c -> d -> e -> a (all after their predecessor)
     let ids = ["a", "b", "c", "d", "e"];
     for i in 0..ids.len() {
         let mut t = make_task(ids[i]);
         let prev = ids[(i + ids.len() - 1) % ids.len()]; // previous in the ring
-        t.blocked_by = vec![prev.to_string()];
+        t.after = vec![prev.to_string()];
         graph.add_node(Node::Task(t));
     }
 
@@ -707,11 +653,11 @@ fn test_cycle_with_branch() {
     let mut graph = WorkGraph::new();
 
     let mut a = make_task("a");
-    a.blocked_by = vec!["b".to_string()];
+    a.after = vec!["b".to_string()];
     let mut b = make_task("b");
-    b.blocked_by = vec!["a".to_string()];
+    b.after = vec!["a".to_string()];
     let mut c = make_task("c");
-    c.blocked_by = vec!["a".to_string()];
+    c.after = vec!["a".to_string()];
 
     graph.add_node(Node::Task(a));
     graph.add_node(Node::Task(b));
@@ -731,9 +677,9 @@ fn test_cycle_persists_through_save_load() {
 
     let mut graph = WorkGraph::new();
     let mut t1 = make_task("a");
-    t1.blocked_by = vec!["b".to_string()];
+    t1.after = vec!["b".to_string()];
     let mut t2 = make_task("b");
-    t2.blocked_by = vec!["a".to_string()];
+    t2.after = vec!["a".to_string()];
 
     graph.add_node(Node::Task(t1));
     graph.add_node(Node::Task(t2));
@@ -756,11 +702,11 @@ fn test_diamond_dependency_no_false_cycle() {
 
     let a = make_task("a");
     let mut b = make_task("b");
-    b.blocked_by = vec!["a".to_string()];
+    b.after = vec!["a".to_string()];
     let mut c = make_task("c");
-    c.blocked_by = vec!["a".to_string()];
+    c.after = vec!["a".to_string()];
     let mut d = make_task("d");
-    d.blocked_by = vec!["b".to_string(), "c".to_string()];
+    d.after = vec!["b".to_string(), "c".to_string()];
 
     graph.add_node(Node::Task(a));
     graph.add_node(Node::Task(b));
@@ -782,271 +728,24 @@ fn test_diamond_dependency_no_false_cycle() {
     assert!(result.ok);
 }
 
-// ===========================================================================
-// 7. Cycles involving loop edges
-// ===========================================================================
-
-#[test]
-fn test_self_loop_edge_detected_by_check() {
-    let mut graph = WorkGraph::new();
-
-    let mut t = make_task("self-looper");
-    t.loops_to = vec![LoopEdge {
-        target: "self-looper".to_string(),
-        guard: None,
-        max_iterations: 5,
-        delay: None,
-    }];
-    graph.add_node(Node::Task(t));
-
-    let issues = check_loop_edges(&graph);
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].kind, LoopEdgeIssueKind::SelfLoop);
-
-    let result = check_all(&graph);
-    assert!(!result.ok, "Self-loop edge should make graph invalid");
-}
-
-#[test]
-fn test_loop_edge_to_nonexistent_target() {
-    let mut graph = WorkGraph::new();
-
-    let mut t = make_task("source");
-    t.loops_to = vec![LoopEdge {
-        target: "ghost".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    }];
-    graph.add_node(Node::Task(t));
-
-    let issues = check_loop_edges(&graph);
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].kind, LoopEdgeIssueKind::TargetNotFound);
-
-    let result = check_all(&graph);
-    assert!(!result.ok);
-}
-
-#[test]
-fn test_loop_edge_zero_max_iterations() {
-    let mut graph = WorkGraph::new();
-
-    let target = make_task("target");
-    let mut source = make_task("source");
-    source.loops_to = vec![LoopEdge {
-        target: "target".to_string(),
-        guard: None,
-        max_iterations: 0,
-        delay: None,
-    }];
-
-    graph.add_node(Node::Task(target));
-    graph.add_node(Node::Task(source));
-
-    let issues = check_loop_edges(&graph);
-    assert!(
-        issues
-            .iter()
-            .any(|i| i.kind == LoopEdgeIssueKind::ZeroMaxIterations)
-    );
-
-    // Even if we try to fire it, zero max_iterations means it never fires
-    graph.get_task_mut("source").unwrap().status = Status::Done;
-    let reactivated = evaluate_loop_edges(&mut graph, "source");
-    assert!(
-        reactivated.is_empty(),
-        "Loop with max_iterations=0 should never fire"
-    );
-}
-
-#[test]
-fn test_loop_edge_guard_references_nonexistent_task() {
-    let mut graph = WorkGraph::new();
-
-    let target = make_task("target");
-    let mut source = make_task("source");
-    source.loops_to = vec![LoopEdge {
-        target: "target".to_string(),
-        guard: Some(LoopGuard::TaskStatus {
-            task: "phantom".to_string(),
-            status: Status::Done,
-        }),
-        max_iterations: 5,
-        delay: None,
-    }];
-
-    graph.add_node(Node::Task(target));
-    graph.add_node(Node::Task(source));
-
-    let issues = check_loop_edges(&graph);
-    assert!(
-        issues
-            .iter()
-            .any(|i| i.kind == LoopEdgeIssueKind::GuardTaskNotFound("phantom".to_string()))
-    );
-
-    // Guard evaluates to false when the referenced task doesn't exist
-    graph.get_task_mut("source").unwrap().status = Status::Done;
-    let reactivated = evaluate_loop_edges(&mut graph, "source");
-    assert!(
-        reactivated.is_empty(),
-        "Guard referencing nonexistent task should evaluate to false"
-    );
-}
-
-#[test]
-fn test_loop_edge_multiple_issues_on_single_edge() {
-    // Self-loop + zero max_iterations = two issues on the same edge
-    let mut graph = WorkGraph::new();
-
-    let mut t = make_task("broken");
-    t.loops_to = vec![LoopEdge {
-        target: "broken".to_string(),
-        guard: None,
-        max_iterations: 0,
-        delay: None,
-    }];
-    graph.add_node(Node::Task(t));
-
-    let issues = check_loop_edges(&graph);
-    assert_eq!(
-        issues.len(),
-        2,
-        "Should report both SelfLoop and ZeroMaxIterations"
-    );
-    let kinds: Vec<_> = issues.iter().map(|i| &i.kind).collect();
-    assert!(kinds.contains(&&LoopEdgeIssueKind::SelfLoop));
-    assert!(kinds.contains(&&LoopEdgeIssueKind::ZeroMaxIterations));
-}
-
-#[test]
-fn test_blocked_by_cycle_with_loop_edge_overlay() {
-    // blocked_by cycle: a <- b <- a
-    // PLUS loop edge: b loops_to a
-    // The blocked_by cycle should be detected; the loop edge is separate
-    let mut graph = WorkGraph::new();
-
-    let mut a = make_task("a");
-    a.blocked_by = vec!["b".to_string()];
-    let mut b = make_task("b");
-    b.blocked_by = vec!["a".to_string()];
-    b.loops_to = vec![LoopEdge {
-        target: "a".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    }];
-
-    graph.add_node(Node::Task(a));
-    graph.add_node(Node::Task(b));
-
-    let result = check_all(&graph);
-    // Cycles are warnings, not errors — ok is still true (no orphans or loop issues)
-    assert!(result.ok, "Cycles are warnings; ok should still be true");
-    assert!(
-        !result.cycles.is_empty(),
-        "blocked_by cycle should be detected"
-    );
-    // The loop edge itself is valid (target exists, max_iterations > 0, not self-loop)
-    assert!(
-        result.loop_edge_issues.is_empty(),
-        "Loop edge from b to a is structurally valid"
-    );
-}
-
-#[test]
-fn test_loop_edge_chain_a_loops_b_loops_c() {
-    // A loops_to B, B loops_to C — both valid structurally
-    let mut graph = WorkGraph::new();
-
-    let a = make_task("a");
-    let mut b = make_task("b");
-    b.loops_to = vec![LoopEdge {
-        target: "a".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    }];
-    let mut c = make_task("c");
-    c.loops_to = vec![LoopEdge {
-        target: "b".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    }];
-
-    graph.add_node(Node::Task(a));
-    graph.add_node(Node::Task(b));
-    graph.add_node(Node::Task(c));
-
-    let result = check_all(&graph);
-    assert!(result.ok, "Chain of loop edges should be valid");
-    assert!(result.loop_edge_issues.is_empty());
-}
-
-#[test]
-fn test_loop_edge_fires_only_up_to_max_iterations_with_persistence() {
-    // Verify that max_iterations is enforced correctly across save/load cycles
-    let file = NamedTempFile::new().unwrap();
-
-    let mut graph = WorkGraph::new();
-    let mut t = make_task("looper");
-    t.loops_to = vec![LoopEdge {
-        target: "looper".to_string(),
-        guard: None,
-        max_iterations: 2,
-        delay: None,
-    }];
-    graph.add_node(Node::Task(t));
-
-    // Iteration 0 -> 1
-    graph.get_task_mut("looper").unwrap().status = Status::Done;
-    evaluate_loop_edges(&mut graph, "looper");
-    assert_eq!(graph.get_task("looper").unwrap().loop_iteration, 1);
-
-    // Save and reload
-    save_graph(&graph, file.path()).unwrap();
-    let mut graph = load_graph(file.path()).unwrap();
-    assert_eq!(graph.get_task("looper").unwrap().loop_iteration, 1);
-
-    // Iteration 1 -> 2
-    graph.get_task_mut("looper").unwrap().status = Status::Done;
-    evaluate_loop_edges(&mut graph, "looper");
-    assert_eq!(graph.get_task("looper").unwrap().loop_iteration, 2);
-
-    // Save and reload
-    save_graph(&graph, file.path()).unwrap();
-    let mut graph = load_graph(file.path()).unwrap();
-
-    // Iteration 2: max reached, should NOT fire
-    graph.get_task_mut("looper").unwrap().status = Status::Done;
-    let reactivated = evaluate_loop_edges(&mut graph, "looper");
-    assert!(
-        reactivated.is_empty(),
-        "Should not fire past max_iterations"
-    );
-    assert_eq!(graph.get_task("looper").unwrap().status, Status::Done);
-    assert_eq!(graph.get_task("looper").unwrap().loop_iteration, 2);
-}
 
 // ===========================================================================
 // Additional edge cases: orphan references, mixed validation
 // ===========================================================================
 
 #[test]
-fn test_orphan_blocked_by_reference() {
+fn test_orphan_after_reference() {
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("orphan-dep");
-    t.blocked_by = vec!["does-not-exist".to_string()];
+    t.after = vec!["does-not-exist".to_string()];
     graph.add_node(Node::Task(t));
 
     let orphans = check_orphans(&graph);
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].from, "orphan-dep");
     assert_eq!(orphans[0].to, "does-not-exist");
-    assert_eq!(orphans[0].relation, "blocked_by");
+    assert_eq!(orphans[0].relation, "after");
 
     let result = check_all(&graph);
     assert!(!result.ok, "Orphan reference should make graph invalid");
@@ -1057,12 +756,12 @@ fn test_orphan_blocks_reference() {
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("orphan-blocks");
-    t.blocks = vec!["does-not-exist".to_string()];
+    t.before = vec!["does-not-exist".to_string()];
     graph.add_node(Node::Task(t));
 
     let orphans = check_orphans(&graph);
     assert_eq!(orphans.len(), 1);
-    assert_eq!(orphans[0].relation, "blocks");
+    assert_eq!(orphans[0].relation, "before");
 }
 
 #[test]
@@ -1080,12 +779,12 @@ fn test_orphan_requires_reference() {
 
 #[test]
 fn test_ready_tasks_treats_missing_blocker_as_unblocked() {
-    // If blocked_by references a task that doesn't exist, ready_tasks treats it as unblocked
+    // If after references a task that doesn't exist, ready_tasks treats it as unblocked
     // (the blocker is gone, so the dependency is satisfied)
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("has-phantom-dep");
-    t.blocked_by = vec!["phantom".to_string()];
+    t.after = vec!["phantom".to_string()];
     graph.add_node(Node::Task(t));
 
     let ready = ready_tasks(&graph);
@@ -1099,51 +798,27 @@ fn test_ready_tasks_treats_missing_blocker_as_unblocked() {
 
 #[test]
 fn test_graph_with_multiple_error_types() {
-    // A graph that has: cycle, orphan reference, and loop edge issue simultaneously
+    // A graph that has: cycle and orphan reference simultaneously
     let mut graph = WorkGraph::new();
 
     // Cycle: a <-> b
     let mut a = make_task("a");
-    a.blocked_by = vec!["b".to_string()];
+    a.after = vec!["b".to_string()];
     let mut b = make_task("b");
-    b.blocked_by = vec!["a".to_string()];
+    b.after = vec!["a".to_string()];
 
     // Orphan: c references nonexistent
     let mut c = make_task("c");
-    c.blocked_by = vec!["nonexistent".to_string()];
-
-    // Loop edge issue: d has loop to nonexistent target
-    let mut d = make_task("d");
-    d.loops_to = vec![LoopEdge {
-        target: "phantom-target".to_string(),
-        guard: None,
-        max_iterations: 3,
-        delay: None,
-    }];
+    c.after = vec!["nonexistent".to_string()];
 
     graph.add_node(Node::Task(a));
     graph.add_node(Node::Task(b));
     graph.add_node(Node::Task(c));
-    graph.add_node(Node::Task(d));
 
     let result = check_all(&graph);
     assert!(!result.ok);
     assert!(!result.cycles.is_empty(), "Should detect cycle");
     assert!(!result.orphan_refs.is_empty(), "Should detect orphan");
-    assert!(
-        !result.loop_edge_issues.is_empty(),
-        "Should detect loop edge issue"
-    );
-}
-
-#[test]
-fn test_evaluate_loop_edges_on_nonexistent_source() {
-    let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("t1")));
-
-    // Calling with a nonexistent source should return empty, not panic
-    let reactivated = evaluate_loop_edges(&mut graph, "nonexistent");
-    assert!(reactivated.is_empty());
 }
 
 #[test]
@@ -1155,13 +830,13 @@ fn test_large_graph_cycle_detection_performance() {
     for i in 0..100 {
         let mut t = make_task(&format!("t{}", i));
         if i > 0 {
-            t.blocked_by = vec![format!("t{}", i - 1)];
+            t.after = vec![format!("t{}", i - 1)];
         }
         graph.add_node(Node::Task(t));
     }
 
-    // Add cycle: t0 blocked_by t99
-    graph.get_task_mut("t0").unwrap().blocked_by = vec!["t99".to_string()];
+    // Add cycle: t0 after t99
+    graph.get_task_mut("t0").unwrap().after = vec!["t99".to_string()];
 
     let cycles = check_cycles(&graph);
     assert!(!cycles.is_empty(), "100-node cycle should be detected");

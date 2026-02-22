@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-21
 **Updated:** 2026-02-21
-**Status:** Draft → Revised (edge rename: `blocked_by` → `after`)
+**Status:** Implemented (all four phases complete)
 **Depends on:** [Cycle Detection Algorithms Research](../research/cycle-detection-algorithms.md)
 
 ---
@@ -414,7 +414,7 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 
 ## 5. Migration Path
 
-### Phase 1: Add Cycle Analysis (Non-Breaking)
+### Phase 1: Add Cycle Analysis (Non-Breaking) — IMPLEMENTED
 
 **Changes:**
 - Add `CycleAnalysis` struct and `analyze_cycles()` function to `src/graph.rs` (or new `src/cycle.rs` module).
@@ -426,7 +426,7 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 
 **Effort:** ~300 lines of Rust. 1-2 days.
 
-### Phase 2: Rename edges and support natural cycles
+### Phase 2: Rename edges and support natural cycles — IMPLEMENTED
 
 **Changes:**
 - Rename `blocked_by` → `after`, `blocks` → `before` with serde aliases for backward compat.
@@ -441,7 +441,7 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 
 **Effort:** ~500 lines of Rust. 2-3 days.
 
-### Phase 3: Migrate `loops_to` to Structural Cycles
+### Phase 3: Migrate `loops_to` to Structural Cycles — IMPLEMENTED
 
 **Changes:**
 - Add `wg migrate-loops` command that converts `loops_to` edges to `after` edges with `CycleConfig`:
@@ -457,7 +457,7 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 
 **Effort:** ~200 lines of Rust. 1 day.
 
-### Phase 4: Remove `loops_to`
+### Phase 4: Remove `loops_to` — IMPLEMENTED
 
 **Changes:**
 - Remove `LoopEdge` struct from `src/graph.rs`.

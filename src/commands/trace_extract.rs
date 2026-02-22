@@ -7,8 +7,7 @@ use workgraph::agency;
 use workgraph::graph::{Status, Task};
 use workgraph::provenance;
 use workgraph::trace_function::{
-    self, ExtractionSource, FunctionInput, FunctionOutput, InputType, LoopEdgeTemplate,
-    TaskTemplate, TraceFunction,
+    self, ExtractionSource, FunctionInput, FunctionOutput, InputType, TaskTemplate, TraceFunction,
 };
 
 /// Run the `wg trace extract <task-id>` command.
@@ -208,9 +207,9 @@ fn collect_subgraph<'a>(root_id: &str, graph: &'a workgraph::graph::WorkGraph) -
         }
         if let Some(task) = graph.get_task(&id) {
             result.push(task);
-            // Find tasks that list this task in their blocked_by
+            // Find tasks that list this task in their after
             for t in graph.tasks() {
-                if t.blocked_by.iter().any(|b| b == &id) {
+                if t.after.iter().any(|b| b == &id) {
                     queue.push(t.id.clone());
                 }
             }
@@ -218,7 +217,7 @@ fn collect_subgraph<'a>(root_id: &str, graph: &'a workgraph::graph::WorkGraph) -
     }
 
     // Sort by dependency order (tasks with fewer deps first)
-    result.sort_by_key(|t| t.blocked_by.len());
+    result.sort_by_key(|t| t.after.len());
     result
 }
 
@@ -231,25 +230,12 @@ fn build_template(
 ) -> TaskTemplate {
     let template_id = strip_prefix(&task.id, root_id);
 
-    // Map blocked_by to template IDs (only those in our subgraph)
-    let blocked_by: Vec<String> = task
-        .blocked_by
+    // Map after to template IDs (only those in our subgraph)
+    let after: Vec<String> = task
+        .after
         .iter()
         .filter(|b| subgraph_ids.contains(b.as_str()))
         .map(|b| strip_prefix(b, root_id))
-        .collect();
-
-    // Map loops_to
-    let loops_to: Vec<LoopEdgeTemplate> = task
-        .loops_to
-        .iter()
-        .filter(|l| subgraph_ids.contains(l.target.as_str()))
-        .map(|l| LoopEdgeTemplate {
-            target: strip_prefix(&l.target, root_id),
-            max_iterations: l.max_iterations,
-            guard: l.guard.as_ref().map(|g| serde_json::to_string(g).unwrap_or_default()),
-            delay: l.delay.clone(),
-        })
         .collect();
 
     // Look up role hint from agency
@@ -263,8 +249,8 @@ fn build_template(
             .clone()
             .unwrap_or_else(|| task.title.clone()),
         skills: task.skills.clone(),
-        blocked_by,
-        loops_to,
+        after,
+        loops_to: vec![],
         role_hint,
         deliverables: task.deliverables.clone(),
         verify: task.verify.clone(),
@@ -787,14 +773,14 @@ mod tests {
             id: "root-child1".to_string(),
             title: "Child 1".to_string(),
             status: Status::Done,
-            blocked_by: vec!["root".to_string()],
+            after: vec!["root".to_string()],
             ..Task::default()
         };
         let child2 = Task {
             id: "root-child2".to_string(),
             title: "Child 2".to_string(),
             status: Status::Done,
-            blocked_by: vec!["root-child1".to_string()],
+            after: vec!["root-child1".to_string()],
             ..Task::default()
         };
         graph.add_node(Node::Task(root));
@@ -809,12 +795,12 @@ mod tests {
         let func = trace_function::load_function(&func_path).unwrap();
         assert_eq!(func.tasks.len(), 3);
 
-        // Check that blocked_by references are remapped to template IDs
+        // Check that after references are remapped to template IDs
         let child1_tmpl = func.tasks.iter().find(|t| t.template_id == "child1").unwrap();
-        assert_eq!(child1_tmpl.blocked_by, vec!["root"]);
+        assert_eq!(child1_tmpl.after, vec!["root"]);
 
         let child2_tmpl = func.tasks.iter().find(|t| t.template_id == "child2").unwrap();
-        assert_eq!(child2_tmpl.blocked_by, vec!["child1"]);
+        assert_eq!(child2_tmpl.after, vec!["child1"]);
     }
 
     #[test]
@@ -932,14 +918,14 @@ mod tests {
             id: "b".to_string(),
             title: "B".to_string(),
             status: Status::Done,
-            blocked_by: vec!["a".to_string()],
+            after: vec!["a".to_string()],
             ..Task::default()
         }));
         graph.add_node(Node::Task(Task {
             id: "c".to_string(),
             title: "C".to_string(),
             status: Status::Done,
-            blocked_by: vec!["b".to_string()],
+            after: vec!["b".to_string()],
             ..Task::default()
         }));
 
@@ -955,7 +941,7 @@ mod tests {
             id: "child".to_string(),
             title: "Child".to_string(),
             status: Status::Done,
-            blocked_by: vec!["root".to_string()],
+            after: vec!["root".to_string()],
             ..Task::default()
         }));
         // External task not in subgraph
@@ -963,7 +949,7 @@ mod tests {
             id: "external".to_string(),
             title: "External".to_string(),
             status: Status::Done,
-            blocked_by: vec!["unrelated".to_string()],
+            after: vec!["unrelated".to_string()],
             ..Task::default()
         }));
 

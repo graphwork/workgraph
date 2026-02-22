@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::query::blocked_by;
+use workgraph::query::after;
 
 #[cfg(test)]
 use super::graph_path;
@@ -14,7 +14,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         anyhow::bail!("Task '{}' not found", id);
     }
 
-    let blockers = blocked_by(&graph, id);
+    let blockers = after(&graph, id);
 
     if json {
         let output: Vec<_> = blockers
@@ -93,7 +93,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let blocker = make_task("blocker", "Blocker task", Status::Open);
         let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
         setup_workgraph(dir.path(), vec![blocker, blocked]);
 
         let result = run(dir.path(), "blocked", false);
@@ -117,11 +117,11 @@ mod tests {
         let b1 = make_task("b1", "Blocker 1", Status::Open);
         let b2 = make_task("b2", "Blocker 2", Status::InProgress);
         let mut task = make_task("t1", "Blocked task", Status::Open);
-        task.blocked_by = vec!["b1".to_string(), "b2".to_string()];
+        task.after = vec!["b1".to_string(), "b2".to_string()];
         let path = setup_workgraph(dir.path(), vec![b1, b2, task]);
 
         let graph = load_graph(&path).unwrap();
-        let blockers = blocked_by(&graph, "t1");
+        let blockers = after(&graph, "t1");
         assert_eq!(blockers.len(), 2);
 
         let ids: Vec<&str> = blockers.iter().map(|b| b.id.as_str()).collect();
@@ -135,11 +135,11 @@ mod tests {
         let b1 = make_task("b1", "Done blocker", Status::Done);
         let b2 = make_task("b2", "Open blocker", Status::Open);
         let mut task = make_task("t1", "Task", Status::Open);
-        task.blocked_by = vec!["b1".to_string(), "b2".to_string()];
+        task.after = vec!["b1".to_string(), "b2".to_string()];
         let path = setup_workgraph(dir.path(), vec![b1, b2, task]);
 
         let graph = load_graph(&path).unwrap();
-        let blockers = blocked_by(&graph, "t1");
+        let blockers = after(&graph, "t1");
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].id, "b2");
     }
@@ -151,7 +151,7 @@ mod tests {
         let path = setup_workgraph(dir.path(), vec![task]);
 
         let graph = load_graph(&path).unwrap();
-        let blockers = blocked_by(&graph, "t1");
+        let blockers = after(&graph, "t1");
         assert!(blockers.is_empty());
     }
 
@@ -161,11 +161,11 @@ mod tests {
         let b1 = make_task("b1", "Done 1", Status::Done);
         let b2 = make_task("b2", "Done 2", Status::Done);
         let mut task = make_task("t1", "Task", Status::Open);
-        task.blocked_by = vec!["b1".to_string(), "b2".to_string()];
+        task.after = vec!["b1".to_string(), "b2".to_string()];
         let path = setup_workgraph(dir.path(), vec![b1, b2, task]);
 
         let graph = load_graph(&path).unwrap();
-        let blockers = blocked_by(&graph, "t1");
+        let blockers = after(&graph, "t1");
         assert!(blockers.is_empty());
     }
 
@@ -174,7 +174,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let blocker = make_task("b1", "Blocker", Status::Open);
         let mut task = make_task("t1", "Blocked", Status::Open);
-        task.blocked_by = vec!["b1".to_string()];
+        task.after = vec!["b1".to_string()];
         setup_workgraph(dir.path(), vec![blocker, task]);
 
         let result = run(dir.path(), "t1", true);
@@ -186,11 +186,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let blocker = make_task("b1", "Blocker task", Status::InProgress);
         let mut task = make_task("t1", "Blocked", Status::Open);
-        task.blocked_by = vec!["b1".to_string()];
+        task.after = vec!["b1".to_string()];
         let path = setup_workgraph(dir.path(), vec![blocker, task]);
 
         let graph = load_graph(&path).unwrap();
-        let blockers = blocked_by(&graph, "t1");
+        let blockers = after(&graph, "t1");
         assert_eq!(blockers.len(), 1);
 
         let json = serde_json::json!({

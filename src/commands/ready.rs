@@ -2,11 +2,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::graph::Status;
-use workgraph::query::ready_tasks;
+use workgraph::query::ready_tasks_cycle_aware;
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
-    let ready = ready_tasks(&graph);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
     // Find tasks that would be ready except they're waiting on ready_after
     let waiting: Vec<_> = graph
@@ -25,7 +26,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 return false;
             }
             // All blockers must be terminal (i.e. only ready_after is holding it back)
-            task.blocked_by.iter().all(|blocker_id| {
+            task.after.iter().all(|blocker_id| {
                 graph
                     .get_task(blocker_id)
                     .map(|t| t.status.is_terminal())
@@ -332,7 +333,7 @@ mod tests {
         // should NOT appear in waiting (because blockers aren't done)
         let blocker = make_task("blocker", "Blocker", Status::Open);
         let mut task = make_task("t1", "Blocked+Waiting", Status::Open);
-        task.blocked_by = vec!["blocker".to_string()];
+        task.after = vec!["blocker".to_string()];
         let future = Utc::now() + Duration::hours(1);
         task.ready_after = Some(future.to_rfc3339());
 
@@ -350,7 +351,7 @@ mod tests {
         // Task with future ready_after and done blocker → appears in waiting
         let blocker = make_task("blocker", "Blocker", Status::Done);
         let mut task = make_task("t1", "Waiting on delay", Status::Open);
-        task.blocked_by = vec!["blocker".to_string()];
+        task.after = vec!["blocker".to_string()];
         let future = Utc::now() + Duration::hours(1);
         task.ready_after = Some(future.to_rfc3339());
 
@@ -373,7 +374,8 @@ mod tests {
         // and validate the JSON structure by building it manually
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
-        let ready = ready_tasks(&graph);
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
         assert_eq!(ready.len(), 1);
         let t = &ready[0];

@@ -33,21 +33,21 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Find entry points: tasks with no blockers (empty blocked_by)
+    // Find entry points: tasks with no blockers (empty after)
     let entry_points: Vec<&str> = tasks
         .iter()
-        .filter(|t| t.blocked_by.is_empty())
+        .filter(|t| t.after.is_empty())
         .map(|t| t.id.as_str())
         .collect();
 
     // Build reverse dependency map: for each task, which tasks depend on it
-    // A task X is depended on by Y if Y.blocked_by contains X
+    // A task X is depended on by Y if Y.after contains X
     let mut dependents: HashMap<&str, HashSet<&str>> = HashMap::new();
     for task in &tasks {
         // Initialize empty set for every task
         dependents.entry(task.id.as_str()).or_default();
         // Add reverse edges
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             dependents
                 .entry(blocker_id.as_str())
                 .or_default()
@@ -257,7 +257,7 @@ mod tests {
 
         // t2 depends on t1
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -279,7 +279,7 @@ mod tests {
         let t1 = make_task("t1", "Task 1");
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         // t2 is a dead end (nothing depends on it)
         graph.add_node(Node::Task(t1));

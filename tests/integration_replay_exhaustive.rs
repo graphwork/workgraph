@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{LoopEdge, Node, Status, Task, WorkGraph};
+use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
@@ -474,10 +474,10 @@ fn test_replay_tasks_multiple_explicit() {
 fn test_replay_keep_done_preserves_high_scoring() {
     let tmp = TempDir::new().unwrap();
     let mut parent = make_task("parent", "Parent", Status::Failed);
-    parent.blocks = vec!["child".to_string()];
+    parent.before = vec!["child".to_string()];
     parent.failure_reason = Some("err".to_string());
     let mut child = make_task("child", "Child", Status::Done);
-    child.blocked_by = vec!["parent".to_string()];
+    child.after = vec!["parent".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![parent, child]);
 
     write_evaluation(&wg_dir, "eval-child", "child", 0.95);
@@ -504,8 +504,8 @@ fn test_replay_field_clearing_and_preservation() {
     t1.loop_iteration = 3;
     t1.failure_reason = Some("some error".to_string());
     t1.paused = true;
-    t1.blocked_by = vec!["dep".to_string()];
-    t1.blocks = vec!["child".to_string()];
+    t1.after = vec!["dep".to_string()];
+    t1.before = vec!["child".to_string()];
     t1.tags = vec!["rust".to_string(), "test".to_string()];
     t1.skills = vec!["implementation".to_string()];
     t1.log = vec![workgraph::graph::LogEntry {
@@ -516,7 +516,7 @@ fn test_replay_field_clearing_and_preservation() {
 
     let dep = make_task("dep", "Dependency", Status::Done);
     let mut child = make_task("child", "Child", Status::Done);
-    child.blocked_by = vec!["t1".to_string()];
+    child.after = vec!["t1".to_string()];
 
     let wg_dir = setup_workgraph(&tmp, vec![t1, dep, child]);
 
@@ -539,50 +539,11 @@ fn test_replay_field_clearing_and_preservation() {
     // Preserved fields
     assert_eq!(task.title, "Full task");
     assert_eq!(task.description, Some("Detailed description".to_string()));
-    assert_eq!(task.blocked_by, vec!["dep"]);
-    assert_eq!(task.blocks, vec!["child"]);
+    assert_eq!(task.after, vec!["dep"]);
+    assert_eq!(task.before, vec!["child"]);
     assert_eq!(task.tags, vec!["rust", "test"]);
     assert_eq!(task.skills, vec!["implementation"]);
     assert!(!task.log.is_empty(), "log should be preserved");
-}
-
-// 2.14 replay_tasks_with_loop_edges
-#[test]
-fn test_replay_tasks_with_loop_edges() {
-    let tmp = TempDir::new().unwrap();
-    let mut src = make_task("src", "Source", Status::Done);
-    src.loop_iteration = 3;
-    src.blocks = vec!["tgt".to_string()];
-    src.loops_to = vec![LoopEdge {
-        target: "tgt".to_string(),
-        guard: None,
-        max_iterations: 5,
-        delay: None,
-    }];
-
-    let mut tgt = make_task("tgt", "Target", Status::Done);
-    tgt.loop_iteration = 3;
-    tgt.blocked_by = vec!["src".to_string()];
-
-    let wg_dir = setup_workgraph(&tmp, vec![src, tgt]);
-
-    wg_ok(&wg_dir, &["replay"]);
-
-    let graph = load_wg_graph(&wg_dir);
-    let src_task = graph.get_task("src").unwrap();
-    let tgt_task = graph.get_task("tgt").unwrap();
-
-    assert_eq!(src_task.status, Status::Open, "src should be reset");
-    assert_eq!(tgt_task.status, Status::Open, "tgt should be reset");
-    assert_eq!(src_task.loop_iteration, 0, "src loop_iteration should be 0");
-    assert_eq!(tgt_task.loop_iteration, 0, "tgt loop_iteration should be 0");
-    // Loop edges preserved
-    assert_eq!(src_task.loops_to.len(), 1, "loops_to should be preserved");
-    assert_eq!(src_task.loops_to[0].target, "tgt");
-    assert_eq!(src_task.loops_to[0].max_iterations, 5);
-    // Structural edges preserved
-    assert_eq!(src_task.blocks, vec!["tgt"]);
-    assert_eq!(tgt_task.blocked_by, vec!["src"]);
 }
 
 // 2.15 replay_empty_graph
@@ -658,16 +619,16 @@ fn test_replay_below_score_non_terminal_ignored() {
 fn test_replay_transitive_dependents_deep_chain() {
     let tmp = TempDir::new().unwrap();
     let mut a = make_task("a", "A", Status::Failed);
-    a.blocks = vec!["b".to_string()];
+    a.before = vec!["b".to_string()];
     a.failure_reason = Some("err".to_string());
     let mut b = make_task("b", "B", Status::Done);
-    b.blocked_by = vec!["a".to_string()];
-    b.blocks = vec!["c".to_string()];
+    b.after = vec!["a".to_string()];
+    b.before = vec!["c".to_string()];
     let mut c = make_task("c", "C", Status::Done);
-    c.blocked_by = vec!["b".to_string()];
-    c.blocks = vec!["d".to_string()];
+    c.after = vec!["b".to_string()];
+    c.before = vec!["d".to_string()];
     let mut d = make_task("d", "D", Status::Done);
-    d.blocked_by = vec!["c".to_string()];
+    d.after = vec!["c".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![a, b, c, d]);
 
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
@@ -684,16 +645,16 @@ fn test_replay_transitive_dependents_deep_chain() {
 fn test_replay_diamond_dependency() {
     let tmp = TempDir::new().unwrap();
     let mut a = make_task("a", "A", Status::Failed);
-    a.blocks = vec!["b".to_string(), "c".to_string()];
+    a.before = vec!["b".to_string(), "c".to_string()];
     a.failure_reason = Some("err".to_string());
     let mut b = make_task("b", "B", Status::Done);
-    b.blocked_by = vec!["a".to_string()];
-    b.blocks = vec!["d".to_string()];
+    b.after = vec!["a".to_string()];
+    b.before = vec!["d".to_string()];
     let mut c = make_task("c", "C", Status::Done);
-    c.blocked_by = vec!["a".to_string()];
-    c.blocks = vec!["d".to_string()];
+    c.after = vec!["a".to_string()];
+    c.before = vec!["d".to_string()];
     let mut d = make_task("d", "D", Status::Done);
-    d.blocked_by = vec!["b".to_string(), "c".to_string()];
+    d.after = vec!["b".to_string(), "c".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![a, b, c, d]);
 
     let json = wg_json(&wg_dir, &["replay", "--failed-only"]);
@@ -730,10 +691,10 @@ fn test_replay_keep_done_with_no_evaluations() {
 fn test_replay_filter_description_in_metadata() {
     let tmp = TempDir::new().unwrap();
     let mut root = make_task("root", "Root", Status::Failed);
-    root.blocks = vec!["child".to_string()];
+    root.before = vec!["child".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut child = make_task("child", "Child", Status::Failed);
-    child.blocked_by = vec!["root".to_string()];
+    child.after = vec!["root".to_string()];
     child.failure_reason = Some("err".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![root, child]);
 
@@ -1129,18 +1090,18 @@ fn test_replay_multiple_evals_keeps_highest_score() {
 fn test_replay_subgraph_deep_tree() {
     let tmp = TempDir::new().unwrap();
     let mut root = make_task("root", "Root", Status::Failed);
-    root.blocks = vec!["a".to_string()];
+    root.before = vec!["a".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut a = make_task("a", "A", Status::Failed);
-    a.blocked_by = vec!["root".to_string()];
-    a.blocks = vec!["b".to_string()];
+    a.after = vec!["root".to_string()];
+    a.before = vec!["b".to_string()];
     a.failure_reason = Some("err".to_string());
     let mut b = make_task("b", "B", Status::Failed);
-    b.blocked_by = vec!["a".to_string()];
-    b.blocks = vec!["c".to_string()];
+    b.after = vec!["a".to_string()];
+    b.before = vec!["c".to_string()];
     b.failure_reason = Some("err".to_string());
     let mut c = make_task("c", "C", Status::Failed);
-    c.blocked_by = vec!["b".to_string()];
+    c.after = vec!["b".to_string()];
     c.failure_reason = Some("err".to_string());
 
     // Outside subgraph
@@ -1165,11 +1126,11 @@ fn test_replay_subgraph_deep_tree() {
 fn test_replay_subgraph_with_cycles() {
     let tmp = TempDir::new().unwrap();
     let mut a = make_task("a", "A", Status::Failed);
-    a.blocks = vec!["b".to_string()];
+    a.before = vec!["b".to_string()];
     a.failure_reason = Some("err".to_string());
     let mut b = make_task("b", "B", Status::Failed);
-    b.blocked_by = vec!["a".to_string()];
-    b.blocks = vec!["a".to_string()]; // cycle: a -> b -> a
+    b.after = vec!["a".to_string()];
+    b.before = vec!["a".to_string()]; // cycle: a -> b -> a
     b.failure_reason = Some("err".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![a, b]);
 
@@ -1673,10 +1634,10 @@ fn test_restore_then_diff_shows_no_changes() {
 fn test_build_filter_desc_all_flags() {
     let tmp = TempDir::new().unwrap();
     let mut root = make_task("root", "Root", Status::Failed);
-    root.blocks = vec!["child".to_string()];
+    root.before = vec!["child".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut child = make_task("child", "Child", Status::Failed);
-    child.blocked_by = vec!["root".to_string()];
+    child.after = vec!["root".to_string()];
     child.failure_reason = Some("err".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![root, child]);
 
@@ -1739,9 +1700,9 @@ fn test_build_filter_desc_tasks_and_below_score() {
 fn test_replay_tasks_and_subgraph_combined() {
     let tmp = TempDir::new().unwrap();
     let mut root = make_task("root", "Root", Status::Done);
-    root.blocks = vec!["child".to_string()];
+    root.before = vec!["child".to_string()];
     let mut child = make_task("child", "Child", Status::Done);
-    child.blocked_by = vec!["root".to_string()];
+    child.after = vec!["root".to_string()];
     let outside = make_task("outside", "Outside", Status::Done);
     // outside has no blocks edges to root — it's outside the subgraph
     let wg_dir = setup_workgraph(&tmp, vec![root, child, outside]);
@@ -1767,10 +1728,10 @@ fn test_replay_tasks_and_subgraph_combined() {
 fn test_replay_config_default_keep_done_threshold() {
     let tmp = TempDir::new().unwrap();
     let mut parent = make_task("parent", "Parent", Status::Failed);
-    parent.blocks = vec!["child".to_string()];
+    parent.before = vec!["child".to_string()];
     parent.failure_reason = Some("err".to_string());
     let mut child = make_task("child", "Child", Status::Done);
-    child.blocked_by = vec!["parent".to_string()];
+    child.after = vec!["parent".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![parent, child]);
 
     // Write config.toml with keep_done_threshold = 0.9
@@ -2033,22 +1994,22 @@ more random text
 }
 
 // 5.14 collect_subgraph_disconnected_blocks
-// collect_subgraph follows `blocks` edges forward from root, not `blocked_by`.
+// collect_subgraph follows `blocks` edges forward from root, not `after`.
 #[test]
 fn test_replay_subgraph_follows_blocks_edges() {
     let tmp = TempDir::new().unwrap();
     // root blocks child, child blocks leaf.
-    // blocked_by is intentionally empty on child/leaf — edges only in blocks.
+    // after is intentionally empty on child/leaf — edges only in blocks.
     let mut root = make_task("root", "Root", Status::Failed);
-    root.blocks = vec!["child".to_string()];
+    root.before = vec!["child".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut child = make_task("child", "Child", Status::Failed);
-    child.blocks = vec!["leaf".to_string()];
+    child.before = vec!["leaf".to_string()];
     child.failure_reason = Some("err".to_string());
-    // blocked_by intentionally NOT set on child
+    // after intentionally NOT set on child
     let mut leaf = make_task("leaf", "Leaf", Status::Failed);
     leaf.failure_reason = Some("err".to_string());
-    // blocked_by intentionally NOT set on leaf
+    // after intentionally NOT set on leaf
 
     let wg_dir = setup_workgraph(&tmp, vec![root, child, leaf]);
 
@@ -2058,9 +2019,9 @@ fn test_replay_subgraph_follows_blocks_edges() {
     assert_eq!(graph.get_task("root").unwrap().status, Status::Open,
         "root should be reset (in subgraph)");
     assert_eq!(graph.get_task("child").unwrap().status, Status::Open,
-        "child should be reset (reachable via root.blocks)");
+        "child should be reset (reachable via root.before)");
     assert_eq!(graph.get_task("leaf").unwrap().status, Status::Open,
-        "leaf should be reset (reachable via child.blocks)");
+        "leaf should be reset (reachable via child.before)");
 }
 
 // 2.7 replay_plan_only_no_side_effects (also in integration_trace_replay.rs)
@@ -2069,9 +2030,9 @@ fn test_replay_plan_only_no_side_effects() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("t1", "Failed task", Status::Failed);
     t1.failure_reason = Some("err".to_string());
-    t1.blocks = vec!["t2".to_string()];
+    t1.before = vec!["t2".to_string()];
     let mut t2 = make_task("t2", "Dependent", Status::Done);
-    t2.blocked_by = vec!["t1".to_string()];
+    t2.after = vec!["t1".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     let output = wg_ok(&wg_dir, &["replay", "--failed-only", "--plan-only"]);
@@ -2149,13 +2110,13 @@ fn test_replay_records_provenance_entry() {
 fn test_replay_model_override_on_all_reset_tasks() {
     let tmp = TempDir::new().unwrap();
     let mut root = make_task("root", "Root", Status::Failed);
-    root.blocks = vec!["mid".to_string()];
+    root.before = vec!["mid".to_string()];
     root.failure_reason = Some("err".to_string());
     let mut mid = make_task("mid", "Mid", Status::Done);
-    mid.blocked_by = vec!["root".to_string()];
-    mid.blocks = vec!["leaf".to_string()];
+    mid.after = vec!["root".to_string()];
+    mid.before = vec!["leaf".to_string()];
     let mut leaf = make_task("leaf", "Leaf", Status::Done);
-    leaf.blocked_by = vec!["mid".to_string()];
+    leaf.after = vec!["mid".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![root, mid, leaf]);
 
     wg_ok(&wg_dir, &["replay", "--failed-only", "--model", "different-model", "--keep-done", "1.0"]);

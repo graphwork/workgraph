@@ -99,8 +99,8 @@ pub struct TaskTemplate {
     pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocked_by")]
+    pub after: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops_to: Vec<LoopEdgeTemplate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,7 +395,7 @@ pub fn substitute_task_template(
         title: substitute(&template.title, inputs),
         description: substitute(&template.description, inputs),
         skills: template.skills.iter().map(|s| substitute(s, inputs)).collect(),
-        blocked_by: template.blocked_by.clone(),
+        after: template.after.clone(),
         loops_to: template.loops_to.clone(),
         role_hint: template.role_hint.clone(),
         deliverables: template
@@ -415,9 +415,9 @@ pub fn substitute_task_template(
 /// Validate the internal consistency of a trace function definition.
 ///
 /// Checks:
-/// - All `blocked_by` references resolve to template IDs within the function
+/// - All `after` references resolve to template IDs within the function
 /// - All `loops_to` targets resolve to template IDs within the function
-/// - No circular `blocked_by` dependencies (loops are only via `loops_to`)
+/// - No circular `after` dependencies (loops are only via `loops_to`)
 /// - Required inputs without defaults, optional inputs noted
 pub fn validate_function(func: &TraceFunction) -> Result<(), TraceFunctionError> {
     let template_ids: Vec<&str> = func.tasks.iter().map(|t| t.template_id.as_str()).collect();
@@ -434,11 +434,11 @@ pub fn validate_function(func: &TraceFunction) -> Result<(), TraceFunctionError>
     }
 
     for task in &func.tasks {
-        // Check blocked_by references
-        for dep in &task.blocked_by {
+        // Check after references
+        for dep in &task.after {
             if !template_ids.contains(&dep.as_str()) {
                 return Err(TraceFunctionError::Validation(format!(
-                    "Task '{}' has blocked_by '{}' which is not a template_id in this function",
+                    "Task '{}' has after '{}' which is not a template_id in this function",
                     task.template_id, dep
                 )));
             }
@@ -455,7 +455,7 @@ pub fn validate_function(func: &TraceFunction) -> Result<(), TraceFunctionError>
         }
     }
 
-    // Check for circular blocked_by (simple cycle detection via DFS)
+    // Check for circular after (simple cycle detection via DFS)
     for task in &func.tasks {
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![task.template_id.as_str()];
@@ -463,15 +463,15 @@ pub fn validate_function(func: &TraceFunction) -> Result<(), TraceFunctionError>
             if !visited.insert(current) {
                 if current == task.template_id.as_str() {
                     return Err(TraceFunctionError::Validation(format!(
-                        "Circular blocked_by dependency detected involving '{}'",
+                        "Circular after dependency detected involving '{}'",
                         task.template_id
                     )));
                 }
                 continue;
             }
-            // Find tasks that `current` blocks (i.e., tasks whose blocked_by contains `current`)
+            // Find tasks that `current` blocks (i.e., tasks whose after contains `current`)
             for t in &func.tasks {
-                if t.blocked_by.iter().any(|b| b == current) && t.template_id != task.template_id {
+                if t.after.iter().any(|b| b == current) && t.template_id != task.template_id {
                     stack.push(t.template_id.as_str());
                 }
             }
@@ -534,7 +534,7 @@ mod tests {
                     title: "Plan {{input.feature_name}}".to_string(),
                     description: "Plan the implementation of {{input.feature_name}}".to_string(),
                     skills: vec!["analysis".to_string()],
-                    blocked_by: vec![],
+                    after: vec![],
                     loops_to: vec![],
                     role_hint: Some("analyst".to_string()),
                     deliverables: vec![],
@@ -546,7 +546,7 @@ mod tests {
                     title: "Implement {{input.feature_name}}".to_string(),
                     description: "Implement the feature. Run: {{input.test_command}}".to_string(),
                     skills: vec!["implementation".to_string()],
-                    blocked_by: vec!["plan".to_string()],
+                    after: vec!["plan".to_string()],
                     loops_to: vec![],
                     role_hint: Some("programmer".to_string()),
                     deliverables: vec![],
@@ -558,7 +558,7 @@ mod tests {
                     title: "Validate {{input.feature_name}}".to_string(),
                     description: "Validate the implementation".to_string(),
                     skills: vec!["review".to_string()],
-                    blocked_by: vec!["implement".to_string()],
+                    after: vec!["implement".to_string()],
                     loops_to: vec![],
                     role_hint: None,
                     deliverables: vec![],
@@ -570,7 +570,7 @@ mod tests {
                     title: "Refine {{input.feature_name}}".to_string(),
                     description: "Address issues found during validation".to_string(),
                     skills: vec![],
-                    blocked_by: vec!["validate".to_string()],
+                    after: vec!["validate".to_string()],
                     loops_to: vec![LoopEdgeTemplate {
                         target: "validate".to_string(),
                         max_iterations: 3,
@@ -932,7 +932,7 @@ mod tests {
             title: "Plan {{input.feature_name}}".to_string(),
             description: "Plan {{input.feature_name}} using {{input.test_command}}".to_string(),
             skills: vec!["analysis".to_string(), "{{input.language}}".to_string()],
-            blocked_by: vec![],
+            after: vec![],
             loops_to: vec![],
             role_hint: Some("analyst".to_string()),
             deliverables: vec!["docs/{{input.feature_name}}.md".to_string()],
@@ -971,9 +971,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_function_bad_blocked_by() {
+    fn validate_function_bad_after() {
         let mut func = sample_function();
-        func.tasks[1].blocked_by = vec!["nonexistent".to_string()];
+        func.tasks[1].after = vec!["nonexistent".to_string()];
 
         let err = validate_function(&func).unwrap_err();
         match err {
@@ -1057,12 +1057,12 @@ tasks:
   - template_id: implement
     title: "Implement {{input.feature_name}}"
     description: "Build it"
-    blocked_by: [plan]
+    after: [plan]
     skills: [implementation]
   - template_id: refine
     title: "Refine {{input.feature_name}}"
     description: "Fix issues"
-    blocked_by: [implement]
+    after: [implement]
     loops_to:
       - target: implement
         max_iterations: 3
@@ -1090,7 +1090,7 @@ outputs:
             ])
         );
         assert_eq!(func.tasks.len(), 3);
-        assert_eq!(func.tasks[1].blocked_by, vec!["plan"]);
+        assert_eq!(func.tasks[1].after, vec!["plan"]);
         assert_eq!(func.tasks[2].loops_to.len(), 1);
         assert_eq!(func.tasks[2].loops_to[0].target, "implement");
         assert_eq!(func.tasks[2].loops_to[0].max_iterations, 3);

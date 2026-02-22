@@ -1,4 +1,4 @@
-use crate::graph::{Status, Task, WorkGraph};
+use crate::graph::{CycleAnalysis, Status, Task, WorkGraph};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -191,7 +191,7 @@ where
             }
 
             // Check if all blockers are now resolved (in our plan or terminal)
-            let blockers_done = task.blocked_by.iter().all(|blocker_id| {
+            let blockers_done = task.after.iter().all(|blocker_id| {
                 completed_in_plan.contains(blocker_id.as_str())
                     || graph
                         .get_task(blocker_id)
@@ -233,7 +233,7 @@ pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
 
     for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             index
                 .entry(blocker_id.clone())
                 .or_default()
@@ -262,7 +262,7 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
                 return false;
             }
             // All blockers must be terminal (done, failed, or abandoned)
-            task.blocked_by.iter().all(|blocker_id| {
+            task.after.iter().all(|blocker_id| {
                 graph
                     .get_task(blocker_id)
                     .map(|t| t.status.is_terminal())
@@ -272,7 +272,7 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
         .collect()
 }
 
-/// Check whether a single blocked_by dependency is satisfied (terminal).
+/// Check whether a single after dependency is satisfied (terminal).
 ///
 /// Handles both local and remote (`peer:task-id`) references.
 /// For remote refs, resolves via federation config using IPC or direct file access.
@@ -315,20 +315,105 @@ pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) ->
             if !is_time_ready(task) {
                 return false;
             }
-            task.blocked_by
+            task.after
                 .iter()
                 .all(|blocker_id| is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)))
         })
         .collect()
 }
 
+/// Find all tasks that are ready to work on, with cycle-aware back-edge exemption.
+///
+/// Same as `ready_tasks()` but cycle header tasks with a `CycleConfig` have their
+/// back-edge predecessors exempt from the readiness check. This allows the cycle
+/// header to become ready on the first iteration (or after re-opening) even though
+/// the back-edge predecessor hasn't completed yet.
+pub fn ready_tasks_cycle_aware<'a>(
+    graph: &'a WorkGraph,
+    cycle_analysis: &CycleAnalysis,
+) -> Vec<&'a Task> {
+    graph
+        .tasks()
+        .filter(|task| {
+            if task.status != Status::Open {
+                return false;
+            }
+            if task.paused {
+                return false;
+            }
+            if !is_time_ready(task) {
+                return false;
+            }
+            task.after.iter().all(|blocker_id| {
+                // Normal check: predecessor is terminal
+                if graph
+                    .get_task(blocker_id)
+                    .map(|t| t.status.is_terminal())
+                    .unwrap_or(true)
+                {
+                    return true;
+                }
+                // Cycle-aware: the task with cycle_config is the user-designated
+                // cycle header. It is exempt from blockers in the same cycle,
+                // allowing the cycle to start its first iteration.
+                if task.cycle_config.is_some() {
+                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
+                        if cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+        })
+        .collect()
+}
+
+/// Find all tasks that are ready to work on, resolving cross-repo dependencies,
+/// with cycle-aware back-edge exemption.
+pub fn ready_tasks_with_peers_cycle_aware<'a>(
+    graph: &'a WorkGraph,
+    workgraph_dir: &Path,
+    cycle_analysis: &CycleAnalysis,
+) -> Vec<&'a Task> {
+    graph
+        .tasks()
+        .filter(|task| {
+            if task.status != Status::Open {
+                return false;
+            }
+            if task.paused {
+                return false;
+            }
+            if !is_time_ready(task) {
+                return false;
+            }
+            task.after.iter().all(|blocker_id| {
+                if is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)) {
+                    return true;
+                }
+                // Cycle-aware: the task with cycle_config is the user-designated
+                // cycle header. It is exempt from blockers in the same cycle.
+                if task.cycle_config.is_some() {
+                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
+                        if cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+        })
+        .collect()
+}
+
 /// Find what tasks are blocking a given task
-pub fn blocked_by<'a>(graph: &'a WorkGraph, task_id: &str) -> Vec<&'a Task> {
+pub fn after<'a>(graph: &'a WorkGraph, task_id: &str) -> Vec<&'a Task> {
     let Some(task) = graph.get_task(task_id) else {
         return vec![];
     };
 
-    task.blocked_by
+    task.after
         .iter()
         .filter_map(|id| graph.get_task(id))
         .filter(|t| !t.status.is_terminal())
@@ -358,7 +443,7 @@ fn cost_of_recursive(
     let self_cost = task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
 
     let deps_cost: f64 = task
-        .blocked_by
+        .after
         .iter()
         .map(|dep_id| cost_of_recursive(graph, dep_id, visited))
         .sum();
@@ -413,7 +498,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Blocker");
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -431,7 +516,7 @@ mod tests {
         blocker.status = Status::Done;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -442,52 +527,52 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_by_returns_blockers() {
+    fn test_after_returns_blockers() {
         let mut graph = WorkGraph::new();
 
         let blocker = make_task("blocker", "Blocker");
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
 
-        let blockers = blocked_by(&graph, "blocked");
+        let blockers = after(&graph, "blocked");
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].id, "blocker");
     }
 
     #[test]
-    fn test_blocked_by_excludes_done_blockers() {
+    fn test_after_excludes_done_blockers() {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
         blocker.status = Status::Done;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
 
-        let blockers = blocked_by(&graph, "blocked");
+        let blockers = after(&graph, "blocked");
         assert!(blockers.is_empty());
     }
 
     #[test]
-    fn test_blocked_by_excludes_failed_blockers() {
+    fn test_after_excludes_failed_blockers() {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
         blocker.status = Status::Failed;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
 
-        let blockers = blocked_by(&graph, "blocked");
+        let blockers = after(&graph, "blocked");
         assert!(
             blockers.is_empty(),
             "Failed blockers should not block dependents"
@@ -495,19 +580,19 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_by_excludes_abandoned_blockers() {
+    fn test_after_excludes_abandoned_blockers() {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
         blocker.status = Status::Abandoned;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
 
-        let blockers = blocked_by(&graph, "blocked");
+        let blockers = after(&graph, "blocked");
         assert!(
             blockers.is_empty(),
             "Abandoned blockers should not block dependents"
@@ -538,7 +623,7 @@ mod tests {
         });
 
         let mut task = make_task("main", "Main task");
-        task.blocked_by = vec!["dep".to_string()];
+        task.after = vec!["dep".to_string()];
         task.estimate = Some(Estimate {
             hours: None,
             cost: Some(1000.0),
@@ -555,14 +640,14 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
         t1.estimate = Some(Estimate {
             hours: None,
             cost: Some(100.0),
         });
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.estimate = Some(Estimate {
             hours: None,
             cost: Some(200.0),
@@ -624,7 +709,7 @@ mod tests {
 
         // Blocked task (blocked by t1)
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t1".to_string()];
+        t4.after = vec!["t1".to_string()];
         t4.estimate = Some(Estimate {
             hours: Some(4.0),
             cost: Some(400.0),
@@ -698,7 +783,7 @@ mod tests {
 
         // Blocked task (not ready)
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
         blocked.estimate = Some(Estimate {
             hours: Some(2.0),
             cost: Some(200.0),
@@ -841,9 +926,9 @@ mod tests {
 
         let c = make_task("c", "Level 0 (root)");
         let mut b = make_task("b", "Level 1");
-        b.blocked_by = vec!["c".to_string()];
+        b.after = vec!["c".to_string()];
         let mut a = make_task("a", "Level 2");
-        a.blocked_by = vec!["b".to_string()];
+        a.after = vec!["b".to_string()];
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -861,11 +946,11 @@ mod tests {
 
         let d = make_task("d", "Level 0");
         let mut c = make_task("c", "Level 1");
-        c.blocked_by = vec!["d".to_string()];
+        c.after = vec!["d".to_string()];
         let mut b = make_task("b", "Level 2");
-        b.blocked_by = vec!["c".to_string()];
+        b.after = vec!["c".to_string()];
         let mut a = make_task("a", "Level 3");
-        a.blocked_by = vec!["b".to_string()];
+        a.after = vec!["b".to_string()];
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -885,11 +970,11 @@ mod tests {
         let mut d = make_task("d", "Level 0");
         d.status = Status::Done;
         let mut c = make_task("c", "Level 1");
-        c.blocked_by = vec!["d".to_string()];
+        c.after = vec!["d".to_string()];
         let mut b = make_task("b", "Level 2");
-        b.blocked_by = vec!["c".to_string()];
+        b.after = vec!["c".to_string()];
         let mut a = make_task("a", "Level 3");
-        a.blocked_by = vec!["b".to_string()];
+        a.after = vec!["b".to_string()];
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -912,7 +997,7 @@ mod tests {
         b1.status = Status::Done;
         let b2 = make_task("b2", "Blocker 2");
         let mut task = make_task("t", "Blocked task");
-        task.blocked_by = vec!["b1".to_string(), "b2".to_string()];
+        task.after = vec!["b1".to_string(), "b2".to_string()];
 
         graph.add_node(Node::Task(b1));
         graph.add_node(Node::Task(b2));
@@ -937,7 +1022,7 @@ mod tests {
         let mut b2 = make_task("b2", "Blocker 2");
         b2.status = Status::Done;
         let mut task = make_task("t", "Blocked task");
-        task.blocked_by = vec!["b1".to_string(), "b2".to_string()];
+        task.after = vec!["b1".to_string(), "b2".to_string()];
 
         graph.add_node(Node::Task(b1));
         graph.add_node(Node::Task(b2));
@@ -961,7 +1046,7 @@ mod tests {
         b_failed.status = Status::Failed;
 
         let mut task = make_task("t", "Blocked task");
-        task.blocked_by = vec![
+        task.after = vec![
             "b-done".to_string(),
             "b-ip".to_string(),
             "b-failed".to_string(),
@@ -991,7 +1076,7 @@ mod tests {
         b_failed.status = Status::Failed;
 
         let mut task = make_task("t", "Blocked task");
-        task.blocked_by = vec!["b-failed".to_string()];
+        task.after = vec!["b-failed".to_string()];
 
         graph.add_node(Node::Task(b_failed));
         graph.add_node(Node::Task(task));
@@ -1013,7 +1098,7 @@ mod tests {
         b_abandoned.status = Status::Abandoned;
 
         let mut task = make_task("t", "Blocked task");
-        task.blocked_by = vec!["b-abandoned".to_string()];
+        task.after = vec!["b-abandoned".to_string()];
 
         graph.add_node(Node::Task(b_abandoned));
         graph.add_node(Node::Task(task));
@@ -1035,7 +1120,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t", "Task with ghost blocker");
-        task.blocked_by = vec!["nonexistent".to_string()];
+        task.after = vec!["nonexistent".to_string()];
 
         graph.add_node(Node::Task(task));
 
@@ -1055,7 +1140,7 @@ mod tests {
 
         let real_blocker = make_task("real", "Real blocker");
         let mut task = make_task("t", "Mixed blockers");
-        task.blocked_by = vec!["real".to_string(), "ghost".to_string()];
+        task.after = vec!["real".to_string(), "ghost".to_string()];
 
         graph.add_node(Node::Task(real_blocker));
         graph.add_node(Node::Task(task));
@@ -1068,16 +1153,16 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_by_with_orphan_blocker() {
-        // blocked_by() should silently skip nonexistent blockers
+    fn test_after_with_orphan_blocker() {
+        // after() should silently skip nonexistent blockers
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t", "Task");
-        task.blocked_by = vec!["ghost1".to_string(), "ghost2".to_string()];
+        task.after = vec!["ghost1".to_string(), "ghost2".to_string()];
 
         graph.add_node(Node::Task(task));
 
-        let blockers = blocked_by(&graph, "t");
+        let blockers = after(&graph, "t");
         assert!(
             blockers.is_empty(),
             "Nonexistent blockers should be filtered out"
@@ -1085,9 +1170,9 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_by_nonexistent_task() {
+    fn test_after_nonexistent_task() {
         let graph = WorkGraph::new();
-        let blockers = blocked_by(&graph, "no-such-task");
+        let blockers = after(&graph, "no-such-task");
         assert!(blockers.is_empty());
     }
 
@@ -1115,14 +1200,14 @@ mod tests {
 
     #[test]
     fn test_build_reverse_index_linear_chain() {
-        // a -> b -> c (c blocked_by b, b blocked_by a)
+        // a -> b -> c (c after b, b after a)
         let mut graph = WorkGraph::new();
 
         let a = make_task("a", "A");
         let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
+        b.after = vec!["a".to_string()];
         let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
+        c.after = vec!["b".to_string()];
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -1144,9 +1229,9 @@ mod tests {
 
         let root = make_task("root", "Root");
         let mut left = make_task("left", "Left");
-        left.blocked_by = vec!["root".to_string()];
+        left.after = vec!["root".to_string()];
         let mut right = make_task("right", "Right");
-        right.blocked_by = vec!["root".to_string()];
+        right.after = vec!["root".to_string()];
 
         graph.add_node(Node::Task(root));
         graph.add_node(Node::Task(left));
@@ -1166,11 +1251,11 @@ mod tests {
 
         let a = make_task("a", "A");
         let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
+        b.after = vec!["a".to_string()];
         let mut c = make_task("c", "C");
-        c.blocked_by = vec!["a".to_string()];
+        c.after = vec!["a".to_string()];
         let mut d = make_task("d", "D");
-        d.blocked_by = vec!["b".to_string(), "c".to_string()];
+        d.after = vec!["b".to_string(), "c".to_string()];
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -1332,13 +1417,13 @@ mod tests {
             cost: Some(10.0),
         });
         let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
+        b.after = vec!["a".to_string()];
         b.estimate = Some(Estimate {
             hours: None,
             cost: Some(20.0),
         });
         let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
+        c.after = vec!["b".to_string()];
         c.estimate = Some(Estimate {
             hours: None,
             cost: Some(30.0),
@@ -1368,7 +1453,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t", "Task");
-        task.blocked_by = vec!["ghost".to_string()];
+        task.after = vec!["ghost".to_string()];
         task.estimate = Some(Estimate {
             hours: None,
             cost: Some(100.0),
@@ -1386,7 +1471,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("self", "Self-blocking");
-        task.blocked_by = vec!["self".to_string()];
+        task.after = vec!["self".to_string()];
         task.estimate = Some(Estimate {
             hours: None,
             cost: Some(50.0),
@@ -1411,28 +1496,28 @@ mod tests {
         });
 
         let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
+        b.after = vec!["a".to_string()];
         b.estimate = Some(Estimate {
             hours: None,
             cost: Some(10.0),
         });
 
         let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
+        c.after = vec!["b".to_string()];
         c.estimate = Some(Estimate {
             hours: None,
             cost: Some(10.0),
         });
 
         let mut d = make_task("d", "D");
-        d.blocked_by = vec!["c".to_string()];
+        d.after = vec!["c".to_string()];
         d.estimate = Some(Estimate {
             hours: None,
             cost: Some(10.0),
         });
 
         let mut e = make_task("e", "E");
-        e.blocked_by = vec!["d".to_string()];
+        e.after = vec!["d".to_string()];
         e.estimate = Some(Estimate {
             hours: None,
             cost: Some(10.0),
@@ -1460,21 +1545,21 @@ mod tests {
         });
 
         let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
+        b.after = vec!["a".to_string()];
         b.estimate = Some(Estimate {
             hours: None,
             cost: Some(20.0),
         });
 
         let mut c = make_task("c", "C");
-        c.blocked_by = vec!["a".to_string()];
+        c.after = vec!["a".to_string()];
         c.estimate = Some(Estimate {
             hours: None,
             cost: Some(30.0),
         });
 
         let mut d = make_task("d", "D");
-        d.blocked_by = vec!["b".to_string(), "c".to_string()];
+        d.after = vec!["b".to_string(), "c".to_string()];
         d.estimate = Some(Estimate {
             hours: None,
             cost: Some(40.0),

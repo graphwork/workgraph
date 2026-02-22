@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, evaluate_loop_edges};
+use workgraph::graph::{LogEntry, Status, evaluate_cycle_iteration};
 use workgraph::parser::save_graph;
 use workgraph::query;
 
@@ -21,19 +21,42 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Check for unresolved blockers
-    let blockers = query::blocked_by(&graph, id);
+    // Check for unresolved blockers (cycle-aware: skip same-cycle blockers
+    // for tasks with cycle_config, since the cycle header is allowed to complete
+    // even though its predecessor in the cycle isn't done yet)
+    let blockers = query::after(&graph, id);
     if !blockers.is_empty() {
-        let blocker_list: Vec<String> = blockers
-            .iter()
-            .map(|t| format!("  - {} ({}): {:?}", t.id, t.title, t.status))
-            .collect();
-        anyhow::bail!(
-            "Cannot mark '{}' as done: blocked by {} unresolved task(s):\n{}",
-            id,
-            blockers.len(),
-            blocker_list.join("\n")
-        );
+        let task = graph.get_task(id).unwrap();
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let effective_blockers: Vec<_> = if task.cycle_config.is_some() {
+            blockers
+                .into_iter()
+                .filter(|b| {
+                    // Keep blocker unless it's in the same cycle as this task
+                    match (
+                        cycle_analysis.task_to_cycle.get(id),
+                        cycle_analysis.task_to_cycle.get(&b.id),
+                    ) {
+                        (Some(my_cycle), Some(b_cycle)) if my_cycle == b_cycle => false,
+                        _ => true,
+                    }
+                })
+                .collect()
+        } else {
+            blockers
+        };
+        if !effective_blockers.is_empty() {
+            let blocker_list: Vec<String> = effective_blockers
+                .iter()
+                .map(|t| format!("  - {} ({}): {:?}", t.id, t.title, t.status))
+                .collect();
+            anyhow::bail!(
+                "Cannot mark '{}' as done: blocked by {} unresolved task(s):\n{}",
+                id,
+                effective_blockers.len(),
+                blocker_list.join("\n")
+            );
+        }
     }
 
     // Re-acquire mutable reference after immutable borrow
@@ -58,9 +81,10 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
         },
     });
 
-    // Evaluate loop edges: re-activate upstream tasks if conditions are met
+    // Evaluate structural cycle iteration
     let id_owned = id.to_string();
-    let reactivated = evaluate_loop_edges(&mut graph, &id_owned);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let cycle_reactivated = evaluate_cycle_iteration(&mut graph, &id_owned, &cycle_analysis);
 
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
@@ -78,8 +102,8 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
 
     println!("Marked '{}' as done", id);
 
-    for task_id in &reactivated {
-        println!("  Loop: re-activated '{}'", task_id);
+    for task_id in &cycle_reactivated {
+        println!("  Cycle: re-activated '{}'", task_id);
     }
 
     // Archive agent conversation (prompt + output) for provenance
@@ -118,7 +142,6 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::graph::LoopEdge;
     use workgraph::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
     #[test]
@@ -172,7 +195,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Blocker task", Status::Open);
         let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
@@ -190,7 +213,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Blocker task", Status::Done);
         let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
@@ -211,7 +234,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Failed blocker", Status::Failed);
         let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
@@ -232,7 +255,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Abandoned blocker", Status::Abandoned);
         let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
@@ -309,42 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn test_done_evaluates_loop_edges_and_reactivates_target() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        // Create a loop: source -> loops_to -> target
-        let mut source = make_task("source", "Source task", Status::InProgress);
-        source.loops_to = vec![LoopEdge {
-            target: "target".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        let mut target = make_task("target", "Target task", Status::Done);
-        target.loop_iteration = 0;
-
-        setup_workgraph(dir_path, vec![source, target]);
-
-        let result = run(dir_path, "source", false);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-
-        // Source should be re-opened (part of the cycle)
-        let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Open);
-        assert_eq!(source.loop_iteration, 1);
-
-        // Target should be re-activated (Open) with incremented loop_iteration
-        let target = graph.get_task("target").unwrap();
-        assert_eq!(target.status, Status::Open);
-        assert_eq!(target.loop_iteration, 1);
-    }
-
-    #[test]
     fn test_done_nonexistent_task_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -383,124 +370,6 @@ mod tests {
 
         let last_log = task.log.last().unwrap();
         assert_eq!(last_log.actor, None);
-    }
-
-    #[test]
-    fn test_done_loop_edge_respects_max_iterations() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        // Source has a loop to target, but target is already at max_iterations
-        let mut source = make_task("source", "Source task", Status::InProgress);
-        source.loops_to = vec![LoopEdge {
-            target: "target".to_string(),
-            guard: None,
-            max_iterations: 2,
-            delay: None,
-        }];
-
-        let mut target = make_task("target", "Target task", Status::Done);
-        target.loop_iteration = 2; // Already at max
-
-        setup_workgraph(dir_path, vec![source, target]);
-
-        let result = run(dir_path, "source", false);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-
-        // Target should NOT be re-activated (still Done, iteration unchanged)
-        let target = graph.get_task("target").unwrap();
-        assert_eq!(target.status, Status::Done);
-        assert_eq!(target.loop_iteration, 2);
-
-        // Source should also stay Done (loop didn't fire)
-        let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Done);
-    }
-
-    #[test]
-    fn test_done_loop_reopens_source_in_chain() {
-        // Regression test: A→B→C chain with loop from C back to A.
-        // When C completes, A (target), B (intermediate), and C (source)
-        // should all be re-opened.
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task_a = make_task("a", "Task A", Status::Done);
-        task_a.loop_iteration = 0;
-
-        let mut task_b = make_task("b", "Task B", Status::Done);
-        task_b.blocked_by = vec!["a".to_string()];
-
-        let mut task_c = make_task("c", "Task C", Status::InProgress);
-        task_c.blocked_by = vec!["b".to_string()];
-        task_c.loops_to = vec![LoopEdge {
-            target: "a".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        setup_workgraph(dir_path, vec![task_a, task_b, task_c]);
-
-        let result = run(dir_path, "c", false);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-
-        // A (target) should be re-opened with incremented iteration
-        let a = graph.get_task("a").unwrap();
-        assert_eq!(a.status, Status::Open);
-        assert_eq!(a.loop_iteration, 1);
-
-        // B (intermediate) should be re-opened
-        let b = graph.get_task("b").unwrap();
-        assert_eq!(b.status, Status::Open);
-
-        // C (source) should be re-opened with incremented iteration
-        let c = graph.get_task("c").unwrap();
-        assert_eq!(c.status, Status::Open);
-        assert_eq!(c.loop_iteration, 1);
-    }
-
-    #[test]
-    fn test_done_converged_adds_tag_and_stops_loop() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut source = make_task("source", "Source task", Status::InProgress);
-        source.loops_to = vec![LoopEdge {
-            target: "target".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-
-        let mut target = make_task("target", "Target task", Status::Done);
-        target.loop_iteration = 0;
-
-        setup_workgraph(dir_path, vec![source, target]);
-
-        let result = run(dir_path, "source", true);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-
-        // Source should have converged tag
-        let source = graph.get_task("source").unwrap();
-        assert!(source.tags.contains(&"converged".to_string()));
-
-        // Source should stay Done (loop did not fire)
-        assert_eq!(source.status, Status::Done);
-
-        // Target should also stay Done
-        let target = graph.get_task("target").unwrap();
-        assert_eq!(target.status, Status::Done);
-        assert_eq!(target.loop_iteration, 0);
     }
 
     #[test]

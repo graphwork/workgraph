@@ -219,7 +219,7 @@ The sharing boundary is controlled by task visibility. Every task carries a `vis
 
 === Trace functions: organizational routines <trace-functions-evolution>
 
-When a workflow pattern proves effective—a plan-implement-validate cycle that consistently produces high evaluation scores—it can be extracted from the trace into a reusable template. `wg trace extract` reads the completed task graph, captures the task structure, dependencies, loop edges, and agent role hints, and writes a parameterized function to `.workgraph/functions/`. `wg trace instantiate` creates a fresh task graph from that template with new inputs.
+When a workflow pattern proves effective—a plan-implement-validate cycle that consistently produces high evaluation scores—it can be extracted from the trace into a reusable template. `wg trace extract` reads the completed task graph, captures the task structure, dependencies, structural cycles, and agent role hints, and writes a parameterized function to `.workgraph/functions/`. `wg trace instantiate` creates a fresh task graph from that template with new inputs.
 
 These trace functions are the system's organizational routines—the term Nelson and Winter (1982) used for the regular, predictable patterns of behavior that serve as an organization's institutional memory. A routine extracted from a successful feature implementation captures not just what tasks to create, but what skills to require, what review loops to include, and what convergence patterns to expect. It is heritable (shareable across projects via the same YAML format), selectable (routines that produce good evaluation scores are retained; others are revised or abandoned), and mutable (a human or an LLM can edit the template to adapt it).
 

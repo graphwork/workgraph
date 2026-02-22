@@ -1,21 +1,17 @@
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-/// A loop edge: a conditional back-edge that can re-activate upstream tasks on completion.
-/// Loop edges are NOT blocking edges — they are separate from `blocked_by` and don't affect
-/// `ready_tasks()` or scheduling. They only fire when the source task completes.
+/// Configuration for structural cycle iteration.
+/// Only present on the cycle header task.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoopEdge {
-    /// Task ID to re-activate when this task completes
-    pub target: String,
-    /// Condition that must be true to loop (None = always loop, up to max_iterations)
+pub struct CycleConfig {
+    /// Hard cap on cycle iterations
+    pub max_iterations: u32,
+    /// Condition that must be true to iterate (None = always, up to max_iterations)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<LoopGuard>,
-    /// Hard cap on iterations (required — no unbounded loops)
-    pub max_iterations: u32,
-    /// How long to wait before re-activating the target (e.g. "30s", "5m", "1h", "24h").
-    /// When set, loop firing sets target.ready_after = now + delay instead of making it immediately ready.
+    /// Time delay before re-activation (e.g., "30s", "5m", "1h")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delay: Option<String>,
 }
@@ -157,10 +153,10 @@ pub struct Task {
     pub assigned: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimate: Option<Estimate>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocks")]
+    pub before: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocked_by")]
+    pub after: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -213,12 +209,12 @@ pub struct Task {
     /// Agent assigned to this task (content-hash of an Agent in the agency)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// Back-edges that can re-activate upstream tasks on completion
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub loops_to: Vec<LoopEdge>,
-    /// Current loop iteration (0 = first run, incremented on each re-activation)
+    /// Current cycle iteration (0 = first run, incremented on each re-activation)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub loop_iteration: u32,
+    /// Configuration for structural cycle iteration (only on cycle header tasks)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_config: Option<CycleConfig>,
     /// Task is not ready until this timestamp (ISO 8601 / RFC 3339).
     /// Set by loop edges with a delay — prevents immediate dispatch after re-activation.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,6 +232,50 @@ pub struct Task {
 
 fn default_visibility() -> String {
     "internal".to_string()
+}
+
+/// Deserialize loops_to accepting both old string format and array format.
+fn deserialize_loops_to<'de, D>(deserializer: D) -> Result<Vec<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct LoopsToVisitor;
+
+    impl<'de> de::Visitor<'de> for LoopsToVisitor {
+        type Value = Vec<serde_json::Value>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or array for loops_to")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(vec![serde_json::Value::String(v.to_string())])
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(vec![serde_json::Value::String(v)])
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(vec![])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(vec![])
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(val) = seq.next_element()? {
+                values.push(val);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(LoopsToVisitor)
 }
 
 fn is_default_visibility(val: &str) -> bool {
@@ -263,10 +303,10 @@ struct TaskHelper {
     assigned: Option<String>,
     #[serde(default)]
     estimate: Option<Estimate>,
-    #[serde(default)]
-    blocks: Vec<String>,
-    #[serde(default)]
-    blocked_by: Vec<String>,
+    #[serde(default, alias = "blocks")]
+    before: Vec<String>,
+    #[serde(default, alias = "blocked_by")]
+    after: Vec<String>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -303,10 +343,15 @@ struct TaskHelper {
     verify: Option<String>,
     #[serde(default)]
     agent: Option<String>,
-    #[serde(default)]
-    loops_to: Vec<LoopEdge>,
+    /// Deprecated: silently ignored on deserialization for backward compatibility.
+    /// Accepts both old string format ("loops_to": "b") and array format ("loops_to": ["b"]).
+    #[serde(default, deserialize_with = "deserialize_loops_to")]
+    #[allow(dead_code)]
+    loops_to: Vec<serde_json::Value>,
     #[serde(default)]
     loop_iteration: u32,
+    #[serde(default)]
+    cycle_config: Option<CycleConfig>,
     #[serde(default)]
     ready_after: Option<String>,
     #[serde(default)]
@@ -342,8 +387,8 @@ impl<'de> Deserialize<'de> for Task {
             status: helper.status,
             assigned: helper.assigned,
             estimate: helper.estimate,
-            blocks: helper.blocks,
-            blocked_by: helper.blocked_by,
+            before: helper.before,
+            after: helper.after,
             requires: helper.requires,
             tags: helper.tags,
             skills: helper.skills,
@@ -362,8 +407,8 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             verify: helper.verify,
             agent,
-            loops_to: helper.loops_to,
             loop_iteration: helper.loop_iteration,
+            cycle_config: helper.cycle_config,
             ready_after: helper.ready_after,
             paused: helper.paused,
             visibility: helper.visibility,
@@ -424,25 +469,106 @@ impl Node {
     }
 }
 
+/// A detected cycle (strongly connected component) in the task graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedCycle {
+    /// All task IDs in this cycle's SCC.
+    pub members: Vec<String>,
+    /// The entry point / loop header task ID.
+    pub header: String,
+    /// Is this a reducible cycle (single entry point)?
+    pub reducible: bool,
+}
+
+/// Cached cycle analysis derived from the graph's after edges.
+/// Never serialized — recomputed lazily on access.
+#[derive(Debug, Clone, Default)]
+pub struct CycleAnalysis {
+    /// Non-trivial SCCs (cycles).
+    pub cycles: Vec<DetectedCycle>,
+    /// Which cycle each task belongs to (task_id → index into cycles).
+    pub task_to_cycle: HashMap<String, usize>,
+    /// Back-edges: (predecessor_id, header_id) pairs within cycles.
+    pub back_edges: HashSet<(String, String)>,
+}
+
+impl CycleAnalysis {
+    /// Compute cycle analysis from a WorkGraph's after edges.
+    pub fn from_graph(graph: &WorkGraph) -> Self {
+        use crate::cycle::NamedGraph;
+
+        let mut named = NamedGraph::new();
+        for task in graph.tasks() {
+            named.add_node(&task.id);
+        }
+        for task in graph.tasks() {
+            for dep_id in &task.after {
+                if graph.get_task(dep_id).is_some() {
+                    named.add_edge(dep_id, &task.id);
+                }
+            }
+        }
+
+        let metadata = named.analyze_cycles();
+        let mut cycles = Vec::new();
+        let mut task_to_cycle = HashMap::new();
+        let mut back_edges = HashSet::new();
+
+        for (idx, meta) in metadata.iter().enumerate() {
+            let members: Vec<String> = meta
+                .members
+                .iter()
+                .map(|&nid| named.get_name(nid).to_string())
+                .collect();
+            let header = named.get_name(meta.header).to_string();
+
+            for member in &members {
+                task_to_cycle.insert(member.clone(), idx);
+            }
+            for &(src, tgt) in &meta.back_edges {
+                back_edges.insert((
+                    named.get_name(src).to_string(),
+                    named.get_name(tgt).to_string(),
+                ));
+            }
+            cycles.push(DetectedCycle {
+                members,
+                header,
+                reducible: meta.reducible,
+            });
+        }
+
+        CycleAnalysis {
+            cycles,
+            task_to_cycle,
+            back_edges,
+        }
+    }
+}
+
 /// The work graph: a directed task graph with dependency edges and optional loop edges.
 ///
-/// Tasks depend on other tasks via `blocked_by`/`blocks` edges. Resources are
+/// Tasks depend on other tasks via `after`/`blocks` edges. Resources are
 /// consumed by tasks via `requires` edges. The graph is persisted as JSONL
 /// (one node per line) and supports concurrent readers via atomic writes.
 #[derive(Debug, Clone, Default)]
 pub struct WorkGraph {
     nodes: HashMap<String, Node>,
+    /// Cached cycle analysis. Lazily computed; invalidated on structural mutations.
+    cycle_analysis: Option<CycleAnalysis>,
 }
 
 impl WorkGraph {
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
+            cycle_analysis: None,
         }
     }
 
     /// Insert a node (task or resource) into the graph.
     pub fn add_node(&mut self, node: Node) {
+        self.cycle_analysis = None;
         self.nodes.insert(node.id().to_string(), node);
     }
 
@@ -461,6 +587,7 @@ impl WorkGraph {
 
     /// Look up a task by ID (mutable), returning `None` if the node is a resource.
     pub fn get_task_mut(&mut self, id: &str) -> Option<&mut Task> {
+        self.cycle_analysis = None;
         match self.nodes.get_mut(id) {
             Some(Node::Task(t)) => Some(t),
             _ => None,
@@ -475,8 +602,15 @@ impl WorkGraph {
 
     /// Look up a task by ID (mutable), returning an error with did-you-mean suggestions if not found.
     pub fn get_task_mut_or_err(&mut self, id: &str) -> anyhow::Result<&mut Task> {
+        self.cycle_analysis = None;
         let err = self.task_not_found_error(id);
-        self.get_task_mut(id).ok_or(err)
+        self.nodes
+            .get_mut(id)
+            .and_then(|n| match n {
+                Node::Task(t) => Some(t),
+                _ => None,
+            })
+            .ok_or(err)
     }
 
     /// Build a "Task not found" error, suggesting similar task IDs if any exist.
@@ -526,16 +660,16 @@ impl WorkGraph {
     /// Remove a node by ID, returning the removed node if it existed.
     ///
     /// Also cleans up all references to the removed node from other tasks
-    /// (`blocked_by`, `blocks`, `requires`, and `loops_to` targets).
+    /// (`after`, `blocks`, `requires`).
     pub fn remove_node(&mut self, id: &str) -> Option<Node> {
+        self.cycle_analysis = None;
         let removed = self.nodes.remove(id);
         if removed.is_some() {
             for node in self.nodes.values_mut() {
                 if let Node::Task(task) = node {
-                    task.blocked_by.retain(|dep| dep != id);
-                    task.blocks.retain(|dep| dep != id);
+                    task.after.retain(|dep| dep != id);
+                    task.before.retain(|dep| dep != id);
                     task.requires.retain(|dep| dep != id);
-                    task.loops_to.retain(|edge| edge.target != id);
                 }
             }
         }
@@ -551,14 +685,31 @@ impl WorkGraph {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+
+    /// Invalidate cached cycle analysis. Called by structural mutations.
+    pub fn invalidate_cycle_cache(&mut self) {
+        self.cycle_analysis = None;
+    }
+
+    /// Compute cycle analysis without caching (for use with immutable references).
+    pub fn compute_cycle_analysis(&self) -> CycleAnalysis {
+        CycleAnalysis::from_graph(self)
+    }
+
+    /// Get or compute cached cycle analysis.
+    pub fn get_cycle_analysis(&mut self) -> &CycleAnalysis {
+        if self.cycle_analysis.is_none() {
+            self.cycle_analysis = Some(CycleAnalysis::from_graph(self));
+        }
+        self.cycle_analysis.as_ref().unwrap()
+    }
 }
 
-/// Evaluate a loop guard condition against the current graph state.
+/// Evaluate a guard condition against the current graph state.
 fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
     match guard {
         None | Some(LoopGuard::Always) => true,
-        // IterationLessThan is checked in evaluate_loop_edges() where the
-        // target task's loop_iteration is available.
+        // IterationLessThan is checked by callers where iteration count is available.
         Some(LoopGuard::IterationLessThan(_)) => true,
         Some(LoopGuard::TaskStatus { task, status }) => graph
             .get_task(task)
@@ -567,258 +718,122 @@ fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
     }
 }
 
-/// Evaluate loop edges after a task transitions to Done.
+/// Evaluate structural cycle iteration after a task transitions to Done.
 ///
-/// For each `LoopEdge` on the completed task:
-/// 1. Check guard condition against current graph state.
-/// 2. Check `target.loop_iteration < max_iterations`.
-/// 3. If both true: re-open the target task (set status to Open, clear
-///    assigned/started_at/completed_at, increment loop_iteration, optionally
-///    set ready_after if the edge has a delay).
-/// 4. Also re-open any intermediate tasks between source and target whose
-///    blockers are no longer all Done (since the target was just re-opened).
+/// Checks if the completed task is part of a structural cycle (detected via
+/// `CycleAnalysis`). If ALL cycle members are Done, and the cycle header has
+/// a `CycleConfig`, evaluates whether to iterate:
+/// 1. Check convergence tag on header (any member can set it via --converged)
+/// 2. Check `max_iterations` on header's `CycleConfig`
+/// 3. Check guard condition
+/// 4. If iterating: re-open all cycle members, increment `loop_iteration`,
+///    optionally set `ready_after` if delay is configured.
 ///
 /// Returns the list of task IDs that were re-activated.
-pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String> {
-    // Check if the source task signaled convergence — skip all loop firing
-    if let Some(task) = graph.get_task(source_id)
-        && task.tags.contains(&"converged".to_string()) {
-            return vec![];
-        }
-
-    // Collect loop edges from the source task (clone to avoid borrow issues)
-    let loop_edges: Vec<LoopEdge> = match graph.get_task(source_id) {
-        Some(task) => task.loops_to.clone(),
+pub fn evaluate_cycle_iteration(
+    graph: &mut WorkGraph,
+    completed_task_id: &str,
+    cycle_analysis: &CycleAnalysis,
+) -> Vec<String> {
+    // 1. Check if the completed task is in a cycle
+    let cycle_idx = match cycle_analysis.task_to_cycle.get(completed_task_id) {
+        Some(&idx) => idx,
         None => return vec![],
     };
 
-    let mut reactivated = Vec::new();
+    let cycle = &cycle_analysis.cycles[cycle_idx];
 
-    for edge in &loop_edges {
-        // 1. Check guard condition
-        if !evaluate_guard(&edge.guard, graph) {
-            continue;
-        }
-
-        // Also check IterationLessThan guard specifically
-        if let Some(LoopGuard::IterationLessThan(n)) = &edge.guard {
-            let current_iter = graph
-                .get_task(&edge.target)
-                .map(|t| t.loop_iteration)
-                .unwrap_or(0);
-            if current_iter >= *n {
-                continue;
+    // 2. Find the cycle member with CycleConfig (may differ from SCC header).
+    //    The spec requires exactly one member to have it; wg check enforces this.
+    let (config_owner_id, cycle_config) = {
+        let mut found = None;
+        for member_id in &cycle.members {
+            if let Some(task) = graph.get_task(member_id) {
+                if let Some(ref config) = task.cycle_config {
+                    found = Some((member_id.clone(), config.clone()));
+                    break;
+                }
             }
         }
-
-        // 2. Check iteration limit
-        let current_iter = match graph.get_task(&edge.target) {
-            Some(target) => target.loop_iteration,
-            None => {
-                eprintln!(
-                    "Warning: loop target '{}' referenced by '{}' does not exist, skipping",
-                    edge.target, source_id
-                );
-                continue;
-            }
-        };
-        if current_iter >= edge.max_iterations {
-            continue;
+        match found {
+            Some(pair) => pair,
+            None => return vec![], // No config = no cycle iteration
         }
+    };
 
-        // 3. Re-activate the target task
-        let new_iteration = current_iter + 1;
-        let ready_after = edge.delay.as_ref().and_then(|d| match parse_delay(d) {
-            Some(secs) if secs <= i64::MAX as u64 => {
-                Some((Utc::now() + Duration::seconds(secs as i64)).to_rfc3339())
-            }
-            Some(secs) => {
-                eprintln!(
-                    "Warning: delay value {}s on loop edge {} → {} exceeds maximum, ignoring delay",
-                    secs, source_id, edge.target
-                );
-                None
-            }
-            None => {
-                eprintln!(
-                    "Warning: invalid delay '{}' on loop edge {} → {}, ignoring delay",
-                    d, source_id, edge.target
-                );
-                None
-            }
-        });
-
-        let target_reactivated = if let Some(target) = graph.get_task_mut(&edge.target) {
-            target.status = Status::Open;
-            target.assigned = None;
-            target.started_at = None;
-            target.completed_at = None;
-            target.loop_iteration = new_iteration;
-            target.ready_after = ready_after;
-
-            target.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: None,
-                message: format!(
-                    "Re-activated by loop from {} (iteration {}/{})",
-                    source_id, new_iteration, edge.max_iterations
-                ),
-            });
-
-            reactivated.push(edge.target.clone());
-            true
-        } else {
-            false
-        };
-
-        // Only re-open intermediates and source if target was successfully reactivated
-        if !target_reactivated {
-            continue;
-        }
-
-        // 4. Re-open intermediate tasks between target and source whose
-        //    blockers are no longer all Done.
-        //
-        //    We find tasks that transitively depend on the target (via blocked_by)
-        //    and are between the target and source in the dependency chain.
-        //    Per the design doc (section 2): intermediate tasks don't strictly
-        //    need explicit re-opening because ready_tasks() won't mark them
-        //    ready when their blocker is Open. However, if they were marked Done
-        //    from a previous iteration, we should re-open them so they run again.
-        let intermediates = find_intermediate_tasks(graph, &edge.target, source_id);
-        for mid_id in &intermediates {
-            if mid_id == source_id {
-                continue; // Source is re-opened separately below
-            }
-            if let Some(mid_task) = graph.get_task_mut(mid_id)
-                && mid_task.status == Status::Done
-            {
-                mid_task.status = Status::Open;
-                mid_task.assigned = None;
-                mid_task.started_at = None;
-                mid_task.completed_at = None;
-                mid_task.loop_iteration = new_iteration;
-
-                mid_task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: None,
-                    message: format!(
-                        "Re-opened: blocker '{}' was re-activated by loop from {}",
-                        edge.target, source_id
-                    ),
-                });
-
-                reactivated.push(mid_id.clone());
-            }
+    // 3. Check if ALL cycle members are Done
+    for member_id in &cycle.members {
+        match graph.get_task(member_id) {
+            Some(t) if t.status == Status::Done => {}
+            _ => return vec![], // Not all done yet
         }
     }
 
-    // 5. Re-open the source task itself so it runs again in the next
-    //    iteration of the cycle.  The source was just marked Done by the
-    //    caller, but it is part of the loop and must execute again.
-    //    Only do this once even if multiple loop edges fired.
-    if !reactivated.is_empty() {
-        // Use the max iteration across all reactivated targets
-        let max_iteration = reactivated
-            .iter()
-            .filter_map(|id| graph.get_task(id).map(|t| t.loop_iteration))
-            .max()
-            .unwrap_or(1);
+    // 4. Check convergence tag on config owner (or any member)
+    if let Some(owner) = graph.get_task(&config_owner_id) {
+        if owner.tags.contains(&"converged".to_string()) {
+            return vec![];
+        }
+    }
 
-        if let Some(src_task) = graph.get_task_mut(source_id) {
-            src_task.status = Status::Open;
-            src_task.assigned = None;
-            src_task.started_at = None;
-            src_task.completed_at = None;
-            src_task.loop_iteration = max_iteration;
+    // 5. Check max_iterations (using config owner's loop_iteration)
+    let current_iter = graph
+        .get_task(&config_owner_id)
+        .map(|t| t.loop_iteration)
+        .unwrap_or(0);
+    if current_iter >= cycle_config.max_iterations {
+        return vec![];
+    }
 
-            src_task.log.push(LogEntry {
+    // 6. Check guard condition
+    if !evaluate_guard(&cycle_config.guard, graph) {
+        return vec![];
+    }
+    if let Some(LoopGuard::IterationLessThan(n)) = &cycle_config.guard {
+        if current_iter >= *n {
+            return vec![];
+        }
+    }
+
+    // 7. All checks passed — re-open all cycle members
+    let new_iteration = current_iter + 1;
+    let ready_after = cycle_config
+        .delay
+        .as_ref()
+        .and_then(|d| match parse_delay(d) {
+            Some(secs) if secs <= i64::MAX as u64 => {
+                Some((Utc::now() + Duration::seconds(secs as i64)).to_rfc3339())
+            }
+            _ => None,
+        });
+
+    let mut reactivated = Vec::new();
+
+    for member_id in &cycle.members {
+        if let Some(task) = graph.get_task_mut(member_id) {
+            task.status = Status::Open;
+            task.assigned = None;
+            task.started_at = None;
+            task.completed_at = None;
+            task.loop_iteration = new_iteration;
+            if *member_id == config_owner_id {
+                task.ready_after = ready_after.clone();
+            }
+
+            task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
-                message: format!("Re-opened by own loop (iteration {})", max_iteration),
+                message: format!(
+                    "Re-activated by cycle iteration (iteration {}/{})",
+                    new_iteration, cycle_config.max_iterations
+                ),
             });
 
-            reactivated.push(source_id.to_string());
+            reactivated.push(member_id.clone());
         }
     }
 
     reactivated
-}
-
-/// Find tasks that are on the dependency path between `from` (the loop target)
-/// and `to` (the loop source). These are tasks that have `from` as a transitive
-/// blocker and are themselves transitive blockers of `to`.
-///
-///
-/// Uses two passes:
-///   1. Forward BFS from `from` along dependents to find all tasks reachable from `from`.
-///   2. Backward BFS from `to` along blocked_by to find all tasks that can reach `to`.
-///
-/// The intersection (excluding `from` and `to` themselves) gives the true intermediates.
-fn find_intermediate_tasks(graph: &WorkGraph, from: &str, to: &str) -> Vec<String> {
-    use std::collections::{HashSet, VecDeque};
-
-    // Build reverse index: task_id -> list of tasks that are blocked_by it
-    let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
-    for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
-            dependents
-                .entry(blocker_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
-
-    // Pass 1: Forward BFS from `from` — find all tasks reachable via dependents
-    let mut forward_reachable = HashSet::new();
-    let mut queue = VecDeque::new();
-    if let Some(deps) = dependents.get(from) {
-        for dep in deps {
-            if forward_reachable.insert(dep.clone()) {
-                queue.push_back(dep.clone());
-            }
-        }
-    }
-    while let Some(current) = queue.pop_front() {
-        if current == to {
-            continue; // Don't traverse past the source
-        }
-        if let Some(deps) = dependents.get(&current) {
-            for dep in deps {
-                if forward_reachable.insert(dep.clone()) {
-                    queue.push_back(dep.clone());
-                }
-            }
-        }
-    }
-
-    // Pass 2: Backward BFS from `to` — find all tasks that transitively block `to`
-    let mut backward_reachable = HashSet::new();
-    if let Some(task) = graph.get_task(to) {
-        for blocker in &task.blocked_by {
-            if backward_reachable.insert(blocker.clone()) {
-                queue.push_back(blocker.clone());
-            }
-        }
-    }
-    while let Some(current) = queue.pop_front() {
-        if current == from {
-            continue; // Don't traverse past the target
-        }
-        if let Some(task) = graph.get_task(&current) {
-            for blocker in &task.blocked_by {
-                if backward_reachable.insert(blocker.clone()) {
-                    queue.push_back(blocker.clone());
-                }
-            }
-        }
-    }
-
-    // Intersection: tasks reachable from `from` AND that can reach `to`
-    forward_reachable
-        .into_iter()
-        .filter(|id| id != from && id != to && backward_reachable.contains(id))
-        .collect()
 }
 
 /// Compute Levenshtein edit distance between two strings.
@@ -912,24 +927,17 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
-        t2.blocks = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
+        t2.before = vec!["t1".to_string()];
         t2.requires = vec!["t1".to_string()];
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
         graph.add_node(Node::Task(t2));
 
         graph.remove_node("t1");
 
         let t2 = graph.get_task("t2").unwrap();
-        assert!(t2.blocked_by.is_empty(), "blocked_by should be cleaned");
-        assert!(t2.blocks.is_empty(), "blocks should be cleaned");
+        assert!(t2.after.is_empty(), "after should be cleaned");
+        assert!(t2.before.is_empty(), "blocks should be cleaned");
         assert!(t2.requires.is_empty(), "requires should be cleaned");
-        assert!(t2.loops_to.is_empty(), "loops_to should be cleaned");
     }
 
     #[test]
@@ -946,19 +954,19 @@ mod tests {
     fn test_task_with_blocks() {
         let mut graph = WorkGraph::new();
         let mut task1 = make_task("api-design", "Design API");
-        task1.blocks = vec!["api-impl".to_string()];
+        task1.before = vec!["api-impl".to_string()];
 
         let mut task2 = make_task("api-impl", "Implement API");
-        task2.blocked_by = vec!["api-design".to_string()];
+        task2.after = vec!["api-design".to_string()];
 
         graph.add_node(Node::Task(task1));
         graph.add_node(Node::Task(task2));
 
         let design = graph.get_task("api-design").unwrap();
-        assert_eq!(design.blocks, vec!["api-impl"]);
+        assert_eq!(design.before, vec!["api-impl"]);
 
         let impl_task = graph.get_task("api-impl").unwrap();
-        assert_eq!(impl_task.blocked_by, vec!["api-design"]);
+        assert_eq!(impl_task.after, vec!["api-design"]);
     }
 
     #[test]
@@ -1211,354 +1219,6 @@ mod tests {
         assert_eq!(parse_delay("30🎯"), None);
         assert_eq!(parse_delay("5ñ"), None);
         assert_eq!(parse_delay("10日"), None);
-    }
-
-    // ── find_intermediate_tasks tests ────────────────────────────────
-
-    #[test]
-    fn test_find_intermediate_empty_graph() {
-        let graph = WorkGraph::new();
-        let result = find_intermediate_tasks(&graph, "a", "b");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_linear_chain() {
-        // A -> B -> C (B blocked_by A, C blocked_by B)
-        // from=A, to=C: intermediate should be [B]
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        b.blocks = vec!["c".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-
-        let result = find_intermediate_tasks(&graph, "a", "c");
-        assert_eq!(result, vec!["b"]);
-    }
-
-    #[test]
-    fn test_find_intermediate_branching_dependencies() {
-        // A -> B -> D, A -> C -> D
-        // from=A, to=D: intermediates should contain B and C
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string(), "c".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        b.blocks = vec!["d".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["a".to_string()];
-        c.blocks = vec!["d".to_string()];
-        let mut d = make_task("d", "D");
-        d.blocked_by = vec!["b".to_string(), "c".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-        graph.add_node(Node::Task(d));
-
-        let mut result = find_intermediate_tasks(&graph, "a", "d");
-        result.sort();
-        assert_eq!(result, vec!["b", "c"]);
-    }
-
-    #[test]
-    fn test_find_intermediate_no_path() {
-        // A and B are independent tasks with no dependency path
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("a", "A")));
-        graph.add_node(Node::Task(make_task("b", "B")));
-
-        let result = find_intermediate_tasks(&graph, "a", "b");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_nonexistent_nodes() {
-        let graph = WorkGraph::new();
-        let result = find_intermediate_tasks(&graph, "nonexistent-from", "nonexistent-to");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_missing_from_node() {
-        // Only 'to' exists in the graph
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("b", "B")));
-
-        let result = find_intermediate_tasks(&graph, "missing", "b");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_missing_to_node() {
-        // Only 'from' exists, and it has a dependent that isn't 'to'
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-
-        // Looking for path from a to "missing" — b is reachable from a but not on a
-        // path to "missing" (which doesn't exist), so it should NOT be returned.
-        let result = find_intermediate_tasks(&graph, "a", "missing");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_self_referential() {
-        // from == to: should return nothing since the source is skipped
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocked_by = vec!["a".to_string()]; // self-dependency
-        graph.add_node(Node::Task(a));
-
-        let result = find_intermediate_tasks(&graph, "a", "a");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_diamond() {
-        // Diamond: A -> B, A -> C, B -> D, C -> D
-        // from=A, to=D: intermediates should be B and C
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string(), "c".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        b.blocks = vec!["d".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["a".to_string()];
-        c.blocks = vec!["d".to_string()];
-        let mut d = make_task("d", "D");
-        d.blocked_by = vec!["b".to_string(), "c".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-        graph.add_node(Node::Task(d));
-
-        let mut result = find_intermediate_tasks(&graph, "a", "d");
-        result.sort();
-        assert_eq!(result, vec!["b", "c"]);
-    }
-
-    #[test]
-    fn test_find_intermediate_excludes_source_and_target() {
-        // A -> B -> C: from=A, to=C
-        // Result should be [B], not include A or C
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        b.blocks = vec!["c".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-
-        let result = find_intermediate_tasks(&graph, "a", "c");
-        assert!(!result.contains(&"a".to_string()));
-        assert!(!result.contains(&"c".to_string()));
-        assert_eq!(result, vec!["b"]);
-    }
-
-    #[test]
-    fn test_find_intermediate_direct_edge_no_intermediates() {
-        // A -> B directly: from=A, to=B — no intermediates
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-
-        let result = find_intermediate_tasks(&graph, "a", "b");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_find_intermediate_longer_chain() {
-        // A -> B -> C -> D -> E: from=A, to=E
-        let mut graph = WorkGraph::new();
-
-        let mut a = make_task("a", "A");
-        a.blocks = vec!["b".to_string()];
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        b.blocks = vec!["c".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
-        c.blocks = vec!["d".to_string()];
-        let mut d = make_task("d", "D");
-        d.blocked_by = vec!["c".to_string()];
-        d.blocks = vec!["e".to_string()];
-        let mut e = make_task("e", "E");
-        e.blocked_by = vec!["d".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-        graph.add_node(Node::Task(d));
-        graph.add_node(Node::Task(e));
-
-        let result = find_intermediate_tasks(&graph, "a", "e");
-        assert_eq!(result.len(), 3);
-        assert!(result.contains(&"b".to_string()));
-        assert!(result.contains(&"c".to_string()));
-        assert!(result.contains(&"d".to_string()));
-    }
-
-    #[test]
-    fn test_find_intermediate_excludes_unrelated_branch() {
-        // Graph: a -> b -> c (loop from c back to a)
-        //        a -> x -> y (branch NOT on path to c)
-        // Only b should be returned, not x or y
-        let mut graph = WorkGraph::new();
-
-        let a = make_task("a", "A");
-        let mut b = make_task("b", "B");
-        b.blocked_by = vec!["a".to_string()];
-        let mut c = make_task("c", "C");
-        c.blocked_by = vec!["b".to_string()];
-        let mut x = make_task("x", "X");
-        x.blocked_by = vec!["a".to_string()];
-        let mut y = make_task("y", "Y");
-        y.blocked_by = vec!["x".to_string()];
-
-        graph.add_node(Node::Task(a));
-        graph.add_node(Node::Task(b));
-        graph.add_node(Node::Task(c));
-        graph.add_node(Node::Task(x));
-        graph.add_node(Node::Task(y));
-
-        // Loop from c back to a — intermediates should only be b
-        let result = find_intermediate_tasks(&graph, "a", "c");
-        assert_eq!(result, vec!["b".to_string()]);
-    }
-
-    #[test]
-    fn test_find_intermediate_loop_iteration_updated() {
-        // Chain: tgt -> mid -> src (blocked_by direction)
-        // Loop: src loops_to tgt
-        // When src completes, tgt gets re-opened, mid (between tgt and src)
-        // should also get re-opened with the correct loop_iteration.
-        let mut graph = WorkGraph::new();
-
-        let mut tgt = make_task("tgt", "Target");
-        tgt.status = Status::Done;
-
-        let mut mid = make_task("mid", "Middle");
-        mid.blocked_by = vec!["tgt".to_string()];
-        mid.status = Status::Done;
-
-        let mut src = make_task("src", "Source");
-        src.blocked_by = vec!["mid".to_string()];
-        src.status = Status::Done;
-        src.loops_to.push(LoopEdge {
-            target: "tgt".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        });
-
-        graph.add_node(Node::Task(tgt));
-        graph.add_node(Node::Task(mid));
-        graph.add_node(Node::Task(src));
-
-        let reactivated = evaluate_loop_edges(&mut graph, "src");
-
-        // All three should be re-opened
-        assert!(reactivated.contains(&"tgt".to_string()));
-        assert!(reactivated.contains(&"mid".to_string()));
-        assert!(reactivated.contains(&"src".to_string()));
-
-        // Mid should have the same loop_iteration as src and tgt (iteration 1)
-        let mid = graph.get_task("mid").unwrap();
-        assert_eq!(
-            mid.loop_iteration, 1,
-            "intermediate task should have updated loop_iteration"
-        );
-        assert_eq!(mid.status, Status::Open);
-
-        let src = graph.get_task("src").unwrap();
-        assert_eq!(src.loop_iteration, 1);
-
-        let tgt = graph.get_task("tgt").unwrap();
-        assert_eq!(tgt.loop_iteration, 1);
-    }
-
-    #[test]
-    fn test_evaluate_loop_edges_multi_target_no_duplicate_source() {
-        // Source task has two loop edges to different targets.
-        // When both fire, the source should appear exactly once in reactivated.
-        let mut graph = WorkGraph::new();
-
-        let mut tgt_a = make_task("tgt-a", "Target A");
-        tgt_a.status = Status::Done;
-
-        let mut tgt_b = make_task("tgt-b", "Target B");
-        tgt_b.status = Status::Done;
-
-        let mut src = make_task("src", "Source");
-        src.status = Status::Done;
-        src.loops_to.push(LoopEdge {
-            target: "tgt-a".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        });
-        src.loops_to.push(LoopEdge {
-            target: "tgt-b".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        });
-
-        graph.add_node(Node::Task(tgt_a));
-        graph.add_node(Node::Task(tgt_b));
-        graph.add_node(Node::Task(src));
-
-        let reactivated = evaluate_loop_edges(&mut graph, "src");
-
-        // Source should appear exactly once, not twice
-        let source_count = reactivated.iter().filter(|id| *id == "src").count();
-        assert_eq!(
-            source_count, 1,
-            "source should appear exactly once in reactivated list, got {}",
-            source_count
-        );
-
-        // Both targets should be reactivated
-        assert!(reactivated.contains(&"tgt-a".to_string()));
-        assert!(reactivated.contains(&"tgt-b".to_string()));
-
-        // Source should be at iteration 1 (max of both targets)
-        let src = graph.get_task("src").unwrap();
-        assert_eq!(src.loop_iteration, 1);
-        assert_eq!(src.status, Status::Open);
     }
 
     #[test]

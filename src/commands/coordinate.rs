@@ -35,7 +35,7 @@ pub struct EstimateSummary {
 pub struct BlockedTaskSummary {
     pub id: String,
     pub title: String,
-    pub blocked_by: Vec<String>,
+    pub after: Vec<String>,
 }
 
 impl TaskSummary {
@@ -57,7 +57,7 @@ impl BlockedTaskSummary {
         BlockedTaskSummary {
             id: task.id.clone(),
             title: task.title.clone(),
-            blocked_by: task.blocked_by.clone(),
+            after: task.after.clone(),
         }
     }
 }
@@ -79,8 +79,8 @@ pub fn get_coordination_status(graph: &workgraph::graph::WorkGraph) -> Coordinat
         .tasks()
         .filter(|t| {
             t.status == Status::Open
-                && !t.blocked_by.is_empty()
-                && t.blocked_by.iter().any(|blocker_id| {
+                && !t.after.is_empty()
+                && t.after.iter().any(|blocker_id| {
                     graph
                         .get_task(blocker_id)
                         .map(|b| !b.status.is_terminal())
@@ -192,7 +192,7 @@ fn print_human_status(status: &CoordinationStatus, max_parallel: Option<usize>) 
                 "  {} - {} (waiting on: {})",
                 task.id,
                 task.title,
-                task.blocked_by.join(", ")
+                task.after.join(", ")
             );
         }
     }
@@ -260,7 +260,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Blocker task");
         let mut blocked = make_task("blocked", "Blocked task");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(status.ready[0].id, "blocker");
         assert_eq!(status.blocked.len(), 1);
         assert_eq!(status.blocked[0].id, "blocked");
-        assert_eq!(status.blocked[0].blocked_by, vec!["blocker"]);
+        assert_eq!(status.blocked[0].after, vec!["blocker"]);
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
         blocker.status = Status::Done;
 
         let mut blocked = make_task("blocked", "Was blocked task");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -378,9 +378,9 @@ mod tests {
         // Chain: t1 -> t2 -> t3
         let t1 = make_task("t1", "Root");
         let mut t2 = make_task("t2", "Middle");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Leaf");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -402,7 +402,7 @@ mod tests {
         let t1 = make_task("t1", "Blocker 1");
         let t2 = make_task("t2", "Blocker 2");
         let mut t3 = make_task("t3", "Needs both");
-        t3.blocked_by = vec!["t1".to_string(), "t2".to_string()];
+        t3.after = vec!["t1".to_string(), "t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -413,7 +413,7 @@ mod tests {
         // t1 and t2 are ready; t3 is blocked
         assert_eq!(status.ready.len(), 2);
         assert_eq!(status.blocked.len(), 1);
-        assert_eq!(status.blocked[0].blocked_by.len(), 2);
+        assert_eq!(status.blocked[0].after.len(), 2);
     }
 
     #[test]
@@ -424,7 +424,7 @@ mod tests {
         t1.status = Status::Done;
         let t2 = make_task("t2", "Open blocker");
         let mut t3 = make_task("t3", "Needs both");
-        t3.blocked_by = vec!["t1".to_string(), "t2".to_string()];
+        t3.after = vec!["t1".to_string(), "t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -467,9 +467,9 @@ mod tests {
         // Create a circular blocking scenario (without actual cycle detection)
         // t1 blocked by nonexistent, t2 blocked by nonexistent
         let mut t1 = make_task("t1", "Blocked 1");
-        t1.blocked_by = vec!["nonexistent1".to_string()];
+        t1.after = vec!["nonexistent1".to_string()];
         let mut t2 = make_task("t2", "Blocked 2");
-        t2.blocked_by = vec!["nonexistent2".to_string()];
+        t2.after = vec!["nonexistent2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -528,12 +528,12 @@ mod tests {
     #[test]
     fn test_blocked_task_summary_from_task() {
         let mut task = make_task("blocked1", "Blocked task");
-        task.blocked_by = vec!["dep1".to_string(), "dep2".to_string()];
+        task.after = vec!["dep1".to_string(), "dep2".to_string()];
 
         let summary = BlockedTaskSummary::from_task(&task);
         assert_eq!(summary.id, "blocked1");
         assert_eq!(summary.title, "Blocked task");
-        assert_eq!(summary.blocked_by, vec!["dep1", "dep2"]);
+        assert_eq!(summary.after, vec!["dep1", "dep2"]);
     }
 
     // --- JSON output format tests ---
@@ -569,7 +569,7 @@ mod tests {
         t2.assigned = Some("agent-2".to_string());
 
         let mut t3 = make_task("t3", "Blocked");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
 
         let mut t4 = make_task("t4", "Done");
         t4.status = Status::Done;
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(parsed["done_count"], 1);
         assert_eq!(parsed["total_count"], 4);
         assert_eq!(parsed["in_progress"][0]["assigned"], "agent-2");
-        assert_eq!(parsed["blocked"][0]["blocked_by"][0], "t1");
+        assert_eq!(parsed["blocked"][0]["after"][0], "t1");
     }
 
     // --- Large graph test ---

@@ -45,7 +45,7 @@ SERVICE MODE (recommended for parallel work)
 
   The coordinator automatically spawns agents on ready tasks. Just add tasks:
 
-  wg add "Do the thing" --blocked-by prerequisite-task
+  wg add "Do the thing" --after prerequisite-task
 
   Monitor with wg agents and wg list. Do NOT manually wg spawn or wg claim —
   the coordinator handles this.
@@ -68,7 +68,7 @@ DISCOVERING & ADDING WORK
   wg list --status open       # Filter by status (open, in-progress, done, etc.)
   wg show <task-id>           # View task details and context
   wg add "Title" -d "Desc"    # Add new task
-  wg add "X" --blocked-by Y   # Add task blocked by another
+  wg add "X" --after Y   # Add task blocked by another
 
 TASK STATE COMMANDS
 ─────────────────────────────────────────
@@ -83,23 +83,22 @@ CONTEXT & ARTIFACTS
   wg artifact <task-id> path  # Record output file/artifact
   wg log <task-id> --list     # View task's progress log
 
-LOOP EDGES (cyclic processes)
+CYCLES (repeating workflows)
 ─────────────────────────────────────────
-  Some workflows repeat. A loops_to edge fires when its task completes,
-  resetting a target task back to open and incrementing loop_iteration.
-  Intermediate tasks in the chain are also re-opened automatically.
+  Some workflows repeat. Workgraph models these as structural cycles —
+  after back-edges with a CycleConfig controlling iteration limits.
 
-  wg add "Revise" --loops-to write --loop-max 3          # loop back to write
-  wg add "Poll" --loops-to poll --loop-max 10 --loop-delay 5m  # self-loop with delay
+  wg add "Write" --after review --max-iterations 3  # cycle header
+  wg add "Review" --after write                     # completes the cycle
+  wg cycles                   # List detected cycles
   wg show <task-id>           # See loop_iteration to know which pass you're on
-  wg loops                    # List all loop edges and their status
 
   IMPORTANT — Signaling convergence:
   When the loop's work is complete and no more iterations are needed:
 
     wg done <task-id> --converged
 
-  This stops the loop. Using plain 'wg done' causes the loop to fire again.
+  This stops the loop/cycle. Using plain 'wg done' causes iteration again.
   Only use plain 'wg done' if you want the next iteration to proceed.
 
 TIPS
@@ -192,12 +191,11 @@ fn json_output() -> serde_json::Value {
                 "abandon": "Give up permanently"
             }
         },
-        "loops": {
-            "description": "Loop edges model repeating workflows. A loops_to edge fires when its task completes, resetting a target back to open and incrementing loop_iteration.",
-            "create": "wg add \"Revise\" --loops-to write --loop-max 3",
-            "inspect": ["wg show <task-id>", "wg loops"],
-            "note": "Agents read loop_iteration from wg show to know which pass they are on",
-            "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a loop when work is complete. Plain 'wg done' causes the loop to fire again."
+        "cycles": {
+            "description": "Structural cycles model repeating workflows via after back-edges with CycleConfig.",
+            "create": "wg add \"Write\" --after review --max-iterations 3",
+            "inspect": ["wg show <task-id>", "wg cycles"],
+            "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a cycle when work is complete. Plain 'wg done' causes the cycle to iterate again."
         },
         "tips": [
             "If the coordinator is running: add tasks with dependencies, it dispatches automatically",
@@ -257,8 +255,8 @@ mod tests {
     }
 
     #[test]
-    fn test_quickstart_text_contains_loop_edges() {
-        assert!(QUICKSTART_TEXT.contains("LOOP EDGES"));
+    fn test_quickstart_text_contains_cycles() {
+        assert!(QUICKSTART_TEXT.contains("CYCLES"));
     }
 
     #[test]
@@ -303,7 +301,7 @@ mod tests {
         assert!(output.get("agency").is_some());
         assert!(output.get("modes").is_some());
         assert!(output.get("commands").is_some());
-        assert!(output.get("loops").is_some());
+        assert!(output.get("cycles").is_some());
         assert!(output.get("tips").is_some());
 
         // Check getting_started is an array
@@ -326,11 +324,11 @@ mod tests {
         assert!(commands.get("work").is_some());
         assert!(commands.get("completion").is_some());
 
-        // Check loops fields
-        let loops = output.get("loops").unwrap();
-        assert!(loops.get("description").is_some());
-        assert!(loops.get("create").is_some());
-        assert!(loops.get("inspect").is_some());
+        // Check cycles fields
+        let cycles = output.get("cycles").unwrap();
+        assert!(cycles.get("description").is_some());
+        assert!(cycles.get("create").is_some());
+        assert!(cycles.get("inspect").is_some());
 
         // Check tips is an array with entries
         let tips = output.get("tips").unwrap().as_array().unwrap();
@@ -355,14 +353,14 @@ mod tests {
 
     #[test]
     fn test_quickstart_converged_prominent() {
-        // The LOOP EDGES section must contain IMPORTANT and --converged prominently
+        // The CYCLES section must contain IMPORTANT and --converged prominently
         assert!(
             QUICKSTART_TEXT.contains("IMPORTANT — Signaling convergence:"),
-            "Loop section should have IMPORTANT heading for convergence"
+            "Cycles section should have IMPORTANT heading for convergence"
         );
         assert!(
             QUICKSTART_TEXT.contains("wg done <task-id> --converged"),
-            "Loop section should show --converged command"
+            "Cycles section should show --converged command"
         );
         // The task state commands should also mention --converged
         assert!(
@@ -374,7 +372,7 @@ mod tests {
     #[test]
     fn test_quickstart_json_convergence_emphasis() {
         let output = json_output();
-        let convergence = output["loops"]["convergence"].as_str().unwrap();
+        let convergence = output["cycles"]["convergence"].as_str().unwrap();
         assert!(
             convergence.contains("IMPORTANT"),
             "JSON convergence note should be emphatic"
@@ -399,7 +397,7 @@ mod tests {
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
             "CONTEXT & ARTIFACTS",
-            "LOOP EDGES",
+            "CYCLES",
             "TIPS",
             "EXECUTORS & MODELS",
         ];

@@ -12,7 +12,7 @@ struct CriticalTask {
     title: String,
     status: Status,
     hours: Option<f64>,
-    blocked_by: Option<String>,
+    after: Option<String>,
 }
 
 /// Slack information for non-critical tasks
@@ -72,7 +72,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         .iter()
         .filter(|t| !cycle_nodes.contains(t.id.as_str()))
         .filter(|t| {
-            t.blocked_by.iter().all(|blocker_id| {
+            t.after.iter().all(|blocker_id| {
                 // Not blocked by any active non-terminal task
                 !active_ids.contains(blocker_id.as_str())
                     || cycle_nodes.contains(blocker_id.as_str())
@@ -112,7 +112,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         .enumerate()
         .filter_map(|(i, task_id)| {
             graph.get_task(task_id).map(|t| {
-                let blocked_by = if i == 0 {
+                let after = if i == 0 {
                     None
                 } else {
                     Some(critical_path[i - 1].clone())
@@ -122,7 +122,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     title: t.title.clone(),
                     status: t.status,
                     hours: t.estimate.as_ref().and_then(|e| e.hours),
-                    blocked_by,
+                    after,
                 }
             })
         })
@@ -245,7 +245,7 @@ fn build_forward_index<'a>(
         }
 
         // For each blocker, add this task to its forward list
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             if active_ids.contains(blocker_id.as_str())
                 && !cycle_nodes.contains(blocker_id.as_str())
             {
@@ -351,7 +351,7 @@ fn find_cycles_dfs(
     path.push(node_id.to_string());
 
     if let Some(task) = graph.get_task(node_id) {
-        for dep_id in &task.blocked_by {
+        for dep_id in &task.after {
             if !active_ids.contains(dep_id.as_str()) {
                 continue;
             }
@@ -396,8 +396,8 @@ mod tests {
                 hours: Some(hours),
                 cost: None,
             }),
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -416,11 +416,11 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         }
     }
 
@@ -469,9 +469,9 @@ mod tests {
         // t1 (8h) -> t2 (16h) -> t3 (4h)
         let t1 = make_task_with_hours("t1", "Task 1", 8.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task_with_hours("t3", "Task 3", 4.0);
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -501,11 +501,11 @@ mod tests {
         // Longest: t1 -> t2 -> t4 = 28h
         let t1 = make_task_with_hours("t1", "Task 1", 8.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         let mut t4 = make_task_with_hours("t4", "Task 4", 4.0);
-        t4.blocked_by = vec!["t2".to_string(), "t3".to_string()];
+        t4.after = vec!["t2".to_string(), "t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -534,7 +534,7 @@ mod tests {
         let mut t1 = make_task_with_hours("t1", "Task 1", 8.0);
         t1.status = Status::Done;
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -558,9 +558,9 @@ mod tests {
 
         // t1 -> t2 -> t1 (cycle)
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -577,7 +577,7 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -602,9 +602,9 @@ mod tests {
         // t1 -> t2, t1 -> t3
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -628,7 +628,7 @@ mod tests {
         let t1 = make_task_with_hours("t1", "Task 1", f64::NAN);
         let t2 = make_task_with_hours("t2", "Task 2", 4.0);
         let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
-        t3.blocked_by = vec!["t1".to_string(), "t2".to_string()];
+        t3.after = vec!["t1".to_string(), "t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -659,7 +659,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task_with_hours("t1", "Task 1", 8.0);
-        t1.blocked_by = vec!["ghost".to_string()]; // orphan reference
+        t1.after = vec!["ghost".to_string()]; // orphan reference
 
         graph.add_node(Node::Task(t1));
 
@@ -683,7 +683,7 @@ mod tests {
 
         let t1 = make_task_with_hours("t1", "Task 1", 10.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", -5.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));

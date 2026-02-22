@@ -205,7 +205,7 @@ pub fn run(
     let task_ids: std::collections::HashSet<_> = all_tasks.iter().map(|(t, _)| &t.id).collect();
 
     for (task, _) in &all_tasks {
-        for blocked in &task.blocked_by {
+        for blocked in &task.after {
             // Only draw edge if both tasks are in our set
             if task_ids.contains(blocked) {
                 println!("  \"{}\" -> \"{}\" [label=\"blocks\"];", blocked, task.id);
@@ -395,7 +395,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("t1", "First");
         let mut t2 = make_task("t2", "Second");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         setup_graph(&dir, &graph);

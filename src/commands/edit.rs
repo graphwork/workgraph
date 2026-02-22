@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::graph::{LoopEdge, parse_delay};
+use workgraph::graph::{CycleConfig, parse_delay};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -14,19 +14,16 @@ pub fn run(
     task_id: &str,
     title: Option<&str>,
     description: Option<&str>,
-    add_blocked_by: &[String],
-    remove_blocked_by: &[String],
+    add_after: &[String],
+    remove_after: &[String],
     add_tag: &[String],
     remove_tag: &[String],
     model: Option<&str>,
     add_skill: &[String],
     remove_skill: &[String],
-    add_loops_to: Option<&str>,
-    loop_max: Option<u32>,
-    loop_guard: Option<&str>,
-    loop_delay: Option<&str>,
-    remove_loops_to: Option<&str>,
-    loop_iteration: Option<u32>,
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
     visibility: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
@@ -42,17 +39,10 @@ pub fn run(
     graph.get_task_or_err(task_id)?;
 
     // Validate self-blocking
-    for dep in add_blocked_by {
+    for dep in add_after {
         if dep == task_id {
             anyhow::bail!("Task '{}' cannot block itself", task_id);
         }
-    }
-
-    // Validate self-loop
-    if let Some(target) = add_loops_to
-        && target == task_id
-    {
-        anyhow::bail!("Task '{}' cannot loop to itself", task_id);
     }
 
     let mut changed = false;
@@ -80,22 +70,22 @@ pub fn run(
             changed = true;
         }
 
-        // Add blocked_by dependencies
-        for dep in add_blocked_by {
-            if !task.blocked_by.contains(dep) {
-                task.blocked_by.push(dep.clone());
-                println!("Added blocked_by: {}", dep);
+        // Add after dependencies
+        for dep in add_after {
+            if !task.after.contains(dep) {
+                task.after.push(dep.clone());
+                println!("Added after: {}", dep);
                 changed = true;
             } else {
                 println!("Already blocked by: {}", dep);
             }
         }
 
-        // Remove blocked_by dependencies
-        for dep in remove_blocked_by {
-            if let Some(pos) = task.blocked_by.iter().position(|x| x == dep) {
-                task.blocked_by.remove(pos);
-                println!("Removed blocked_by: {}", dep);
+        // Remove after dependencies
+        for dep in remove_after {
+            if let Some(pos) = task.after.iter().position(|x| x == dep) {
+                task.after.remove(pos);
+                println!("Removed after: {}", dep);
                 changed = true;
             } else {
                 println!("Not blocked by: {}", dep);
@@ -153,60 +143,61 @@ pub fn run(
             }
         }
 
-        // Add loops_to edge
-        if let Some(target) = add_loops_to {
-            let max_iterations = loop_max.ok_or_else(|| {
-                anyhow::anyhow!("--loop-max is required when using --add-loops-to")
-            })?;
-            let guard = match loop_guard {
+        // Update cycle config
+        if let Some(max_iter) = max_iterations {
+            let guard = match cycle_guard {
                 Some(expr) => Some(crate::commands::add::parse_guard_expr(expr)?),
-                None => None,
+                None => task.cycle_config.as_ref().and_then(|c| c.guard.clone()),
             };
-            let delay = match loop_delay {
+            let delay = match cycle_delay {
                 Some(d) => {
                     parse_delay(d).ok_or_else(|| {
-                        anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+                        anyhow::anyhow!(
+                            "Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d",
+                            d
+                        )
                     })?;
                     Some(d.to_string())
                 }
-                None => None,
+                None => task.cycle_config.as_ref().and_then(|c| c.delay.clone()),
             };
-            // Check for duplicate target
-            if task.loops_to.iter().any(|e| e.target == target) {
-                println!("Already has loops_to edge targeting: {}", target);
-            } else {
-                task.loops_to.push(LoopEdge {
-                    target: target.to_string(),
-                    guard,
-                    max_iterations,
-                    delay,
-                });
-                println!(
-                    "Added loops_to: {} (max_iterations: {})",
-                    target, max_iterations
-                );
-                changed = true;
-            }
-        } else if loop_max.is_some() || loop_guard.is_some() || loop_delay.is_some() {
-            anyhow::bail!("--loop-max, --loop-guard, and --loop-delay require --add-loops-to");
-        }
-
-        // Remove loops_to edge
-        if let Some(target) = remove_loops_to {
-            if let Some(pos) = task.loops_to.iter().position(|e| e.target == target) {
-                task.loops_to.remove(pos);
-                println!("Removed loops_to: {}", target);
-                changed = true;
-            } else {
-                println!("No loops_to edge targeting: {}", target);
-            }
-        }
-
-        // Set loop_iteration directly
-        if let Some(iter) = loop_iteration {
-            task.loop_iteration = iter;
-            println!("Set loop_iteration: {}", iter);
+            task.cycle_config = Some(CycleConfig {
+                max_iterations: max_iter,
+                guard,
+                delay,
+            });
+            println!("Set cycle_config: max_iterations={}", max_iter);
             changed = true;
+        } else {
+            // Allow updating guard/delay on existing cycle config
+            if let Some(expr) = cycle_guard {
+                if let Some(ref mut config) = task.cycle_config {
+                    config.guard = Some(crate::commands::add::parse_guard_expr(expr)?);
+                    println!("Updated cycle guard");
+                    changed = true;
+                } else {
+                    anyhow::bail!(
+                        "Cannot set --cycle-guard without --max-iterations: task has no cycle_config"
+                    );
+                }
+            }
+            if let Some(d) = cycle_delay {
+                if let Some(ref mut config) = task.cycle_config {
+                    parse_delay(d).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d",
+                            d
+                        )
+                    })?;
+                    config.delay = Some(d.to_string());
+                    println!("Updated cycle delay: {}", d);
+                    changed = true;
+                } else {
+                    anyhow::bail!(
+                        "Cannot set --cycle-delay without --max-iterations: task has no cycle_config"
+                    );
+                }
+            }
         }
 
         // Update visibility
@@ -229,16 +220,16 @@ pub fn run(
 
     // Maintain bidirectional consistency: update `blocks` on referenced tasks
     let task_id_owned = task_id.to_string();
-    for dep in add_blocked_by {
+    for dep in add_after {
         if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.blocks.contains(&task_id_owned)
+            && !blocker.before.contains(&task_id_owned)
         {
-            blocker.blocks.push(task_id_owned.clone());
+            blocker.before.push(task_id_owned.clone());
         }
     }
-    for dep in remove_blocked_by {
+    for dep in remove_after {
         if let Some(blocker) = graph.get_task_mut(dep) {
-            blocker.blocks.retain(|b| b != &task_id_owned);
+            blocker.before.retain(|b| b != &task_id_owned);
         }
     }
 
@@ -300,7 +291,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         )?;
 
@@ -332,7 +322,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         )?;
 
@@ -351,7 +340,6 @@ mod tests {
             &[],
             None,
             Some("sonnet"),
-            None,
             None,
             None,
             None,
@@ -379,9 +367,6 @@ mod tests {
             None,
             &[],
             &[],
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -416,9 +401,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -429,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_blocked_by() {
+    fn test_add_after() {
         let temp_dir = TempDir::new().unwrap();
         create_test_graph(temp_dir.path()).unwrap();
 
@@ -449,21 +431,18 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
         let path = graph_path(temp_dir.path());
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("test-task").unwrap();
-        assert!(task.blocked_by.contains(&"dep2".to_string()));
-        assert!(task.blocked_by.contains(&"dep1".to_string()));
+        assert!(task.after.contains(&"dep2".to_string()));
+        assert!(task.after.contains(&"dep1".to_string()));
     }
 
     #[test]
-    fn test_remove_blocked_by() {
+    fn test_remove_after() {
         let temp_dir = TempDir::new().unwrap();
         create_test_graph(temp_dir.path()).unwrap();
 
@@ -483,16 +462,13 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
         let path = graph_path(temp_dir.path());
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("test-task").unwrap();
-        assert!(!task.blocked_by.contains(&"dep1".to_string()));
+        assert!(!task.after.contains(&"dep1".to_string()));
     }
 
     #[test]
@@ -512,9 +488,6 @@ mod tests {
             None,
             &[],
             &[],
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -550,9 +523,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -583,9 +553,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -612,9 +579,6 @@ mod tests {
             None,
             &["skill2".to_string()],
             &[],
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -650,9 +614,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -683,9 +644,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -708,9 +666,6 @@ mod tests {
             None,
             &[],
             &[],
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -740,9 +695,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_err());
         assert!(
@@ -754,45 +706,11 @@ mod tests {
     }
 
     #[test]
-    fn test_self_loop_rejected() {
-        let temp_dir = TempDir::new().unwrap();
-        create_test_graph(temp_dir.path()).unwrap();
-
-        let result = run(
-            temp_dir.path(),
-            "test-task",
-            None,
-            None,
-            &[],
-            &[],
-            &[],
-            &[],
-            None,
-            &[],
-            &[],
-            Some("test-task"),
-            Some(3),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("cannot loop to itself")
-        );
-    }
-
-    #[test]
-    fn test_add_blocked_by_updates_blocker_blocks() {
+    fn test_add_after_updates_blocker_blocks() {
         let temp_dir = TempDir::new().unwrap();
         create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
 
-        // Add a new blocked_by edge
+        // Add a new after edge
         let result = run(
             temp_dir.path(),
             "test-task",
@@ -809,9 +727,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -821,13 +736,13 @@ mod tests {
         // Verify bidirectional consistency
         let blocker = graph.get_task("blocker-task").unwrap();
         assert!(
-            blocker.blocks.contains(&"test-task".to_string()),
-            "blocker-task.blocks should contain test-task"
+            blocker.before.contains(&"test-task".to_string()),
+            "blocker-task.before should contain test-task"
         );
     }
 
     #[test]
-    fn test_remove_blocked_by_updates_blocker_blocks() {
+    fn test_remove_after_updates_blocker_blocks() {
         let temp_dir = TempDir::new().unwrap();
         create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
 
@@ -848,13 +763,10 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         )
         .unwrap();
 
-        // Remove the blocked_by edge
+        // Remove the after edge
         let result = run(
             temp_dir.path(),
             "test-task",
@@ -871,9 +783,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
         );
         assert!(result.is_ok());
 
@@ -883,8 +792,8 @@ mod tests {
         // Verify bidirectional consistency
         let blocker = graph.get_task("blocker-task").unwrap();
         assert!(
-            !blocker.blocks.contains(&"test-task".to_string()),
-            "blocker-task.blocks should NOT contain test-task after removal"
+            !blocker.before.contains(&"test-task".to_string()),
+            "blocker-task.before should NOT contain test-task after removal"
         );
     }
 }

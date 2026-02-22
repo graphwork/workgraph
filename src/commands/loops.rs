@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 use workgraph::check::check_cycles;
-use workgraph::graph::{LoopGuard, WorkGraph};
+use workgraph::graph::WorkGraph;
 
 /// Classification of a cycle
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,61 +86,10 @@ fn format_cycle_path(cycle: &[String]) -> String {
     path
 }
 
-/// Information about a loop edge for display
-#[derive(Debug, Clone)]
-pub struct LoopEdgeInfo {
-    pub source: String,
-    pub target: String,
-    pub guard: String,
-    pub max_iterations: u32,
-    pub current_iteration: u32,
-    pub active: bool,
-    pub delay: Option<String>,
-}
-
-/// Format a LoopGuard as a human-readable string
-fn format_guard(guard: &Option<LoopGuard>) -> String {
-    match guard {
-        None => "none (always)".to_string(),
-        Some(LoopGuard::Always) => "always".to_string(),
-        Some(LoopGuard::IterationLessThan(n)) => format!("iteration < {}", n),
-        Some(LoopGuard::TaskStatus { task, status }) => {
-            format!("task:{}={:?}", task, status)
-        }
-    }
-}
-
-/// Collect all loop edge info from the graph
-fn collect_loop_edges(graph: &WorkGraph) -> Vec<LoopEdgeInfo> {
-    let mut edges = Vec::new();
-
-    for task in graph.tasks() {
-        for edge in &task.loops_to {
-            let current_iteration = graph
-                .get_task(&edge.target)
-                .map(|t| t.loop_iteration)
-                .unwrap_or(0);
-            let active = current_iteration < edge.max_iterations;
-
-            edges.push(LoopEdgeInfo {
-                source: task.id.clone(),
-                target: edge.target.clone(),
-                guard: format_guard(&edge.guard),
-                max_iterations: edge.max_iterations,
-                current_iteration,
-                active,
-                delay: edge.delay.clone(),
-            });
-        }
-    }
-
-    edges
-}
-
 pub fn run(dir: &Path, json: bool) -> Result<()> {
+    eprintln!("Note: `wg loops` is deprecated. Use `wg cycles` instead.");
     let (graph, _path) = super::load_workgraph(dir)?;
     let cycles = check_cycles(&graph);
-    let loop_edges = collect_loop_edges(&graph);
 
     if json {
         // Classify cycles
@@ -166,68 +115,19 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
 
-        let loop_edges_output: Vec<_> = loop_edges
-            .iter()
-            .map(|e| {
-                let mut obj = serde_json::json!({
-                    "source": e.source,
-                    "target": e.target,
-                    "guard": e.guard,
-                    "max_iterations": e.max_iterations,
-                    "current_iteration": e.current_iteration,
-                    "status": if e.active { "active" } else { "exhausted" },
-                });
-                if let Some(ref delay) = e.delay {
-                    obj["delay"] = serde_json::json!(delay);
-                }
-                obj
-            })
-            .collect();
-
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "cycles_detected": classified.len(),
                 "cycles": cycles_output,
-                "loop_edges": loop_edges_output,
             }))?
         );
         return Ok(());
     }
 
     // Human-readable output
-    // Section 1: Loop edges
-    if loop_edges.is_empty() {
-        println!("No loop edges defined.");
-    } else {
-        println!("Loop edges: {}\n", loop_edges.len());
-        for edge in &loop_edges {
-            let status = if edge.active { "ACTIVE" } else { "EXHAUSTED" };
-            println!(
-                "  {} --[loops_to]--> {}  [{}]",
-                edge.source, edge.target, status
-            );
-            println!(
-                "    iterations: {}/{}  guard: {}",
-                edge.current_iteration, edge.max_iterations, edge.guard
-            );
-            if let Some(ref delay) = edge.delay {
-                println!("    delay: {}", delay);
-            }
-            println!();
-        }
-
-        let active_count = loop_edges.iter().filter(|e| e.active).count();
-        let exhausted_count = loop_edges.len() - active_count;
-        println!(
-            "Loop summary: {} active, {} exhausted\n",
-            active_count, exhausted_count
-        );
-    }
-
-    // Section 2: blocked_by cycles (existing behavior)
     if cycles.is_empty() {
-        println!("No blocked_by cycles detected.");
+        println!("No after cycles detected.");
         return Ok(());
     }
 
@@ -286,7 +186,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Status, Task};
+    use workgraph::graph::{Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -300,35 +200,8 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
-            description: None,
-            status: Status::Open,
-            assigned: None,
-            estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
-            requires: vec![],
             tags: tags.into_iter().map(String::from).collect(),
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: None,
-            not_before: None,
-            created_at: None,
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: None,
-            verify: None,
-            agent: None,
-            loops_to: vec![],
-            loop_iteration: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
+            ..Task::default()
         }
     }
 

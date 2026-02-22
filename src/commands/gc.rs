@@ -21,12 +21,12 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool) -> Result<()> {
     let all_tasks: Vec<_> = graph.tasks().cloned().collect();
 
     // Build a set of task IDs that have non-terminal dependents.
-    // A task should NOT be gc'd if any task that lists it in blocked_by is non-terminal.
+    // A task should NOT be gc'd if any task that lists it in after is non-terminal.
     let mut has_open_dependent: HashSet<String> = HashSet::new();
     for task in &all_tasks {
         if !task.status.is_terminal() {
             // This task is non-terminal — all its blockers are "needed"
-            for blocker_id in &task.blocked_by {
+            for blocker_id in &task.after {
                 has_open_dependent.insert(blocker_id.clone());
             }
         }
@@ -155,13 +155,13 @@ mod tests {
         id: &str,
         title: &str,
         status: Status,
-        blocked_by: Vec<&str>,
+        after: Vec<&str>,
     ) -> workgraph::graph::Task {
         workgraph::graph::Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
-            blocked_by: blocked_by.into_iter().map(String::from).collect(),
+            after: after.into_iter().map(String::from).collect(),
             ..workgraph::graph::Task::default()
         }
     }

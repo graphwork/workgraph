@@ -219,7 +219,7 @@ fn test_check_detects_orphan_blockers() {
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut task = make_task("t1", "Broken dep", Status::Open);
-    task.blocked_by.push("nonexistent".to_string());
+    task.after.push("nonexistent".to_string());
 
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -246,7 +246,7 @@ fn test_check_detects_orphan_blockers() {
 fn test_ready_shows_unblocked_tasks() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked", Status::Open);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), blocked],
@@ -261,7 +261,7 @@ fn test_ready_shows_unblocked_tasks() {
 fn test_ready_after_dep_done() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked", Status::Open);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Done), blocked],
@@ -375,7 +375,7 @@ fn test_done_via_cli() {
 fn test_done_blocked_task_fails() {
     let tmp = TempDir::new().unwrap();
     let mut task = make_task("d2", "Blocked done", Status::InProgress);
-    task.blocked_by.push("blocker".to_string());
+    task.after.push("blocker".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("blocker", "Blocker", Status::Open), task],
@@ -451,14 +451,14 @@ fn test_add_with_dependencies() {
             "Dependent task",
             "--id",
             "child1",
-            "--blocked-by",
+            "--after",
             "dep1",
         ],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("child1").unwrap();
-    assert!(task.blocked_by.contains(&"dep1".to_string()));
+    assert!(task.after.contains(&"dep1".to_string()));
 }
 
 // ===========================================================================
@@ -493,7 +493,7 @@ fn test_archive_removes_done_tasks() {
 fn test_analyze_runs_on_graph() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked", Status::Open);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![
@@ -594,7 +594,7 @@ fn test_abandon_task() {
 fn test_why_blocked_shows_blockers() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked task", Status::Blocked);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Blocker", Status::Open), blocked],
@@ -612,7 +612,7 @@ fn test_why_blocked_shows_blockers() {
 fn test_blocked_shows_blockers_of_task() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Blocked child", Status::Open);
-    child.blocked_by.push("parent".to_string());
+    child.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), child],
@@ -725,7 +725,7 @@ fn test_show_task_with_all_fields_populated() {
     task.assigned = Some("agent-1".to_string());
     task.tags = vec!["urgent".to_string(), "backend".to_string()];
     task.skills = vec!["rust".to_string()];
-    task.blocked_by = vec!["t0".to_string()];
+    task.after = vec!["t0".to_string()];
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("t0", "Prerequisite", Status::Done), task],
@@ -784,7 +784,7 @@ fn test_check_clean_graph_no_errors() {
 fn test_ready_excludes_blocked_tasks() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("blocked", "Blocked task", Status::Open);
-    blocked.blocked_by.push("blocker".to_string());
+    blocked.after.push("blocker".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("blocker", "Blocker", Status::Open), blocked],
@@ -838,7 +838,7 @@ fn parse_json(output: &str, cmd: &str) -> serde_json::Value {
 fn test_list_json_fields() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("t1", "Open task", Status::Open);
-    t1.blocked_by = vec!["t2".to_string()];
+    t1.after = vec!["t2".to_string()];
     let wg_dir = setup_workgraph(
         &tmp,
         vec![
@@ -853,14 +853,14 @@ fn test_list_json_fields() {
     let arr = parsed.as_array().expect("list --json should be an array");
     assert_eq!(arr.len(), 3);
 
-    // Each entry must have id, title, status, blocked_by
+    // Each entry must have id, title, status, after
     for item in arr {
         assert!(item["id"].is_string(), "id should be a string");
         assert!(item["title"].is_string(), "title should be a string");
         assert!(item["status"].is_string(), "status should be a string");
         assert!(
-            item["blocked_by"].is_array(),
-            "blocked_by should be an array"
+            item["after"].is_array(),
+            "after should be an array"
         );
     }
 
@@ -868,7 +868,7 @@ fn test_list_json_fields() {
     let t1_item = arr.iter().find(|i| i["id"] == "t1").expect("t1 in list");
     assert_eq!(t1_item["title"], "Open task");
     assert_eq!(t1_item["status"], "open");
-    assert_eq!(t1_item["blocked_by"][0], "t2");
+    assert_eq!(t1_item["after"][0], "t2");
 }
 
 #[test]
@@ -912,7 +912,7 @@ fn test_show_json_fields() {
     task.assigned = Some("agent-42".to_string());
     task.tags = vec!["backend".to_string(), "urgent".to_string()];
     task.skills = vec!["rust".to_string()];
-    task.blocked_by = vec!["dep1".to_string()];
+    task.after = vec!["dep1".to_string()];
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("dep1", "Dependency", Status::Done), task],
@@ -937,10 +937,10 @@ fn test_show_json_fields() {
     let skills = parsed["skills"].as_array().unwrap();
     assert!(skills.contains(&serde_json::json!("rust")));
 
-    // blocked_by should be objects with id/title/status
-    let blocked_by = parsed["blocked_by"].as_array().unwrap();
-    assert_eq!(blocked_by.len(), 1);
-    assert_eq!(blocked_by[0]["id"], "dep1");
+    // after should be objects with id/title/status
+    let after = parsed["after"].as_array().unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0]["id"], "dep1");
 }
 
 #[test]
@@ -965,7 +965,7 @@ fn test_show_json_minimal_task() {
 fn test_ready_json_fields() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked", Status::Open);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), blocked],
@@ -1017,8 +1017,8 @@ fn test_ready_json_with_assigned() {
 fn test_blocked_json_fields() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Blocked child", Status::Open);
-    child.blocked_by.push("b1".to_string());
-    child.blocked_by.push("b2".to_string());
+    child.after.push("b1".to_string());
+    child.after.push("b2".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![
@@ -1060,8 +1060,8 @@ fn test_blocked_json_no_blockers() {
 fn test_blocked_json_excludes_done_blockers() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Blocked", Status::Open);
-    child.blocked_by.push("done-dep".to_string());
-    child.blocked_by.push("open-dep".to_string());
+    child.after.push("done-dep".to_string());
+    child.after.push("open-dep".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![
@@ -1084,7 +1084,7 @@ fn test_blocked_json_excludes_done_blockers() {
 fn test_why_blocked_json_fields() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Blocked child", Status::Blocked);
-    child.blocked_by.push("parent".to_string());
+    child.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Blocker", Status::Open), child],
@@ -1108,7 +1108,7 @@ fn test_context_json_fields() {
     let mut dep = make_task("dep", "Dependency", Status::Done);
     dep.artifacts = vec!["output.txt".to_string()];
     let mut child = make_task("child", "Dependent", Status::Open);
-    child.blocked_by.push("dep".to_string());
+    child.after.push("dep".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![dep, child]);
 
     let output = wg_ok(&wg_dir, &["context", "child", "--json"]);
@@ -1148,12 +1148,13 @@ fn test_loops_json_clean_graph() {
         ],
     );
 
+    // `wg loops` now redirects to `wg cycles`
     let output = wg_ok(&wg_dir, &["loops", "--json"]);
     let parsed = parse_json(&output, "loops");
     assert!(parsed.is_object());
-    assert_eq!(parsed["cycles_detected"], 0);
+    assert_eq!(parsed["cycle_count"], 0);
     assert!(parsed["cycles"].as_array().unwrap().is_empty());
-    assert!(parsed["loop_edges"].as_array().unwrap().is_empty());
+    assert!(parsed["back_edges"].as_array().unwrap().is_empty());
 }
 
 // ── wg check --json ─────────────────────────────────────────────────
@@ -1182,7 +1183,7 @@ fn test_check_json_with_orphan_refs() {
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut task = make_task("t1", "Broken", Status::Open);
-    task.blocked_by.push("nonexistent".to_string());
+    task.after.push("nonexistent".to_string());
 
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -1253,7 +1254,7 @@ fn test_status_json_fields() {
 fn test_analyze_json_output() {
     let tmp = TempDir::new().unwrap();
     let mut blocked = make_task("child", "Blocked", Status::Open);
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), blocked],
@@ -1270,7 +1271,7 @@ fn test_analyze_json_output() {
 fn test_structure_json_output() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Child", Status::Open);
-    child.blocked_by.push("parent".to_string());
+    child.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), child],
@@ -1287,9 +1288,9 @@ fn test_structure_json_output() {
 fn test_bottlenecks_json_output() {
     let tmp = TempDir::new().unwrap();
     let mut c1 = make_task("c1", "Child 1", Status::Open);
-    c1.blocked_by.push("hub".to_string());
+    c1.after.push("hub".to_string());
     let mut c2 = make_task("c2", "Child 2", Status::Open);
-    c2.blocked_by.push("hub".to_string());
+    c2.after.push("hub".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("hub", "Hub task", Status::Open), c1, c2],
@@ -1306,7 +1307,7 @@ fn test_bottlenecks_json_output() {
 fn test_critical_path_json_output() {
     let tmp = TempDir::new().unwrap();
     let mut child = make_task("child", "Child", Status::Open);
-    child.blocked_by.push("parent".to_string());
+    child.after.push("parent".to_string());
     let wg_dir = setup_workgraph(
         &tmp,
         vec![make_task("parent", "Parent", Status::Open), child],

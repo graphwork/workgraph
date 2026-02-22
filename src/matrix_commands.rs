@@ -553,7 +553,7 @@ pub fn execute_ready(workgraph_dir: &Path) -> String {
         .tasks()
         .filter(|t| {
             t.status == Status::Open
-                && t.blocked_by.iter().all(|dep| {
+                && t.after.iter().all(|dep| {
                     graph
                         .get_task(dep)
                         .map(|d| d.status.is_terminal())

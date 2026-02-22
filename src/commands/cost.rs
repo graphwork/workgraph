@@ -118,7 +118,7 @@ mod tests {
         });
 
         let mut main = make_task("main", "Main task");
-        main.blocked_by = vec!["dep1".to_string(), "dep2".to_string()];
+        main.after = vec!["dep1".to_string(), "dep2".to_string()];
         main.estimate = Some(Estimate {
             hours: None,
             cost: Some(500.0),
@@ -140,14 +140,14 @@ mod tests {
         });
 
         let mut mid = make_task("mid", "Middle");
-        mid.blocked_by = vec!["leaf".to_string()];
+        mid.after = vec!["leaf".to_string()];
         mid.estimate = Some(Estimate {
             hours: None,
             cost: Some(200.0),
         });
 
         let mut root = make_task("root", "Root");
-        root.blocked_by = vec!["mid".to_string()];
+        root.after = vec!["mid".to_string()];
         root.estimate = Some(Estimate {
             hours: None,
             cost: Some(300.0),
@@ -189,7 +189,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dep = make_task("dep", "Dep with no estimate");
         let mut main = make_task("main", "Main");
-        main.blocked_by = vec!["dep".to_string()];
+        main.after = vec!["dep".to_string()];
         main.estimate = Some(Estimate {
             hours: None,
             cost: Some(500.0),
@@ -222,21 +222,21 @@ mod tests {
         });
 
         let mut mid1 = make_task("mid1", "Mid 1");
-        mid1.blocked_by = vec!["leaf".to_string()];
+        mid1.after = vec!["leaf".to_string()];
         mid1.estimate = Some(Estimate {
             hours: None,
             cost: Some(200.0),
         });
 
         let mut mid2 = make_task("mid2", "Mid 2");
-        mid2.blocked_by = vec!["leaf".to_string()];
+        mid2.after = vec!["leaf".to_string()];
         mid2.estimate = Some(Estimate {
             hours: None,
             cost: Some(300.0),
         });
 
         let mut root = make_task("root", "Root");
-        root.blocked_by = vec!["mid1".to_string(), "mid2".to_string()];
+        root.after = vec!["mid1".to_string(), "mid2".to_string()];
         root.estimate = Some(Estimate {
             hours: None,
             cost: Some(400.0),
@@ -253,14 +253,14 @@ mod tests {
     fn test_cost_handles_cycle() {
         let dir = tempdir().unwrap();
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
         t1.estimate = Some(Estimate {
             hours: None,
             cost: Some(100.0),
         });
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.estimate = Some(Estimate {
             hours: None,
             cost: Some(200.0),

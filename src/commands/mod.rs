@@ -21,6 +21,7 @@ pub mod check;
 pub mod claim;
 pub mod config_cmd;
 pub mod context;
+pub mod cycles;
 pub mod coordinate;
 pub mod cost;
 pub mod critical_path;
@@ -42,6 +43,7 @@ pub mod list;
 pub mod log;
 pub mod loops;
 pub mod match_cmd;
+pub mod migrate_loops;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
 pub mod motivation;
@@ -203,7 +205,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Test task", Some("prov-add"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         let entries = ops_with_type(dir, "add_task");
@@ -217,12 +219,12 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Edit target", Some("prov-edit"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::edit::run(
             dir, "prov-edit", Some("New Title"), None,
-            &[], &[], &[], &[], None, &[], &[], None, None, None, None, None, None, None,
+            &[], &[], &[], &[], None, &[], &[], None, None, None, None,
         ).unwrap();
 
         let entries = ops_with_type(dir, "edit");
@@ -239,7 +241,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Claim target", Some("prov-claim"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::claim::claim(dir, "prov-claim", Some("agent-1")).unwrap();
@@ -260,7 +262,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Done target", Some("prov-done"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::done::run(dir, "prov-done", false).unwrap();
@@ -275,7 +277,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Fail target", Some("prov-fail"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::fail::run(dir, "prov-fail", Some("timeout")).unwrap();
@@ -290,7 +292,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Abandon target", Some("prov-abandon"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::abandon::run(dir, "prov-abandon", Some("no longer needed")).unwrap();
@@ -305,7 +307,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Retry target", Some("prov-retry"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::fail::run(dir, "prov-retry", Some("compile error")).unwrap();
@@ -323,7 +325,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Pause target", Some("prov-pause"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::pause::run(dir, "prov-pause").unwrap();
@@ -343,7 +345,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Artifact target", Some("prov-art"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
 
         super::artifact::run_add(dir, "prov-art", "output.txt").unwrap();
@@ -363,7 +365,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "Archive target", Some("prov-archive"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
         super::done::run(dir, "prov-archive", false).unwrap();
 
@@ -380,7 +382,7 @@ mod provenance_coverage_tests {
         let dir = tmp.path();
         super::add::run(
             dir, "GC target", Some("prov-gc"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
         super::abandon::run(dir, "prov-gc", Some("giving up")).unwrap();
@@ -400,12 +402,12 @@ mod provenance_coverage_tests {
         // add
         super::add::run(
             dir, "Lifecycle task", Some("lifecycle"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, None, "internal",
+            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal",
         ).unwrap();
         // edit
         super::edit::run(
             dir, "lifecycle", Some("Renamed"), None,
-            &[], &[], &["tag1".to_string()], &[], None, &[], &[], None, None, None, None, None, None, None,
+            &[], &[], &["tag1".to_string()], &[], None, &[], &[], None, None, None, None,
         ).unwrap();
         // pause
         super::pause::run(dir, "lifecycle").unwrap();

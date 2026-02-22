@@ -100,36 +100,36 @@ open → [claim] → in-progress → [done] → done
 
 **Note:** `wg submit`, `wg approve`, and `wg reject` are deprecated. Always use `wg done`.
 
-## Loop edges (cyclic processes)
+## Cycles (repeating workflows)
 
-Some workflows repeat. A `loops_to` edge on a task fires when that task completes, resetting a target task back to `open` and incrementing its `loop_iteration`. Intermediate tasks in the dependency chain are also re-opened automatically.
-
-```bash
-# Create: revise loops back to write, max 3 iterations
-wg add "Revise" --blocked-by review --loops-to write --loop-max 3
-
-# Self-loops, delays, and guards
-wg add "Poll" --loops-to poll --loop-max 10 --loop-delay 5m
-wg add "Retry" --loops-to retry --loop-max 5 --loop-guard "task:conn-check=done"
-```
-
-As a spawned agent on a looping task, check `wg show <task-id>` for `loop_iteration` to know which pass you're on. Review previous logs and artifacts to build on prior work. If the work has converged and no more iterations are needed, use `wg done <task-id> --converged` to signal early termination — the loop edge will not fire again.
+Some workflows repeat. Workgraph models these as **structural cycles** — `blocked_by` back-edges with a `CycleConfig` that controls iteration limits. When a cycle iteration completes, the cycle header task is reset to `open` with its `loop_iteration` incremented, and intermediate tasks are re-opened automatically.
 
 ```bash
-wg loops                    # List all loop edges and status
-wg show <task-id>           # See loop_iteration and loop edges
+# Create a write/review cycle, max 3 iterations
+wg add "Write" --id write --blocked-by review --max-iterations 3
+wg add "Review" --blocked-by write --id review
+
+# Inspect cycles
+wg cycles
 ```
 
-### Pausing and resuming loops
+As a spawned agent on a task inside a cycle, check `wg show <task-id>` for `loop_iteration` to know which pass you're on. Review previous logs and artifacts to build on prior work. If the work has converged and no more iterations are needed, use `wg done <task-id> --converged` to signal early termination — the cycle will not iterate again.
 
-To temporarily stop a looping task without losing its iteration count or loop edges:
+```bash
+wg cycles                   # List detected cycles and status
+wg show <task-id>           # See loop_iteration and cycle membership
+```
+
+### Pausing and resuming cycles
+
+To temporarily stop a cycling task without losing its iteration count:
 
 ```bash
 wg pause <task-id>          # Coordinator skips this task until resumed
 wg resume <task-id>         # Task becomes dispatchable again
 ```
 
-Paused tasks keep their status, loop edges, and iteration count intact. `wg show` displays "(PAUSED)" and `wg list` shows "[PAUSED]".
+Paused tasks keep their status and iteration count intact. `wg show` displays "(PAUSED)" and `wg list` shows "[PAUSED]".
 
 To pause/resume the entire coordinator (all dispatching stops, running agents continue):
 
@@ -151,13 +151,10 @@ wg service resume           # Resume dispatching
 | `wg add "X" --model haiku` | Task with preferred model |
 | `wg add "X" --verify "Tests pass"` | Task requiring review before completion |
 | `wg add "X" --tag important --hours 2` | Tags and estimates |
-| `wg add "X" --loops-to Y --loop-max 3` | Loop back to task Y on completion (max 3 iterations) |
-| `wg add "X" --loops-to Y --loop-max 5 --loop-delay 5m` | Loop with delay between iterations |
-| `wg add "X" --loops-to Y --loop-max 3 --loop-guard "task:Z=done"` | Loop with guard condition |
+| `wg add "X" --blocked-by Y --max-iterations 3` | Create cycle header with max 3 iterations |
 | `wg edit <id> --title "New" --description "New"` | Edit task fields |
 | `wg edit <id> --add-blocked-by X --remove-blocked-by Y` | Modify dependencies |
-| `wg edit <id> --add-loops-to X --loop-max 3` | Add loop edge |
-| `wg edit <id> --remove-loops-to X` | Remove loop edge |
+| `wg edit <id> --add-blocked-by X --max-iterations 3` | Add cycle back-edge |
 | `wg edit <id> --add-tag T --remove-tag T` | Modify tags |
 | `wg edit <id> --add-skill S --remove-skill S` | Modify skills |
 | `wg edit <id> --model sonnet` | Change preferred model |
@@ -214,7 +211,7 @@ wg service resume           # Resume dispatching
 | `wg structure` | Entry points, dead ends, high-impact roots |
 | `wg bottlenecks` | Tasks blocking the most work |
 | `wg critical-path` | Longest dependency chain |
-| `wg loops` | Cycle detection and classification |
+| `wg cycles` | Cycle detection and classification |
 | `wg velocity --weeks 8` | Completion velocity over time |
 | `wg aging` | Task age distribution |
 | `wg forecast` | Completion forecast from velocity |

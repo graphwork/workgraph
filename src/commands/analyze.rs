@@ -53,7 +53,7 @@ pub struct StructuralHealth {
 #[derive(Debug, Clone, Serialize)]
 pub struct BottleneckInfo {
     pub id: String,
-    pub transitive_blocks: usize,
+    pub transitive_before: usize,
     pub status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned: Option<String>,
@@ -339,69 +339,6 @@ fn compute_structural_health(graph: &WorkGraph) -> StructuralHealth {
         });
     }
 
-    // Loop edge validation
-    if !check_result.loop_edge_issues.is_empty() {
-        let details: Vec<String> = check_result
-            .loop_edge_issues
-            .iter()
-            .map(|issue| {
-                use workgraph::check::LoopEdgeIssueKind;
-                match &issue.kind {
-                    LoopEdgeIssueKind::TargetNotFound => {
-                        format!("{} -> {} (target not found)", issue.from, issue.target)
-                    }
-                    LoopEdgeIssueKind::ZeroMaxIterations => {
-                        format!("{} -> {} (max_iterations=0)", issue.from, issue.target)
-                    }
-                    LoopEdgeIssueKind::GuardTaskNotFound(guard_task) => {
-                        format!(
-                            "{} -> {} (guard task '{}' not found)",
-                            issue.from, issue.target, guard_task
-                        )
-                    }
-                    LoopEdgeIssueKind::SelfLoop => {
-                        format!("{} -> {} (self-loop)", issue.from, issue.target)
-                    }
-                }
-            })
-            .collect();
-        issues.push(StructuralIssue {
-            severity: Severity::Critical,
-            message: format!(
-                "{} loop edge issue(s) found",
-                check_result.loop_edge_issues.len()
-            ),
-            details: Some(details),
-        });
-    }
-
-    // Loop edge summary (informational)
-    let total_loop_edges: usize = graph.tasks().map(|t| t.loops_to.len()).sum();
-    if total_loop_edges > 0 {
-        let active_count = graph
-            .tasks()
-            .flat_map(|t| t.loops_to.iter().map(move |e| (t, e)))
-            .filter(|(_t, e)| {
-                graph
-                    .get_task(&e.target)
-                    .map(|target| target.loop_iteration < e.max_iterations)
-                    .unwrap_or(false)
-            })
-            .count();
-        let exhausted_count = total_loop_edges - active_count;
-
-        if check_result.loop_edge_issues.is_empty() {
-            issues.push(StructuralIssue {
-                severity: Severity::Ok,
-                message: format!(
-                    "{} loop edge(s) ({} active, {} exhausted)",
-                    total_loop_edges, active_count, exhausted_count
-                ),
-                details: None,
-            });
-        }
-    }
-
     StructuralHealth { issues }
 }
 
@@ -410,7 +347,7 @@ fn find_dead_end_open_tasks(graph: &WorkGraph) -> Vec<String> {
     // Build reverse dependency map
     let mut has_dependents: HashSet<&str> = HashSet::new();
     for task in graph.tasks() {
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             has_dependents.insert(blocker_id);
         }
     }
@@ -453,12 +390,12 @@ fn compute_bottlenecks(graph: &WorkGraph, now: &DateTime<Utc>) -> Vec<Bottleneck
         // Count transitive dependents
         let mut transitive: HashSet<String> = HashSet::new();
         collect_transitive_dependents(&reverse_index, &task.id, &mut transitive);
-        let transitive_blocks = transitive.len();
+        let transitive_before = transitive.len();
 
         // Only include tasks that block at least 3 tasks (significant impact)
-        if transitive_blocks >= 3 {
+        if transitive_before >= 3 {
             let percentage = if total_tasks > 0 {
-                (transitive_blocks as f64 / total_tasks as f64 * 100.0).round() as usize
+                (transitive_before as f64 / total_tasks as f64 * 100.0).round() as usize
             } else {
                 0
             };
@@ -485,7 +422,7 @@ fn compute_bottlenecks(graph: &WorkGraph, now: &DateTime<Utc>) -> Vec<Bottleneck
 
             bottlenecks.push(BottleneckInfo {
                 id: task.id.clone(),
-                transitive_blocks,
+                transitive_before,
                 status: task.status,
                 assigned: task.assigned.clone(),
                 severity,
@@ -503,7 +440,7 @@ fn compute_bottlenecks(graph: &WorkGraph, now: &DateTime<Utc>) -> Vec<Bottleneck
             Severity::Ok => 2,
         };
         match severity_order(&a.severity).cmp(&severity_order(&b.severity)) {
-            std::cmp::Ordering::Equal => b.transitive_blocks.cmp(&a.transitive_blocks),
+            std::cmp::Ordering::Equal => b.transitive_before.cmp(&a.transitive_before),
             other => other,
         }
     });
@@ -650,7 +587,7 @@ fn generate_recommendations(
                 task: Some(bottleneck.id.clone()),
                 reason: format!(
                     "critical bottleneck - blocks {} tasks",
-                    bottleneck.transitive_blocks
+                    bottleneck.transitive_before
                 ),
             });
             priority += 1;
@@ -797,7 +734,7 @@ fn print_human_readable(output: &AnalysisOutput) {
 
             println!(
                 "  {} {}: blocks {} tasks, status={}{}",
-                indicator, bottleneck.id, bottleneck.transitive_blocks, status_str, assigned_str
+                indicator, bottleneck.id, bottleneck.transitive_before, status_str, assigned_str
             );
         }
         println!();
@@ -955,7 +892,7 @@ mod tests {
     fn test_compute_structural_health_with_orphan() {
         let mut graph = WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["nonexistent".to_string()];
+        t1.after = vec!["nonexistent".to_string()];
         graph.add_node(Node::Task(t1));
 
         let structural = compute_structural_health(&graph);
@@ -975,11 +912,11 @@ mod tests {
         // Create a chain: t1 -> t2 -> t3 -> t4
         let t1 = make_task("t1", "Root Task");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         let mut t4 = make_task("t4", "Task 4");
-        t4.blocked_by = vec!["t3".to_string()];
+        t4.after = vec!["t3".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -991,7 +928,7 @@ mod tests {
         // t1 should be the biggest bottleneck (blocks 3 tasks)
         assert!(!bottlenecks.is_empty());
         assert_eq!(bottlenecks[0].id, "t1");
-        assert_eq!(bottlenecks[0].transitive_blocks, 3);
+        assert_eq!(bottlenecks[0].transitive_before, 3);
     }
 
     #[test]
@@ -1045,7 +982,7 @@ mod tests {
 
         let bottlenecks = vec![BottleneckInfo {
             id: "critical-task".to_string(),
-            transitive_blocks: 8,
+            transitive_before: 8,
             status: Status::Open,
             assigned: None,
             severity: Severity::Critical,
@@ -1109,7 +1046,7 @@ mod tests {
         // t1 is depended on by t2
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         // t3 is a dead end (nothing depends on it)
         let t3 = make_task("t3", "Forgotten task");
@@ -1150,7 +1087,7 @@ mod tests {
 
         let t1 = make_task("t1", "Blocker");
         let mut t2 = make_task("t2", "Blocked");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1274,7 +1211,7 @@ mod tests {
         let t1 = make_task("t1", "Root");
         for i in 2..=5 {
             let mut t = make_task(&format!("t{}", i), &format!("Task {}", i));
-            t.blocked_by = vec!["t1".to_string()];
+            t.after = vec!["t1".to_string()];
             graph.add_node(Node::Task(t));
         }
         graph.add_node(Node::Task(t1));
@@ -1282,7 +1219,7 @@ mod tests {
         let bottlenecks = compute_bottlenecks(&graph, &now);
         assert_eq!(bottlenecks.len(), 1);
         assert_eq!(bottlenecks[0].id, "t1");
-        assert_eq!(bottlenecks[0].transitive_blocks, 4);
+        assert_eq!(bottlenecks[0].transitive_before, 4);
     }
 
     #[test]
@@ -1294,7 +1231,7 @@ mod tests {
         t1.status = Status::Done;
         for i in 2..=5 {
             let mut t = make_task(&format!("t{}", i), &format!("Task {}", i));
-            t.blocked_by = vec!["t1".to_string()];
+            t.after = vec!["t1".to_string()];
             graph.add_node(Node::Task(t));
         }
         graph.add_node(Node::Task(t1));
@@ -1314,7 +1251,7 @@ mod tests {
         t1.started_at = Some((now - Duration::days(5)).to_rfc3339());
         for i in 2..=5 {
             let mut t = make_task(&format!("t{}", i), &format!("Task {}", i));
-            t.blocked_by = vec!["t1".to_string()];
+            t.after = vec!["t1".to_string()];
             graph.add_node(Node::Task(t));
         }
         graph.add_node(Node::Task(t1));
@@ -1339,7 +1276,7 @@ mod tests {
             for child_idx in 0..3 {
                 let child_id = format!("child{}_{}", root_idx, child_idx);
                 let mut t = make_task(&child_id, &format!("Child {}-{}", root_idx, child_idx));
-                t.blocked_by = vec![root_id.clone()];
+                t.after = vec![root_id.clone()];
                 graph.add_node(Node::Task(t));
             }
         }
@@ -1359,7 +1296,7 @@ mod tests {
         // Total: 1 root + 4 children = 5, blocker blocks 4/5 = 80%
         for i in 0..4 {
             let mut t = make_task(&format!("c{}", i), &format!("Child {}", i));
-            t.blocked_by = vec!["blocker".to_string()];
+            t.after = vec!["blocker".to_string()];
             graph.add_node(Node::Task(t));
         }
 
@@ -1654,7 +1591,7 @@ mod tests {
         let structural = StructuralHealth { issues: vec![] };
         let bottlenecks = vec![BottleneckInfo {
             id: "stale-task".to_string(),
-            transitive_blocks: 3,
+            transitive_before: 3,
             status: Status::InProgress,
             assigned: Some("alice".to_string()),
             severity: Severity::Warning,
@@ -1827,7 +1764,7 @@ mod tests {
         let bottlenecks = vec![
             BottleneckInfo {
                 id: "b1".to_string(),
-                transitive_blocks: 10,
+                transitive_before: 10,
                 status: Status::Open,
                 assigned: None,
                 severity: Severity::Critical,
@@ -1835,7 +1772,7 @@ mod tests {
             },
             BottleneckInfo {
                 id: "b2".to_string(),
-                transitive_blocks: 8,
+                transitive_before: 8,
                 status: Status::Open,
                 assigned: None,
                 severity: Severity::Critical,
@@ -1933,7 +1870,7 @@ mod tests {
             },
             bottlenecks: vec![BottleneckInfo {
                 id: "t1".to_string(),
-                transitive_blocks: 5,
+                transitive_before: 5,
                 status: Status::Open,
                 assigned: Some("alice".to_string()),
                 severity: Severity::Warning,
@@ -1991,7 +1928,7 @@ mod tests {
             },
             bottlenecks: vec![BottleneckInfo {
                 id: "t1".to_string(),
-                transitive_blocks: 3,
+                transitive_before: 3,
                 status: Status::Open,
                 assigned: None,
                 severity: Severity::Ok,
@@ -2161,7 +2098,7 @@ mod tests {
         t1.assigned = Some("alice".to_string());
 
         let mut t2 = make_task("t2", "Child task");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         t2.estimate = Some(Estimate {
             hours: Some(5.0),
             cost: Some(200.0),

@@ -6,7 +6,7 @@ A conceptual manual for humans who want to understand and use workgraph and its 
 
 1. **Glossary** — precise definitions for every term used in the manual
 2. **System Overview** — what workgraph is, what the agency adds, and how they relate
-3. **The Task Graph** — tasks, statuses, dependencies, loop edges, readiness, and emergent patterns
+3. **The Task Graph** — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns
 4. **The Agency Model** — roles, motivations, agents, content-hash IDs, skills, and trust
 5. **Coordination & Execution** — the service daemon, coordinator tick, dispatch cycle, and parallelism
 6. **Evolution & Improvement** — evaluation, evolution strategies, lineage, and the autopoietic loop

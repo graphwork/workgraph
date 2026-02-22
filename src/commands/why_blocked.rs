@@ -78,7 +78,7 @@ fn build_blocking_tree(
     visited.insert(task_id.to_string());
 
     if let Some(task) = task {
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             // Skip if already visited (cycle detection)
             if visited.contains(blocker_id) {
                 continue;
@@ -134,7 +134,7 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     if task.status != Status::Open {
         return false;
     }
-    task.blocked_by.iter().all(|blocker_id| {
+    task.after.iter().all(|blocker_id| {
         workgraph::query::is_blocker_satisfied(blocker_id, graph, Some(dir))
     })
 }
@@ -281,7 +281,7 @@ fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
     serde_json::json!({
         "id": node.id,
         "status": format!("{:?}", node.status),
-        "blocked_by": node.children.iter().map(tree_to_json).collect::<Vec<_>>(),
+        "after": node.children.iter().map(tree_to_json).collect::<Vec<_>>(),
     })
 }
 
@@ -317,7 +317,7 @@ mod tests {
 
         let blocker = make_task("blocker", "Blocker");
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -337,9 +337,9 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -364,7 +364,7 @@ mod tests {
         blocker.status = Status::Done;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked));
@@ -382,10 +382,10 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
 
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -408,9 +408,9 @@ mod tests {
 
         let root = make_task("root", "Root");
         let mut mid = make_task("mid", "Middle");
-        mid.blocked_by = vec!["root".to_string()];
+        mid.after = vec!["root".to_string()];
         let mut leaf = make_task("leaf", "Leaf");
-        leaf.blocked_by = vec!["mid".to_string()];
+        leaf.after = vec!["mid".to_string()];
 
         graph.add_node(Node::Task(root));
         graph.add_node(Node::Task(mid));
@@ -433,9 +433,9 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -456,7 +456,7 @@ mod tests {
         blocker.status = Status::Done;
 
         let mut blocked = make_task("blocked", "Blocked");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
 
         graph.add_node(Node::Task(blocker));
         graph.add_node(Node::Task(blocked.clone()));
@@ -470,7 +470,7 @@ mod tests {
         let mut graph2 = WorkGraph::new();
         let blocker2 = make_task("blocker", "Blocker");
         let mut blocked2 = make_task("blocked", "Blocked");
-        blocked2.blocked_by = vec!["blocker".to_string()];
+        blocked2.after = vec!["blocker".to_string()];
 
         graph2.add_node(Node::Task(blocker2));
         graph2.add_node(Node::Task(blocked2.clone()));
@@ -485,7 +485,7 @@ mod tests {
         let mut root = make_task("root", "Root");
         root.status = Status::InProgress;
         let mut leaf = make_task("leaf", "Leaf");
-        leaf.blocked_by = vec!["root".to_string()];
+        leaf.after = vec!["root".to_string()];
 
         graph.add_node(Node::Task(root));
         graph.add_node(Node::Task(leaf));

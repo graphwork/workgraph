@@ -1,435 +1,412 @@
 # Workgraph Agent Guide
 
-How to operate AI agents with workgraph: the service daemon, spawning, identity injection, evaluation, and manual operation.
+How spawned agents should think about task graphs: recognizing patterns, building structures, staffing work, and staying in control.
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Service Mode (recommended)](#service-mode-recommended)
-- [Agent Identity](#agent-identity)
-- [Manual Agent Operation](#manual-agent-operation)
-- [The Autonomous Agent Loop](#the-autonomous-agent-loop)
-- [Task Selection](#task-selection)
-- [Multi-Agent Coordination](#multi-agent-coordination)
-- [Context and Trajectories](#context-and-trajectories)
-- [Model Selection](#model-selection)
-- [Monitoring](#monitoring)
-- [Best Practices](#best-practices)
+**Reference:** The canonical pattern vocabulary is defined in [spec-patterns-vocab](design/spec-patterns-vocab.md). This guide teaches you how to apply it.
 
 ---
 
-## Overview
+## 1. Pattern Recognition
 
-Workgraph supports three ways to run agents:
+When a human (or a planner task) says one of these words, you should know exactly what graph shape to build.
 
-1. **Service mode** (recommended): `wg service start` runs a daemon that automatically spawns agents on ready tasks, monitors them, and cleans up dead ones. This is the primary workflow.
-2. **Autonomous loop**: `wg agent run` runs a continuous wake/check/work/sleep cycle for a single agent.
-3. **Manual mode**: Agents use `wg ready`, `wg claim`, `wg done` for step-by-step control.
+| Word | Graph shape | Key property |
+|------|-------------|--------------|
+| **pipeline** | `A → B → C → D` | Sequential handoffs; throughput = slowest stage |
+| **diamond** | `A → [B,C,D] → E` | Fork-join; parallel workers, single integrator |
+| **scatter-gather** | Like diamond, but workers assess the *same* input from different perspectives | Heterogeneous reviewers |
+| **loop** | `A → B → C → A` (back-edge) | Iterate until `--converged` or `--max-iterations` hit |
+| **map-reduce** | Data-parallel diamond: planner → N workers → reducer | Workers do the same kind of work on different data |
+| **scaffold** | Platform task → [stream tasks…] | Shared infrastructure first, then parallel features |
+| **diamond with specialists** | Planner forks to role-matched workers, synthesizer joins | The power pattern — combines structure + agency |
 
-In all modes, the agency system can inject an identity (role + motivation) into the agent's prompt when it starts working on a task.
+If the request doesn't map to one of these, it's probably a **composition** — see §6.
 
 ---
 
-## Service Mode (recommended)
+## 2. Structure Rules
 
-The service daemon handles everything: finding ready tasks, spawning agents, reaping dead ones, and picking up newly unblocked work.
+Structure patterns describe how to arrange tasks in the graph.
 
-### Starting the service
+### 2.1 Pipeline — sequential stages
+
+Use when work requires ordered transformations: design → build → test → ship.
 
 ```bash
-wg service start
+wg add "Design API" --id design
+wg add "Implement API" --id implement --after design
+wg add "Review API" --id review --after implement
+wg add "Deploy API" --id deploy --after review
 ```
 
-That's it. The daemon auto-spawns agents on ready tasks (up to `max_agents` in parallel). When a task completes and unblocks new ones, the daemon picks those up on the next tick.
+**Rule:** If stages share files, they *must* be sequential. A pipeline is the safe default when you're unsure about file overlap.
 
-### How the coordinator tick works
+### 2.2 Diamond — parallel workers with integrator
 
-Each tick, the coordinator:
+Use when work decomposes into independent units that touch **disjoint files**.
 
-1. **Reaps zombie child processes** — agents that exited
-2. **Cleans up dead agents** — process exited or heartbeat stale
-3. **Counts alive agents** — if `>= max_agents`, skips spawning
-4. **Gets ready tasks** — open tasks with all dependencies done
-5. **[If auto_assign enabled]** Creates `assign-{task}` blocker tasks for unassigned ready tasks, dispatched with the assigner model/agent
-6. **[If auto_evaluate enabled]** Creates `evaluate-{task}` tasks blocked by completed tasks, dispatched with the evaluator model/agent
-7. **Spawns agents** on remaining ready tasks, respecting per-task model overrides
+```bash
+wg add "Plan the work" --id planner
+wg add "Implement module A" --id worker-a --after planner
+wg add "Implement module B" --id worker-b --after planner
+wg add "Implement module C" --id worker-c --after planner
+wg add "Integrate results" --id synthesizer --after worker-a,worker-b,worker-c
+```
 
-The coordinator runs on two triggers:
-- **IPC-driven immediate ticks**: Any graph change (done, add, edit, fail) sends a `graph_changed` notification over the Unix socket, triggering an immediate tick
-- **Safety-net poll**: A background tick every `poll_interval` seconds (default: 60s) catches manual edits or missed events
+**Rules:**
+- Each worker must own distinct files. If worker-a and worker-b both edit `src/main.rs`, one will overwrite the other. Serialize them instead.
+- **Always have an integrator task at the join point.** The synthesizer resolves conflicts and produces a coherent whole. Forgetting this is an anti-pattern (§5).
+- The planner should explicitly list each worker's file scope in its task description.
 
-### Pausing and resuming
+### 2.3 Scatter-Gather — multiple perspectives
+
+Like a diamond, but workers examine the *same* artifact from different angles rather than building parts of a whole.
+
+```bash
+wg add "Produce artifact" --id artifact
+wg add "Security review" --id sec-review --after artifact
+wg add "Performance review" --id perf-review --after artifact
+wg add "UX review" --id ux-review --after artifact
+wg add "Summarize reviews" --id summary --after sec-review,perf-review,ux-review
+```
+
+### 2.4 Loop — iterate until convergence
+
+Use for iterative refinement: draft → review → revise, repeat.
+
+```bash
+# The back-edge (--after revise) creates the cycle
+wg add "Write draft" --id write --after revise --max-iterations 5
+wg add "Review draft" --id review --after write
+wg add "Revise draft" --id revise --after review
+```
+
+**Rules:**
+- Always set `--max-iterations` on the cycle header. Unbounded loops are an anti-pattern.
+- **Always have a refine task that can loop back.** The revise node is what feeds improvements back into the next iteration.
+- Use `wg done review --converged` to stop the loop when work has stabilized.
+- Use plain `wg done review` to let the cycle continue iterating.
+- Any cycle member can signal convergence — it stops the entire cycle.
+
+**Checking iteration state:**
+```bash
+wg show <task-id>    # shows loop_iteration and cycle membership
+wg cycles            # see all cycles and their current state
+```
+
+Previous iterations' logs and artifacts are preserved. Review them with `wg log <task-id> --list` and `wg context <task-id>` to build on prior work rather than starting fresh.
+
+### 2.5 The Critical Structural Rule
+
+> **Same files = sequential edges. NEVER parallelize shared-file mutations.**
+
+When deciding between pipeline and diamond, check file overlap:
+- **Disjoint files** → safe to fork-join (diamond)
+- **Shared files** → must serialize (pipeline)
+- **Unsure** → default to pipeline; you can always parallelize later
+
+The synthesizer/integrator is the *only* task that may touch all files, because it runs after all workers finish.
+
+---
+
+## 3. Agency Rules
+
+Agency patterns describe how to staff work — which roles to create and how to match them to tasks.
+
+### 3.1 Planner-Workers-Synthesizer (default for complex work)
+
+One thinker decomposes the problem, many doers execute in parallel, one integrator combines results. This is the default staffing for any diamond structure.
+
+```bash
+# Define roles
+wg role add "Architect" --outcome "Clean decomposition with non-overlapping boundaries" --skill architecture
+wg role add "Implementer" --outcome "Working, tested code for assigned module" --skill coding --skill testing
+wg role add "Integrator" --outcome "Cohesive merged output with conflicts resolved" --skill integration
+
+# Create agents from roles
+wg agent create "Planner" --role <architect-hash> --motivation <motivation-hash>
+wg agent create "Worker" --role <implementer-hash> --motivation <motivation-hash>
+wg agent create "Synthesizer" --role <integrator-hash> --motivation <motivation-hash>
+
+# Assign agents to tasks
+wg assign planner <planner-agent>
+wg assign worker-a <worker-agent>
+wg assign synthesizer <synthesizer-agent>
+```
+
+### 3.2 Diamond with Specialists — the power pattern
+
+Combine a diamond structure with role-matched workers. Each worker is a specialist in its domain.
+
+```bash
+# Structure
+wg add "Plan decomposition" --id plan
+wg add "Implement auth module" --id auth --after plan
+wg add "Implement data layer" --id data --after plan
+wg add "Implement UI" --id ui --after plan
+wg add "Integrate" --id integrate --after auth,data,ui
+
+# Specialist roles
+wg role add "Security Dev" --outcome "Secure auth" --skill security --skill coding
+wg role add "Data Dev" --outcome "Efficient data layer" --skill database --skill coding
+wg role add "Frontend Dev" --outcome "Responsive UI" --skill frontend --skill coding
+wg role add "Integrator" --outcome "Working integrated system" --skill integration
+
+# Route specialists to matching tasks
+wg assign auth <security-agent>
+wg assign data <data-agent>
+wg assign ui <frontend-agent>
+wg assign integrate <integrator-agent>
+```
+
+### 3.3 Requisite Variety — match roles to task types
+
+**Ashby's Law: you need at least as many distinct roles as you have distinct task types.**
+
+| Violation | Symptom | Fix |
+|-----------|---------|-----|
+| Too few roles | Low scores on specialized tasks | `wg evolve --strategy gap-analysis` |
+| Too many roles | Roles with zero assignments | `wg evolve --strategy retirement` |
+
+Check coverage:
+```bash
+wg agency stats    # role coverage and utilization
+wg skill list      # all skill types in the graph
+```
+
+### 3.4 Stream-Aligned vs. Specialist
+
+- **Stream-aligned role**: owns an end-to-end flow (auth feature, user onboarding). Minimizes handoffs.
+- **Specialist role**: owns a domain across all flows (security, database). Maximizes depth.
+
+Default to stream-aligned. Use specialists when deep domain expertise is required.
+
+### 3.5 Platform (Scaffold)
+
+A platform role produces shared infrastructure that other roles depend on. Platform tasks appear as `--after` dependencies for stream-aligned work.
+
+```bash
+wg add "Set up CI pipeline" --id setup-ci
+wg add "Implement feature A" --id feature-a --after setup-ci
+wg add "Implement feature B" --id feature-b --after setup-ci
+```
+
+---
+
+## 4. Control Rules
+
+Control patterns describe how you stay coordinated without direct agent-to-agent communication.
+
+### 4.1 Stigmergic Coordination — the graph is truth
+
+**Read `wg show` and `wg context`. Don't assume — the graph is the single source of truth.**
+
+Agents coordinate indirectly through the shared graph. There are no agent-to-agent messages. Every `wg done`, `wg log`, and `wg artifact` call modifies the graph, which stimulates downstream agents.
+
+```bash
+# You (Agent A) complete work, leaving traces
+wg log implement-api "Implemented REST endpoints in src/api.rs"
+wg artifact implement-api src/api.rs
+wg done implement-api
+
+# Agent B (on a downstream task) reads the traces
+wg context write-tests
+# → Shows: From implement-api (done): Artifacts: src/api.rs
+```
+
+**Key practices:**
+- Write descriptive task titles and descriptions — they are pheromone trails for downstream agents
+- Use `wg log` to leave progress traces — they become context for dependent tasks
+- Use `wg artifact` to mark outputs — they appear in `wg context` for successors
+- Always check `wg context <your-task>` before starting work — it shows what predecessors produced
+
+### 4.2 After Code Changes: Rebuild
+
+When you modify source code in a Rust project that uses `cargo install`:
+
+```bash
+cargo install --path .
+```
+
+This updates the global `wg` binary. Forgetting this step is a common source of "why isn't this working" bugs. Do it after every code change.
+
+### 4.3 Convergence Signaling
+
+Use `wg done --converged` to stop a loop. Use plain `wg done` to iterate.
+
+```bash
+# Work is good enough — stop the loop
+wg done review --converged
+
+# Work needs another pass — let the cycle continue
+wg done review
+```
+
+The `--converged` flag tags the cycle header. This prevents further iterations even if `--max-iterations` hasn't been reached. Any cycle member can signal convergence for the entire cycle.
+
+### 4.4 Evolve — the feedback loop
+
+After work accumulates, evaluate and evolve roles:
+
+```bash
+# Evaluate completed work
+wg evaluate my-task
+
+# Preview evolution proposals
+wg evolve --dry-run
+
+# Apply evolution
+wg evolve --strategy all
+```
+
+**Single-loop learning:** task failed → retry with different agent (`wg retry`).
+**Double-loop learning:** task type keeps failing → change the role itself (`wg evolve --strategy mutation`).
+
+Escalate from single to double loop when the same task type fails repeatedly.
+
+---
+
+## 5. Anti-Patterns
+
+| Anti-pattern | What goes wrong | Fix |
+|--------------|----------------|-----|
+| **Parallel file conflict** | Two concurrent tasks edit the same file → one overwrites the other | Serialize with `--after` or decompose so each task owns distinct files |
+| **Using built-in TaskCreate** | Built-in task tools are a separate system that does NOT interact with workgraph | Always use `wg` CLI commands (`wg add`, `wg done`, etc.) |
+| **Missing integrator** | Diamond with no join point → parallel outputs never get merged | Always add a synthesizer task with `--after worker-a,worker-b,...` |
+| **Missing loop-back on refine** | Review identifies issues but there's no path back to fix them | Add a revise task in the cycle with a back-edge to the cycle header |
+| **Unbounded loop** | Cycle without `--max-iterations` → runs forever | Always set `--max-iterations` on cycle headers |
+| **Monolithic task** | One giant task with no decomposition → no parallelism, no feedback | Break into diamond or pipeline |
+| **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve --strategy retirement` |
+| **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve --strategy gap-analysis` |
+| **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate` manually |
+
+---
+
+## 6. Pattern Composition
+
+Real workflows combine patterns. Common compositions:
+
+| Composition | Structure | Example |
+|-------------|-----------|---------|
+| **Pipeline of diamonds** | Sequential phases, each a fork-join | Design → [impl-A, impl-B, impl-C] → integrate → [test-unit, test-e2e] → deploy |
+| **Diamond with pipeline workers** | Fork to workers, each a mini-pipeline | Plan → [design-A → impl-A, design-B → impl-B] → integrate |
+| **Loop around a diamond** | Iterate a fork-join until convergence | [write-spec, write-impl, write-tests] → review → (back-edge) |
+| **Scaffold then stream** | Platform first, then parallel features | setup-ci → [feature-A, feature-B, feature-C] |
+
+---
+
+## 7. Service Operation
+
+The service daemon handles spawning, monitoring, and cleanup automatically.
+
+### Starting
+
+```bash
+wg service start                  # default settings
+wg service start --max-agents 4   # limit parallel agents
+```
+
+### Coordinator tick
+
+Each tick: reap zombies → clean dead agents → count alive → find ready tasks → spawn agents.
+
+Ticks happen on two triggers:
+- **Immediate:** any graph change (`wg done`, `wg add`, etc.) triggers a tick via IPC
+- **Poll:** safety-net every 60 seconds catches missed events
+
+### Pause/resume
 
 ```bash
 wg service pause    # running agents continue, no new spawns
-wg service resume   # resume coordinator, immediate tick
+wg service resume   # resume + immediate tick
 ```
 
-Pause is useful when you want running agents to finish but don't want new work dispatched (e.g., during a deploy).
+### Monitoring
+
+```bash
+wg service status              # daemon and coordinator state
+wg agents                      # all agents with status
+wg list --status in-progress   # tasks being worked on
+wg tui                         # interactive dashboard
+wg status                      # one-screen summary
+wg analyze                     # comprehensive health report
+```
 
 ### Configuration
 
 ```toml
 # .workgraph/config.toml
-
 [coordinator]
-max_agents = 4         # max parallel agents
-poll_interval = 60     # safety-net tick interval (seconds)
-executor = "claude"    # executor for spawned agents
-model = "opus"         # model override (optional)
+max_agents = 4
+poll_interval = 60
+executor = "claude"
+model = "opus"
 
 [agent]
-executor = "claude"
-model = "opus"         # default model
-heartbeat_timeout = 5  # minutes before agent is considered dead
+heartbeat_timeout = 5   # minutes before agent is considered dead
 
 [agency]
-auto_evaluate = false  # auto-create evaluation tasks
-auto_assign = false    # auto-create identity assignment tasks
-assigner_model = "haiku"
-evaluator_model = "opus"
-evolver_model = "opus"
+auto_evaluate = false
+auto_assign = false
 ```
 
-### What happens when a task is spawned
+### Model selection
 
-1. The coordinator claims the task (sets status to `in-progress`)
-2. It resolves the effective model: task's `model` field > coordinator `model` > agent `model`
-3. If the task has an `agent` field (identity assignment), the agent's role and motivation are loaded and injected into the prompt
-4. A wrapper script is generated in `.workgraph/agents/agent-N/run.sh` that:
-   - Runs the executor (claude, shell, etc.)
-   - Captures output to `output.log`
-   - On exit: marks the task as done or failed
-5. The process is detached with `setsid()` so it survives daemon restarts
-6. The agent is registered in the agent registry
-
----
-
-## Agent Identity
-
-The agency system lets you assign composable identities to agents. When a task has an agent assignment, the spawned agent receives an identity section in its prompt covering:
-
-- **Role**: skills, desired outcome, description
-- **Motivation**: acceptable trade-offs, hard constraints, description
-
-### Manual assignment
+Priority order: `--model` flag > task's `model` field > `coordinator.model` > `agent.model`.
 
 ```bash
-# Create roles and motivations
-wg role add "Programmer" --outcome "Working, tested code" --skill rust --skill testing
-wg motivation add "Careful" --accept "Slow" --reject "Untested"
-
-# Pair them into an agent
-wg agent create "Careful Coder" --role <role-hash> --motivation <motivation-hash>
-
-# Assign to a task
-wg assign my-task <agent-hash>
-```
-
-### Automatic assignment
-
-Enable auto-assign and the coordinator creates `assign-{task}` meta-tasks for unassigned ready tasks. The assigner agent picks from available agents based on the task's requirements.
-
-```bash
-wg config --auto-assign true
-wg config --assigner-model haiku   # cheap model is fine for assignment
-```
-
-### Automatic evaluation
-
-Enable auto-evaluate and the coordinator creates `evaluate-{task}` meta-tasks for completed tasks. The evaluator scores the work across four dimensions and updates performance records.
-
-```bash
-wg config --auto-evaluate true
-wg config --evaluator-model opus   # strong model for quality evaluation
-```
-
-See [AGENCY.md](AGENCY.md) for the full agency system documentation.
-
----
-
-## Manual Agent Operation
-
-For AI assistants (like Claude Code) working interactively on a claimed task:
-
-### Protocol
-
-1. **Check for work**
-   ```bash
-   wg ready
-   ```
-
-2. **Select and claim a task**
-   ```bash
-   wg next --actor claude
-   wg claim <task-id> --actor claude
-   ```
-
-3. **View task details and context**
-   ```bash
-   wg show <task-id>
-   wg context <task-id>
-   ```
-
-4. **Do the work** (coding, documentation, etc.)
-
-5. **Log progress**
-   ```bash
-   wg log <task-id> "Completed implementation" --actor claude
-   ```
-
-6. **Record artifacts**
-   ```bash
-   wg artifact <task-id> src/feature.rs
-   ```
-
-7. **Mark complete or failed**
-   ```bash
-   wg done <task-id>
-   # or if something went wrong:
-   wg fail <task-id> --reason "Missing dependency"
-   ```
-
-### Integrating with Claude Code
-
-Add to `CLAUDE.md`:
-
-```markdown
-Use workgraph for task management.
-
-At the start of each session, run `wg quickstart` to orient yourself.
-Use `wg service start` to dispatch work — do not manually claim tasks.
-```
-
-For spawned agents (subagents), the service injects task context and completion instructions into the prompt automatically.
-
----
-
-## The Autonomous Agent Loop
-
-### Running the loop
-
-```bash
-# Run continuously
-wg agent run --actor claude-main
-
-# Run single iteration
-wg agent run --actor claude-main --once
-
-# Custom interval and task limit
-wg agent run --actor claude-main --interval 30 --max-tasks 10
-```
-
-### The wake/check/work/sleep cycle
-
-```
-     ┌──────────────────────────────────────┐
-     │                                      │
-     v                                      │
-   WAKE                                     │
-     │  Record heartbeat                    │
-     v                                      │
-   CHECK                                    │
-     │  Find ready tasks                    │
-     │  Match to agent capabilities         │
-     │  Select best task                    │
-     ├──── No work? ───────────────────────>│
-     v                                      │
-   WORK                                     │
-     │  Claim task                          │
-     │  Execute (if exec command set)       │
-     │  Mark done or failed                 │
-     v                                      │
-   SLEEP ──────────────────────────────────>┘
-```
-
-### Agent registration
-
-Each autonomous agent session needs an agent identity:
-
-```bash
-# AI agent with role + motivation
-wg agent create "Claude Coder" \
-  --role <role-hash> \
-  --motivation <motivation-hash> \
-  --capabilities coding,documentation,testing \
-  --trust-level provisional
-
-# Or a minimal agent for simple autonomous loops
-wg agent create "General Worker" \
-  --role <role-hash> \
-  --motivation <motivation-hash> \
-  --capabilities coding,testing
-```
-
-### Tasks with exec commands
-
-For fully automated execution, attach shell commands to tasks:
-
-```bash
-wg exec run-tests --set "cargo test"
-wg exec build --set "cargo build --release"
-```
-
-The agent loop runs these automatically. Tasks without exec commands are claimed but left for external completion (e.g., by an AI coding assistant).
-
----
-
-## Task Selection
-
-### How tasks are scored
-
-The `wg next` and agent loop commands score ready tasks by:
-
-| Factor | Score |
-|--------|-------|
-| Each matched skill | +10 |
-| Each missing required skill | -5 |
-| All required skills matched | +20 |
-| No skill requirements (general task) | +5 |
-| Task has exec command | +15 |
-| Verified trust level | +5 |
-
-```bash
-wg next --actor claude-main
-# Next task for claude-main:
-#   implement-api - Implement API endpoints
-#   Skills: rust, api-design (all matched)
+wg add "Simple fix" --model haiku      # cheap model for simple work
+wg add "Complex design" --model opus   # strong model for hard work
 ```
 
 ---
 
-## Multi-Agent Coordination
+## 8. Manual Operation
 
-### Parallel execution
-
-Multiple agents work simultaneously on independent tasks. The service handles this automatically:
+For interactive sessions (e.g., Claude Code working on a claimed task):
 
 ```bash
-wg service start --max-agents 4
-wg agents    # see who's working on what
-```
-
-### Claim atomicity
-
-Claims are atomic — if two agents try to claim the same task, only one succeeds. The graph is protected by flock-based file locking.
-
-### Heartbeats and dead agent detection
-
-Agents send heartbeats while working. If an agent's process exits or its heartbeat goes stale (default: 5 minutes), the coordinator marks it dead and unclaims its task so another agent can pick it up.
-
-```bash
-wg dead-agents --check       # check without modifying
-wg dead-agents --cleanup     # mark dead and unclaim tasks
+wg quickstart                    # orient yourself
+wg ready                         # find available work
+wg show <task-id>                # read task details
+wg context <task-id>             # see what predecessors produced
+# ... do the work ...
+wg log <task-id> "What I did"    # leave traces for successors
+wg artifact <task-id> path/to   # record outputs
+wg done <task-id>                # complete
 ```
 
 ---
 
-## Context and Trajectories
+## Quick Reference
 
-### Context inheritance
-
-Tasks can specify inputs and deliverables. When dependencies complete, their artifacts and deliverables become available context:
-
+**Build a pipeline:**
 ```bash
-wg context implement-api
-# Context for implement-api:
-#   From design-api (done):
-#     Artifacts: docs/api-spec.md
+wg add "Step 1" --id s1 && wg add "Step 2" --id s2 --after s1 && wg add "Step 3" --id s3 --after s2
 ```
 
-### Trajectory planning
-
-For AI agents with limited context windows, trajectories minimize context switching:
-
+**Build a diamond:**
 ```bash
-wg trajectory implement-api --actor claude-main
-# Groups related tasks that share context (files, directories)
+wg add "Plan" --id p && wg add "Work A" --id a --after p && wg add "Work B" --id b --after p && wg add "Integrate" --id i --after a,b
 ```
 
----
-
-## Model Selection
-
-Models are selected in priority order:
-
-1. `--model` flag on `wg spawn` (highest priority)
-2. Task's `model` field (set with `wg add --model` or `wg edit --model`)
-3. `coordinator.model` in config.toml
-4. `agent.model` in config.toml (lowest priority)
-
-For agency meta-tasks, separate model settings apply:
-- `agency.assigner_model` for assignment tasks
-- `agency.evaluator_model` for evaluation tasks
-- `agency.evolver_model` for evolution
-
+**Build a loop:**
 ```bash
-# Per-task model at creation
-wg add "Simple fix" --model haiku
-
-# Change model on existing task
-wg edit my-task --model sonnet
-
-# Set coordinator default
-wg config --model sonnet
-wg service reload
+wg add "Write" --id w --after revise --max-iterations 5 && wg add "Review" --id r --after w && wg add "Revise" --id revise --after r
 ```
 
----
-
-## Monitoring
-
-### Check service status
-
+**Stop a loop:**
 ```bash
-wg service status    # daemon info, coordinator state
-wg agents            # all agents with status
-wg agents --alive    # running only
-wg agents --dead     # dead only
+wg done <task> --converged
 ```
 
-### View agent work
-
+**Never do this:**
 ```bash
-wg list --status in-progress   # tasks being worked on
-wg show <task-id>              # full task details
-wg log <task-id> --list        # progress log
+# WRONG: built-in task tools don't interact with workgraph
+TaskCreate(...)   # ← NO
+TaskUpdate(...)   # ← NO
+
+# RIGHT: always use wg CLI
+wg add "Task title" --id my-task
+wg done my-task
 ```
-
-### Interactive dashboard
-
-```bash
-wg tui    # split-pane view of tasks, agents, and logs
-```
-
-### Quick project overview
-
-```bash
-wg status     # one-screen summary
-wg analyze    # comprehensive health report
-```
-
----
-
-## Best Practices
-
-### Task design
-
-- **Use `--model` for cost control**: haiku for simple tasks, opus for complex ones
-- **Use `--verify` for critical tasks**: require human approval before completion
-- **Specify skills**: helps task selection match agents to appropriate work
-- **Specify inputs and deliverables**: enables context inheritance
-
-### Service operation
-
-- **Start with a low `max_agents`**: 2-4 is usually enough. More agents means more concurrent API costs.
-- **Use `wg service pause`**: when deploying or making manual changes
-- **Monitor with `wg tui`**: see what's happening in real time
-- **Check `wg service status`**: after any issues to see coordinator state
-
-### Agency
-
-- **Start without auto-assign/auto-evaluate**: manually assign and evaluate first to understand the system
-- **Use cheap models for assignment**: haiku is fine for picking which agent works on what
-- **Use strong models for evaluation**: opus gives more accurate quality scores
-- **Run `wg evolve --dry-run` first**: preview evolution proposals before applying them

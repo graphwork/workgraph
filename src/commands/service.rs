@@ -32,9 +32,9 @@ use chrono::Utc;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Node, Status, Task, evaluate_loop_edges};
+use workgraph::graph::{LogEntry, Node, Status, Task, evaluate_cycle_iteration};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks_with_peers;
+use workgraph::query::ready_tasks_with_peers_cycle_aware;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive, spawn};
@@ -380,7 +380,8 @@ fn check_ready_or_return(
     alive_count: usize,
     dir: &Path,
 ) -> Option<TickResult> {
-    let ready = ready_tasks_with_peers(graph, dir);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     if ready.is_empty() {
         let terminal = graph.tasks().filter(|t| t.status.is_terminal()).count();
         let total = graph.tasks().count();
@@ -415,7 +416,8 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
 
     // Collect task data to avoid holding references while mutating graph
     let ready_task_data: Vec<_> = {
-        let ready = ready_tasks_with_peers(graph, dir);
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
         ready
             .iter()
             .map(|t| {
@@ -553,8 +555,8 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             status: Status::Open,
             assigned: None,
             estimate: None,
-            blocks: vec![task_id.clone()],
-            blocked_by: vec![],
+            before: vec![task_id.clone()],
+            after: vec![],
             requires: vec![],
             tags: vec!["assignment".to_string(), "agency".to_string()],
             skills: vec![],
@@ -573,20 +575,21 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             model: config.agency.assigner_model.clone(),
             verify: None,
             agent: config.agency.assigner_agent.clone(),
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         };
 
         graph.add_node(Node::Task(assign_task));
 
         // Add the assignment task as a blocker on the original task
         if let Some(t) = graph.get_task_mut(&task_id)
-            && !t.blocked_by.contains(&assign_task_id)
+            && !t.after.contains(&assign_task_id)
         {
-            t.blocked_by.push(assign_task_id.clone());
+            t.after.push(assign_task_id.clone());
         }
 
         eprintln!(
@@ -683,8 +686,8 @@ fn build_auto_evaluate_tasks(
             status: Status::Open,
             assigned: None,
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![task_id.clone()],
+            before: vec![],
+            after: vec![task_id.clone()],
             requires: vec![],
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             skills: vec![],
@@ -703,11 +706,12 @@ fn build_auto_evaluate_tasks(
             model: config.agency.evaluator_model.clone(),
             verify: None,
             agent: config.agency.evaluator_agent.clone(),
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         };
 
         graph.add_node(Node::Task(eval_task));
@@ -728,8 +732,8 @@ fn build_auto_evaluate_tasks(
         .filter(|t| t.id.starts_with("evaluate-") && t.status == Status::Open)
         .filter_map(|t| {
             // The eval task blocks on a single task: the original
-            if t.blocked_by.len() == 1 {
-                let source_id = &t.blocked_by[0];
+            if t.after.len() == 1 {
+                let source_id = &t.after[0];
                 if let Some(source) = graph.get_task(source_id)
                     && source.status == Status::Failed
                 {
@@ -742,7 +746,7 @@ fn build_auto_evaluate_tasks(
 
     for (eval_id, source_id) in &eval_fixups {
         if let Some(t) = graph.get_task_mut(eval_id) {
-            t.blocked_by.retain(|b| b != source_id);
+            t.after.retain(|b| b != source_id);
             modified = true;
             eprintln!(
                 "[coordinator] Unblocked evaluation task '{}' (source '{}' failed)",
@@ -904,7 +908,8 @@ fn spawn_agents_for_ready_tasks(
     model: Option<&str>,
     slots_available: usize,
 ) -> usize {
-    let final_ready = ready_tasks_with_peers(graph, dir);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let final_ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let agents_dir = dir.join("agency").join("agents");
     let mut spawned = 0;
 
@@ -1019,7 +1024,8 @@ pub fn coordinator_tick(
     }
 
     // Phase 6: Spawn agents on ready tasks
-    let final_ready = ready_tasks_with_peers(&graph, dir);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
     let ready_count = final_ready.len();
     drop(final_ready);
     let spawned = spawn_agents_for_ready_tasks(dir, &graph, executor, model, slots_available);
@@ -1158,9 +1164,12 @@ fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
         }
     }
 
-    // Evaluate loop edges for tasks that were triaged as done
-    for task_id in &tasks_completed_by_triage {
-        evaluate_loop_edges(&mut graph, task_id);
+    // Evaluate structural cycle iterations for tasks triaged as done
+    if !tasks_completed_by_triage.is_empty() {
+        let cycle_analysis = graph.compute_cycle_analysis();
+        for task_id in &tasks_completed_by_triage {
+            evaluate_cycle_iteration(&mut graph, task_id, &cycle_analysis);
+        }
     }
 
     if tasks_modified {
@@ -1666,7 +1675,7 @@ pub enum IpcRequest {
         #[serde(default)]
         description: Option<String>,
         #[serde(default)]
-        blocked_by: Vec<String>,
+        after: Vec<String>,
         #[serde(default)]
         tags: Vec<String>,
         #[serde(default)]
@@ -2451,7 +2460,7 @@ fn handle_request(
             title,
             id,
             description,
-            blocked_by,
+            after,
             tags,
             skills,
             deliverables,
@@ -2469,7 +2478,7 @@ fn handle_request(
                 &title,
                 id.as_deref(),
                 description.as_deref(),
-                &blocked_by,
+                &after,
                 &tags,
                 &skills,
                 &deliverables,
@@ -2709,7 +2718,7 @@ fn handle_add_task(
     title: &str,
     id: Option<&str>,
     description: Option<&str>,
-    blocked_by: &[String],
+    after: &[String],
     tags: &[String],
     skills: &[String],
     deliverables: &[String],
@@ -2782,8 +2791,8 @@ fn handle_add_task(
         status: Status::Open,
         assigned: None,
         estimate: None,
-        blocks: vec![],
-        blocked_by: blocked_by.to_vec(),
+        before: vec![],
+        after: after.to_vec(),
         requires: vec![],
         tags: tags.to_vec(),
         skills: skills.to_vec(),
@@ -2802,21 +2811,21 @@ fn handle_add_task(
         model: model.map(String::from),
         verify: verify.map(String::from),
         agent: None,
-        loops_to: vec![],
         loop_iteration: 0,
         ready_after: None,
         paused: false,
-            visibility: "internal".to_string(),
+        visibility: "internal".to_string(),
+        cycle_config: None,
     };
 
     graph.add_node(Node::Task(task));
 
-    // Maintain bidirectional blocked_by/blocks consistency
-    for dep in blocked_by {
+    // Maintain bidirectional after/blocks consistency
+    for dep in after {
         if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.blocks.contains(&task_id)
+            && !blocker.before.contains(&task_id)
         {
-            blocker.blocks.push(task_id.clone());
+            blocker.before.push(task_id.clone());
         }
     }
 
@@ -3737,8 +3746,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -3757,11 +3766,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            cycle_config: None,
         };
         let prompt = build_triage_prompt(&task, "some log output");
         assert!(prompt.contains("test-task"));
@@ -3910,8 +3920,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -3930,11 +3940,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -3956,8 +3967,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -3976,11 +3987,12 @@ poll_interval = 120
             model: None,
             verify: Some("Check tests pass".to_string()),
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "done".to_string(),
@@ -4000,8 +4012,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -4020,11 +4032,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "continue".to_string(),
@@ -4058,8 +4071,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -4078,11 +4091,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "restart".to_string(),
@@ -4106,8 +4120,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -4126,11 +4140,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "continue".to_string(),
@@ -4158,8 +4173,8 @@ poll_interval = 120
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
             estimate: None,
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -4178,11 +4193,12 @@ poll_interval = 120
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
+
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
         let verdict = TriageVerdict {
             verdict: "restart".to_string(),

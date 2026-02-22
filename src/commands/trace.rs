@@ -495,7 +495,7 @@ struct RecursiveTraceOutput {
 }
 
 /// Collect the subgraph rooted at `root_id`: the task itself plus all tasks
-/// whose blocked_by chains trace back to it. Filters out internal tasks
+/// whose after chains trace back to it. Filters out internal tasks
 /// (assignment/evaluation tags) for cleaner display.
 pub fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
     let reverse_index = build_reverse_index(graph);
@@ -738,7 +738,7 @@ fn print_recursive_tree(
     let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
 
     for task in descendants {
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             if desc_ids.contains(blocker.as_str()) {
                 forward.entry(blocker.as_str()).or_default().push(task.id.as_str());
                 reverse.entry(task.id.as_str()).or_default().push(blocker.as_str());
@@ -1560,10 +1560,10 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root")));
         let mut b = make_done_task("child", "Child");
-        b.blocked_by = vec!["root".to_string()];
+        b.after = vec!["root".to_string()];
         graph.add_node(Node::Task(b));
         let mut c = make_done_task("grandchild", "Grandchild");
-        c.blocked_by = vec!["child".to_string()];
+        c.after = vec!["child".to_string()];
         graph.add_node(Node::Task(c));
 
         let desc = collect_descendants("root", &graph);
@@ -1575,11 +1575,11 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root")));
         let mut b = make_done_task("left", "Left");
-        b.blocked_by = vec!["root".to_string()];
+        b.after = vec!["root".to_string()];
         let mut c = make_done_task("right", "Right");
-        c.blocked_by = vec!["root".to_string()];
+        c.after = vec!["root".to_string()];
         let mut d = make_done_task("merge", "Merge");
-        d.blocked_by = vec!["left".to_string(), "right".to_string()];
+        d.after = vec!["left".to_string(), "right".to_string()];
         graph.add_node(Node::Task(b));
         graph.add_node(Node::Task(c));
         graph.add_node(Node::Task(d));
@@ -1594,7 +1594,7 @@ mod tests {
         graph.add_node(Node::Task(make_done_task("root", "Root")));
         let mut assign = make_done_task("assign-root", "Assign agent");
         assign.tags = vec!["assignment".to_string(), "agency".to_string()];
-        assign.blocked_by = vec!["root".to_string()];
+        assign.after = vec!["root".to_string()];
         graph.add_node(Node::Task(assign));
 
         let desc = collect_descendants("root", &graph);
@@ -1669,7 +1669,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root task")));
         let mut child = make_done_task("child", "Child task");
-        child.blocked_by = vec!["root".to_string()];
+        child.after = vec!["root".to_string()];
         child.assigned = Some("agent-1".to_string());
         child.artifacts = vec!["output.txt".to_string()];
         graph.add_node(Node::Task(child));
@@ -1688,7 +1688,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root task")));
         let mut child = make_done_task("child", "Child task");
-        child.blocked_by = vec!["root".to_string()];
+        child.after = vec!["root".to_string()];
         graph.add_node(Node::Task(child));
         setup_graph(&dir, &graph);
 
@@ -1707,12 +1707,12 @@ mod tests {
         root.completed_at = Some("2026-02-20T10:01:00+00:00".to_string());
         graph.add_node(Node::Task(root));
         let mut child1 = make_done_task("c1", "Child 1");
-        child1.blocked_by = vec!["root".to_string()];
+        child1.after = vec!["root".to_string()];
         child1.started_at = Some("2026-02-20T10:01:00+00:00".to_string());
         child1.completed_at = Some("2026-02-20T10:03:00+00:00".to_string());
         graph.add_node(Node::Task(child1));
         let mut child2 = make_done_task("c2", "Child 2");
-        child2.blocked_by = vec!["root".to_string()];
+        child2.after = vec!["root".to_string()];
         child2.started_at = Some("2026-02-20T10:01:00+00:00".to_string());
         child2.completed_at = Some("2026-02-20T10:04:00+00:00".to_string());
         graph.add_node(Node::Task(child2));
@@ -1775,7 +1775,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root")));
         let mut child = make_done_task("child", "Child");
-        child.blocked_by = vec!["root".to_string()];
+        child.after = vec!["root".to_string()];
         graph.add_node(Node::Task(child));
         setup_graph(&dir, &graph);
 

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{Estimate, LoopEdge, Node, Status, Task, parse_delay};
+use workgraph::graph::{CycleConfig, Estimate, Node, Status, Task, parse_delay};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -47,7 +47,7 @@ pub fn run(
     title: &str,
     id: Option<&str>,
     description: Option<&str>,
-    blocked_by: &[String],
+    after: &[String],
     assign: Option<&str>,
     hours: Option<f64>,
     cost: Option<f64>,
@@ -58,10 +58,9 @@ pub fn run(
     max_retries: Option<u32>,
     model: Option<&str>,
     verify: Option<&str>,
-    loops_to: Option<&str>,
-    loop_max: Option<u32>,
-    loop_guard: Option<&str>,
-    loop_delay: Option<&str>,
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
     visibility: &str,
 ) -> Result<()> {
     if title.trim().is_empty() {
@@ -97,8 +96,8 @@ pub fn run(
         None => generate_id(title, &graph),
     };
 
-    // Validate blocked_by references (supports cross-repo peer:task-id syntax)
-    for blocker_id in blocked_by {
+    // Validate after references (supports cross-repo peer:task-id syntax)
+    for blocker_id in after {
         if blocker_id == &task_id {
             anyhow::bail!("Task '{}' cannot block itself", task_id);
         }
@@ -118,41 +117,31 @@ pub fn run(
         None
     };
 
-    // Build loop edges if --loops-to specified
-    let loops_to_edges = if let Some(target) = loops_to {
-        if graph.get_node(target).is_none() {
-            eprintln!(
-                "Warning: loop target '{}' does not exist in the graph",
-                target
-            );
-        }
-        let max_iterations = loop_max
-            .ok_or_else(|| anyhow::anyhow!("--loop-max is required when using --loops-to"))?;
-        let guard = match loop_guard {
+    // Build cycle config if --max-iterations specified
+    let cycle_config = if let Some(max_iter) = max_iterations {
+        let guard = match cycle_guard {
             Some(expr) => Some(parse_guard_expr(expr)?),
             None => None,
         };
-        let delay = match loop_delay {
+        let delay = match cycle_delay {
             Some(d) => {
-                // Validate the delay parses correctly
                 parse_delay(d).ok_or_else(|| {
-                    anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+                    anyhow::anyhow!("Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
                 })?;
                 Some(d.to_string())
             }
             None => None,
         };
-        vec![LoopEdge {
-            target: target.to_string(),
+        Some(CycleConfig {
+            max_iterations: max_iter,
             guard,
-            max_iterations,
             delay,
-        }]
+        })
     } else {
-        if loop_max.is_some() || loop_guard.is_some() || loop_delay.is_some() {
-            anyhow::bail!("--loop-max, --loop-guard, and --loop-delay require --loops-to");
+        if cycle_guard.is_some() || cycle_delay.is_some() {
+            anyhow::bail!("--cycle-guard and --cycle-delay require --max-iterations");
         }
-        vec![]
+        None
     };
 
     let task = Task {
@@ -162,8 +151,8 @@ pub fn run(
         status: Status::Open,
         assigned: assign.map(String::from),
         estimate,
-        blocks: vec![],
-        blocked_by: blocked_by.to_vec(),
+        before: vec![],
+        after: after.to_vec(),
         requires: vec![],
         tags: tags.to_vec(),
         skills: skills.to_vec(),
@@ -182,8 +171,8 @@ pub fn run(
         model: model.map(String::from),
         verify: verify.map(String::from),
         agent: None,
-        loops_to: loops_to_edges,
         loop_iteration: 0,
+        cycle_config,
         ready_after: None,
         paused: false,
         visibility: visibility.to_string(),
@@ -194,14 +183,14 @@ pub fn run(
 
     // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
     // (skip cross-repo refs — those live in a different graph)
-    for dep in blocked_by {
+    for dep in after {
         if workgraph::federation::parse_remote_ref(dep).is_some() {
             continue; // Cross-repo dep; can't update remote graph's blocks field
         }
         if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.blocks.contains(&task_id)
+            && !blocker.before.contains(&task_id)
         {
-            blocker.blocks.push(task_id.clone());
+            blocker.before.push(task_id.clone());
         }
     }
 
@@ -221,9 +210,6 @@ pub fn run(
     );
 
     println!("Added task: {} ({})", title, task_id);
-    if let (Some(target), Some(max)) = (&loops_to, &loop_max) {
-        println!("  Loop edge: → {} (max {} iterations)", target, max);
-    }
     super::print_service_hint(dir);
     Ok(())
 }
@@ -242,7 +228,7 @@ pub fn run_remote(
     title: &str,
     id: Option<&str>,
     description: Option<&str>,
-    blocked_by: &[String],
+    after: &[String],
     tags: &[String],
     skills: &[String],
     deliverables: &[String],
@@ -273,7 +259,7 @@ pub fn run_remote(
             title: title.to_string(),
             id: id.map(String::from),
             description: description.map(String::from),
-            blocked_by: blocked_by.to_vec(),
+            after: after.to_vec(),
             tags: tags.to_vec(),
             skills: skills.to_vec(),
             deliverables: deliverables.to_vec(),
@@ -306,7 +292,7 @@ pub fn run_remote(
             title,
             id,
             description,
-            blocked_by,
+            after,
             tags,
             skills,
             deliverables,
@@ -330,7 +316,7 @@ fn add_task_directly(
     title: &str,
     id: Option<&str>,
     description: Option<&str>,
-    blocked_by: &[String],
+    after: &[String],
     tags: &[String],
     skills: &[String],
     deliverables: &[String],
@@ -368,8 +354,8 @@ fn add_task_directly(
         status: Status::Open,
         assigned: None,
         estimate: None,
-        blocks: vec![],
-        blocked_by: blocked_by.to_vec(),
+        before: vec![],
+        after: after.to_vec(),
         requires: vec![],
         tags: tags.to_vec(),
         skills: skills.to_vec(),
@@ -388,21 +374,21 @@ fn add_task_directly(
         model: model.map(String::from),
         verify: verify.map(String::from),
         agent: None,
-        loops_to: vec![],
         loop_iteration: 0,
         ready_after: None,
         paused: false,
         visibility: "internal".to_string(),
+        cycle_config: None,
     };
 
     graph.add_node(Node::Task(task));
 
-    // Maintain bidirectional blocked_by/blocks consistency
-    for dep in blocked_by {
+    // Maintain bidirectional after/blocks consistency
+    for dep in after {
         if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.blocks.contains(&task_id)
+            && !blocker.before.contains(&task_id)
         {
-            blocker.blocks.push(task_id.clone());
+            blocker.before.push(task_id.clone());
         }
     }
 
@@ -761,7 +747,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         );
         assert!(result.is_err());
@@ -796,7 +781,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         );
         assert!(result.is_err());
@@ -825,7 +809,6 @@ mod tests {
             &[],
             &[],
             &[],
-            None,
             None,
             None,
             None,
@@ -873,14 +856,13 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         );
         assert!(result.is_ok());
     }
 
     #[test]
-    fn blocked_by_updates_blocker_blocks_field() {
+    fn after_updates_blocker_blocks_field() {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
         std::fs::create_dir_all(dir_path).unwrap();
@@ -912,7 +894,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             "internal",
         );
         assert!(result.is_ok());
@@ -920,24 +901,24 @@ mod tests {
         // Reload graph and verify symmetry
         let graph = load_graph(&path).unwrap();
 
-        // The new task should have blocked_by set
+        // The new task should have after set
         let dep = graph.get_task("dep-task").unwrap();
-        assert!(dep.blocked_by.contains(&"blocker-a".to_string()));
-        assert!(dep.blocked_by.contains(&"blocker-b".to_string()));
+        assert!(dep.after.contains(&"blocker-a".to_string()));
+        assert!(dep.after.contains(&"blocker-b".to_string()));
 
         // Each blocker should have the new task in its blocks field
         let a = graph.get_task("blocker-a").unwrap();
         assert!(
-            a.blocks.contains(&"dep-task".to_string()),
-            "blocker-a.blocks should contain dep-task, got: {:?}",
-            a.blocks
+            a.before.contains(&"dep-task".to_string()),
+            "blocker-a.before should contain dep-task, got: {:?}",
+            a.before
         );
 
         let b = graph.get_task("blocker-b").unwrap();
         assert!(
-            b.blocks.contains(&"dep-task".to_string()),
-            "blocker-b.blocks should contain dep-task, got: {:?}",
-            b.blocks
+            b.before.contains(&"dep-task".to_string()),
+            "blocker-b.before should contain dep-task, got: {:?}",
+            b.before
         );
     }
 }

@@ -96,9 +96,9 @@ fn filter_internal_tasks<'a>(
         internal_ids.insert(task.id.as_str());
 
         // Determine the parent task ID.
-        // For assign-X: the parent is X (assign task has no blocked_by from parent,
-        //   but parent has blocked_by assign-X)
-        // For evaluate-X: the parent is X (evaluate task is blocked_by X)
+        // For assign-X: the parent is X (assign task has no after from parent,
+        //   but parent has after assign-X)
+        // For evaluate-X: the parent is X (evaluate task is after X)
         let parent_id = if task.tags.iter().any(|t| t == "assignment") {
             // assign-{parent_id}: strip the prefix
             task.id.strip_prefix("assign-").map(|s| s.to_string())
@@ -292,12 +292,12 @@ fn generate_dot(
 
     // Print edges
     for task in tasks {
-        for blocked_by in &task.blocked_by {
+        for after in &task.after {
             // Only show edge if the blocker is also in our task set
-            if task_ids.contains(blocked_by.as_str()) {
+            if task_ids.contains(after.as_str()) {
                 // Check if this edge is on critical path
                 let edge_style =
-                    if critical_path.contains(&task.id) && critical_path.contains(blocked_by) {
+                    if critical_path.contains(&task.id) && critical_path.contains(after) {
                         "color=red, penwidth=2"
                     } else {
                         ""
@@ -306,12 +306,12 @@ fn generate_dot(
                 if edge_style.is_empty() {
                     lines.push(format!(
                         "  \"{}\" -> \"{}\" [label=\"blocks\"];",
-                        blocked_by, task.id
+                        after, task.id
                     ));
                 } else {
                     lines.push(format!(
                         "  \"{}\" -> \"{}\" [label=\"blocks\", {}];",
-                        blocked_by, task.id, edge_style
+                        after, task.id, edge_style
                     ));
                 }
             }
@@ -333,23 +333,6 @@ fn generate_dot(
             }
         }
 
-        // Loop edges (loops_to) — dashed magenta with iteration info
-        for loop_edge in &task.loops_to {
-            if task_ids.contains(loop_edge.target.as_str()) {
-                let label = format!(
-                    "loop {}/{}",
-                    graph
-                        .get_task(&loop_edge.target)
-                        .map(|t| t.loop_iteration)
-                        .unwrap_or(0),
-                    loop_edge.max_iterations
-                );
-                lines.push(format!(
-                    "  \"{}\" -> \"{}\" [style=dashed, color=magenta, fontcolor=magenta, label=\"{}\"];",
-                    task.id, loop_edge.target, label
-                ));
-            }
-        }
     }
 
     lines.push("}".to_string());
@@ -358,7 +341,7 @@ fn generate_dot(
 }
 
 fn generate_mermaid(
-    graph: &WorkGraph,
+    _graph: &WorkGraph,
     tasks: &[&workgraph::graph::Task],
     task_ids: &HashSet<&str>,
     critical_path: &HashSet<String>,
@@ -404,42 +387,21 @@ fn generate_mermaid(
 
     // Print edges
     for task in tasks {
-        for blocked_by in &task.blocked_by {
-            if task_ids.contains(blocked_by.as_str()) {
+        for after in &task.after {
+            if task_ids.contains(after.as_str()) {
                 // Check if this edge is on critical path
                 let arrow =
-                    if critical_path.contains(&task.id) && critical_path.contains(blocked_by) {
+                    if critical_path.contains(&task.id) && critical_path.contains(after) {
                         "==>" // thick arrow for critical path
                     } else {
                         "-->"
                     };
 
-                lines.push(format!("  {} {} {}", blocked_by, arrow, task.id));
+                lines.push(format!("  {} {} {}", after, arrow, task.id));
             }
         }
     }
 
-    // Print loop edges (loops_to) — dashed magenta
-    let mut has_loops = false;
-    for task in tasks {
-        for loop_edge in &task.loops_to {
-            if task_ids.contains(loop_edge.target.as_str()) {
-                if !has_loops {
-                    lines.push(String::new());
-                    lines.push("  %% Loop edges".to_string());
-                    has_loops = true;
-                }
-                let iter_count = graph
-                    .get_task(&loop_edge.target)
-                    .map(|t| t.loop_iteration)
-                    .unwrap_or(0);
-                lines.push(format!(
-                    "  {} -. \"loop {}/{}\" .-> {}",
-                    task.id, iter_count, loop_edge.max_iterations, loop_edge.target
-                ));
-            }
-        }
-    }
 
     // Print actor assignments
     let assigned_actors: HashSet<&str> =
@@ -469,13 +431,6 @@ fn generate_mermaid(
         ));
     }
 
-    // Add loop edge styling
-    if has_loops {
-        lines.push(String::new());
-        lines.push("  %% Loop edge styling".to_string());
-        lines.push("  linkStyle default stroke:#ff00ff,stroke-dasharray: 5 5".to_string());
-    }
-
     lines.join("\n")
 }
 
@@ -489,7 +444,7 @@ fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Has
             continue;
         }
 
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             if active_ids.contains(blocker_id.as_str()) {
                 forward_index
                     .entry(blocker_id.as_str())
@@ -504,7 +459,7 @@ fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Has
         .tasks()
         .filter(|t| active_ids.contains(t.id.as_str()))
         .filter(|t| {
-            t.blocked_by
+            t.after
                 .iter()
                 .all(|b| !active_ids.contains(b.as_str()))
         })
@@ -637,7 +592,7 @@ fn generate_ascii(
     let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
     for task in tasks {
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             if task_ids.contains(blocker.as_str()) {
                 forward
                     .entry(blocker.as_str())
@@ -702,20 +657,11 @@ fn generate_ascii(
         let color = task.map(|t| status_color(&t.status)).unwrap_or("");
         let status = task.map(|t| status_label(&t.status)).unwrap_or("unknown");
         let loop_info = task
-            .filter(|t| !t.loops_to.is_empty() || t.loop_iteration > 0)
+            .filter(|t| t.cycle_config.is_some() || t.loop_iteration > 0)
             .map(|t| {
-                // Show iteration progress: pick the max iteration / max from loops_to,
-                // or use loop_iteration directly if this task is a loop target.
-                let (iter, max) = if !t.loops_to.is_empty() {
-                    // Task has outgoing loop edges — show target iteration info
-                    let edge = &t.loops_to[0];
-                    let iter = graph
-                        .get_task(&edge.target)
-                        .map(|tgt| tgt.loop_iteration)
-                        .unwrap_or(0);
-                    (iter, edge.max_iterations)
+                let (iter, max) = if let Some(ref cfg) = t.cycle_config {
+                    (t.loop_iteration, cfg.max_iterations)
                 } else {
-                    // Task is a loop target (has loop_iteration > 0 but no outgoing loops)
                     (t.loop_iteration, 0)
                 };
                 if max > 0 {
@@ -757,7 +703,7 @@ fn generate_ascii(
 
     for task in tasks {
         let ti = id_to_idx[task.id.as_str()];
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             if let Some(&bi) = id_to_idx.get(blocker.as_str()) {
                 union(&mut parent_uf, ti, bi);
             }
@@ -868,27 +814,6 @@ fn generate_ascii(
                     format!("{}│ ", prefix)
                 };
 
-                // Draw loop back-edges if this task has any
-                if let Some(task) = task_map.get(id) {
-                    let magenta = if use_color { "\x1b[35m" } else { "" };
-                    let reset = if use_color { "\x1b[0m" } else { "" };
-                    for loop_edge in &task.loops_to {
-                        let iter = graph
-                            .get_task(&loop_edge.target)
-                            .map(|t| t.loop_iteration)
-                            .unwrap_or(0);
-                        lines.push(format!(
-                            "{}{}↺ loops to {} (iter {}/{})",
-                            child_prefix, magenta, loop_edge.target, iter, loop_edge.max_iterations
-                        ));
-                        if use_color {
-                            // Append reset to the last line
-                            if let Some(last) = lines.last_mut() {
-                                last.push_str(reset);
-                            }
-                        }
-                    }
-                }
 
                 // Get children and recurse
                 let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
@@ -969,7 +894,7 @@ pub fn generate_graph(
 /// Like generate_graph but allows overriding the displayed status for each task.
 /// Used by trace animation to show historical snapshots.
 pub fn generate_graph_with_overrides(
-    graph: &WorkGraph,
+    _graph: &WorkGraph,
     tasks: &[&Task],
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
@@ -983,7 +908,7 @@ pub fn generate_graph_with_overrides(
     let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
     for task in tasks {
-        for blocker in &task.blocked_by {
+        for blocker in &task.after {
             if task_ids.contains(blocker.as_str()) {
                 forward
                     .entry(blocker.as_str())
@@ -1121,10 +1046,16 @@ pub fn generate_graph_with_overrides(
             .map(|a| format!(" {}", a))
             .unwrap_or_default();
 
-        let loop_info = if !task.loops_to.is_empty() || task.loop_iteration > 0 {
-            " ↺"
+        let loop_info = if let Some(ref cfg) = task.cycle_config {
+            if cfg.max_iterations > 0 {
+                format!(" ↺ {}/{}", task.loop_iteration, cfg.max_iterations)
+            } else {
+                " ↺".to_string()
+            }
+        } else if task.loop_iteration > 0 {
+            format!(" ↺ {}", task.loop_iteration)
         } else {
-            ""
+            String::new()
         };
 
         let line1 = display_id;
@@ -1425,27 +1356,6 @@ pub fn generate_graph_with_overrides(
         }
     }
 
-    // Append loop edge annotations at the bottom
-    let mut loop_lines: Vec<String> = Vec::new();
-    for task in tasks {
-        for loop_edge in &task.loops_to {
-            if task_ids.contains(loop_edge.target.as_str()) {
-                let iter = graph
-                    .get_task(&loop_edge.target)
-                    .map(|t| t.loop_iteration)
-                    .unwrap_or(0);
-                let magenta = if use_color { "\x1b[35m" } else { "" };
-                loop_lines.push(format!(
-                    "{}↺ {} loops to {} (iter {}/{}){}",
-                    magenta, task.id, loop_edge.target, iter, loop_edge.max_iterations, reset
-                ));
-            }
-        }
-    }
-    if !loop_lines.is_empty() {
-        output.push(String::new());
-        output.extend(loop_lines);
-    }
 
     output.join("\n")
 }
@@ -1526,8 +1436,8 @@ mod tests {
                 hours: Some(hours),
                 cost: None,
             }),
-            blocks: vec![],
-            blocked_by: vec![],
+            before: vec![],
+            after: vec![],
             requires: vec![],
             tags: vec![],
             skills: vec![],
@@ -1546,11 +1456,11 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         }
     }
 
@@ -1602,7 +1512,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task_with_hours("t1", "Task 1", 8.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1640,7 +1550,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1659,7 +1569,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task_with_hours("t1", "Task 1", 8.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1681,9 +1591,9 @@ mod tests {
         // Critical path should be t1 -> t2
         let t1 = make_task_with_hours("t1", "Task 1", 8.0);
         let mut t2 = make_task_with_hours("t2", "Task 2", 16.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task_with_hours("t3", "Task 3", 2.0);
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1733,7 +1643,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("src", "Source task");
         let mut t2 = make_task("tgt", "Target task");
-        t2.blocked_by = vec!["src".to_string()];
+        t2.after = vec!["src".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
 
@@ -1754,9 +1664,9 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("a", "Task A");
         let mut t2 = make_task("b", "Task B");
-        t2.blocked_by = vec!["a".to_string()];
+        t2.after = vec!["a".to_string()];
         let mut t3 = make_task("c", "Task C");
-        t3.blocked_by = vec!["a".to_string()];
+        t3.after = vec!["a".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         graph.add_node(Node::Task(t3));
@@ -1780,7 +1690,7 @@ mod tests {
         let t1 = make_task("a", "Task A");
         let t2 = make_task("b", "Task B");
         let mut t3 = make_task("c", "Merge Task");
-        t3.blocked_by = vec!["a".to_string(), "b".to_string()];
+        t3.after = vec!["a".to_string(), "b".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         graph.add_node(Node::Task(t3));
@@ -1817,7 +1727,7 @@ mod tests {
         t1.status = Status::InProgress;
         let mut t2 = make_task("child", "Child");
         t2.status = Status::Blocked;
-        t2.blocked_by = vec!["root".to_string()];
+        t2.after = vec!["root".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
 
@@ -1835,9 +1745,9 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("a", "Task A");
         let mut t2 = make_task("b", "Task B");
-        t2.blocked_by = vec!["a".to_string()];
+        t2.after = vec!["a".to_string()];
         let mut t3 = make_task("c", "Task C");
-        t3.blocked_by = vec!["b".to_string()];
+        t3.after = vec!["b".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         graph.add_node(Node::Task(t3));
@@ -1865,7 +1775,7 @@ mod tests {
 
         let t1 = make_task_with_hours("t1", "Task 1", f64::NAN);
         let mut t2 = make_task_with_hours("t2", "Task 2", 4.0);
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -1897,12 +1807,12 @@ mod tests {
 
     // --- Internal task filtering tests ---
 
-    fn make_internal_task(id: &str, title: &str, tag: &str, blocked_by: Vec<&str>) -> Task {
+    fn make_internal_task(id: &str, title: &str, tag: &str, after: Vec<&str>) -> Task {
         Task {
             id: id.to_string(),
             title: title.to_string(),
             tags: vec![tag.to_string(), "agency".to_string()],
-            blocked_by: blocked_by.into_iter().map(String::from).collect(),
+            after: after.into_iter().map(String::from).collect(),
             ..Task::default()
         }
     }
@@ -1931,7 +1841,7 @@ mod tests {
         );
         assign.status = Status::InProgress;
         // assign task blocks parent (parent is blocked by assign)
-        parent.blocked_by = vec!["assign-my-task".to_string()];
+        parent.after = vec!["assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -1988,7 +1898,7 @@ mod tests {
             vec![],
         );
         assign.status = Status::InProgress;
-        parent.blocked_by = vec!["assign-my-task".to_string()];
+        parent.after = vec!["assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -2017,7 +1927,7 @@ mod tests {
             vec![],
         );
         assign.status = Status::InProgress;
-        parent.blocked_by = vec!["assign-my-task".to_string()];
+        parent.after = vec!["assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -2045,7 +1955,7 @@ mod tests {
             "assignment",
             vec![],
         );
-        parent.blocked_by = vec!["assign-my-task".to_string()];
+        parent.after = vec!["assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -2064,22 +1974,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ascii_loop_symbol_on_task_with_loops_to() {
-        use workgraph::graph::LoopEdge;
+    fn test_ascii_loop_symbol_on_task_with_cycle_config() {
+        use workgraph::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");
-        src.loops_to.push(LoopEdge {
-            target: "tgt".to_string(),
-            guard: None,
+        src.cycle_config = Some(CycleConfig {
             max_iterations: 10,
+            guard: None,
             delay: None,
         });
+        src.loop_iteration = 3;
         let mut tgt = make_task("tgt", "Target");
-        tgt.loop_iteration = 3;
-        tgt.blocked_by = vec!["src".to_string()];
-        // Need src blocked_by tgt for the loop chain
-        src.blocked_by = vec!["tgt".to_string()];
+        tgt.after = vec!["src".to_string()];
+        src.after = vec!["tgt".to_string()];
         graph.add_node(Node::Task(src));
         graph.add_node(Node::Task(tgt));
 
@@ -2088,7 +1996,7 @@ mod tests {
         let no_annots = HashMap::new();
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
 
-        // The source task (which has loops_to) should show the ↺ symbol
+        // The source task (which has cycle_config) should show the ↺ symbol
         assert!(
             result.contains("↺"),
             "Expected ↺ symbol in output:\n{}",
@@ -2104,14 +2012,13 @@ mod tests {
 
     #[test]
     fn test_ascii_loop_symbol_independent_task() {
-        use workgraph::graph::LoopEdge;
+        use workgraph::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut task = make_task("looper", "Looping task");
-        task.loops_to.push(LoopEdge {
-            target: "looper".to_string(),
-            guard: None,
+        task.cycle_config = Some(CycleConfig {
             max_iterations: 5,
+            guard: None,
             delay: None,
         });
         task.loop_iteration = 2;
@@ -2136,19 +2043,18 @@ mod tests {
     }
 
     #[test]
-    fn test_ascii_loop_backedge_uses_loop_symbol() {
-        use workgraph::graph::LoopEdge;
+    fn test_ascii_loop_symbol_with_cycle_config_no_iteration() {
+        use workgraph::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");
-        src.loops_to.push(LoopEdge {
-            target: "tgt".to_string(),
-            guard: None,
+        src.cycle_config = Some(CycleConfig {
             max_iterations: 5,
+            guard: None,
             delay: None,
         });
         let mut tgt = make_task("tgt", "Target");
-        tgt.blocked_by = vec!["src".to_string()];
+        tgt.after = vec!["src".to_string()];
         graph.add_node(Node::Task(src));
         graph.add_node(Node::Task(tgt));
 
@@ -2157,10 +2063,10 @@ mod tests {
         let no_annots = HashMap::new();
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
 
-        // The loop back-edge line should contain ↺
+        // Task with cycle_config should show the ↺ symbol
         assert!(
             result.contains("↺"),
-            "Expected ↺ symbol in back-edge line:\n{}",
+            "Expected ↺ symbol for cycle_config task:\n{}",
             result
         );
     }
@@ -2198,7 +2104,7 @@ mod tests {
             make_internal_task("assign-b", "Assign agent to b", "assignment", vec!["a"]);
         assign_b.status = Status::InProgress;
         let mut task_b = make_task("b", "Task B");
-        task_b.blocked_by = vec!["assign-b".to_string()];
+        task_b.after = vec!["assign-b".to_string()];
         graph.add_node(Node::Task(task_a));
         graph.add_node(Node::Task(assign_b));
         graph.add_node(Node::Task(task_b));
@@ -2251,7 +2157,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("a", "Task A");
         let mut t2 = make_task("b", "Task B");
-        t2.blocked_by = vec!["a".to_string()];
+        t2.after = vec!["a".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
 
@@ -2272,11 +2178,11 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("root", "Root");
         let mut c1 = make_task("c1", "Child 1");
-        c1.blocked_by = vec!["root".to_string()];
+        c1.after = vec!["root".to_string()];
         let mut c2 = make_task("c2", "Child 2");
-        c2.blocked_by = vec!["root".to_string()];
+        c2.after = vec!["root".to_string()];
         let mut c3 = make_task("c3", "Child 3");
-        c3.blocked_by = vec!["root".to_string()];
+        c3.after = vec!["root".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(c1));
         graph.add_node(Node::Task(c2));
@@ -2301,7 +2207,7 @@ mod tests {
         let t1 = make_task("a", "Task A");
         let t2 = make_task("b", "Task B");
         let mut merge = make_task("merge", "Merge");
-        merge.blocked_by = vec!["a".to_string(), "b".to_string()];
+        merge.after = vec!["a".to_string(), "b".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         graph.add_node(Node::Task(merge));
@@ -2322,11 +2228,11 @@ mod tests {
         let mut graph = WorkGraph::new();
         let t1 = make_task("start", "Start");
         let mut left = make_task("left", "Left");
-        left.blocked_by = vec!["start".to_string()];
+        left.after = vec!["start".to_string()];
         let mut right = make_task("right", "Right");
-        right.blocked_by = vec!["start".to_string()];
+        right.after = vec!["start".to_string()];
         let mut end = make_task("end", "End");
-        end.blocked_by = vec!["left".to_string(), "right".to_string()];
+        end.after = vec!["left".to_string(), "right".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(left));
         graph.add_node(Node::Task(right));
@@ -2354,7 +2260,7 @@ mod tests {
         t1.status = Status::InProgress;
         let mut t2 = make_task("child", "Child");
         t2.status = Status::Blocked;
-        t2.blocked_by = vec!["root".to_string()];
+        t2.after = vec!["root".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
 
@@ -2369,19 +2275,18 @@ mod tests {
 
     #[test]
     fn test_generate_graph_loop_annotation() {
-        use workgraph::graph::LoopEdge;
+        use workgraph::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");
-        src.loops_to.push(LoopEdge {
-            target: "tgt".to_string(),
-            guard: None,
+        src.cycle_config = Some(CycleConfig {
             max_iterations: 5,
+            guard: None,
             delay: None,
         });
+        src.loop_iteration = 2;
         let mut tgt = make_task("tgt", "Target");
-        tgt.loop_iteration = 2;
-        tgt.blocked_by = vec!["src".to_string()];
+        tgt.after = vec!["src".to_string()];
         graph.add_node(Node::Task(src));
         graph.add_node(Node::Task(tgt));
 

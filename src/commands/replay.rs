@@ -271,7 +271,7 @@ fn reset_task(task: &mut Task) {
     task.loop_iteration = 0;
     task.failure_reason = None;
     task.paused = false;
-    // Preserve: log, blocked_by, blocks, description, tags, skills, etc.
+    // Preserve: log, after, blocks, description, tags, skills, etc.
 }
 
 /// Build a reverse dependency index: task_id -> list of tasks that depend on it.
@@ -280,7 +280,7 @@ fn build_reverse_index(
 ) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
     for task in graph.tasks() {
-        for dep in &task.blocked_by {
+        for dep in &task.after {
             index
                 .entry(dep.clone())
                 .or_default()
@@ -317,7 +317,7 @@ fn collect_subgraph(
     while let Some(id) = queue.pop() {
         if result.insert(id.clone())
             && let Some(task) = graph.get_task(&id) {
-                for blocked in &task.blocks {
+                for blocked in &task.before {
                     queue.push(blocked.clone());
                 }
             }
@@ -402,12 +402,12 @@ mod tests {
     fn test_replay_specific_tasks_with_dependents() {
         let (_tmp, dir) = make_dir();
         let mut t1 = make_task_with_status("t1", "Root", Status::Done);
-        t1.blocks = vec!["t2".to_string()];
+        t1.before = vec!["t2".to_string()];
         let mut t2 = make_task_with_status("t2", "Middle", Status::Done);
-        t2.blocked_by = vec!["t1".to_string()];
-        t2.blocks = vec!["t3".to_string()];
+        t2.after = vec!["t1".to_string()];
+        t2.before = vec!["t3".to_string()];
         let mut t3 = make_task_with_status("t3", "Leaf", Status::Done);
-        t3.blocked_by = vec!["t2".to_string()];
+        t3.after = vec!["t2".to_string()];
         setup_workgraph(&dir, vec![t1, t2, t3]);
 
         let opts = ReplayOptions {
@@ -462,9 +462,9 @@ mod tests {
     fn test_replay_subgraph() {
         let (_tmp, dir) = make_dir();
         let mut root = make_task_with_status("root", "Root", Status::Done);
-        root.blocks = vec!["child".to_string()];
+        root.before = vec!["child".to_string()];
         let mut child = make_task_with_status("child", "Child", Status::Failed);
-        child.blocked_by = vec!["root".to_string()];
+        child.after = vec!["root".to_string()];
         let other = make_task_with_status("other", "Unrelated", Status::Failed);
         setup_workgraph(&dir, vec![root, child, other]);
 
@@ -499,7 +499,7 @@ mod tests {
             artifacts: vec!["file.rs".to_string()],
             loop_iteration: 3,
             failure_reason: Some("err".to_string()),
-            blocked_by: vec!["dep".to_string()],
+            after: vec!["dep".to_string()],
             ..Task::default()
         };
 
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(task.loop_iteration, 0);
         assert!(task.failure_reason.is_none());
         // Preserved:
-        assert_eq!(task.blocked_by, vec!["dep"]);
+        assert_eq!(task.after, vec!["dep"]);
         assert_eq!(task.title, "Test");
     }
 
@@ -573,11 +573,11 @@ mod tests {
     fn test_build_reverse_index() {
         let (_tmp, dir) = make_dir();
         let mut t1 = make_task("t1", "Root");
-        t1.blocks = vec!["t2".to_string(), "t3".to_string()];
+        t1.before = vec!["t2".to_string(), "t3".to_string()];
         let mut t2 = make_task("t2", "Mid");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Leaf");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
         setup_workgraph(&dir, vec![t1, t2, t3]);
 
         let (graph, _) = super::super::load_workgraph(&dir).unwrap();

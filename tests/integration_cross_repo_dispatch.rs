@@ -56,7 +56,7 @@ fn add_task_request_serializes_correctly() {
         "cmd": "add_task",
         "title": "Fix the bug",
         "description": "A description",
-        "blocked_by": ["task-a"],
+        "after": ["task-a"],
         "tags": ["urgent"],
         "skills": ["rust"],
         "deliverables": ["fix.rs"],
@@ -70,7 +70,7 @@ fn add_task_request_serializes_correctly() {
     let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(value["cmd"], "add_task");
     assert_eq!(value["title"], "Fix the bug");
-    assert_eq!(value["blocked_by"][0], "task-a");
+    assert_eq!(value["after"][0], "task-a");
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn direct_add_task_to_peer_graph() {
 }
 
 #[test]
-fn direct_add_task_with_blocked_by() {
+fn direct_add_task_with_after() {
     let tmp = TempDir::new().unwrap();
     let remote = setup_project(&tmp, "remote");
     let remote_wg = remote.join(".workgraph");
@@ -255,15 +255,15 @@ fn direct_add_task_with_blocked_by() {
         id: "dependent-task".to_string(),
         title: "Depends on prereq".to_string(),
         status: Status::Open,
-        blocked_by: vec!["prereq-task".to_string()],
+        after: vec!["prereq-task".to_string()],
         ..Task::default()
     };
     graph.add_node(Node::Task(task));
 
     // Update the blocker's blocks field (same as add.rs logic)
     if let Some(blocker) = graph.get_task_mut("prereq-task") {
-        if !blocker.blocks.contains(&"dependent-task".to_string()) {
-            blocker.blocks.push("dependent-task".to_string());
+        if !blocker.before.contains(&"dependent-task".to_string()) {
+            blocker.before.push("dependent-task".to_string());
         }
     }
     save_graph(&graph, &graph_path).unwrap();
@@ -271,10 +271,10 @@ fn direct_add_task_with_blocked_by() {
     // Verify both tasks and the bidirectional relationship
     let graph = load_graph(&graph_path).unwrap();
     let dep = graph.get_task("dependent-task").unwrap();
-    assert!(dep.blocked_by.contains(&"prereq-task".to_string()));
+    assert!(dep.after.contains(&"prereq-task".to_string()));
 
     let prereq = graph.get_task("prereq-task").unwrap();
-    assert!(prereq.blocks.contains(&"dependent-task".to_string()));
+    assert!(prereq.before.contains(&"dependent-task".to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +562,7 @@ fn cli_add_without_repo_flag_adds_locally() {
 }
 
 // ===========================================================================
-// Cross-Repo Dependencies (peer:task-id in blocked_by)
+// Cross-Repo Dependencies (peer:task-id in after)
 // ===========================================================================
 
 #[test]
@@ -597,7 +597,7 @@ fn cross_repo_dep_ready_when_remote_task_done() {
     local_task.id = "local-task".to_string();
     local_task.title = "Local task".to_string();
     local_task.status = Status::Open;
-    local_task.blocked_by = vec!["upstream:remote-prereq".to_string()];
+    local_task.after = vec!["upstream:remote-prereq".to_string()];
     local_graph.add_node(Node::Task(local_task));
     save_graph(&local_graph, &local_graph_path).unwrap();
 
@@ -639,7 +639,7 @@ fn cross_repo_dep_blocked_when_remote_task_open() {
     local_task.id = "local-task".to_string();
     local_task.title = "Local task".to_string();
     local_task.status = Status::Open;
-    local_task.blocked_by = vec!["upstream:remote-prereq".to_string()];
+    local_task.after = vec!["upstream:remote-prereq".to_string()];
     local_graph.add_node(Node::Task(local_task));
     save_graph(&local_graph, &local_graph_path).unwrap();
 
@@ -665,7 +665,7 @@ fn cross_repo_dep_blocked_when_peer_unknown() {
     local_task.id = "local-task".to_string();
     local_task.title = "Local task".to_string();
     local_task.status = Status::Open;
-    local_task.blocked_by = vec!["unknown-peer:some-task".to_string()];
+    local_task.after = vec!["unknown-peer:some-task".to_string()];
     local_graph.add_node(Node::Task(local_task));
     save_graph(&local_graph, &local_graph_path).unwrap();
 
@@ -712,7 +712,7 @@ fn cross_repo_dep_mixed_with_local_deps() {
     dependent.id = "dependent-task".to_string();
     dependent.title = "Depends on both".to_string();
     dependent.status = Status::Open;
-    dependent.blocked_by = vec![
+    dependent.after = vec![
         "local-prereq".to_string(),
         "upstream:remote-prereq".to_string(),
     ];
@@ -764,7 +764,7 @@ fn cross_repo_dep_mixed_one_not_done() {
     dependent.id = "dependent-task".to_string();
     dependent.title = "Depends on both".to_string();
     dependent.status = Status::Open;
-    dependent.blocked_by = vec![
+    dependent.after = vec![
         "local-prereq".to_string(),
         "upstream:remote-prereq".to_string(),
     ];
@@ -778,21 +778,21 @@ fn cross_repo_dep_mixed_one_not_done() {
 }
 
 #[test]
-fn cli_add_with_cross_repo_blocked_by() {
+fn cli_add_with_cross_repo_after() {
     use std::process::Command;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
     let local_wg = local.join(".workgraph");
 
-    // Add a task with a cross-repo blocked_by reference
+    // Add a task with a cross-repo after reference
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
         .args([
             "--dir",
             local_wg.to_str().unwrap(),
             "add",
             "Depends on remote",
-            "--blocked-by",
+            "--after",
             "upstream:remote-task",
         ])
         .output()
@@ -803,19 +803,19 @@ fn cli_add_with_cross_repo_blocked_by() {
 
     assert!(
         output.status.success(),
-        "wg add --blocked-by peer:task failed.\nstdout: {}\nstderr: {}",
+        "wg add --after peer:task failed.\nstdout: {}\nstderr: {}",
         stdout,
         stderr
     );
 
-    // Verify blocked_by was stored with the peer:task-id reference
+    // Verify after was stored with the peer:task-id reference
     let graph = load_graph(&local_wg.join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = graph.tasks().collect();
     assert_eq!(tasks.len(), 1);
     assert!(
-        tasks[0].blocked_by.contains(&"upstream:remote-task".to_string()),
-        "Expected 'upstream:remote-task' in blocked_by, got: {:?}",
-        tasks[0].blocked_by
+        tasks[0].after.contains(&"upstream:remote-task".to_string()),
+        "Expected 'upstream:remote-task' in after, got: {:?}",
+        tasks[0].after
     );
 }
 
@@ -868,7 +868,7 @@ fn resolve_remote_task_status_peer_not_found() {
 // Validates all four cross-repo subsystems working together:
 //   1. Peer registration (federation.yaml)
 //   2. Cross-repo task dispatch (wg add --repo)
-//   3. Cross-repo dependencies (peer:task-id in blocked_by)
+//   3. Cross-repo dependencies (peer:task-id in after)
 //   4. Trace function portability (instantiate --from peer)
 
 /// Helper: save a trace function to a workgraph's functions directory.
@@ -904,7 +904,7 @@ fn setup_trace_function(wg_dir: &Path) {
                 title: "Build {{input.service_name}}".to_string(),
                 description: "Build the service binary".to_string(),
                 skills: vec!["rust".to_string()],
-                blocked_by: vec![],
+                after: vec![],
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
@@ -916,7 +916,7 @@ fn setup_trace_function(wg_dir: &Path) {
                 title: "Test {{input.service_name}}".to_string(),
                 description: "Run the test suite".to_string(),
                 skills: vec!["testing".to_string()],
-                blocked_by: vec!["build".to_string()],
+                after: vec!["build".to_string()],
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
@@ -928,7 +928,7 @@ fn setup_trace_function(wg_dir: &Path) {
                 title: "Deploy {{input.service_name}}".to_string(),
                 description: "Push to production".to_string(),
                 skills: vec!["ops".to_string()],
-                blocked_by: vec!["test".to_string()],
+                after: vec!["test".to_string()],
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
@@ -1024,7 +1024,7 @@ fn end_to_end_cross_repo_all_four_subsystems() {
         title: "Integrate shared library".to_string(),
         description: Some("Use the shared lib after B builds it".to_string()),
         status: Status::Open,
-        blocked_by: vec!["project-b:build-lib".to_string()],
+        after: vec!["project-b:build-lib".to_string()],
         ..Task::default()
     };
     graph_a.add_node(Node::Task(dependent));
@@ -1106,15 +1106,15 @@ fn end_to_end_cross_repo_all_four_subsystems() {
     let graph_a = load_graph(&graph_path_a).unwrap();
     let build = graph_a.get_task("gw-build").unwrap();
     assert_eq!(build.title, "Build api-gateway");
-    assert!(build.blocked_by.is_empty(), "Root task should have no blockers");
+    assert!(build.after.is_empty(), "Root task should have no blockers");
 
     let test = graph_a.get_task("gw-test").unwrap();
     assert_eq!(test.title, "Test api-gateway");
-    assert!(test.blocked_by.contains(&"gw-build".to_string()));
+    assert!(test.after.contains(&"gw-build".to_string()));
 
     let deploy = graph_a.get_task("gw-deploy").unwrap();
     assert_eq!(deploy.title, "Deploy api-gateway");
-    assert!(deploy.blocked_by.contains(&"gw-test".to_string()));
+    assert!(deploy.after.contains(&"gw-test".to_string()));
 
     // ── Step 8: Verify the full graph state ────────────────────────────
     // Project A should now have: integrate-lib (ready), gw-build (ready),
@@ -1182,7 +1182,7 @@ fn end_to_end_cross_repo_mixed_local_and_remote_deps() {
         id: "final-task".to_string(),
         title: "Needs both".to_string(),
         status: Status::Open,
-        blocked_by: vec![
+        after: vec![
             "local-dep".to_string(),
             "project-b:remote-dep".to_string(),
         ],

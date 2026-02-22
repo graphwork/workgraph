@@ -284,10 +284,10 @@ fn print_input_detail(input: &FunctionInput) {
 }
 
 fn print_template_summary(template: &TaskTemplate, indent: &str) {
-    let deps = if template.blocked_by.is_empty() {
+    let deps = if template.after.is_empty() {
         String::new()
     } else {
-        format!(" (blocked by: {})", template.blocked_by.join(", "))
+        format!(" (blocked by: {})", template.after.join(", "))
     };
     let loops = if template.loops_to.is_empty() {
         String::new()
@@ -309,8 +309,8 @@ fn print_template_detail(template: &TaskTemplate) {
         }
     }
 
-    if !template.blocked_by.is_empty() {
-        println!("    Blocked by: {}", template.blocked_by.join(", "));
+    if !template.after.is_empty() {
+        println!("    After: {}", template.after.join(", "));
     }
     if !template.loops_to.is_empty() {
         for edge in &template.loops_to {
@@ -408,7 +408,7 @@ mod tests {
                     title: "Plan {{input.feature_name}}".to_string(),
                     description: "Plan the implementation".to_string(),
                     skills: vec!["analysis".to_string()],
-                    blocked_by: vec![],
+                    after: vec![],
                     loops_to: vec![],
                     role_hint: Some("analyst".to_string()),
                     deliverables: vec![],
@@ -420,7 +420,7 @@ mod tests {
                     title: "Implement {{input.feature_name}}".to_string(),
                     description: "Build the feature".to_string(),
                     skills: vec!["implementation".to_string()],
-                    blocked_by: vec!["plan".to_string()],
+                    after: vec!["plan".to_string()],
                     loops_to: vec![],
                     role_hint: Some("programmer".to_string()),
                     deliverables: vec![],
@@ -432,7 +432,7 @@ mod tests {
                     title: "Validate {{input.feature_name}}".to_string(),
                     description: "Review the implementation".to_string(),
                     skills: vec!["review".to_string()],
-                    blocked_by: vec!["implement".to_string()],
+                    after: vec!["implement".to_string()],
                     loops_to: vec![],
                     role_hint: None,
                     deliverables: vec![],

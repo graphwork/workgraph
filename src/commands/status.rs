@@ -250,7 +250,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
                             .map(|ts| ts > now)
                             .unwrap_or(false)
                     });
-                    let all_blockers_done = task.blocked_by.iter().all(|bid| {
+                    let all_blockers_done = task.after.iter().all(|bid| {
                         graph
                             .get_task(bid)
                             .map(|t| t.status.is_terminal())
@@ -480,7 +480,7 @@ mod tests {
 
         // Blocked task
         let mut t4 = make_task("t4", "Blocked");
-        t4.blocked_by = vec!["t1".to_string()];
+        t4.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t4));
 
         save_graph(&graph, &path).unwrap();
@@ -547,7 +547,7 @@ mod tests {
 
         // Blocked task: has unfinished blocker
         let mut blocked = make_task("blocked", "Blocked task");
-        blocked.blocked_by = vec!["blocker".to_string()];
+        blocked.after = vec!["blocker".to_string()];
         graph.add_node(Node::Task(blocked));
 
         // The blocker itself (open)

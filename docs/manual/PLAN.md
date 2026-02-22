@@ -18,13 +18,17 @@ Every writer must use these terms with these exact meanings. If a term is not in
 |------|-----------|
 | **task** | The fundamental unit of work in a workgraph. Has an ID, title, status, and may have dependencies, skills, inputs, deliverables, and other metadata. Tasks are nodes in the graph. |
 | **status** | The current lifecycle state of a task. One of: *open* (available for work), *in-progress* (claimed by an agent), *done* (completed successfully), *failed* (attempted and failed; retryable), *abandoned* (permanently dropped), or *blocked* (explicitly marked; rarely used since blocking is usually derived). The three *terminal* statuses are done, failed, and abandoned — a terminal task no longer blocks its dependents. |
-| **dependency** | A directed edge between tasks expressed via `blocked_by`. Task B depends on task A means B cannot be ready until A reaches a terminal status. Dependencies form the forward structure of the graph. |
-| **blocked_by** | The authoritative dependency list on a task. A task is *blocked* (in the derived sense) when any entry in its `blocked_by` list is non-terminal. |
-| **blocks** | The inverse of `blocked_by`, maintained for bidirectional traversal. If B is blocked_by A, then A.blocks includes B. Not checked by the scheduler — purely a convenience index. |
-| **ready** | A task is *ready* when it is open, not paused, past any time constraints (`not_before`, `ready_after`), and every task in its `blocked_by` list is terminal. Ready tasks are candidates for dispatch. |
-| **loop edge** | A conditional back-edge (`loops_to`) that fires when its source task completes. It re-opens a target task upstream, creating an intentional cycle. Loop edges are *not* blocking edges — they do not affect `ready` calculation. Every loop edge has a mandatory `max_iterations` cap. |
-| **guard** | A condition on a loop edge that must be true for the loop to fire. Three kinds: *Always* (unconditional), *TaskStatus* (fire if a named task has a specific status), and *IterationLessThan* (fire if the target's iteration count is below a threshold). |
-| **loop iteration** | A counter on each task tracking how many times it has been re-activated by a loop edge. Starts at zero. Compared against `max_iterations` to enforce loop bounds. |
+| **dependency** | A directed edge between tasks expressed via `after`. Task B depends on task A means B cannot be ready until A reaches a terminal status. Dependencies form the forward structure of the graph. |
+| **after** | The authoritative dependency list on a task. `task.after = ["dep"]` means the task comes after `dep` — i.e., `dep` must complete before this task can be ready. Renamed from `blocked_by`; the old name is accepted as a serde alias for backward compatibility. |
+| **before** | The computed inverse of `after`, maintained for bidirectional traversal. If B is after A, then A.before includes B. Not checked by the scheduler — purely a convenience index. Renamed from `blocks`. |
+| **ready** | A task is *ready* when it is open, not paused, past any time constraints (`not_before`, `ready_after`), and every task in its `after` list is terminal. For cycle headers, back-edge predecessors within the same cycle are exempt from the readiness check (see *back-edge exemption*). Ready tasks are candidates for dispatch. |
+| **structural cycle** | A cycle formed by `after` edges in the task graph. Detected automatically by Tarjan's SCC algorithm. Each structural cycle has a header (entry point), members, and back-edges. Cycles iterate when all members complete and the header's `CycleConfig` allows it. Structural cycles replace the old `loops_to` edge system. |
+| **CycleConfig** | Configuration for structural cycle iteration, stored on the cycle header task. Fields: `max_iterations` (hard cap), `guard` (optional firing condition), `delay` (optional time delay between iterations). A cycle without a `CycleConfig` on its header is unconfigured and treated as a deadlock. |
+| **cycle header** | The entry point of a structural cycle — the task that has a `CycleConfig` and controls iteration. Identified automatically as the node with external predecessors (or the lexicographically smallest ID in isolated cycles). The header receives back-edge exemption in readiness checks and carries the `"converged"` tag and `loop_iteration` counter. |
+| **back-edge exemption** | In cycle-aware dispatch, the cycle header's predecessors that form back-edges within the cycle are exempt from the readiness check. This allows the header to become ready on the first iteration (when back-edge predecessors haven't completed yet) and on re-iteration (after all members are re-opened). Only applies when the header has a `CycleConfig`. |
+| **guard** | A condition on a cycle's `CycleConfig` that must be true for the cycle to iterate. Three kinds: *Always* (unconditional), *TaskStatus* (iterate if a named task has a specific status), and *IterationLessThan* (iterate if the header's iteration count is below a threshold). |
+| **loop iteration** | A counter on each task tracking how many times it has been re-activated by cycle iteration. Starts at zero. On the cycle header, compared against `CycleConfig.max_iterations` to enforce cycle bounds. Set to the same value on all cycle members during re-opening. |
+| **loop edge (historical)** | The former `loops_to` mechanism: a conditional back-edge that fired on task completion to re-open a target upstream. Replaced by structural cycles. Legacy `loops_to` edges can be migrated with `wg migrate-loops`. |
 | **resource** | A non-task node in the graph representing a consumable or limited asset (budget, compute, etc.). Tasks may `require` resources. Currently informational — not enforced by the scheduler. |
 | **role** | An agency entity defining *what* an agent does. Contains a description, a desired outcome, and a list of skills. Identified by a content-hash of its identity-defining fields. |
 | **motivation** | An agency entity defining *why* an agent acts the way it does. Contains a description, acceptable trade-offs (compromises the agent may make), and unacceptable trade-offs (hard constraints it must never violate). Identified by a content-hash of its identity-defining fields. |
@@ -52,20 +56,45 @@ Every writer must use these terms with these exact meanings. If a term is not in
 | **generation** | The number of evolutionary steps from a manually-created ancestor. Generation 0 = human-created. Each mutation or crossover increments the generation by one from the highest parent. |
 | **synergy matrix** | A performance cross-reference showing how each (role, motivation) pair performs together. Computed from the `context_id` fields in evaluation references. Surfaced by `wg agency stats`. |
 | **meta-task** | A task created automatically by the coordinator to manage the agency loop. Assignment tasks (`assign-{id}`), evaluation tasks (`evaluate-{id}`), and evolution review tasks are meta-tasks. Tagged to prevent recursive meta-task creation. |
-| **map/reduce pattern** | An emergent workflow pattern in the task graph. *Fan-out* (map): one task blocks several children that run in parallel. *Fan-in* (reduce): several tasks block a single aggregator that runs only when all are terminal. Not a formal primitive — arises naturally from dependency edges. |
+| **map/reduce pattern** | An emergent workflow pattern in the task graph. *Fan-out* (map): one task precedes several children that run in parallel. *Fan-in* (reduce): several tasks precede a single aggregator that runs only when all are terminal. Not a formal primitive — arises naturally from dependency edges. |
 | **triage** | An optional LLM-based assessment of dead agents. When `auto_triage` is enabled, the coordinator reads the dead agent's output log and classifies the result as *done*, *continue* (with recovery context), or *restart*. |
 | **wrapper script** | The `run.sh` file generated for each spawned agent. Runs the executor command, captures output, and handles post-exit logic: if the agent didn't self-report completion, the wrapper checks task status and calls `wg done` or `wg fail` accordingly. |
 | **visibility** | A field on each task controlling what information crosses organizational boundaries during trace exports. Three values: *internal* (default, org-only — all details included), *public* (sanitized sharing — task structure without agent output or logs), *peer* (richer detail for credentialed peers — includes evaluations and agent info but strips notes and detailed logs). Set via `wg add --visibility <zone>` or `wg edit`. |
-| **convergence** | An agent-driven signal (`wg done --converged`) indicating that a loop's iterative work has reached a stable state. Adds a `"converged"` tag to the task. When the source task carries the converged tag, loop edges do not fire — even if iterations remain and guard conditions are met. Cleared on retry. |
+| **convergence** | An agent-driven signal (`wg done --converged`) indicating that a cycle's iterative work has reached a stable state. Adds a `"converged"` tag to the **cycle header** (regardless of which cycle member the agent completes). When the header carries the converged tag, the cycle does not iterate — even if iterations remain and guard conditions are met. Cleared on retry. Any cycle member can signal convergence for the entire cycle. |
 | **trace** | The operations log (`operations.jsonl`) recording every mutation to the graph. The project's organizational memory — queryable via `wg trace`, exportable with visibility filtering via `wg trace export`, and importable from peers via `wg trace import`. Also the high-level concept referring to the provenance system and `wg trace` command family. |
 | **trace export** | A filtered, shareable snapshot of the trace. Visibility filtering controls what is included: *internal* exports everything, *public* sanitizes (strips logs, evaluations, agent details), *peer* provides richer detail for trusted peers. The interchange format for cross-boundary sharing. Produced by `wg trace export --visibility <zone>`. |
-| **trace function** | A parameterized workflow template extracted from completed traces via `wg trace extract`. Captures task structure, dependencies, loop edges, and input parameters. Input types include string, text, file list, file content, number, URL, enum, and JSON. Instantiated via `wg trace instantiate` to create new task graphs following the same pattern. Stored as YAML in `.workgraph/functions/`. |
+| **trace function** | A parameterized workflow template extracted from completed traces via `wg trace extract`. Captures task structure, dependencies, structural cycles, and input parameters. Input types include string, text, file list, file content, number, URL, enum, and JSON. Instantiated via `wg trace instantiate` to create new task graphs following the same pattern. Stored as YAML in `.workgraph/functions/`. |
 | **replay** | Re-execution of previously completed or failed work. `wg replay` creates an immutable snapshot of the current graph state (stored in `.workgraph/runs/`), then selectively resets tasks based on criteria: failed-only, below-score threshold, explicit task list, or subgraph. Dependents in the transitive closure are also reset. Supports `--plan-only` for previewing. |
 | **federation** | The system for sharing agency entities across workgraph projects. Operations: *scan* (discover entities in a remote store), *pull* (import from remote to local), *push* (export from local to remote). Named remotes are stored in `.workgraph/federation.yaml`. Performance records are merged during transfer with deduplication by task ID and timestamp. Content-hash IDs make federation natural — identical entities deduplicate automatically. |
 | **remote** | A named reference to another workgraph project's agency store, used for federation. Stores a path, optional description, and last-sync timestamp. Managed via `wg agency remote add/list/remove`. Stored in `.workgraph/federation.yaml`. |
 | **evaluation source** | A freeform string tag on each evaluation identifying its origin. Default: `"llm"` (internal auto-evaluator). Conventions: `"manual"` (human-reviewed), `"outcome:<metric>"` (external outcome data, e.g., `"outcome:sharpe"`), `"ci:<suite>"` (CI/test results), `"vx:<peer-id>"` (Veracity Exchange peer evaluation), `"import:<source>"` (imported via trace import). The evolver reads all evaluations regardless of source. |
 | **event stream** | A real-time feed of graph mutations produced by `wg watch --json`. Events are typed: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. Filterable by category (`task_state`, `evaluation`, `agent`) or by task ID prefix. Enables external adapters to observe and react without polling. |
 | **adapter** | An external tool or service that translates between an external system's vocabulary and workgraph's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI commands) → react. Not a formal type in the codebase — a conceptual pattern for integration. Examples: CI bots, Slack integrations, portfolio management tools. |
+| | |
+| **— Pattern Vocabulary —** | The following terms come from the [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md), organized into four categories: structure, agency, control, and shorthands. |
+| | |
+| *Structure patterns* | |
+| **pipeline** | A sequential chain of specialized stages with handoffs. Each stage transforms its predecessor's output. Graph shape: `A → B → C → D`. Throughput is limited by the slowest stage (Theory of Constraints). |
+| **diamond** (fork-join) | Split work into parallel independent tasks, then synchronize at an integrator. The "diamond" shape: one node fans out, another fans in. Graph shape: `planner → [worker-1, worker-2, worker-3] → synthesizer`. **Critical rule: never parallelize tasks that modify the same files.** |
+| **scatter-gather** | Fan out to heterogeneous specialists who each examine the same artifact from their own perspective, then collect their views. Unlike diamond, workers have different roles and the aggregator may accept partial results. |
+| **loop** (structural cycle) | Iterate a chain of tasks until convergence. Formed by `after` edges creating a cycle, detected by Tarjan's SCC algorithm. The cycle header carries a `CycleConfig` with `max_iterations`, optional guard, and optional delay. Any cycle member can signal `--converged` to stop iteration early. |
+| | |
+| *Agency patterns* | |
+| **planner-workers-synthesizer** | The canonical staffing for a diamond: one thinker decomposes the problem, many doers execute in parallel, one integrator combines results. Roles: architect/planner, implementer/worker, integrator/synthesizer. |
+| **specialist** | One role owns one domain. Tasks requiring that domain are routed to agents with that role. Maps to Team Topologies' "complicated-subsystem team." Ashby's Law check: ensure at least as many specialist roles as distinct task types requiring specialized knowledge. |
+| **stream-aligned** | One role follows one thread of work end-to-end, from inception to delivery. The default role type — most roles should be this. Aligned to a work stream (feature, product area), not to a function. Maps to Team Topologies' "stream-aligned team." |
+| **platform** | One role produces shared infrastructure that other roles depend on. Platform tasks appear as `after` dependencies for stream-aligned tasks. Maps to Team Topologies' "platform team." See also: **scaffold** shorthand. |
+| | |
+| *Control patterns* | |
+| **stigmergic** | Agents read the graph, not each other. The graph is the communication channel. All coordination happens through task state — no agent-to-agent messages. Every `wg done`, `wg log`, `wg artifact` call modifies the shared graph, stimulating downstream agents. This is the fundamental operating principle of workgraph, not an optional pattern. |
+| **requisite variety** | Match the number of distinct roles to the number of distinct task types. Ashby's Law: **R ≥ V** (roles ≥ variety of tasks). Diagnosed via `wg agency stats`. Too few roles → low scores on specialized tasks; too many → roles with zero assignments. Fixed via `wg evolve`. |
+| **evolve** | Evaluate completed work, then mutate roles and motivations to produce better agents. The execute → evaluate → evolve cycle. Autopoietic: the system produces the components (agent definitions) that produce the system (task completions). Strategies: mutation, crossover, gap-analysis, retirement, motivation-tuning. |
+| **double-loop** | Don't just retry a failed task with a different agent (single-loop). Change the role definition itself (double-loop). Escalate from single to double loop when the same task type fails repeatedly, evaluation scores plateau, or the role definition doesn't match actual work. From Argyris & Schön (1978). |
+| | |
+| *Shorthands* | |
+| **map-reduce** | Data-parallel diamond variant: planner decomposes → N workers → reducer aggregates. |
+| **scaffold** | Platform role produces infrastructure that stream-aligned roles depend on. Graph shape: `setup-ci → [feature-A, feature-B, feature-C]`. |
+| **"diamond with specialists"** | The most common compound pattern: the structure is a diamond, the staffing is planner-workers-synthesizer, and the workers are specialists matched to their slice of work. |
 
 ---
 
@@ -107,7 +136,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 ### Section 2: The Task Graph
 **File:** `docs/manual/02-task-graph.typ`
 
-**Purpose:** Deep understanding of the graph model — tasks, statuses, dependencies, loop edges, readiness, and emergent patterns. The reader should finish this section able to design a workgraph for any project.
+**Purpose:** Deep understanding of the graph model — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns. The reader should finish this section able to design a workgraph for any project.
 
 **Key points to cover:**
 
@@ -117,25 +146,25 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 3. **Terminal statuses and their meaning.** Done, Failed, and Abandoned are all *terminal* — they all unblock dependents. This is a deliberate design choice: a failed dependency doesn't freeze the entire graph. The downstream task gets dispatched and can decide what to do with a failed upstream.
 
-4. **Dependencies: blocked_by and blocks.** The `blocked_by` list is authoritative. `blocks` is its inverse, maintained for convenience. A task is blocked (derived) when any of its `blocked_by` entries is non-terminal. Transitivity works naturally: if C blocks B blocks A, then B is not ready while C is not terminal, so A is not ready either.
+4. **Dependencies: after and before.** The `after` list is authoritative. `before` is its inverse, maintained for convenience. A task is blocked (derived) when any of its `after` entries is non-terminal. Transitivity works naturally: if A is after B, and B is after C, then B is not ready while C is not terminal, so A is not ready either.
 
-5. **Readiness.** The four conditions: open status, not paused, past time constraints, all blockers terminal. Explain `not_before` (scheduling for the future) and `ready_after` (set by loop edge delays). Non-existent blockers are treated as resolved (fail-open).
+5. **Readiness.** The four conditions: open status, not paused, past time constraints, all predecessors terminal. Explain `not_before` (scheduling for the future) and `ready_after` (set by cycle delays). Non-existent predecessors are treated as resolved (fail-open).
 
-6. **Loop edges: intentional cycles.** Why workgraph is a directed graph, not a DAG. The `loops_to` mechanism: a separate edge type that fires on task completion, re-opens a target upstream, increments the iteration counter, and is bounded by `max_iterations`. Loop edges are *not* blocking edges — they don't affect scheduling. Guards (Always, TaskStatus, IterationLessThan) control when loops fire. Delays (`ready_after`) control pacing. Walk through the review-revise-loop example step by step.
+6. **Structural cycles: intentional repetition.** Why workgraph is a directed graph, not a DAG. Cycles are formed naturally by `after` edges — if A is after C, C is after B, and B is after A, the system detects the cycle automatically using Tarjan's SCC algorithm. The cycle header (entry point) carries a `CycleConfig` with `max_iterations`, an optional guard condition, and an optional delay. Without a `CycleConfig`, cycles are flagged as unconfigured deadlocks. Back-edge exemption allows the header to become ready despite its cycle predecessors not being terminal. Walk through the review-revise cycle example step by step.
 
-7. **Early convergence.** An agent can signal `wg done <task> --converged` to prevent loop edges from firing, even if iterations remain and guards are satisfied. The task gets a `"converged"` tag. The loop evaluator checks this tag and skips firing. Use case: a refine agent determines work has converged and doesn't need another iteration. `wg retry` clears the convergence tag. This complements bounded iteration — `max_iterations` is the safety cap, convergence is the intelligent early exit.
+7. **Early convergence.** Any agent working on a cycle member can signal `wg done <task> --converged` to stop the cycle, even if iterations remain and guards are satisfied. The `"converged"` tag is placed on the cycle header (regardless of which member the agent completes). The cycle evaluator checks this tag and skips iteration. Use case: a refine agent determines work has converged and doesn't need another iteration. `wg retry` clears the convergence tag. This complements bounded iteration — `max_iterations` is the safety cap, convergence is the intelligent early exit.
 
-8. **Intermediate task re-opening.** When a loop fires and re-opens its target, intermediate tasks between source and target that were Done are also re-opened. The source task itself is re-opened. This makes the entire cycle available for re-execution.
+8. **Cycle member re-opening.** When all cycle members reach `done` and the cycle hasn't converged or hit `max_iterations`, all members are re-opened with `loop_iteration` incremented. The entire cycle becomes available for re-execution. This replaces the old intermediate-task BFS with precise cycle membership from the SCC analysis.
 
-9. **Emergent patterns.** Fan-out (map): one parent blocks several children. Fan-in (reduce): several tasks block one aggregator. Pipelines: linear chains. Review loops: cycles via loop edges. These are not built-in primitives — they arise naturally from the dependency graph. Mention that proven patterns can be captured as reusable trace functions (see below).
+9. **Emergent patterns.** Fan-out (map): one parent precedes several children. Fan-in (reduce): several tasks precede one aggregator. Pipelines: linear chains. Review loops: structural cycles. These are not built-in primitives — they arise naturally from the dependency graph. Mention that proven patterns can be captured as reusable trace functions (see below).
 
-10. **Trace functions: reusable workflow templates.** When a workflow pattern proves useful, it can be extracted from a completed trace into a reusable template — a trace function. Trace functions capture the task structure, dependencies, and loop edges of a proven workflow. They are parameterized (feature name, description, files become input variables with typed schemas) and can be instantiated to create new task graphs following the same pattern. See `wg trace extract` and `wg trace instantiate`. Stored in `.workgraph/functions/`. Connect back to emergent patterns — trace functions formalize what starts as ad-hoc structure.
+10. **Trace functions: reusable workflow templates.** When a workflow pattern proves useful, it can be extracted from a completed trace into a reusable template — a trace function. Trace functions capture the task structure, dependencies, and structural cycles of a proven workflow. They are parameterized (feature name, description, files become input variables with typed schemas) and can be instantiated to create new task graphs following the same pattern. See `wg trace extract` and `wg trace instantiate`. Stored in `.workgraph/functions/`. Connect back to emergent patterns — trace functions formalize what starts as ad-hoc structure.
 
 11. **Graph analysis and visualization tools.** Critical path (longest dependency chain), bottlenecks (tasks blocking the most downstream work), impact (what depends on a task), cost (total including dependencies), forecast (projected completion). Include `wg viz --graph` which produces a 2D spatial layout using Unicode box-drawing characters, showing tasks positioned by dependency depth. Brief mentions — these are tools, not concepts.
 
 12. **Storage format.** JSONL: one JSON node per line, human-readable, version-control-friendly. Atomic writes with file locking for concurrent safety. The graph file is the canonical state — everything reads from and writes to it.
 
-**Cross-references:** Back-reference to Section 1 (overview). Forward-reference to Section 3 (federation uses visibility for cross-boundary sharing). Forward-reference to Section 4 (how the coordinator uses readiness; convergence in dispatch prompts; event stream). Forward-reference to Section 5 (loop edges as evaluation points; trace functions connect to replay).
+**Cross-references:** Back-reference to Section 1 (overview). Forward-reference to Section 3 (federation uses visibility for cross-boundary sharing). Forward-reference to Section 4 (how the coordinator uses readiness; convergence in dispatch prompts; event stream). Forward-reference to Section 5 (structural cycles as evaluation points; trace functions connect to replay).
 
 **Tone notes:** This section is the most technical. Be precise but not pedantic. Use the review-revise-loop as a running example to make the abstract concrete.
 
@@ -189,7 +218,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 2. **The coordinator tick.** The six-phase heartbeat: (1) reap zombie processes, (2) clean up dead agents and count alive slots, (3) create auto-assign meta-tasks if enabled, (4) create auto-evaluate meta-tasks if enabled, (5) save graph if modified and find ready tasks, (6) spawn agents for ready tasks up to available slots. Two triggers: IPC-driven (immediate, reactive) and safety-net poll (background timer, catches manual edits).
 
-3. **The dispatch cycle in detail.** For each ready task: resolve executor (shell for `exec` tasks, agent's executor otherwise, fallback to config default) → resolve model (task.model > coordinator.model > agent.model) → build context from completed dependencies (their artifacts + recent logs) → render prompt template with identity and skills → generate wrapper script → claim task atomically → fork detached process → register in agent registry. Emphasize the claim-before-spawn ordering that prevents double-dispatch. Mention that for tasks that are the source of loop edges, the rendered prompt includes a note about the `--converged` flag, informing the agent that it can break the loop early if the work has reached a stable state.
+3. **The dispatch cycle in detail.** For each ready task: resolve executor (shell for `exec` tasks, agent's executor otherwise, fallback to config default) → resolve model (task.model > coordinator.model > agent.model) → build context from completed dependencies (their artifacts + recent logs) → render prompt template with identity and skills → generate wrapper script → claim task atomically → fork detached process → register in agent registry. Emphasize the claim-before-spawn ordering that prevents double-dispatch. Mention that for tasks that are members of structural cycles, the rendered prompt includes a note about the `--converged` flag, informing the agent that it can break the cycle early if the work has reached a stable state.
 
 4. **The wrapper script.** What `run.sh` does: unsets environment variables for nested sessions, runs the executor command with output capture, checks task status after exit (the agent may have already self-reported), and marks done or failed if the agent didn't. This is the safety net that ensures tasks don't get stuck in-progress after agent death.
 
@@ -211,7 +240,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 13. **Replay.** `wg replay` re-executes previously completed or failed work by creating an immutable snapshot of the current graph state and selectively resetting tasks. Criteria for reset: `--failed-only`, `--below-score <threshold>`, explicit task list, or `--subgraph <root>`. Dependents in the transitive closure are also reset. `--plan-only` previews what would be reset. Snapshots are stored in `.workgraph/runs/`. Connect to trace functions (§2) — replay re-executes existing work, trace functions template new work from proven patterns.
 
-**Cross-references:** Back-reference to Section 2 (readiness; convergence and loop edges). Back-reference to Section 3 (agent identity injection; federation). Forward-reference to Section 5 (evaluation feeding evolution; evaluation source). Forward-reference to Section 1 (event stream enables external integration pattern).
+**Cross-references:** Back-reference to Section 2 (readiness; convergence and structural cycles). Back-reference to Section 3 (agent identity injection; federation). Forward-reference to Section 5 (evaluation feeding evolution; evaluation source). Forward-reference to Section 1 (event stream enables external integration pattern).
 
 **Tone notes:** This is operational prose. Walk through the dispatch cycle as a narrative, not a bullet list. Make the reader *see* what happens when `wg service start` runs and a task becomes ready.
 
@@ -250,7 +279,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 13. **Practical guidance.** When to evolve: after accumulating enough evaluations (at least 5-10 per role). How to use `--budget`: start small (2-3 operations), review results, iterate. How to use `--dry-run`: always preview first. How to seed: `wg agency init` for starters, then evolve. How to experiment: use the under-explored combinations from `wg agency stats` as hypotheses.
 
-**Cross-references:** Back-reference to Section 3 (roles, motivations, content-hash IDs; federation mechanics). Back-reference to Section 4 (auto-evaluate, auto-assign creating the data pipeline; evaluation source in auto-evaluate; event stream enabling external evaluations). Back-reference to Section 2 (loop edges as natural evaluation points for iterative tasks).
+**Cross-references:** Back-reference to Section 3 (roles, motivations, content-hash IDs; federation mechanics). Back-reference to Section 4 (auto-evaluate, auto-assign creating the data pipeline; evaluation source in auto-evaluate; event stream enabling external evaluations). Back-reference to Section 2 (structural cycles as natural evaluation points for iterative tasks).
 
 **Tone notes:** This section should feel like watching a system learn. The prose should build from the concrete (one evaluation) to the systemic (the full improvement cycle). End with the philosophical point: this is a system that can describe and improve itself, but always with a human hand on the wheel.
 
@@ -266,17 +295,17 @@ Every writer must use these terms with these exact meanings. If a term is not in
 | 01-overview | 05-evolution | "External evaluation sources are detailed in §5" |
 | 02-task-graph | 03-agency | "Task visibility controls what federation shares — §3" |
 | 02-task-graph | 04-coordination | "How the coordinator uses readiness — §4; convergence in dispatch prompts — §4" |
-| 02-task-graph | 05-evolution | "Loop edges as natural evaluation points — §5; trace functions connect to replay — §4" |
+| 02-task-graph | 05-evolution | "Structural cycles as natural evaluation points — §5; trace functions connect to replay — §4" |
 | 03-agency | 04-coordination | "How agents are dispatched — §4" |
 | 03-agency | 05-evolution | "How agents are evaluated and evolved — §5; federation data enriches evolution — §5" |
 | 03-agency | 02-task-graph | "Task visibility as the task-level boundary mechanism — §2" |
 | 04-coordination | 01-overview | "Event stream enables external integration pattern — §1" |
-| 04-coordination | 02-task-graph | "Readiness calculation — §2; convergence and loop edges — §2" |
+| 04-coordination | 02-task-graph | "Readiness calculation — §2; convergence and structural cycles — §2" |
 | 04-coordination | 03-agency | "Agent identity injection — §3; federation — §3" |
 | 04-coordination | 05-evolution | "Auto-evaluate creates the data pipeline for §5; evaluation source — §5" |
 | 05-evolution | 03-agency | "Roles, motivations, content-hash IDs — §3; federation mechanics — §3" |
 | 05-evolution | 04-coordination | "Auto-evaluate and auto-assign — §4; event stream enabling external evaluations — §4" |
-| 05-evolution | 02-task-graph | "Loop edges as evaluation points — §2" |
+| 05-evolution | 02-task-graph | "Structural cycles as evaluation points — §2" |
 
 ---
 
@@ -304,7 +333,7 @@ These rules apply to ALL writers across all five sections:
 
 10. **"Evolution" is the process; "evolve" is the command.** Do not use "evolution" as a verb. Say "run evolution" or "run `wg evolve`."
 
-11. **"Loop edge" not "back-edge" or "cycle edge."** The codebase uses `loops_to` and the design doc uses "loop edge." Be consistent.
+11. **"Structural cycle" for the current system; "loop edge" only in historical context.** The codebase now uses `CycleConfig` and `CycleAnalysis`. Use "structural cycle" for the current model. "Loop edge" (`loops_to`) refers to the old system and should only appear in historical context or migration documentation. "Back-edge" is acceptable when referring to the specific edges within a cycle that create the cycle structure.
 
 12. **"Meta-task" for auto-created coordinator tasks.** Assignment tasks, evaluation tasks, and evolution review tasks are meta-tasks. Regular work is just "tasks."
 

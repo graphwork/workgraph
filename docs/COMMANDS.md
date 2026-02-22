@@ -44,10 +44,9 @@ wg add <TITLE> [OPTIONS]
 | `--max-retries <N>` | Maximum retry attempts |
 | `--model <MODEL>` | Preferred model for this task (haiku, sonnet, opus) |
 | `--verify <CRITERIA>` | Verification criteria — task requires review before done |
-| `--loops-to <ID>` | Create a loop edge back to target task (re-activates on completion) |
-| `--loop-max <N>` | Maximum loop iterations (required with `--loops-to`) |
-| `--loop-delay <DUR>` | Delay between iterations (e.g., `30s`, `5m`, `1h`, `24h`, `7d`) |
-| `--loop-guard <EXPR>` | Guard condition: `task:<id>=<status>` or `always` |
+| `--max-iterations <N>` | Maximum cycle iterations — sets `CycleConfig` on this task, making it a cycle header |
+| `--cycle-guard <EXPR>` | Guard condition for cycle iteration: `task:<id>=<status>` or `always` |
+| `--cycle-delay <DUR>` | Delay between cycle iterations (e.g., `30s`, `5m`, `1h`) |
 
 **Examples:**
 
@@ -70,16 +69,13 @@ wg add "Quick formatting fix" --model haiku
 # Task requiring review
 wg add "Security audit" --verify "All findings documented with severity ratings"
 
-# Loop edge: revise loops back to write (max 3 iterations)
-wg add "Revise draft" --blocked-by review \
-  --loops-to write --loop-max 3
+# Cycle header — creates a structural cycle with review
+wg add "Write draft" --id write --after review --max-iterations 3
+wg add "Review draft" --after write --id review
 
-# Self-loop with delay
-wg add "Poll status" --loops-to poll-status --loop-max 10 --loop-delay 5m
-
-# Loop with guard condition
-wg add "Retry upload" --loops-to retry-upload --loop-max 5 \
-  --loop-guard "task:check-connection=done"
+# Cycle header with guard and delay
+wg add "Write" --after review --max-iterations 5 \
+  --cycle-guard "task:review=failed" --cycle-delay "5m"
 ```
 
 ---
@@ -104,12 +100,9 @@ wg edit <ID> [OPTIONS]
 | `--add-skill <SKILL>` | Add a required skill (repeatable) |
 | `--remove-skill <SKILL>` | Remove a required skill (repeatable) |
 | `--model <MODEL>` | Update preferred model |
-| `--add-loops-to <ID>` | Add a loop edge back to target task |
-| `--remove-loops-to <ID>` | Remove a loop edge to target task |
-| `--loop-max <N>` | Maximum loop iterations (required with `--add-loops-to`) |
-| `--loop-delay <DUR>` | Delay between iterations (e.g., `30s`, `5m`, `1h`) |
-| `--loop-guard <EXPR>` | Guard condition: `task:<id>=<status>` or `always` |
-| `--loop-iteration <N>` | Manually override the loop iteration counter |
+| `--max-iterations <N>` | Set maximum cycle iterations (creates or updates `CycleConfig`) |
+| `--cycle-guard <EXPR>` | Set guard condition for cycle iteration |
+| `--cycle-delay <DUR>` | Set delay between cycle iterations |
 
 Triggers a `graph_changed` IPC notification to the service daemon, so the coordinator picks up changes immediately.
 
@@ -127,6 +120,11 @@ wg edit my-task --remove-tag stale --add-tag urgent
 
 # Change model
 wg edit my-task --model opus
+
+# Set cycle configuration (makes this task a cycle header)
+wg edit my-task --max-iterations 5
+wg edit my-task --cycle-guard "task:review=failed"
+wg edit my-task --cycle-delay "5m"
 ```
 
 ---
@@ -136,15 +134,26 @@ wg edit my-task --model opus
 Mark a task as completed.
 
 ```bash
-wg done <ID>
+wg done <ID> [--converged]
 ```
 
-Sets status to `done`, records `completed_at` timestamp, and unblocks dependent tasks. Fails for verified tasks (use `wg submit` instead).
+Sets status to `done`, records `completed_at` timestamp, and unblocks dependent tasks. If the task is part of a structural cycle, completing the last member triggers cycle iteration (re-opening all members for the next pass).
 
-**Example:**
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--converged` | Stop the cycle — adds a `"converged"` tag to the cycle header, preventing further iterations even if `max_iterations` hasn't been reached |
+
+**Examples:**
 ```bash
 wg done design-api
 # Automatically unblocks tasks that were waiting on design-api
+
+# In a cycle: allow next iteration
+wg done review-task
+
+# In a cycle: signal convergence (stops the cycle)
+wg done review-task --converged
 ```
 
 ---
@@ -568,21 +577,80 @@ wg structure
 
 ---
 
-### `wg loops`
+### `wg cycles`
 
-Inspect loop edges and detect dependency cycles in the graph.
+Detect and display structural cycles in the task graph.
 
 ```bash
-wg loops
+wg cycles [--json]
 ```
 
-Shows all `loops_to` edges with their current iteration count, max iterations, guard conditions, delays, and whether the loop is active or exhausted. Also detects and classifies any `blocked_by` dependency cycles.
+Uses Tarjan's SCC algorithm to find cycles formed by `after` edges. Shows cycle members, header, iteration status, and configuration.
+
+**Example output:**
+
+```
+Detected cycles: 2
+
+  1. write → review → write  [ACTIVE]
+     Header: write (iteration 1/5)
+     Guard: task:review=failed
+     Delay: 5m
+     Status: review is in-progress
+
+  2. spec → implement → test → spec  [CONVERGED]
+     Header: spec (iteration 2/3, converged)
+     Guard: none (always)
+     Status: all done
+
+Summary: 1 active, 1 converged
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--json` | Output cycle data as JSON |
+
+---
+
+### `wg loops`
+
+**DEPRECATED**: Redirects to `wg cycles` with a deprecation warning. Use `wg cycles` instead.
+
+```bash
+wg loops    # prints deprecation warning and runs wg cycles
+```
+
+---
+
+### `wg migrate-loops`
+
+Migrate legacy `loops_to` edges to structural cycles (`after` edges + `CycleConfig`).
+
+```bash
+wg migrate-loops [--dry-run]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show what would be migrated without making changes |
+
+For each `loops_to` edge on a source task targeting a target task:
+1. Adds the source task to the target's `after` list (creating the back-edge)
+2. Sets `CycleConfig` on the target task (preserving `max_iterations`, `guard`, and `delay`)
+3. Removes the `loops_to` edge from the source
 
 **Example:**
 ```bash
-wg loops
-# Shows loop edges: revise -> write (iteration 1/3, active)
-# Detects and classifies any dependency cycles in the graph
+wg migrate-loops --dry-run
+# Found 2 loops_to edge(s) to migrate:
+#   review --loops_to--> write (max: 3, guard: None, delay: None)
+#   test --loops_to--> spec (max: 5, guard: Always, delay: Some("5m"))
+# Dry run — no changes made.
+
+wg migrate-loops
+# Migrated 2 loops_to edge(s) to structural cycles.
 ```
 
 ---
@@ -611,7 +679,7 @@ Comprehensive health report combining all analyses.
 wg analyze
 ```
 
-Runs bottlenecks, structure, loops, aging, and other analyses together.
+Runs bottlenecks, structure, cycles, aging, and other analyses together.
 
 **Example:**
 ```bash

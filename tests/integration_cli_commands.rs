@@ -168,7 +168,7 @@ fn edit_tags_add_and_remove() {
 }
 
 #[test]
-fn edit_blocked_by_updates_dependency() {
+fn edit_after_updates_dependency() {
     let (_dir, path) = setup_graph(vec![
         make_task("dep", "Dependency"),
         make_task("e3", "Blocked task"),
@@ -176,7 +176,7 @@ fn edit_blocked_by_updates_dependency() {
 
     let mut graph = load_graph(&path).unwrap();
     let task = graph.get_task_mut("e3").unwrap();
-    task.blocked_by.push("dep".to_string());
+    task.after.push("dep".to_string());
     save_graph(&graph, &path).unwrap();
 
     let graph = load_graph(&path).unwrap();
@@ -184,7 +184,7 @@ fn edit_blocked_by_updates_dependency() {
         graph
             .get_task("e3")
             .unwrap()
-            .blocked_by
+            .after
             .contains(&"dep".to_string())
     );
 
@@ -375,7 +375,7 @@ fn add_log_entry_persists() {
 #[test]
 fn ready_tasks_respects_dependencies() {
     let mut blocked = make_task("child", "Blocked child");
-    blocked.blocked_by.push("parent".to_string());
+    blocked.after.push("parent".to_string());
     let (_dir, path) = setup_graph(vec![make_task("parent", "Parent"), blocked]);
 
     let graph = load_graph(&path).unwrap();

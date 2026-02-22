@@ -385,7 +385,7 @@ fn test_fallback_poll_pickup() {
         "title": "Poll Test Task",
         "description": "Added directly to test poll fallback",
         "status": "open",
-        "blocked_by": [],
+        "after": [],
         "tags": [],
         "skills": [],
         "inputs": [],

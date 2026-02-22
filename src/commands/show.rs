@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{LogEntry, LoopEdge, LoopGuard, Status};
+use workgraph::graph::{CycleConfig, LogEntry, LoopGuard, Status};
 use workgraph::query::build_reverse_index;
 
 /// Blocker info with status
@@ -42,8 +42,8 @@ struct TaskDetails {
     artifacts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exec: Option<String>,
-    blocked_by: Vec<BlockerInfo>,
-    blocks: Vec<BlockerInfo>,
+    after: Vec<BlockerInfo>,
+    before: Vec<BlockerInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,10 +66,10 @@ struct TaskDetails {
     verify: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    loops_to: Vec<LoopEdge>,
     #[serde(skip_serializing_if = "is_zero")]
     loop_iteration: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_config: Option<CycleConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ready_after: Option<String>,
     #[serde(default, skip_serializing_if = "is_not_paused")]
@@ -95,8 +95,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let reverse_index = build_reverse_index(&graph);
 
     // Get blocker info with statuses (supports cross-repo peer:task-id references)
-    let blocked_by_info: Vec<BlockerInfo> = task
-        .blocked_by
+    let after_info: Vec<BlockerInfo> = task
+        .after
         .iter()
         .map(|blocker_id| {
             if let Some((peer_name, remote_task_id)) =
@@ -132,7 +132,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         .collect();
 
     // Get what this task blocks
-    let blocks_info: Vec<BlockerInfo> = reverse_index
+    let before_info: Vec<BlockerInfo> = reverse_index
         .get(id)
         .map(|dependents| {
             dependents
@@ -165,8 +165,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         deliverables: task.deliverables.clone(),
         artifacts: task.artifacts.clone(),
         exec: task.exec.clone(),
-        blocked_by: blocked_by_info,
-        blocks: blocks_info,
+        after: after_info,
+        before: before_info,
         created_at: task.created_at.clone(),
         started_at: task.started_at.clone(),
         completed_at: task.completed_at.clone(),
@@ -178,8 +178,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         model: task.model.clone(),
         verify: task.verify.clone(),
         agent: task.agent.clone(),
-        loops_to: task.loops_to.clone(),
         loop_iteration: task.loop_iteration,
+        cycle_config: task.cycle_config.clone(),
         ready_after: task.ready_after.clone(),
         paused: task.paused,
         visibility: task.visibility.clone(),
@@ -276,12 +276,12 @@ fn print_human_readable(details: &TaskDetails) {
 
     println!();
 
-    // Blocked by section
-    println!("Blocked by:");
-    if details.blocked_by.is_empty() {
+    // After section
+    println!("After:");
+    if details.after.is_empty() {
         println!("  (none)");
     } else {
-        for blocker in &details.blocked_by {
+        for blocker in &details.after {
             println!("  - {} ({})", blocker.id, blocker.status);
         }
     }
@@ -289,38 +289,32 @@ fn print_human_readable(details: &TaskDetails) {
     println!();
 
     // Blocks section
-    println!("Blocks:");
-    if details.blocks.is_empty() {
+    println!("Before:");
+    if details.before.is_empty() {
         println!("  (none)");
     } else {
-        for blocked in &details.blocks {
+        for blocked in &details.before {
             println!("  - {} ({})", blocked.id, blocked.status);
         }
     }
 
-    // Loop edges
-    if !details.loops_to.is_empty() || details.loop_iteration > 0 {
+    // Cycle config
+    if let Some(ref cc) = details.cycle_config {
         println!();
-        println!("Loops:");
-        for edge in &details.loops_to {
-            let guard_str = match &edge.guard {
-                Some(LoopGuard::TaskStatus { task, status }) => {
-                    format!(", guard: task:{}={}", task, status)
+        println!("Cycle config (header):");
+        println!("  Max iterations: {}", cc.max_iterations);
+        if let Some(ref guard) = cc.guard {
+            let guard_str = match guard {
+                LoopGuard::TaskStatus { task, status } => {
+                    format!("task:{}={}", task, status)
                 }
-                Some(LoopGuard::IterationLessThan(n)) => {
-                    format!(", guard: iteration<{}", n)
-                }
-                Some(LoopGuard::Always) => ", guard: always".to_string(),
-                None => String::new(),
+                LoopGuard::IterationLessThan(n) => format!("iteration<{}", n),
+                LoopGuard::Always => "always".to_string(),
             };
-            let delay_str = match &edge.delay {
-                Some(d) => format!(", delay: {}", d),
-                None => String::new(),
-            };
-            println!(
-                "  → {} (max: {}{}{})",
-                edge.target, edge.max_iterations, guard_str, delay_str,
-            );
+            println!("  Guard: {}", guard_str);
+        }
+        if let Some(ref delay) = cc.delay {
+            println!("  Delay: {}", delay);
         }
         if details.loop_iteration > 0 {
             println!("  Current iteration: {}", details.loop_iteration);
@@ -409,9 +403,9 @@ mod tests {
 
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         let mut t3 = make_task("t3", "Task 3");
-        t3.blocked_by = vec!["t1".to_string()];
+        t3.after = vec!["t1".to_string()];
 
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
@@ -448,8 +442,8 @@ mod tests {
             deliverables: vec![],
             artifacts: vec![],
             exec: None,
-            blocked_by: vec![],
-            blocks: vec![BlockerInfo {
+            after: vec![],
+            before: vec![BlockerInfo {
                 id: "t2".to_string(),
                 status: Status::Open,
             }],
@@ -464,11 +458,11 @@ mod tests {
             model: None,
             verify: None,
             agent: None,
-            loops_to: vec![],
             loop_iteration: 0,
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+        cycle_config: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();
@@ -543,7 +537,7 @@ mod tests {
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
         let mut task = make_task("t1", "Task with ghost blocker");
-        task.blocked_by = vec!["nonexistent".to_string()];
+        task.after = vec!["nonexistent".to_string()];
         graph.add_node(Node::Task(task));
         workgraph::parser::save_graph(&graph, &path).unwrap();
 
@@ -558,7 +552,7 @@ mod tests {
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
         let mut task = make_task("t1", "Task with ghost blocker");
-        task.blocked_by = vec!["ghost".to_string()];
+        task.after = vec!["ghost".to_string()];
         graph.add_node(Node::Task(task));
         workgraph::parser::save_graph(&graph, &path).unwrap();
 

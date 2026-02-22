@@ -254,7 +254,7 @@ impl DagLayout {
         let mut all_edges: Vec<(usize, usize)> = Vec::new();
         for task in tasks.values() {
             let child_num = id_to_num[task.id.as_str()];
-            for blocker_id in &task.blocked_by {
+            for blocker_id in &task.after {
                 if let Some(&parent_num) = id_to_num.get(blocker_id.as_str()) {
                     all_edges.push((parent_num, child_num));
                 }
@@ -442,24 +442,8 @@ impl DagLayout {
             })
             .collect();
 
-        // Build loop edges from tasks' loops_to fields
-        let mut layout_loop_edges: Vec<LoopLayoutEdge> = Vec::new();
-        for task in tasks.values() {
-            for loop_edge in &task.loops_to {
-                if tasks.contains_key(&loop_edge.target) {
-                    let target_task = &tasks[&loop_edge.target];
-                    layout_loop_edges.push(LoopLayoutEdge {
-                        from_id: task.id.clone(),
-                        to_id: loop_edge.target.clone(),
-                        iteration: target_task.loop_iteration,
-                        max_iterations: loop_edge.max_iterations,
-                        segments: Vec::new(), // Will be routed in reroute_edges
-                    });
-                }
-            }
-        }
-        // Sort for deterministic ordering
-        layout_loop_edges.sort_by(|a, b| (&a.from_id, &a.to_id).cmp(&(&b.from_id, &b.to_id)));
+        // Loop edges from loops_to have been removed; cycle_config is now used instead.
+        let layout_loop_edges: Vec<LoopLayoutEdge> = Vec::new();
 
         Self {
             nodes: layout_nodes,
@@ -568,7 +552,7 @@ pub fn reroute_edges(layout: &mut DagLayout, graph: &WorkGraph) {
             None => continue,
         };
 
-        for blocker_id in &task.blocked_by {
+        for blocker_id in &task.after {
             // Skip if this edge is a back-edge (cycle)
             if back_edge_set.contains(&(blocker_id.clone(), node.task_id.clone())) {
                 continue;
@@ -1343,11 +1327,11 @@ mod tests {
     use super::*;
     use workgraph::graph::{Node, Status, Task, WorkGraph};
 
-    fn make_task(id: &str, title: &str, blocked_by: Vec<&str>) -> Task {
+    fn make_task(id: &str, title: &str, after: Vec<&str>) -> Task {
         Task {
             id: id.to_string(),
             title: title.to_string(),
-            blocked_by: blocked_by.into_iter().map(|s| s.to_string()).collect(),
+            after: after.into_iter().map(|s| s.to_string()).collect(),
             ..Task::default()
         }
     }

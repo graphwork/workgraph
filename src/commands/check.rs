@@ -1,18 +1,24 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
-use workgraph::check::{LoopEdgeIssueKind, check_all};
+use workgraph::check::check_all;
+
+#[derive(Serialize)]
+struct CycleInfo {
+    header: String,
+    members: Vec<String>,
+    reducible: bool,
+}
 
 #[derive(Serialize)]
 struct CheckJsonOutput {
     ok: bool,
     cycles: Vec<Vec<String>>,
     orphan_refs: Vec<workgraph::check::OrphanRef>,
-    loop_edge_issues: Vec<workgraph::check::LoopEdgeIssue>,
     stale_assignments: Vec<workgraph::check::StaleAssignment>,
     stuck_blocked: Vec<workgraph::check::StuckBlocked>,
     node_count: usize,
-    loop_edge_count: usize,
+    structural_cycles: Vec<CycleInfo>,
     warnings: usize,
     errors: usize,
 }
@@ -20,22 +26,28 @@ struct CheckJsonOutput {
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
     let result = check_all(&graph);
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let irreducible_count = cycle_analysis.cycles.iter().filter(|c| !c.reducible).count();
 
     let warnings =
-        result.cycles.len() + result.stale_assignments.len() + result.stuck_blocked.len();
-    let errors = result.orphan_refs.len() + result.loop_edge_issues.len();
-    let loop_edge_count: usize = graph.tasks().map(|t| t.loops_to.len()).sum();
+        result.cycles.len() + result.stale_assignments.len() + result.stuck_blocked.len() + irreducible_count;
+    let errors = result.orphan_refs.len();
+
+    let structural_cycles: Vec<CycleInfo> = cycle_analysis.cycles.iter().map(|c| CycleInfo {
+        header: c.header.clone(),
+        members: c.members.clone(),
+        reducible: c.reducible,
+    }).collect();
 
     if json {
         let output = CheckJsonOutput {
             ok: result.ok,
             cycles: result.cycles,
             orphan_refs: result.orphan_refs,
-            loop_edge_issues: result.loop_edge_issues,
             stale_assignments: result.stale_assignments,
             stuck_blocked: result.stuck_blocked,
             node_count: graph.len(),
-            loop_edge_count,
+            structural_cycles,
             warnings,
             errors,
         };
@@ -70,7 +82,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             eprintln!(
                 "  {} (blocked by: {})",
                 stuck.task_id,
-                stuck.blocked_by_ids.join(", ")
+                stuck.after_ids.join(", ")
             );
         }
     }
@@ -86,43 +98,25 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         }
     }
 
-    // Loop edge issues are errors
-    if !result.loop_edge_issues.is_empty() {
-        eprintln!("Error: Loop edge issues:");
-        for issue in &result.loop_edge_issues {
-            let desc = match &issue.kind {
-                LoopEdgeIssueKind::TargetNotFound => {
-                    format!(
-                        "{} --[loops_to]--> {} (target not found)",
-                        issue.from, issue.target
-                    )
-                }
-                LoopEdgeIssueKind::ZeroMaxIterations => {
-                    format!(
-                        "{} --[loops_to]--> {} (max_iterations is 0, loop will never fire)",
-                        issue.from, issue.target
-                    )
-                }
-                LoopEdgeIssueKind::GuardTaskNotFound(guard_task) => {
-                    format!(
-                        "{} --[loops_to]--> {} (guard references non-existent task '{}')",
-                        issue.from, issue.target, guard_task
-                    )
-                }
-                LoopEdgeIssueKind::SelfLoop => {
-                    format!(
-                        "{} --[loops_to]--> {} (self-loop: task would immediately re-open on completion)",
-                        issue.from, issue.target
-                    )
-                }
-            };
-            eprintln!("  {}", desc);
+    // Structural cycle analysis (Tarjan's SCC on after edges)
+    if !cycle_analysis.cycles.is_empty() {
+        eprintln!(
+            "Structural cycles: {} detected (via Tarjan's SCC on after edges)",
+            cycle_analysis.cycles.len()
+        );
+        for cycle in &cycle_analysis.cycles {
+            let reducibility = if cycle.reducible { "reducible" } else { "IRREDUCIBLE" };
+            eprintln!(
+                "  {} ({} members, {})",
+                cycle.header, cycle.members.len(), reducibility
+            );
         }
-    }
-
-    // Count loop edges for info
-    if loop_edge_count > 0 && result.loop_edge_issues.is_empty() {
-        println!("Loop edges: {} edge(s), all valid", loop_edge_count);
+        if irreducible_count > 0 {
+            eprintln!(
+                "Warning: {} irreducible cycle(s) detected — these have multiple entry points",
+                irreducible_count
+            );
+        }
     }
 
     if errors > 0 {
@@ -141,7 +135,7 @@ mod tests {
     use super::super::graph_path;
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{LoopEdge, Node, Task};
+    use workgraph::graph::{Node, Task};
     use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -179,7 +173,7 @@ mod tests {
 
         let mut graph = workgraph::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["nonexistent".to_string()];
+        t1.after = vec!["nonexistent".to_string()];
         graph.add_node(Node::Task(t1));
         setup_graph(&dir, &graph);
 
@@ -190,7 +184,7 @@ mod tests {
     #[test]
     fn test_check_warns_on_cycles_but_no_error_alone() {
         // Cycles are treated as warnings, not errors, in the command layer.
-        // However, cycles in blocked_by also create orphan-like issues only
+        // However, cycles in after also create orphan-like issues only
         // if the target doesn't exist. With valid nodes that have cycles,
         // the check should still succeed (cycles are just warnings).
         let tmp = TempDir::new().unwrap();
@@ -198,9 +192,9 @@ mod tests {
 
         let mut graph = workgraph::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
-        t1.blocked_by = vec!["t2".to_string()];
+        t1.after = vec!["t2".to_string()];
         let mut t2 = make_task("t2", "Task 2");
-        t2.blocked_by = vec!["t1".to_string()];
+        t2.after = vec!["t1".to_string()];
         graph.add_node(Node::Task(t1));
         graph.add_node(Node::Task(t2));
         setup_graph(&dir, &graph);
@@ -215,26 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_fails_on_loop_edge_issues() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
-
-        let mut graph = workgraph::graph::WorkGraph::new();
-        let mut t1 = make_task("t1", "Task 1");
-        t1.loops_to = vec![LoopEdge {
-            target: "nonexistent".to_string(),
-            guard: None,
-            max_iterations: 3,
-            delay: None,
-        }];
-        graph.add_node(Node::Task(t1));
-        setup_graph(&dir, &graph);
-
-        let result = run(&dir, false);
-        assert!(result.is_err(), "loop edge issues should fail check");
-    }
-
-    #[test]
     fn test_check_fails_when_not_initialized() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
@@ -244,28 +218,6 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not initialized"));
-    }
-
-    #[test]
-    fn test_check_ok_with_valid_loop_edges() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
-
-        let mut graph = workgraph::graph::WorkGraph::new();
-        let t1 = make_task("t1", "Task 1");
-        let mut t2 = make_task("t2", "Task 2");
-        t2.loops_to = vec![LoopEdge {
-            target: "t1".to_string(),
-            guard: None,
-            max_iterations: 5,
-            delay: None,
-        }];
-        graph.add_node(Node::Task(t1));
-        graph.add_node(Node::Task(t2));
-        setup_graph(&dir, &graph);
-
-        let result = run(&dir, false);
-        assert!(result.is_ok(), "valid loop edges should pass check");
     }
 
     #[test]
