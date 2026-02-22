@@ -47,8 +47,7 @@ impl TemplateVars {
 
         let skills_preamble = Self::resolve_skills_preamble(workgraph_dir);
 
-        let task_loop_info = if task.cycle_config.is_some() {
-            let config = task.cycle_config.as_ref().unwrap();
+        let task_loop_info = if let Some(config) = &task.cycle_config {
             format!(
                 "## Cycle Information\n\n\
                  This task is a cycle header (iteration {}, max {}).\n\n\

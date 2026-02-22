@@ -10,11 +10,13 @@ pub mod matrix_commands;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix_lite;
 pub mod parser;
+pub mod plan_validator;
 pub mod provenance;
 pub mod query;
 pub mod runs;
 pub mod service;
 pub mod trace_function;
+pub mod trace_memory;
 pub mod usage;
 
 pub use config::MatrixConfig;

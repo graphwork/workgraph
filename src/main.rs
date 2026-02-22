@@ -1056,6 +1056,10 @@ enum TraceCommands {
         /// Include functions from federated peer workgraphs
         #[arg(long)]
         include_peers: bool,
+
+        /// Filter by visibility level (internal, peer, public)
+        #[arg(long)]
+        visibility: Option<String>,
     },
 
     /// Show details of a trace function
@@ -1065,10 +1069,11 @@ enum TraceCommands {
         id: String,
     },
 
-    /// Extract a trace function from a completed task
+    /// Extract a trace function from completed task(s)
     Extract {
-        /// Task ID to extract from
-        task_id: String,
+        /// Task ID(s) to extract from (multiple IDs with --generative)
+        #[arg(required = true, num_args = 1..)]
+        task_ids: Vec<String>,
 
         /// Function name/ID (default: derived from task ID)
         #[arg(long)]
@@ -1083,9 +1088,13 @@ enum TraceCommands {
         #[arg(long)]
         recursive: bool,
 
-        /// Use LLM to generalize descriptions (not yet wired)
+        /// Use LLM to generalize descriptions
         #[arg(long)]
         generalize: bool,
+
+        /// Multi-trace extraction: compare multiple traces to produce a version 2 (generative) function
+        #[arg(long)]
+        generative: bool,
 
         /// Write to specific path instead of .workgraph/functions/<name>.yaml
         #[arg(long)]
@@ -1154,6 +1163,24 @@ enum TraceCommands {
         /// Show what would be imported without making changes
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Bootstrap the extract-function meta-function
+    Bootstrap {
+        /// Overwrite if already exists
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Upgrade a generative function to adaptive (adds run memory)
+    #[command(name = "make-adaptive")]
+    MakeAdaptive {
+        /// Function ID (prefix match supported)
+        function_id: String,
+
+        /// Maximum number of past runs to include in memory
+        #[arg(long, default_value = "10")]
+        max_runs: u32,
     },
 }
 
@@ -2073,12 +2100,13 @@ fn supports_json(cmd: &Commands) -> bool {
     }
 }
 
-/// Check if the user is requesting help for a specific subcommand (e.g., `wg show --help`).
+/// Check if the user is requesting help for a specific subcommand (e.g., `wg show --help`
+/// or `wg trace extract --help`).
 ///
 /// Because we use `disable_help_flag = true` for the custom top-level help system,
 /// clap doesn't intercept `--help` at the subcommand level. This function pre-scans
 /// raw args and, if a subcommand + help flag is detected, prints clap's native help
-/// for that subcommand.
+/// for that subcommand. Supports nested subcommands (e.g., `wg trace extract --help`).
 fn maybe_print_subcommand_help() -> bool {
     let args: Vec<String> = std::env::args().collect();
 
@@ -2088,28 +2116,30 @@ fn maybe_print_subcommand_help() -> bool {
         return false;
     }
 
-    // Build the clap command to get subcommand names
-    let cmd = Cli::command();
-    let subcmd_names: Vec<String> = cmd
-        .get_subcommands()
-        .map(|c| c.get_name().to_string())
-        .collect();
+    // Walk the subcommand chain: start from the root command and drill down
+    // through non-flag args that match subcommand names at each level.
+    let mut current_cmd = Cli::command();
+    let mut matched_any = false;
 
-    // Find which subcommand is being referenced (skip argv[0], skip flags)
-    let subcmd = args
-        .iter()
-        .skip(1)
-        .find(|a| !a.starts_with('-') && subcmd_names.contains(a));
-
-    if let Some(subcmd_name) = subcmd {
-        // Extract the subcommand from clap and print its help directly
-        let cmd = Cli::command();
-        if let Some(sub) = cmd.get_subcommands().find(|c| c.get_name() == subcmd_name) {
-            let mut sub = sub.clone().disable_help_flag(false);
-            sub.print_help().ok();
-            println!();
-            std::process::exit(0);
+    for arg in args.iter().skip(1) {
+        if arg.starts_with('-') {
+            continue;
         }
+        let maybe_sub = current_cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == arg)
+            .cloned();
+        if let Some(sub) = maybe_sub {
+            current_cmd = sub;
+            matched_any = true;
+        }
+    }
+
+    if matched_any {
+        let mut cmd = current_cmd.disable_help_flag(false);
+        cmd.print_help().ok();
+        println!();
+        std::process::exit(0);
     }
 
     false
@@ -2355,29 +2385,42 @@ fn main() -> Result<()> {
                     commands::trace::run(&workgraph_dir, &id, mode)
                 }
             }
-            TraceCommands::ListFunctions { verbose, include_peers } => {
-                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers)
+            TraceCommands::ListFunctions { verbose, include_peers, visibility } => {
+                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
             }
             TraceCommands::ShowFunction { id } => {
                 commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
             }
             TraceCommands::Extract {
-                task_id,
+                task_ids,
                 name,
                 subgraph,
                 recursive,
                 generalize,
+                generative,
                 output,
                 force,
-            } => commands::trace_extract::run(
-                &workgraph_dir,
-                &task_id,
-                name.as_deref(),
-                subgraph || recursive,
-                generalize,
-                output.as_deref(),
-                force,
-            ),
+            } => {
+                if generative {
+                    commands::trace_extract::run_generative(
+                        &workgraph_dir,
+                        &task_ids,
+                        name.as_deref(),
+                        output.as_deref(),
+                        force,
+                    )
+                } else {
+                    commands::trace_extract::run(
+                        &workgraph_dir,
+                        &task_ids[0],
+                        name.as_deref(),
+                        subgraph || recursive,
+                        generalize,
+                        output.as_deref(),
+                        force,
+                    )
+                }
+            }
             TraceCommands::Instantiate {
                 function_id,
                 from,
@@ -2421,6 +2464,13 @@ fn main() -> Result<()> {
                 dry_run,
                 cli.json,
             ),
+            TraceCommands::Bootstrap { force } => {
+                commands::trace_bootstrap::run(&workgraph_dir, force)
+            }
+            TraceCommands::MakeAdaptive {
+                function_id,
+                max_runs,
+            } => commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs),
         },
         Commands::Replay {
             model,

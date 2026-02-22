@@ -442,8 +442,8 @@ pub fn resolve_remote_task_status(
     // Check if the peer's service is running
     let service_status = check_peer_service(&resolved.workgraph_dir);
 
-    if service_status.running {
-        if let Some(socket_path) = &service_status.socket_path {
+    if service_status.running
+        && let Some(socket_path) = &service_status.socket_path {
             // Try IPC first
             match query_task_via_ipc(socket_path, task_id) {
                 Ok(status) => return status,
@@ -452,7 +452,6 @@ pub fn resolve_remote_task_status(
                 }
             }
         }
-    }
 
     // Fall back to direct graph file read
     let graph_path = resolved.workgraph_dir.join("graph.jsonl");

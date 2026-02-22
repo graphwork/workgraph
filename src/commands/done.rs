@@ -33,13 +33,10 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
                 .into_iter()
                 .filter(|b| {
                     // Keep blocker unless it's in the same cycle as this task
-                    match (
-                        cycle_analysis.task_to_cycle.get(id),
-                        cycle_analysis.task_to_cycle.get(&b.id),
-                    ) {
-                        (Some(my_cycle), Some(b_cycle)) if my_cycle == b_cycle => false,
-                        _ => true,
-                    }
+                    !matches!(
+                        (cycle_analysis.task_to_cycle.get(id), cycle_analysis.task_to_cycle.get(&b.id)),
+                        (Some(my_cycle), Some(b_cycle)) if my_cycle == b_cycle
+                    )
                 })
                 .collect()
         } else {

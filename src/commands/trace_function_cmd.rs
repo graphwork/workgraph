@@ -1,17 +1,48 @@
 use anyhow::Result;
 use std::path::Path;
 use workgraph::trace_function::{
-    self, FunctionInput, InputType, TaskTemplate, TraceFunction,
+    self, FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
 };
 
 /// List all available trace functions.
-pub fn run_list(dir: &Path, json: bool, verbose: bool, include_peers: bool) -> Result<()> {
+pub fn run_list(
+    dir: &Path,
+    json: bool,
+    verbose: bool,
+    include_peers: bool,
+    visibility_filter: Option<&str>,
+) -> Result<()> {
+    let vis_filter = match visibility_filter {
+        Some(s) => Some(
+            FunctionVisibility::from_str_opt(s)
+                .ok_or_else(|| anyhow::anyhow!("Invalid visibility '{}'. Use: internal, peer, public", s))?,
+        ),
+        None => None,
+    };
+
     let func_dir = trace_function::functions_dir(dir);
-    let local_functions = trace_function::load_all_functions(&func_dir)?;
+    let mut local_functions = trace_function::load_all_functions(&func_dir)?;
+
+    // Apply visibility filter to local functions
+    if let Some(ref vis) = vis_filter {
+        local_functions.retain(|f| &f.visibility == vis);
+    }
 
     // Collect peer functions if requested
     let peer_entries: Vec<(String, Vec<TraceFunction>)> = if include_peers {
-        load_peer_functions(dir)?
+        let mut entries = load_peer_functions(dir)?;
+        // Filter peer functions: only show Peer or Public visibility from peers
+        for (_name, funcs) in &mut entries {
+            funcs.retain(|f| {
+                let visible = matches!(f.visibility, FunctionVisibility::Peer | FunctionVisibility::Public);
+                if let Some(ref vis) = vis_filter {
+                    visible && &f.visibility == vis
+                } else {
+                    visible
+                }
+            });
+        }
+        entries
     } else {
         Vec::new()
     };
@@ -52,7 +83,11 @@ pub fn run_list(dir: &Path, json: bool, verbose: bool, include_peers: bool) -> R
 
     // Print local functions
     if has_local {
-        let label = if include_peers { "Local functions:" } else { "Functions:" };
+        let label = if include_peers {
+            "Local functions:"
+        } else {
+            "Functions:"
+        };
         println!("{}", label);
         print_function_table(&local_functions, verbose, None);
     }
@@ -84,7 +119,7 @@ fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> 
     let config = workgraph::federation::load_federation_config(dir)?;
     let mut results = Vec::new();
 
-    for (name, _peer_config) in &config.peers {
+    for name in config.peers.keys() {
         match workgraph::federation::resolve_peer(name, dir) {
             Ok(resolved) => {
                 let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
@@ -103,8 +138,18 @@ fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> 
 
 /// Print a table of functions with consistent formatting.
 fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: Option<&str>) {
-    let id_width = functions.iter().map(|f| f.id.len()).max().unwrap_or(4).max(4);
-    let name_width = functions.iter().map(|f| f.name.len()).max().unwrap_or(4).max(4);
+    let id_width = functions
+        .iter()
+        .map(|f| f.id.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let name_width = functions
+        .iter()
+        .map(|f| f.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
 
     for func in functions {
         let display_id = if let Some(peer) = peer_name {
@@ -112,18 +157,27 @@ fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: O
         } else {
             func.id.clone()
         };
-        let display_id_width = if peer_name.is_some() {
-            display_id.len().max(id_width + peer_name.unwrap().len() + 1)
+        let display_id_width = if let Some(pn) = peer_name {
+            display_id
+                .len()
+                .max(id_width + pn.len() + 1)
         } else {
             id_width
         };
 
+        let vis_tag = match func.visibility {
+            FunctionVisibility::Internal => "",
+            FunctionVisibility::Peer => " [peer]",
+            FunctionVisibility::Public => " [public]",
+        };
+
         println!(
-            "  {:<id_w$}  {:<name_w$}  {} tasks, {} inputs",
+            "  {:<id_w$}  {:<name_w$}  {} tasks, {} inputs{}",
             display_id,
             format!("\"{}\"", func.name),
             func.tasks.len(),
             func.inputs.len(),
+            vis_tag,
             id_w = display_id_width,
             name_w = name_width + 2, // +2 for quotes
         );
@@ -149,26 +203,27 @@ fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: O
 /// Show details of a single trace function.
 pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
     let func_dir = trace_function::functions_dir(dir);
-    let func = trace_function::find_function_by_prefix(&func_dir, id)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let func =
+        trace_function::find_function_by_prefix(&func_dir, id).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&func)?);
         return Ok(());
     }
 
-    print_function_details(&func);
+    print_function_details(&func, &func_dir);
 
     Ok(())
 }
 
-fn print_function_details(func: &TraceFunction) {
+fn print_function_details(func: &TraceFunction, func_dir: &Path) {
     println!("Function: {}", func.id);
     println!("Name: {}", func.name);
     if !func.description.is_empty() {
         println!("Description: {}", func.description);
     }
     println!("Version: {}", func.version);
+    println!("Visibility: {}", func.visibility);
 
     if !func.tags.is_empty() {
         println!("Tags: {}", func.tags.join(", "));
@@ -191,6 +246,89 @@ fn print_function_details(func: &TraceFunction) {
     }
     if let Some(ref at) = func.extracted_at {
         println!("Extracted at: {}", at);
+    }
+
+    // Planning config
+    if let Some(ref planning) = func.planning {
+        println!();
+        println!("Planning:");
+        println!("  Planner: {} (\"{}\")", planning.planner_template.template_id, planning.planner_template.title);
+        println!("  Output format: {}", planning.output_format);
+        if planning.static_fallback {
+            println!("  Static fallback: yes");
+        }
+        if !planning.validate_plan {
+            println!("  Plan validation: disabled");
+        }
+    }
+
+    // Constraints
+    if let Some(ref constraints) = func.constraints {
+        println!();
+        println!("Constraints:");
+        if let Some(min) = constraints.min_tasks {
+            print!("  Tasks: [{}", min);
+            if let Some(max) = constraints.max_tasks {
+                println!(", {}]", max);
+            } else {
+                println!(", unbounded)");
+            }
+        } else if let Some(max) = constraints.max_tasks {
+            println!("  Max tasks: {}", max);
+        }
+        if let Some(depth) = constraints.max_depth {
+            println!("  Max depth: {}", depth);
+        }
+        if constraints.allow_cycles {
+            println!("  Cycles: allowed");
+            if let Some(max_iter) = constraints.max_total_iterations {
+                println!("  Max total iterations: {}", max_iter);
+            }
+        }
+        if !constraints.required_skills.is_empty() {
+            println!("  Required skills: {}", constraints.required_skills.join(", "));
+        }
+        if !constraints.required_phases.is_empty() {
+            println!("  Required phases: {}", constraints.required_phases.join(", "));
+        }
+        if !constraints.forbidden_patterns.is_empty() {
+            println!("  Forbidden patterns: {}", constraints.forbidden_patterns.len());
+            for p in &constraints.forbidden_patterns {
+                println!("    - [{}]: {}", p.tags.join(", "), p.reason);
+            }
+        }
+    }
+
+    // Memory config
+    if let Some(ref memory) = func.memory {
+        println!();
+        println!("Memory:");
+        println!("  Max runs: {}", memory.max_runs);
+        let mut includes = Vec::new();
+        if memory.include.outcomes {
+            includes.push("outcomes");
+        }
+        if memory.include.scores {
+            includes.push("scores");
+        }
+        if memory.include.interventions {
+            includes.push("interventions");
+        }
+        if memory.include.duration {
+            includes.push("duration");
+        }
+        if memory.include.retries {
+            includes.push("retries");
+        }
+        if memory.include.artifacts {
+            includes.push("artifacts");
+        }
+        if !includes.is_empty() {
+            println!("  Includes: {}", includes.join(", "));
+        }
+        if let Some(ref path) = memory.storage_path {
+            println!("  Storage: {}", path);
+        }
     }
 
     // Inputs
@@ -220,6 +358,30 @@ fn print_function_details(func: &TraceFunction) {
                 "  - {} (from {}.{}): {}",
                 output.name, output.from_task, output.field, output.description
             );
+        }
+    }
+
+    // Redacted fields
+    if !func.redacted_fields.is_empty() {
+        println!();
+        println!("Redacted fields: {}", func.redacted_fields.join(", "));
+    }
+
+    // Run history
+    let runs = trace_function::load_runs(func_dir, &func.id);
+    if !runs.is_empty() {
+        println!();
+        println!("Runs: {} recorded", runs.len());
+        if let Some(last) = runs.last() {
+            println!("  Last run: {}", last.instantiated_at);
+            if let Some(score) = last.avg_score {
+                print!("  Last score: {:.2}", score);
+            }
+            if last.all_succeeded {
+                println!("  (all succeeded)");
+            } else {
+                println!("  (had failures)");
+            }
         }
     }
 }
@@ -295,7 +457,10 @@ fn print_template_summary(template: &TaskTemplate, indent: &str) {
         let targets: Vec<&str> = template.loops_to.iter().map(|l| l.target.as_str()).collect();
         format!(" (loops to: {})", targets.join(", "))
     };
-    println!("{}{}: {}{}{}", indent, template.template_id, template.title, deps, loops);
+    println!(
+        "{}{}: {}{}{}",
+        indent, template.template_id, template.title, deps, loops
+    );
 }
 
 fn print_template_detail(template: &TaskTemplate) {
@@ -314,7 +479,10 @@ fn print_template_detail(template: &TaskTemplate) {
     }
     if !template.loops_to.is_empty() {
         for edge in &template.loops_to {
-            print!("    Loops to: {} (max {})", edge.target, edge.max_iterations);
+            print!(
+                "    Loops to: {} (max {})",
+                edge.target, edge.max_iterations
+            );
             if let Some(ref guard) = edge.guard {
                 print!(", guard: {}", guard);
             }
@@ -360,6 +528,7 @@ fn format_yaml_value(v: &serde_yaml::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::TempDir;
     use workgraph::trace_function::*;
 
@@ -446,6 +615,11 @@ mod tests {
                 from_task: "implement".to_string(),
                 field: "artifacts".to_string(),
             }],
+            planning: None,
+            constraints: None,
+            memory: None,
+            visibility: FunctionVisibility::Internal,
+            redacted_fields: vec![],
         }
     }
 
@@ -454,7 +628,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("functions")).unwrap();
-        assert!(run_list(dir, false, false, false).is_ok());
+        assert!(run_list(dir, false, false, false, None).is_ok());
     }
 
     #[test]
@@ -462,7 +636,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("functions")).unwrap();
-        assert!(run_list(dir, true, false, false).is_ok());
+        assert!(run_list(dir, true, false, false, None).is_ok());
     }
 
     #[test]
@@ -471,7 +645,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, false, false, false).is_ok());
+        assert!(run_list(dir, false, false, false, None).is_ok());
     }
 
     #[test]
@@ -480,7 +654,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, false, true, false).is_ok());
+        assert!(run_list(dir, false, true, false, None).is_ok());
     }
 
     #[test]
@@ -489,7 +663,7 @@ mod tests {
         let dir = tmp.path();
         let func_dir = dir.join("functions");
         save_function(&sample_function(), &func_dir).unwrap();
-        assert!(run_list(dir, true, false, false).is_ok());
+        assert!(run_list(dir, true, false, false, None).is_ok());
     }
 
     #[test]
@@ -527,7 +701,10 @@ mod tests {
         save_function(&sample_function(), &func_dir).unwrap();
         let result = run_show(dir, "nonexistent", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No function matching"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No function matching"));
     }
 
     #[test]
@@ -566,9 +743,106 @@ mod tests {
         save_function(&f1, &func_dir).unwrap();
         save_function(&f2, &func_dir).unwrap();
 
-        assert!(run_list(dir, false, false, false).is_ok());
-        assert!(run_list(dir, true, false, false).is_ok());
-        assert!(run_list(dir, false, true, false).is_ok());
+        assert!(run_list(dir, false, false, false, None).is_ok());
+        assert!(run_list(dir, true, false, false, None).is_ok());
+        assert!(run_list(dir, false, true, false, None).is_ok());
+    }
+
+    // ── --visibility filter tests ──
+
+    #[test]
+    fn list_visibility_filter_internal() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+
+        let mut f1 = sample_function();
+        f1.id = "internal-func".to_string();
+        f1.visibility = FunctionVisibility::Internal;
+
+        let mut f2 = sample_function();
+        f2.id = "peer-func".to_string();
+        f2.visibility = FunctionVisibility::Peer;
+
+        save_function(&f1, &func_dir).unwrap();
+        save_function(&f2, &func_dir).unwrap();
+
+        // Filter to internal only
+        assert!(run_list(dir, false, false, false, Some("internal")).is_ok());
+    }
+
+    #[test]
+    fn list_visibility_filter_peer() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+
+        let mut f1 = sample_function();
+        f1.id = "internal-func".to_string();
+        f1.visibility = FunctionVisibility::Internal;
+
+        let mut f2 = sample_function();
+        f2.id = "peer-func".to_string();
+        f2.visibility = FunctionVisibility::Peer;
+
+        save_function(&f1, &func_dir).unwrap();
+        save_function(&f2, &func_dir).unwrap();
+
+        // Filter to peer only
+        assert!(run_list(dir, false, false, false, Some("peer")).is_ok());
+    }
+
+    #[test]
+    fn list_visibility_filter_invalid() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("functions")).unwrap();
+
+        let result = run_list(dir, false, false, false, Some("unknown"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid visibility"));
+    }
+
+    // ── --include-peers visibility filtering ──
+
+    #[test]
+    fn list_peers_filters_internal_functions() {
+        let tmp = TempDir::new().unwrap();
+        let local_dir = tmp.path().join("local");
+        let local_wg = local_dir.join(".workgraph");
+        std::fs::create_dir_all(local_wg.join("functions")).unwrap();
+
+        // Set up peer project with an internal function (should be hidden)
+        let peer_project = tmp.path().join("peer-project");
+        let peer_wg = peer_project.join(".workgraph");
+        std::fs::create_dir_all(&peer_wg).unwrap();
+        let peer_func_dir = peer_wg.join("functions");
+
+        let mut internal_func = sample_function();
+        internal_func.id = "internal-secret".to_string();
+        internal_func.visibility = FunctionVisibility::Internal;
+        save_function(&internal_func, &peer_func_dir).unwrap();
+
+        let mut peer_func = sample_function();
+        peer_func.id = "shared-func".to_string();
+        peer_func.visibility = FunctionVisibility::Peer;
+        save_function(&peer_func, &peer_func_dir).unwrap();
+
+        // Configure peer
+        let config = workgraph::federation::FederationConfig {
+            peers: std::collections::BTreeMap::from([(
+                "other".to_string(),
+                workgraph::federation::PeerConfig {
+                    path: peer_project.to_str().unwrap().to_string(),
+                    description: Some("Test peer".to_string()),
+                },
+            )]),
+            ..Default::default()
+        };
+        workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
+
+        // List with --include-peers should only show peer/public functions
+        assert!(run_list(&local_wg, false, false, true, None).is_ok());
     }
 
     // ── --include-peers tests ──
@@ -580,12 +854,14 @@ mod tests {
         let local_wg = local_dir.join(".workgraph");
         std::fs::create_dir_all(local_wg.join("functions")).unwrap();
 
-        // Set up peer project with a function
+        // Set up peer project with a peer-visible function
         let peer_project = tmp.path().join("peer-project");
         let peer_wg = peer_project.join(".workgraph");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let peer_func_dir = peer_wg.join("functions");
-        save_function(&sample_function(), &peer_func_dir).unwrap();
+        let mut func = sample_function();
+        func.visibility = FunctionVisibility::Peer;
+        save_function(&func, &peer_func_dir).unwrap();
 
         // Configure peer in federation.yaml
         let config = workgraph::federation::FederationConfig {
@@ -601,8 +877,8 @@ mod tests {
         workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // List with --include-peers should find peer functions
-        assert!(run_list(&local_wg, false, false, true).is_ok());
-        assert!(run_list(&local_wg, true, false, true).is_ok());
+        assert!(run_list(&local_wg, false, false, true, None).is_ok());
+        assert!(run_list(&local_wg, true, false, true, None).is_ok());
     }
 
     #[test]
@@ -612,7 +888,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("functions")).unwrap();
 
         // No federation.yaml = no peers
-        assert!(run_list(dir, false, false, true).is_ok());
+        assert!(run_list(dir, false, false, true, None).is_ok());
     }
 
     #[test]
@@ -638,8 +914,8 @@ mod tests {
         workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // Should not error, just skip the inaccessible peer
-        assert!(run_list(&local_wg, false, false, true).is_ok());
-        assert!(run_list(&local_wg, true, false, true).is_ok());
+        assert!(run_list(&local_wg, false, false, true, None).is_ok());
+        assert!(run_list(&local_wg, true, false, true, None).is_ok());
     }
 
     #[test]
@@ -651,12 +927,13 @@ mod tests {
         // Local function
         save_function(&sample_function(), &local_wg.join("functions")).unwrap();
 
-        // Peer with function
+        // Peer with peer-visible function
         let peer_project = tmp.path().join("peer");
         let peer_wg = peer_project.join(".workgraph");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let mut peer_func = sample_function();
         peer_func.id = "peer-func".to_string();
+        peer_func.visibility = FunctionVisibility::Peer;
         save_function(&peer_func, &peer_wg.join("functions")).unwrap();
 
         let config = workgraph::federation::FederationConfig {
@@ -672,6 +949,126 @@ mod tests {
         workgraph::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // JSON output should succeed
-        assert!(run_list(&local_wg, true, false, true).is_ok());
+        assert!(run_list(&local_wg, true, false, true, None).is_ok());
+    }
+
+    // ── show-function new fields tests ──
+
+    #[test]
+    fn show_displays_visibility() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        let mut func = sample_function();
+        func.visibility = FunctionVisibility::Peer;
+        save_function(&func, &func_dir).unwrap();
+        assert!(run_show(dir, "impl-feature", false).is_ok());
+    }
+
+    #[test]
+    fn show_displays_planning_config() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        let mut func = sample_function();
+        func.planning = Some(PlanningConfig {
+            planner_template: TaskTemplate {
+                template_id: "planner".to_string(),
+                title: "Plan".to_string(),
+                description: "Plan the work".to_string(),
+                skills: vec!["analysis".to_string()],
+                after: vec![],
+                loops_to: vec![],
+                role_hint: Some("architect".to_string()),
+                deliverables: vec![],
+                verify: None,
+                tags: vec![],
+            },
+            output_format: "workgraph-yaml".to_string(),
+            static_fallback: true,
+            validate_plan: true,
+        });
+        save_function(&func, &func_dir).unwrap();
+        assert!(run_show(dir, "impl-feature", false).is_ok());
+    }
+
+    #[test]
+    fn show_displays_constraints() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        let mut func = sample_function();
+        func.constraints = Some(StructuralConstraints {
+            min_tasks: Some(2),
+            max_tasks: Some(20),
+            required_skills: vec!["implementation".to_string(), "testing".to_string()],
+            max_depth: Some(4),
+            allow_cycles: false,
+            max_total_iterations: None,
+            required_phases: vec!["implement".to_string(), "test".to_string()],
+            forbidden_patterns: vec![ForbiddenPattern {
+                tags: vec!["untested".to_string(), "production".to_string()],
+                reason: "Cannot deploy untested code".to_string(),
+            }],
+        });
+        save_function(&func, &func_dir).unwrap();
+        assert!(run_show(dir, "impl-feature", false).is_ok());
+    }
+
+    #[test]
+    fn show_displays_memory_config() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        let mut func = sample_function();
+        func.memory = Some(TraceMemoryConfig {
+            max_runs: 10,
+            include: MemoryInclusions {
+                outcomes: true,
+                scores: true,
+                interventions: true,
+                duration: true,
+                retries: false,
+                artifacts: false,
+            },
+            storage_path: None,
+        });
+        save_function(&func, &func_dir).unwrap();
+        assert!(run_show(dir, "impl-feature", false).is_ok());
+    }
+
+    #[test]
+    fn show_displays_run_history() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        save_function(&sample_function(), &func_dir).unwrap();
+
+        // Write a .runs.jsonl file
+        let run = RunSummary {
+            instantiated_at: "2026-02-20T12:00:00Z".to_string(),
+            inputs: HashMap::new(),
+            prefix: "impl-feature/".to_string(),
+            task_outcomes: vec![],
+            interventions: vec![],
+            wall_clock_secs: Some(120),
+            all_succeeded: true,
+            avg_score: Some(0.9),
+        };
+        let run_json = serde_json::to_string(&run).unwrap();
+        std::fs::write(func_dir.join("impl-feature.runs.jsonl"), format!("{}\n", run_json)).unwrap();
+
+        assert!(run_show(dir, "impl-feature", false).is_ok());
+    }
+
+    #[test]
+    fn show_displays_redacted_fields() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let func_dir = dir.join("functions");
+        let mut func = sample_function();
+        func.redacted_fields = vec!["extracted_by".to_string()];
+        save_function(&func, &func_dir).unwrap();
+        assert!(run_show(dir, "impl-feature", false).is_ok());
     }
 }

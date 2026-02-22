@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use workgraph::graph::{Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::trace_function::{
-    self, FunctionInput, InputType, TaskTemplate, TraceFunction,
+    self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
 
 use super::graph_path;
@@ -110,6 +110,19 @@ pub fn run(
     // 4. For file_content type: read file at provided path and substitute content
     let final_inputs = resolve_file_contents(&func.inputs, resolved)?;
 
+    // Layer 3: Memory injection for adaptive functions (version >= 3)
+    let memory_text = if func.version >= 3 {
+        if let Some(ref memory_config) = func.memory {
+            let summaries =
+                workgraph::trace_memory::load_run_summaries(dir, &func.id, memory_config);
+            workgraph::trace_memory::render_run_summaries(&summaries, &memory_config.include)
+        } else {
+            "No previous runs recorded.".to_string()
+        }
+    } else {
+        String::new()
+    };
+
     // 5. Generate task ID prefix
     let prefix = prefix
         .map(String::from)
@@ -139,12 +152,31 @@ pub fn run(
         }
     }
 
+    // Layer 2: Determine task templates (static or planner-generated)
+    let task_templates = if let Some(ref planning) = func.planning {
+        execute_plan_or_fallback(
+            dir,
+            &func,
+            planning,
+            &final_inputs,
+            &memory_text,
+            &prefix,
+            &mut graph,
+            &graph_file,
+            after.first().map(|s| s.as_str()),
+            model,
+            dry_run,
+        )?
+    } else {
+        func.tasks.clone()
+    };
+
     // 7. Build ID map and create tasks
     let mut id_map: HashMap<String, String> = HashMap::new(); // template_id -> real task_id
     let mut created_ids: Vec<String> = Vec::new();
 
     // Pre-compute all task IDs so loops_to can reference forward
-    for template in &func.tasks {
+    for template in &task_templates {
         let task_id = format!("{}-{}", prefix, template.template_id);
         if !dry_run && graph.get_node(&task_id).is_some() {
             anyhow::bail!(
@@ -155,8 +187,12 @@ pub fn run(
         id_map.insert(template.template_id.clone(), task_id);
     }
 
-    for template in &func.tasks {
-        let rendered = trace_function::substitute_task_template(template, &final_inputs);
+    for template in &task_templates {
+        let mut rendered = trace_function::substitute_task_template(template, &final_inputs);
+        if !memory_text.is_empty() {
+            rendered.description =
+                rendered.description.replace("{{memory.run_summaries}}", &memory_text);
+        }
         let task_id = id_map[&template.template_id].clone();
 
         // Remap after from template_ids to real task_ids
@@ -293,6 +329,18 @@ pub fn run(
             "prefix": prefix,
         }),
         config.log.rotation_threshold,
+    );
+
+    // Record run for trace memory (append to .runs.jsonl)
+    let _ = append_run_record(
+        dir,
+        &func.id,
+        &serde_json::json!({
+            "instantiated_at": Utc::now().to_rfc3339(),
+            "inputs": input_summary,
+            "prefix": prefix,
+            "task_ids": created_ids,
+        }),
     );
 
     // Output
@@ -465,6 +513,120 @@ fn print_dry_run_task(
     println!();
 }
 
+/// Execute the planning node or fall back to static tasks (Layer 2).
+///
+/// If a planner task exists in the graph and is Done, parses its output as a
+/// YAML task template list, validates against constraints, and returns the
+/// generated templates. Otherwise falls back to the function's static tasks.
+#[allow(clippy::too_many_arguments)]
+fn execute_plan_or_fallback(
+    _dir: &Path,
+    func: &TraceFunction,
+    planning: &PlanningConfig,
+    _inputs: &HashMap<String, serde_yaml::Value>,
+    _memory_text: &str,
+    prefix: &str,
+    graph: &mut workgraph::graph::WorkGraph,
+    _graph_file: &Path,
+    _after: Option<&str>,
+    _model: Option<&str>,
+    _dry_run: bool,
+) -> Result<Vec<TaskTemplate>> {
+    let planner_task_id = format!("{}-{}", prefix, planning.planner_template.template_id);
+
+    // Check if planner task exists and is Done
+    if let Some(task) = graph.get_task(&planner_task_id)
+        && task.status == workgraph::graph::Status::Done
+            && let Some(generated) = try_parse_planner_output(task) {
+                // Validate against constraints if enabled
+                if planning.validate_plan
+                    && let Some(ref constraints) = func.constraints {
+                        match workgraph::plan_validator::validate_plan(&generated, constraints) {
+                            Ok(()) => return Ok(generated),
+                            Err(errors) => {
+                                eprintln!(
+                                    "Plan validation failed ({} error(s)):",
+                                    errors.len()
+                                );
+                                for e in &errors {
+                                    eprintln!("  - {}", e);
+                                }
+                                if planning.static_fallback {
+                                    eprintln!("Falling back to static task templates.");
+                                    return Ok(func.tasks.clone());
+                                }
+                                anyhow::bail!(
+                                    "Generated plan failed validation and static_fallback is disabled"
+                                );
+                            }
+                        }
+                    }
+                return Ok(generated);
+            }
+
+    // Planner task not ready — fall back to static templates
+    Ok(func.tasks.clone())
+}
+
+/// Try to parse planner task output as a list of TaskTemplates.
+///
+/// Checks artifacts first (for .yaml/.yml files), then log entries for
+/// embedded ```yaml blocks.
+fn try_parse_planner_output(task: &workgraph::graph::Task) -> Option<Vec<TaskTemplate>> {
+    // Check artifacts for YAML files
+    for artifact in &task.artifacts {
+        if (artifact.ends_with(".yaml") || artifact.ends_with(".yml"))
+            && let Ok(content) = std::fs::read_to_string(artifact)
+                && let Ok(templates) = serde_yaml::from_str::<Vec<TaskTemplate>>(&content)
+                    && !templates.is_empty() {
+                        return Some(templates);
+                    }
+    }
+
+    // Check log entries for embedded YAML blocks
+    for entry in &task.log {
+        if let Some(yaml_str) = extract_yaml_block(&entry.message)
+            && let Ok(templates) = serde_yaml::from_str::<Vec<TaskTemplate>>(yaml_str)
+                && !templates.is_empty() {
+                    return Some(templates);
+                }
+    }
+
+    None
+}
+
+/// Extract a ```yaml ... ``` fenced code block from text.
+fn extract_yaml_block(text: &str) -> Option<&str> {
+    let marker = "```yaml\n";
+    let start = text.find(marker)? + marker.len();
+    let rest = &text[start..];
+    let end = rest.find("```")?;
+    let block = rest[..end].trim();
+    if block.is_empty() {
+        None
+    } else {
+        Some(block)
+    }
+}
+
+/// Append a JSON run record to the function's `.runs.jsonl` file.
+fn append_run_record(
+    workgraph_dir: &Path,
+    function_id: &str,
+    record: &serde_json::Value,
+) -> Result<()> {
+    use std::io::Write;
+    let func_dir = workgraph_dir.join("functions");
+    std::fs::create_dir_all(&func_dir)?;
+    let runs_path = func_dir.join(format!("{}.runs.jsonl", function_id));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&runs_path)?;
+    writeln!(file, "{}", serde_json::to_string(record)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +726,11 @@ mod tests {
                 },
             ],
             outputs: vec![],
+            planning: None,
+            constraints: None,
+            memory: None,
+            visibility: FunctionVisibility::Internal,
+            redacted_fields: vec![],
         }
     }
 
@@ -1341,5 +1508,351 @@ mod tests {
             false,
         );
         assert!(result.is_err());
+    }
+
+    // ── Run tracking tests ──
+
+    #[test]
+    fn instantiate_records_run_jsonl() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+        setup_function(dir, &sample_function());
+
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let runs_path = dir.join("functions").join("impl-feature.runs.jsonl");
+        assert!(runs_path.exists(), "runs.jsonl should be created");
+
+        let content = std::fs::read_to_string(&runs_path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 1, "should have one run record");
+
+        let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(record["prefix"], "auth");
+        assert!(record["instantiated_at"].is_string());
+        assert!(record["task_ids"].is_array());
+        assert_eq!(record["task_ids"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn instantiate_appends_run_jsonl_on_second_call() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+        setup_function(dir, &sample_function());
+
+        // First instantiation
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Second instantiation with different prefix
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            Some("second"),
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let runs_path = dir.join("functions").join("impl-feature.runs.jsonl");
+        let content = std::fs::read_to_string(&runs_path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "should have two run records");
+    }
+
+    // ── Memory injection tests ──
+
+    #[test]
+    fn instantiate_v3_injects_memory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        // Create a v3 function with memory config and a memory placeholder
+        let mut func = sample_function();
+        func.version = 3;
+        func.memory = Some(TraceMemoryConfig {
+            max_runs: 10,
+            include: MemoryInclusions {
+                outcomes: true,
+                scores: true,
+                interventions: true,
+                duration: true,
+                retries: false,
+                artifacts: false,
+            },
+            storage_path: None,
+        });
+        func.tasks[0].description =
+            "Plan {{input.feature_name}}\n\nPast runs:\n{{memory.run_summaries}}".to_string();
+        setup_function(dir, &func);
+
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let plan = graph.get_task("auth-plan").unwrap();
+        let desc = plan.description.as_ref().unwrap();
+
+        // With no prior runs, memory should be replaced with "No previous runs recorded."
+        assert!(
+            desc.contains("No previous runs recorded."),
+            "v3 function should inject memory text; got: {}",
+            desc
+        );
+        assert!(
+            !desc.contains("{{memory.run_summaries}}"),
+            "placeholder should be replaced"
+        );
+    }
+
+    #[test]
+    fn instantiate_v1_does_not_inject_memory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        // Create a v1 function with a memory placeholder (shouldn't be replaced)
+        let mut func = sample_function();
+        func.tasks[0].description =
+            "Plan {{input.feature_name}}\n{{memory.run_summaries}}".to_string();
+        setup_function(dir, &func);
+
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let plan = graph.get_task("auth-plan").unwrap();
+        let desc = plan.description.as_ref().unwrap();
+
+        // v1 function: memory_text is empty, so placeholder stays
+        assert!(
+            desc.contains("{{memory.run_summaries}}"),
+            "v1 function should NOT inject memory; got: {}",
+            desc
+        );
+    }
+
+    // ── Plan execution tests ──
+
+    #[test]
+    fn instantiate_v2_falls_back_to_static_tasks() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        // Create a v2 function with planning config
+        let mut func = sample_function();
+        func.version = 2;
+        func.planning = Some(PlanningConfig {
+            planner_template: TaskTemplate {
+                template_id: "planner".to_string(),
+                title: "Plan it".to_string(),
+                description: "Generate a plan".to_string(),
+                skills: vec!["analysis".to_string()],
+                after: vec![],
+                loops_to: vec![],
+                role_hint: None,
+                deliverables: vec![],
+                verify: None,
+                tags: vec![],
+            },
+            output_format: "workgraph-yaml".to_string(),
+            static_fallback: true,
+            validate_plan: true,
+        });
+        func.constraints = Some(StructuralConstraints {
+            min_tasks: Some(2),
+            max_tasks: Some(10),
+            required_skills: vec![],
+            max_depth: None,
+            allow_cycles: false,
+            max_total_iterations: None,
+            required_phases: vec![],
+            forbidden_patterns: vec![],
+        });
+        setup_function(dir, &func);
+
+        // No planner task exists, so should fall back to static templates
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        // Static fallback tasks should be created
+        assert!(graph.get_task("auth-plan").is_some());
+        assert!(graph.get_task("auth-implement").is_some());
+        assert!(graph.get_task("auth-validate").is_some());
+        assert!(graph.get_task("auth-refine").is_some());
+    }
+
+    #[test]
+    fn instantiate_v2_uses_planner_output() {
+        use workgraph::graph::{LogEntry, Node, Status, Task};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        setup_workgraph(dir);
+
+        // Create a v2 function with planning
+        let mut func = sample_function();
+        func.version = 2;
+        func.planning = Some(PlanningConfig {
+            planner_template: TaskTemplate {
+                template_id: "planner".to_string(),
+                title: "Plan it".to_string(),
+                description: "Generate a plan".to_string(),
+                skills: vec![],
+                after: vec![],
+                loops_to: vec![],
+                role_hint: None,
+                deliverables: vec![],
+                verify: None,
+                tags: vec![],
+            },
+            output_format: "workgraph-yaml".to_string(),
+            static_fallback: true,
+            validate_plan: false, // skip validation for this test
+        });
+        // Clear static tasks to verify we get planner output
+        func.tasks = vec![];
+        setup_function(dir, &func);
+
+        // Create the planner task in Done state with YAML output in log
+        let planner_yaml = r#"```yaml
+- template_id: design
+  title: "Design auth"
+  description: "Design the auth system"
+  skills: [analysis]
+- template_id: build
+  title: "Build auth"
+  description: "Build the auth system"
+  skills: [implementation]
+  after: [design]
+```"#;
+
+        let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        graph.add_node(Node::Task(Task {
+            id: "auth-planner".to_string(),
+            title: "Plan it".to_string(),
+            status: Status::Done,
+            log: vec![LogEntry {
+                timestamp: "2026-02-21T12:00:00Z".to_string(),
+                actor: Some("agent".to_string()),
+                message: planner_yaml.to_string(),
+            }],
+            ..Task::default()
+        }));
+        save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Run instantiation
+        run(
+            dir,
+            "impl-feature",
+            None,
+            &["feature_name=auth".to_string()],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        // Should use planner output, not static tasks
+        assert!(
+            graph.get_task("auth-design").is_some(),
+            "planner-generated 'design' task should exist"
+        );
+        assert!(
+            graph.get_task("auth-build").is_some(),
+            "planner-generated 'build' task should exist"
+        );
+    }
+
+    // ── extract_yaml_block tests ──
+
+    #[test]
+    fn extract_yaml_block_basic() {
+        let text = "Here is the plan:\n```yaml\n- id: a\n  title: A\n```\nDone.";
+        let block = extract_yaml_block(text).unwrap();
+        assert!(block.contains("- id: a"));
+        assert!(block.contains("title: A"));
+    }
+
+    #[test]
+    fn extract_yaml_block_no_yaml() {
+        let text = "No yaml here.";
+        assert!(extract_yaml_block(text).is_none());
+    }
+
+    #[test]
+    fn extract_yaml_block_empty() {
+        let text = "```yaml\n```";
+        assert!(extract_yaml_block(text).is_none());
     }
 }

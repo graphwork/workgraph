@@ -356,13 +356,11 @@ pub fn ready_tasks_cycle_aware<'a>(
                 // Cycle-aware: the task with cycle_config is the user-designated
                 // cycle header. It is exempt from blockers in the same cycle,
                 // allowing the cycle to start its first iteration.
-                if task.cycle_config.is_some() {
-                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
-                        if cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
+                if task.cycle_config.is_some()
+                    && let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
                             return true;
                         }
-                    }
-                }
                 false
             })
         })
@@ -394,13 +392,11 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                 }
                 // Cycle-aware: the task with cycle_config is the user-designated
                 // cycle header. It is exempt from blockers in the same cycle.
-                if task.cycle_config.is_some() {
-                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
-                        if cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
+                if task.cycle_config.is_some()
+                    && let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(&cycle_idx) {
                             return true;
                         }
-                    }
-                }
                 false
             })
         })

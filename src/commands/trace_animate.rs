@@ -57,6 +57,7 @@ pub fn run(dir: &Path, root_id: &str, speed: f64) -> Result<()> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_animation_loop(
     stdout: &mut io::Stdout,
     graph: &workgraph::graph::WorkGraph,
@@ -96,7 +97,7 @@ fn run_animation_loop(
         } else {
             let gap = (snapshots[current_idx + 1].timestamp - snapshots[current_idx].timestamp)
                 .num_milliseconds() as f64;
-            let scaled = (gap / speed).max(50.0).min(5000.0);
+            let scaled = (gap / speed).clamp(50.0, 5000.0);
             scaled as u64
         };
 

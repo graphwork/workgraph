@@ -358,11 +358,10 @@ pub fn build_loop_nesting_forest(
 
         while let Some(node) = queue.pop_front() {
             for &pred in &rev_adj[node] {
-                if dfs_num[pred] >= header_dfs && body.insert(pred) {
-                    if pred != header {
+                if dfs_num[pred] >= header_dfs && body.insert(pred)
+                    && pred != header {
                         queue.push_back(pred);
                     }
-                }
             }
         }
 
@@ -969,6 +968,12 @@ pub struct NamedGraph {
     names: Vec<String>,
     name_to_id: HashMap<String, NodeId>,
     adj: Vec<Vec<NodeId>>,
+}
+
+impl Default for NamedGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NamedGraph {

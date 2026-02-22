@@ -576,6 +576,7 @@ fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 /// - Connected components grouped together, separated by blank lines
 /// - Independent tasks listed at bottom
 /// - Color coding by status via ANSI escape codes
+#[allow(clippy::only_used_in_recursion)]
 fn generate_ascii(
     graph: &WorkGraph,
     tasks: &[&workgraph::graph::Task],
@@ -756,7 +757,7 @@ fn generate_ascii(
 
         // DFS from each root
         for root in &roots {
-            #[allow(clippy::too_many_arguments)]
+            #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
             fn render_tree<'a>(
                 id: &'a str,
                 prefix: &str,
@@ -1203,7 +1204,7 @@ pub fn generate_graph_with_overrides(
         // For simplicity with color: rebuild content rows as strings with color.
         output.push(row_top.iter().collect::<String>().trim_end().to_string());
 
-        for ci in 0..num_content_lines {
+        for (ci, content_row) in content_rows.iter().enumerate().take(num_content_lines) {
             if use_color {
                 let mut s = String::new();
                 for (ni, &id) in layer.iter().enumerate() {
@@ -1228,7 +1229,7 @@ pub fn generate_graph_with_overrides(
                 output.push(s.trim_end().to_string());
             } else {
                 output.push(
-                    content_rows[ci]
+                    content_row
                         .iter()
                         .collect::<String>()
                         .trim_end()
@@ -1254,15 +1255,14 @@ pub fn generate_graph_with_overrides(
                 if let Some(children) = forward.get(pid) {
                     let pc = box_center(layer_idx, ni);
                     for &cid in children {
-                        if let Some(&(cl, cn)) = node_pos.get(cid) {
-                            if cl == next_layer_idx {
+                        if let Some(&(cl, cn)) = node_pos.get(cid)
+                            && cl == next_layer_idx {
                                 let cc = box_center(cl, cn);
                                 edges.push(Edge {
                                     parent_center: pc,
                                     child_center: cc,
                                 });
                             }
-                        }
                     }
                 }
             }
@@ -1307,6 +1307,7 @@ pub fn generate_graph_with_overrides(
                     let max_x = *all_points.last().unwrap();
 
                     // Draw horizontal line
+                    #[allow(clippy::needless_range_loop)]
                     for x in min_x..=max_x {
                         if x < canvas_width && row2[x] == ' ' {
                             row2[x] = '─';

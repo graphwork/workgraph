@@ -690,12 +690,31 @@ wg trace import peer-export.json      # import a peer's trace as read-only conte
 
 ### Trace functions (workflow templates)
 
-Extract proven workflows into reusable templates:
+Extract proven workflows into reusable templates. Three layers of increasing sophistication:
+
+- **Static** (version 1): Fixed task topology with `{{input.X}}` substitution
+- **Generative** (version 2): A planning node decides the task graph at instantiation time, within structural constraints
+- **Adaptive** (version 3): Generative + trace memory from past runs, so the planner learns over time
 
 ```bash
-wg trace extract impl-feature --name impl-feature  # extract pattern from completed work
+# Extract a static function from completed work
+wg trace extract impl-auth --name impl-feature --subgraph
+
+# Extract a generative function by comparing multiple traces
+wg trace extract impl-auth impl-caching impl-logging \
+  --generative --name impl-feature
+
+# Instantiate a function (creates tasks from template)
 wg trace instantiate impl-feature \
-  --input feature_name=auth --input description="Add OAuth"  # create tasks from pattern
+  --input feature_name=auth --input description="Add OAuth"
+
+# Upgrade to adaptive (adds learning from past runs)
+wg trace make-adaptive impl-feature
+
+# Bootstrap the meta-function (extraction as a workflow)
+wg trace bootstrap
+
+# List and inspect functions
 wg trace list-functions              # list available templates
 wg trace show-function impl-feature  # inspect a template
 ```
@@ -748,6 +767,9 @@ wg watch              # real-time event stream (for external adapters)
 wg trace show <id>    # execution history of a task
 wg trace export       # export trace data for sharing
 wg trace extract <id> # extract workflow pattern into reusable template
+wg trace extract --generative <id>... # compare traces → generative function
+wg trace make-adaptive <id>  # upgrade to adaptive (adds trace memory)
+wg trace bootstrap    # bootstrap the extraction meta-function
 ```
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference including `viz`, `plan`, `coordinate`, `archive`, `reschedule`, and more.

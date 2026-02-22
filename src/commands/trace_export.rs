@@ -7,14 +7,19 @@ use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::load_graph;
 use workgraph::provenance;
+use workgraph::trace_function::{
+    self, FunctionVisibility, TraceFunction, export_function, function_visible_at,
+};
 
-/// Exported trace data with metadata, tasks, evaluations, and operations.
+/// Exported trace data with metadata, tasks, evaluations, operations, and functions.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraceExport {
     pub metadata: ExportMetadata,
     pub tasks: Vec<ExportedTask>,
     pub evaluations: Vec<Evaluation>,
     pub operations: Vec<provenance::OperationEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<TraceFunction>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,7 +121,7 @@ pub fn run(
                 id: t.id.clone(),
                 title: t.title.clone(),
                 description: t.description.clone(),
-                status: t.status.clone(),
+                status: t.status,
                 visibility: t.visibility.clone(),
                 skills: t.skills.clone(),
                 after: t.after.clone(),
@@ -176,6 +181,19 @@ pub fn run(
             .collect()
     };
 
+    // Load and filter functions by visibility
+    let target_vis = FunctionVisibility::from_str_opt(visibility)
+        .unwrap_or(FunctionVisibility::Internal);
+    let functions: Vec<TraceFunction> = {
+        let funcs_dir = trace_function::functions_dir(dir);
+        let all_funcs = trace_function::load_all_functions(&funcs_dir).unwrap_or_default();
+        all_funcs
+            .into_iter()
+            .filter(|f| function_visible_at(f, &target_vis))
+            .filter_map(|f| export_function(&f, &target_vis).ok())
+            .collect()
+    };
+
     // Build export
     let export = TraceExport {
         metadata: ExportMetadata {
@@ -188,6 +206,7 @@ pub fn run(
         tasks: exported_tasks,
         evaluations,
         operations,
+        functions,
     };
 
     let json_output = serde_json::to_string_pretty(&export)?;
@@ -196,9 +215,15 @@ pub fn run(
     if let Some(output_path) = output {
         std::fs::write(output_path, &json_output)?;
         if !json {
+            let func_msg = if export.functions.is_empty() {
+                String::new()
+            } else {
+                format!(", {} functions", export.functions.len())
+            };
             eprintln!(
-                "Exported {} tasks to {} (visibility: {})",
+                "Exported {} tasks{} to {} (visibility: {})",
                 export.tasks.len(),
+                func_msg,
                 output_path,
                 visibility
             );
@@ -218,6 +243,7 @@ pub fn run(
             "task_count": export.tasks.len(),
             "evaluation_count": export.evaluations.len(),
             "operation_count": export.operations.len(),
+            "function_count": export.functions.len(),
         }),
         provenance::DEFAULT_ROTATION_THRESHOLD,
     );

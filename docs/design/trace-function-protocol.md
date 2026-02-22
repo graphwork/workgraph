@@ -527,3 +527,57 @@ wg trace instantiate extract-function \
 ---
 
 The key architectural insight: each layer is a strict superset of the previous one. A Layer 1 function is a valid Layer 2 function with no planning node, and a Layer 2 function is a valid Layer 3 function with no trace memory. The data model is additive and backward-compatible.
+
+---
+
+## 9. Implementation Notes
+
+Notes on how the implementation diverges from or extends the spec above.
+
+### 9.1 Trace Memory: Dual Storage Strategy
+
+The spec (§3.4) describes a per-run JSON directory at `.workgraph/functions/<id>.memory/`. The implementation adds a second, parallel strategy: `.workgraph/functions/<id>.runs.jsonl` (one JSON line per run summary). The JSONL strategy is what `trace_instantiate` and `trace_make_adaptive` actually use for reading/writing run history. The per-run JSON directory (`trace_memory::memory_dir`, `save_run_summary`, `load_recent_summaries`) exists alongside it but is used by `build_run_summary` for spec-compliant individual run storage. Both strategies coexist; consumers should prefer the JSONL path for operational use.
+
+### 9.2 Generative Extraction: Trace Alignment Heuristic
+
+The spec (§4.2) describes an abstract "align traces: identify shared vs variable task topology" step. The implementation in `trace_extract::run_generative()` implements this as:
+1. Collect subgraphs for each trace.
+2. Compare task counts and ordered skill-set tuples across all traces.
+3. If all traces have identical topology (same count AND same skills in order), fall back to static extraction.
+4. Otherwise: compute `min_tasks`/`max_tasks` from trace sizes, `common_skills` (intersection), `all_skills` (union), and `max_depth`. Pick the median-size trace as the static fallback.
+5. Synthesize a planning prompt describing the observed pattern variation.
+
+This is more heuristic than a formal structural alignment algorithm but works well for typical extraction scenarios.
+
+### 9.3 Planner Output Capture
+
+The spec (§4.2) doesn't detail how the planning node's output is captured. The implementation in `trace_instantiate::execute_plan_or_fallback()` uses a two-step search:
+1. Check the planner task's artifacts for files ending in `.yaml` or `.yml`, parse the first one found.
+2. If no artifact, scan the task's log entries for ` ```yaml ` fenced code blocks.
+3. Parse the YAML as `Vec<TaskTemplate>`.
+4. If `validate_plan` is true, run `plan_validator::validate_plan()` against the function's constraints.
+5. On validation failure: use static fallback tasks if `static_fallback` is true; otherwise error.
+
+### 9.4 The `--generalize` Flag Is Wired
+
+The spec (§1.2) notes that `--generalize` is "stubbed and not wired to an LLM." As of the current implementation, it is wired: `trace_extract::generalize_with_executor()` calls `claude --print` via subprocess, sending the raw function YAML with a prompt to replace instance-specific values with `{{input.<name>}}` placeholders. Requires the coordinator executor to be `claude`.
+
+### 9.5 Intervention Detection
+
+The spec (§3.4) defines `InterventionSummary` but doesn't specify which provenance operations constitute interventions. The implementation (`trace_memory::build_run_summary()`) detects four operation types as interventions: `retry`, `edit`, `reassign`, and `manual_override`.
+
+### 9.6 TaskTemplate YAML Aliases
+
+The `TaskTemplate` struct accepts both `after` and `blocked_by` (via `#[serde(alias = "blocked_by")]`) as the field name for dependency lists in YAML. This mirrors the graph model's edge rename from `blocked_by` to `after`.
+
+### 9.7 Plan Validation: Depth Calculation
+
+The spec (§3.3) mentions `max_depth` as a constraint but doesn't detail the algorithm. The implementation (`plan_validator::validate_plan()`) computes depth via BFS from root nodes (tasks with zero in-degree), tracking the longest path. This is the standard topological-order longest-path computation.
+
+### 9.8 Phase Detection via Tags
+
+The spec (§3.3) mentions `required_phases` but doesn't define what constitutes a "phase." The implementation checks the union of all task `tags` across the plan for the presence of each required phase name. This means planners must tag tasks with phase names (e.g., `analyze`, `implement`, `test`) for phase validation to work.
+
+### 9.9 Function Composition (Phase 5)
+
+Function composition (functions referencing other functions as sub-steps) remains unimplemented as noted in the roadmap. This is deferred to a future phase.

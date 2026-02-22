@@ -153,7 +153,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
             "started_at": service_status.started_at,
         });
 
-        if let Some(wg_dir) = resolved.as_ref().ok() {
+        if let Ok(wg_dir) = resolved.as_ref() {
             obj["workgraph_dir"] = serde_json::json!(wg_dir.display().to_string());
             obj["accessible"] = serde_json::json!(true);
         } else {

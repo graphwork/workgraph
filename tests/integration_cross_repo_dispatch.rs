@@ -874,7 +874,7 @@ fn resolve_remote_task_status_peer_not_found() {
 /// Helper: save a trace function to a workgraph's functions directory.
 fn setup_trace_function(wg_dir: &Path) {
     use workgraph::trace_function::{
-        FunctionInput, InputType, TaskTemplate, TraceFunction,
+        FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
     };
 
     let func = TraceFunction {
@@ -937,6 +937,11 @@ fn setup_trace_function(wg_dir: &Path) {
             },
         ],
         outputs: vec![],
+        planning: None,
+        constraints: None,
+        memory: None,
+        visibility: FunctionVisibility::Peer,
+        redacted_fields: vec![],
     };
 
     let func_dir = workgraph::trace_function::functions_dir(wg_dir);

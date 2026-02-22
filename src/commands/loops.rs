@@ -14,6 +14,7 @@ pub enum CycleClassification {
     Info,
 }
 
+#[allow(dead_code)]
 impl CycleClassification {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -25,6 +26,7 @@ impl CycleClassification {
 }
 
 /// A classified cycle with metadata
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassifiedCycle {
     pub nodes: Vec<String>,
@@ -33,6 +35,7 @@ pub struct ClassifiedCycle {
 }
 
 /// Classify a cycle based on its length and tags
+#[allow(dead_code)]
 fn classify_cycle(cycle: &[String], graph: &WorkGraph) -> ClassifiedCycle {
     let len = cycle.len();
 
@@ -77,6 +80,7 @@ fn classify_cycle(cycle: &[String], graph: &WorkGraph) -> ClassifiedCycle {
 }
 
 /// Format cycle as a path string (a -> b -> c -> a)
+#[allow(dead_code)]
 fn format_cycle_path(cycle: &[String]) -> String {
     let mut path = cycle.join(" -> ");
     if let Some(first) = cycle.first() {
@@ -86,6 +90,7 @@ fn format_cycle_path(cycle: &[String]) -> String {
     path
 }
 
+#[allow(dead_code)]
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     eprintln!("Note: `wg loops` is deprecated. Use `wg cycles` instead.");
     let (graph, _path) = super::load_workgraph(dir)?;

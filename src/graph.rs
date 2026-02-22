@@ -748,12 +748,11 @@ pub fn evaluate_cycle_iteration(
     let (config_owner_id, cycle_config) = {
         let mut found = None;
         for member_id in &cycle.members {
-            if let Some(task) = graph.get_task(member_id) {
-                if let Some(ref config) = task.cycle_config {
+            if let Some(task) = graph.get_task(member_id)
+                && let Some(ref config) = task.cycle_config {
                     found = Some((member_id.clone(), config.clone()));
                     break;
                 }
-            }
         }
         match found {
             Some(pair) => pair,
@@ -770,11 +769,10 @@ pub fn evaluate_cycle_iteration(
     }
 
     // 4. Check convergence tag on config owner (or any member)
-    if let Some(owner) = graph.get_task(&config_owner_id) {
-        if owner.tags.contains(&"converged".to_string()) {
+    if let Some(owner) = graph.get_task(&config_owner_id)
+        && owner.tags.contains(&"converged".to_string()) {
             return vec![];
         }
-    }
 
     // 5. Check max_iterations (using config owner's loop_iteration)
     let current_iter = graph
@@ -789,11 +787,10 @@ pub fn evaluate_cycle_iteration(
     if !evaluate_guard(&cycle_config.guard, graph) {
         return vec![];
     }
-    if let Some(LoopGuard::IterationLessThan(n)) = &cycle_config.guard {
-        if current_iter >= *n {
+    if let Some(LoopGuard::IterationLessThan(n)) = &cycle_config.guard
+        && current_iter >= *n {
             return vec![];
         }
-    }
 
     // 7. All checks passed — re-open all cycle members
     let new_iteration = current_iter + 1;

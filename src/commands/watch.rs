@@ -98,8 +98,8 @@ pub fn run(
         let all_ops = provenance::read_all_operations(dir).unwrap_or_default();
         let start = all_ops.len().saturating_sub(replay);
         for op in &all_ops[start..] {
-            if let Some(event) = op_to_watch_event(op) {
-                if should_include_event(
+            if let Some(event) = op_to_watch_event(op)
+                && should_include_event(
                     &event.event_type,
                     &event_filters,
                     task_filter,
@@ -108,7 +108,6 @@ pub fn run(
                     let line = serde_json::to_string(&event)?;
                     println!("{}", line);
                 }
-            }
         }
     }
 
@@ -173,9 +172,9 @@ pub fn run(
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if let Ok(op) = serde_json::from_str::<provenance::OperationEntry>(trimmed) {
-                        if let Some(event) = op_to_watch_event(&op) {
-                            if should_include_event(
+                    if let Ok(op) = serde_json::from_str::<provenance::OperationEntry>(trimmed)
+                        && let Some(event) = op_to_watch_event(&op)
+                            && should_include_event(
                                 &event.event_type,
                                 &event_filters,
                                 task_filter,
@@ -189,8 +188,6 @@ pub fn run(
                                 }
                                 let _ = out.flush();
                             }
-                        }
-                    }
                 }
                 Err(_) => break,
             }

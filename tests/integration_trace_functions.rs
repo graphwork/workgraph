@@ -11,8 +11,8 @@ use tempfile::TempDir;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::trace_function::{
-    self, ExtractionSource, FunctionInput, FunctionOutput, InputType, LoopEdgeTemplate,
-    TaskTemplate, TraceFunction, TraceFunctionError,
+    self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
+    LoopEdgeTemplate, TaskTemplate, TraceFunction, TraceFunctionError,
 };
 
 // ===========================================================================
@@ -185,6 +185,11 @@ fn sample_function() -> TraceFunction {
             from_task: "implement".to_string(),
             field: "artifacts".to_string(),
         }],
+        planning: None,
+        constraints: None,
+        memory: None,
+        visibility: FunctionVisibility::Internal,
+        redacted_fields: vec![],
     }
 }
 
@@ -929,6 +934,11 @@ fn instantiate_single_task_function_creates_task() {
             tags: vec![],
         }],
         outputs: vec![],
+        planning: None,
+        constraints: None,
+        memory: None,
+        visibility: FunctionVisibility::Internal,
+        redacted_fields: vec![],
     };
     setup_function(dir, &func);
 

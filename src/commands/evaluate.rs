@@ -510,8 +510,8 @@ pub fn run_show(
     } else {
         // Table header
         println!(
-            "{:<20} {:>5}  {:<16} {:<12} {}",
-            "Task", "Score", "Source", "Agent", "Timestamp"
+            "{:<20} {:>5}  {:<16} {:<12} Timestamp",
+            "Task", "Score", "Source", "Agent"
         );
         println!("{}", "─".repeat(75));
 

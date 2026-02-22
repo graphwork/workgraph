@@ -705,6 +705,7 @@ pub fn run_recursive(dir: &Path, root_id: &str, timeline: bool, json: bool) -> R
 }
 
 /// Print the recursive execution tree with ASCII rendering.
+#[allow(clippy::only_used_in_recursion)]
 fn print_recursive_tree(
     root_id: &str,
     graph: &WorkGraph,
@@ -761,6 +762,7 @@ fn print_recursive_tree(
 
     let mut rendered: HashSet<&str> = HashSet::new();
 
+    #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
     fn render_tree_recursive<'a>(
         id: &'a str,
         prefix: &str,
@@ -987,24 +989,22 @@ fn print_timeline(
     let mut events: Vec<TimelineEvent> = Vec::new();
 
     for task in descendants {
-        if let Some(ref started) = task.started_at {
-            if let Some(ts) = parse_timestamp(started) {
+        if let Some(ref started) = task.started_at
+            && let Some(ts) = parse_timestamp(started) {
                 events.push(TimelineEvent {
                     timestamp: ts,
                     kind: TimelineEventKind::Start,
                     task_id: task.id.clone(),
                 });
             }
-        }
-        if let Some(ref completed) = task.completed_at {
-            if let Some(ts) = parse_timestamp(completed) {
+        if let Some(ref completed) = task.completed_at
+            && let Some(ts) = parse_timestamp(completed) {
                 events.push(TimelineEvent {
                     timestamp: ts,
                     kind: TimelineEventKind::End(task.status),
                     task_id: task.id.clone(),
                 });
             }
-        }
     }
 
     for iv in interventions {
@@ -1075,11 +1075,10 @@ fn print_timeline(
                 );
 
                 // Free the lane
-                if let Some(l) = lane {
-                    if l < active_lanes.len() {
+                if let Some(l) = lane
+                    && l < active_lanes.len() {
                         active_lanes[l] = String::new();
                     }
-                }
             }
             TimelineEventKind::Intervention(detail) => {
                 let lane = task_lanes.get(&event.task_id).copied();
@@ -1138,10 +1137,10 @@ fn render_lanes(
         .max(highlight_lane.map(|l| l + 1).unwrap_or(0));
 
     let mut result = String::new();
-    for i in 0..effective_len {
+    for (i, lane) in active_lanes.iter().enumerate().take(effective_len) {
         if Some(i) == highlight_lane {
             result.push_str(&format!("{}{}{}", cyan, marker, reset));
-        } else if !active_lanes[i].is_empty() {
+        } else if !lane.is_empty() {
             result.push_str(&format!("{}│{}", dim, reset));
         } else {
             result.push(' ');
@@ -1169,6 +1168,7 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
 // ── Temporal trace reconstruction ────────────────────────────────────────
 
 /// A snapshot of the graph state at a point in time.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphSnapshot {
     pub timestamp: DateTime<Utc>,
