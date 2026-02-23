@@ -21,27 +21,31 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Check for unresolved blockers (cycle-aware: skip same-cycle blockers
-    // for tasks with cycle_config, since the cycle header is allowed to complete
-    // even though its predecessor in the cycle isn't done yet)
+    // Check for unresolved blockers (cycle-aware: only exempt back-edge blockers,
+    // not all same-cycle blockers).
+    //
+    // A "back-edge blocker" is a blocker that has cycle_config (the cycle's
+    // iterator/validator task) and is in the same cycle as the task being
+    // completed.  The auto-created dependency from the worker back to the
+    // iterator is a loop-back edge; the iterator should not block the worker.
     let blockers = query::after(&graph, id);
     if !blockers.is_empty() {
-        let task = graph.get_task(id).unwrap();
         let cycle_analysis = graph.compute_cycle_analysis();
-        let effective_blockers: Vec<_> = if task.cycle_config.is_some() {
-            blockers
-                .into_iter()
-                .filter(|b| {
-                    // Keep blocker unless it's in the same cycle as this task
-                    !matches!(
-                        (cycle_analysis.task_to_cycle.get(id), cycle_analysis.task_to_cycle.get(&b.id)),
-                        (Some(my_cycle), Some(b_cycle)) if my_cycle == b_cycle
-                    )
-                })
-                .collect()
-        } else {
-            blockers
-        };
+        let effective_blockers: Vec<_> = blockers
+            .into_iter()
+            .filter(|b| {
+                // Exempt if the blocker is the cycle iterator in the same cycle
+                let blocker_is_cycle_iterator = b.cycle_config.is_some();
+                let in_same_cycle = blocker_is_cycle_iterator
+                    && cycle_analysis
+                        .task_to_cycle
+                        .get(&b.id)
+                        .is_some_and(|bc| {
+                            cycle_analysis.task_to_cycle.get(id) == Some(bc)
+                        });
+                !in_same_cycle
+            })
+            .collect();
         if !effective_blockers.is_empty() {
             let blocker_list: Vec<String> = effective_blockers
                 .iter()
@@ -64,8 +68,25 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
     task.status = Status::Done;
     task.completed_at = Some(Utc::now().to_rfc3339());
 
-    if converged && !task.tags.contains(&"converged".to_string()) {
-        task.tags.push("converged".to_string());
+    // When --converged is passed, check if a non-trivial guard is set.
+    // If so, the guard is authoritative — ignore the converged flag.
+    if converged {
+        let has_guard = task
+            .cycle_config
+            .as_ref()
+            .and_then(|c| c.guard.as_ref())
+            .map(|g| !matches!(g, workgraph::graph::LoopGuard::Always))
+            .unwrap_or(false);
+
+        if has_guard {
+            eprintln!(
+                "Warning: --converged ignored for '{}' because a cycle guard is set.\n         \
+                 Only the guard condition determines convergence.",
+                id
+            );
+        } else if !task.tags.contains(&"converged".to_string()) {
+            task.tags.push("converged".to_string());
+        }
     }
 
     task.log.push(LogEntry {

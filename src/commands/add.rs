@@ -194,7 +194,27 @@ pub fn run(
         }
     }
 
-
+    // Auto-create back-edges when --max-iterations is set and --after deps exist.
+    // For each --after dep, add the new task's ID to the dep's after list,
+    // forming a structural cycle that the SCC detector will find.
+    if max_iterations.is_some() && !after.is_empty() {
+        for dep_id in after {
+            if workgraph::federation::parse_remote_ref(dep_id).is_some() {
+                continue; // Skip cross-repo deps
+            }
+            if let Some(dep_task) = graph.get_task_mut(dep_id) {
+                if !dep_task.after.contains(&task_id) {
+                    dep_task.after.push(task_id.clone());
+                }
+            }
+            // Maintain bidirectional consistency for the back-edge
+            if let Some(new_task) = graph.get_task_mut(&task_id) {
+                if !new_task.before.contains(dep_id) {
+                    new_task.before.push(dep_id.clone());
+                }
+            }
+        }
+    }
 
     // Save atomically (temp file + rename)
     save_graph(&graph, &path).context("Failed to save graph")?;

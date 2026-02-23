@@ -587,6 +587,9 @@ fn generate_ascii(
         return String::from("(no tasks to display)");
     }
 
+    // Compute cycle analysis to distinguish back-edges from fan-in
+    let cycle_analysis = graph.compute_cycle_analysis();
+
     // Build adjacency within the active set
     // forward: parent → children (parent blocks children)
     // reverse: child → parents (child is blocked by parents)
@@ -760,6 +763,7 @@ fn generate_ascii(
             #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
             fn render_tree<'a>(
                 id: &'a str,
+                parent_id: Option<&str>,
                 prefix: &str,
                 is_last: bool,
                 is_root: bool,
@@ -770,6 +774,7 @@ fn generate_ascii(
                 format_node: &dyn Fn(&str) -> String,
                 task_map: &HashMap<&str, &workgraph::graph::Task>,
                 graph: &WorkGraph,
+                back_edges: &HashSet<(String, String)>,
                 use_color: bool,
             ) {
                 // Build the connector for this node
@@ -781,10 +786,50 @@ fn generate_ascii(
                     "├→ ".to_string()
                 };
 
-                // Check if already rendered (fan-in case)
+                // Check if already rendered
                 if rendered.contains(id) {
-                    // Show a back-reference
-                    lines.push(format!("{}{}{} ...", prefix, connector, format_node(id)));
+                    // Distinguish cycle back-edges from fan-in (diamond joins).
+                    // Check structural back-edges first, then fall back to implicit
+                    // cycle detection (parent has cycle_config and id is in its after list).
+                    let is_back_edge = if let Some(pid) = parent_id {
+                        // Structural back-edge: (parent, id) in back_edges means
+                        // the graph edge parent→id is a back-edge in the DFS.
+                        // In the `after` representation, id.after contains parent,
+                        // creating graph edge parent→id.
+                        back_edges.contains(&(pid.to_string(), id.to_string()))
+                            || back_edges.contains(&(id.to_string(), pid.to_string()))
+                            || {
+                                // Implicit cycle: parent or id has cycle_config
+                                // and both are connected via after
+                                let parent_has_cycle = task_map
+                                    .get(pid)
+                                    .map(|t| t.cycle_config.is_some())
+                                    .unwrap_or(false);
+                                let id_has_cycle = task_map
+                                    .get(id)
+                                    .map(|t| t.cycle_config.is_some())
+                                    .unwrap_or(false);
+                                parent_has_cycle || id_has_cycle
+                            }
+                    } else {
+                        false
+                    };
+
+                    if is_back_edge {
+                        lines.push(format!(
+                            "{}{}↺ {}  (cycle back-edge)",
+                            prefix,
+                            connector,
+                            format_node(id)
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "{}{}{} ...",
+                            prefix,
+                            connector,
+                            format_node(id)
+                        ));
+                    }
                     return;
                 }
 
@@ -815,7 +860,6 @@ fn generate_ascii(
                     format!("{}│ ", prefix)
                 };
 
-
                 // Get children and recurse
                 let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
                 let child_count = children.len();
@@ -823,6 +867,7 @@ fn generate_ascii(
                     let child_is_last = i == child_count - 1;
                     render_tree(
                         child,
+                        Some(id),
                         &child_prefix,
                         child_is_last,
                         false,
@@ -833,6 +878,7 @@ fn generate_ascii(
                         format_node,
                         task_map,
                         graph,
+                        back_edges,
                         use_color,
                     );
                 }
@@ -840,6 +886,7 @@ fn generate_ascii(
 
             render_tree(
                 root,
+                None,
                 "",
                 true,
                 true,
@@ -850,6 +897,7 @@ fn generate_ascii(
                 &format_node,
                 &task_map,
                 graph,
+                &cycle_analysis.back_edges,
                 use_color,
             );
         }

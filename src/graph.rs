@@ -798,11 +798,18 @@ fn reactivate_cycle(
         }
     }
 
-    // Check convergence tag on config owner
-    if let Some(owner) = graph.get_task(config_owner_id)
-        && owner.tags.contains(&"converged".to_string()) {
+    // Check convergence tag on config owner — but only if no external guard is set.
+    // When a guard is present, the guard is authoritative over convergence.
+    let guard_is_set = cycle_config.guard.is_some()
+        && !matches!(cycle_config.guard, Some(LoopGuard::Always));
+
+    if !guard_is_set {
+        if let Some(owner) = graph.get_task(config_owner_id)
+            && owner.tags.contains(&"converged".to_string())
+        {
             return vec![];
         }
+    }
 
     // Check max_iterations
     let current_iter = graph
