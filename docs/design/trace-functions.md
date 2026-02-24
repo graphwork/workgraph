@@ -628,20 +628,20 @@ pub struct FunctionOutput {
 
 The implementation breaks into five independent modules plus tests:
 
-1. **Core data structures and storage** (`src/trace_function.rs`)
+1. **Core data structures and storage** (`src/function.rs`)
    - `TraceFunction`, `FunctionInput`, `TaskTemplate` structs
    - YAML serialization/deserialization
    - Load/save to `.workgraph/functions/`
    - Input validation
    - Template substitution
 
-2. **Extraction** (`src/commands/trace_extract.rs`)
+2. **Extraction** (`src/commands/func_extract.rs`)
    - Static extraction from task + graph + agency
    - Subgraph collection
    - Parameter detection heuristics
    - Optional LLM generalization pass
 
-3. **Instantiation** (`src/commands/trace_instantiate.rs`)
+3. **Instantiation** (`src/commands/func_apply.rs`)
    - Input parsing and validation
    - Task creation with ID remapping
    - Dependency wiring (blocked_by, loops_to)

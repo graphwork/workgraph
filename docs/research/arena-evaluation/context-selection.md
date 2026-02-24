@@ -53,7 +53,7 @@ The FLIP score measures how faithfully the response tracks the original task ins
 
 ## 3. Application to `--generalize`
 
-`wg func extract --generalize` (`src/commands/trace_extract.rs:473-548`) runs three LLM passes to convert a raw trace into a reusable function template:
+`wg func extract --generalize` (`src/commands/func_extract.rs:473-548`) runs three LLM passes to convert a raw trace into a reusable function template:
 
 1. **Pass 1:** Identify task roles from descriptions and graph position
 2. **Pass 2:** Rewrite titles/descriptions to be generic (replace concrete values with `{{input.*}}` placeholders)
@@ -88,7 +88,7 @@ for each prompt variant P_i:
 
 ## 4. Application to Trace Functions (Layer 2 Planning)
 
-Layer 2 generative functions (`src/trace_function.rs:209-225`) have a `PlanningConfig` with a `planner_template` — a task that generates the execution plan at apply-time rather than using static tasks.
+Layer 2 generative functions (`src/function.rs:209-225`) have a `PlanningConfig` with a `planner_template` — a task that generates the execution plan at apply-time rather than using static tasks.
 
 The planner prompt determines the quality of the generated task graph. Different planning prompts produce different graph topologies, task granularities, and skill assignments.
 

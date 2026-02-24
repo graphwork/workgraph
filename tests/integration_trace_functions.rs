@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::trace_function::{
+use workgraph::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
     LoopEdgeTemplate, TaskTemplate, TraceFunction, TraceFunctionError,
 };
@@ -40,8 +40,8 @@ fn setup_graph(dir: &Path, graph: &WorkGraph) {
 }
 
 fn setup_function(dir: &Path, func: &TraceFunction) {
-    let func_dir = trace_function::functions_dir(dir);
-    trace_function::save_function(func, &func_dir).unwrap();
+    let func_dir = function::functions_dir(dir);
+    function::save_function(func, &func_dir).unwrap();
 }
 
 fn wg_binary() -> PathBuf {
@@ -202,11 +202,11 @@ fn storage_round_trip_yaml() {
     let tmp = TempDir::new().unwrap();
     let func = sample_function();
 
-    let path = trace_function::save_function(&func, tmp.path()).unwrap();
+    let path = function::save_function(&func, tmp.path()).unwrap();
     assert!(path.exists());
     assert_eq!(path.file_name().unwrap(), "impl-feature.yaml");
 
-    let loaded = trace_function::load_function(&path).unwrap();
+    let loaded = function::load_function(&path).unwrap();
     assert_eq!(loaded.id, func.id);
     assert_eq!(loaded.name, func.name);
     assert_eq!(loaded.description, func.description);
@@ -236,14 +236,14 @@ fn storage_round_trip_yaml() {
 
 #[test]
 fn storage_load_from_nonexistent_dir_returns_empty() {
-    let result = trace_function::load_all_functions(Path::new("/nonexistent/dir/xyz")).unwrap();
+    let result = function::load_all_functions(Path::new("/nonexistent/dir/xyz")).unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
 fn storage_load_all_empty_dir() {
     let tmp = TempDir::new().unwrap();
-    let all = trace_function::load_all_functions(tmp.path()).unwrap();
+    let all = function::load_all_functions(tmp.path()).unwrap();
     assert!(all.is_empty());
 }
 
@@ -257,11 +257,11 @@ fn storage_load_all_sorts_by_id() {
     let mut f3 = sample_function();
     f3.id = "middle-func".to_string();
 
-    trace_function::save_function(&f1, tmp.path()).unwrap();
-    trace_function::save_function(&f2, tmp.path()).unwrap();
-    trace_function::save_function(&f3, tmp.path()).unwrap();
+    function::save_function(&f1, tmp.path()).unwrap();
+    function::save_function(&f2, tmp.path()).unwrap();
+    function::save_function(&f3, tmp.path()).unwrap();
 
-    let all = trace_function::load_all_functions(tmp.path()).unwrap();
+    let all = function::load_all_functions(tmp.path()).unwrap();
     assert_eq!(all.len(), 3);
     assert_eq!(all[0].id, "alpha-func");
     assert_eq!(all[1].id, "middle-func");
@@ -271,27 +271,27 @@ fn storage_load_all_sorts_by_id() {
 #[test]
 fn storage_find_by_prefix_exact() {
     let tmp = TempDir::new().unwrap();
-    trace_function::save_function(&sample_function(), tmp.path()).unwrap();
+    function::save_function(&sample_function(), tmp.path()).unwrap();
 
-    let found = trace_function::find_function_by_prefix(tmp.path(), "impl-feature").unwrap();
+    let found = function::find_function_by_prefix(tmp.path(), "impl-feature").unwrap();
     assert_eq!(found.id, "impl-feature");
 }
 
 #[test]
 fn storage_find_by_prefix_partial() {
     let tmp = TempDir::new().unwrap();
-    trace_function::save_function(&sample_function(), tmp.path()).unwrap();
+    function::save_function(&sample_function(), tmp.path()).unwrap();
 
-    let found = trace_function::find_function_by_prefix(tmp.path(), "impl").unwrap();
+    let found = function::find_function_by_prefix(tmp.path(), "impl").unwrap();
     assert_eq!(found.id, "impl-feature");
 }
 
 #[test]
 fn storage_find_by_prefix_not_found() {
     let tmp = TempDir::new().unwrap();
-    trace_function::save_function(&sample_function(), tmp.path()).unwrap();
+    function::save_function(&sample_function(), tmp.path()).unwrap();
 
-    let err = trace_function::find_function_by_prefix(tmp.path(), "nonexistent").unwrap_err();
+    let err = function::find_function_by_prefix(tmp.path(), "nonexistent").unwrap_err();
     assert!(matches!(err, TraceFunctionError::NotFound(_)));
 }
 
@@ -303,10 +303,10 @@ fn storage_find_by_prefix_ambiguous() {
     let mut f2 = sample_function();
     f2.id = "impl-bugfix".to_string();
 
-    trace_function::save_function(&f1, tmp.path()).unwrap();
-    trace_function::save_function(&f2, tmp.path()).unwrap();
+    function::save_function(&f1, tmp.path()).unwrap();
+    function::save_function(&f2, tmp.path()).unwrap();
 
-    let err = trace_function::find_function_by_prefix(tmp.path(), "impl").unwrap_err();
+    let err = function::find_function_by_prefix(tmp.path(), "impl").unwrap_err();
     assert!(matches!(err, TraceFunctionError::Ambiguous(_)));
 }
 
@@ -329,7 +329,7 @@ fn validation_missing_required_input_errors() {
     }];
 
     let provided = HashMap::new();
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("feature_name"));
@@ -358,7 +358,7 @@ fn validation_wrong_type_string_where_number_expected() {
         serde_yaml::Value::String("not-a-number".to_string()),
     );
 
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     assert!(matches!(err, TraceFunctionError::Validation(_)));
 }
 
@@ -382,7 +382,7 @@ fn validation_number_where_string_expected() {
         serde_yaml::Value::Number(serde_yaml::Number::from(42)),
     );
 
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     assert!(matches!(err, TraceFunctionError::Validation(_)));
 }
 
@@ -410,7 +410,7 @@ fn validation_enum_value_not_in_allowed_list() {
         serde_yaml::Value::String("java".to_string()),
     );
 
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("java"));
@@ -444,7 +444,7 @@ fn validation_enum_valid_value_accepted() {
         serde_yaml::Value::String("rust".to_string()),
     );
 
-    let resolved = trace_function::validate_inputs(&defs, &provided).unwrap();
+    let resolved = function::validate_inputs(&defs, &provided).unwrap();
     assert_eq!(resolved.get("language").unwrap().as_str().unwrap(), "rust");
 }
 
@@ -468,7 +468,7 @@ fn validation_number_below_min_errors() {
         serde_yaml::Value::Number(serde_yaml::Number::from(-0.5)),
     );
 
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("below minimum"));
@@ -497,7 +497,7 @@ fn validation_number_above_max_errors() {
         serde_yaml::Value::Number(serde_yaml::Number::from(1.5)),
     );
 
-    let err = trace_function::validate_inputs(&defs, &provided).unwrap_err();
+    let err = function::validate_inputs(&defs, &provided).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("exceeds maximum"));
@@ -526,7 +526,7 @@ fn validation_number_within_range_accepted() {
         serde_yaml::Value::Number(serde_yaml::Number::from(0.5)),
     );
 
-    let resolved = trace_function::validate_inputs(&defs, &provided).unwrap();
+    let resolved = function::validate_inputs(&defs, &provided).unwrap();
     assert!(resolved.contains_key("threshold"));
 }
 
@@ -563,7 +563,7 @@ fn validation_optional_input_with_default_applied() {
         serde_yaml::Value::String("auth".to_string()),
     );
 
-    let resolved = trace_function::validate_inputs(&defs, &provided).unwrap();
+    let resolved = function::validate_inputs(&defs, &provided).unwrap();
     assert_eq!(
         resolved.get("feature_name").unwrap().as_str().unwrap(),
         "auth"
@@ -589,7 +589,7 @@ fn validation_optional_input_without_default_omitted() {
     }];
 
     let provided = HashMap::new();
-    let resolved = trace_function::validate_inputs(&defs, &provided).unwrap();
+    let resolved = function::validate_inputs(&defs, &provided).unwrap();
     assert!(!resolved.contains_key("notes"));
 }
 
@@ -613,7 +613,7 @@ fn validation_file_list_requires_sequence() {
         "files".to_string(),
         serde_yaml::Value::String("src/main.rs".to_string()),
     );
-    assert!(trace_function::validate_inputs(&defs, &provided).is_err());
+    assert!(function::validate_inputs(&defs, &provided).is_err());
 
     // Correct: sequence
     provided.insert(
@@ -622,7 +622,7 @@ fn validation_file_list_requires_sequence() {
             "src/main.rs".to_string(),
         )]),
     );
-    assert!(trace_function::validate_inputs(&defs, &provided).is_ok());
+    assert!(function::validate_inputs(&defs, &provided).is_ok());
 }
 
 // ===========================================================================
@@ -637,7 +637,7 @@ fn substitution_simple_string_replacement() {
         serde_yaml::Value::String("auth".to_string()),
     );
 
-    let result = trace_function::substitute("Plan {{input.feature_name}}", &inputs);
+    let result = function::substitute("Plan {{input.feature_name}}", &inputs);
     assert_eq!(result, "Plan auth");
 }
 
@@ -653,7 +653,7 @@ fn substitution_multiple_inputs_in_same_template() {
         serde_yaml::Value::String("cargo test auth".to_string()),
     );
 
-    let result = trace_function::substitute(
+    let result = function::substitute(
         "Implement {{input.feature_name}}. Run: {{input.test_command}}",
         &inputs,
     );
@@ -672,7 +672,7 @@ fn substitution_file_list_rendered_as_newline_separated() {
         ]),
     );
 
-    let result = trace_function::substitute("Files:\n{{input.files}}", &inputs);
+    let result = function::substitute("Files:\n{{input.files}}", &inputs);
     assert_eq!(result, "Files:\nsrc/main.rs\nsrc/lib.rs\nsrc/config.rs");
 }
 
@@ -685,15 +685,15 @@ fn substitution_missing_optional_uses_default_in_resolved_map() {
         serde_yaml::Value::String("auth".to_string()),
     );
 
-    let resolved = trace_function::validate_inputs(&func.inputs, &provided).unwrap();
-    let result = trace_function::substitute("Run: {{input.test_command}}", &resolved);
+    let resolved = function::validate_inputs(&func.inputs, &provided).unwrap();
+    let result = function::substitute("Run: {{input.test_command}}", &resolved);
     assert_eq!(result, "Run: cargo test");
 }
 
 #[test]
 fn substitution_unrecognized_placeholder_left_as_is() {
     let inputs = HashMap::new();
-    let result = trace_function::substitute(
+    let result = function::substitute(
         "Hello {{input.unknown}} world {{input.other}}",
         &inputs,
     );
@@ -708,7 +708,7 @@ fn substitution_number_input() {
         serde_yaml::Value::Number(serde_yaml::Number::from(42)),
     );
 
-    let result = trace_function::substitute("Minimum score: {{input.threshold}}", &inputs);
+    let result = function::substitute("Minimum score: {{input.threshold}}", &inputs);
     assert_eq!(result, "Minimum score: 42");
 }
 
@@ -741,7 +741,7 @@ fn substitution_task_template_all_fields() {
         serde_yaml::Value::String("rust".to_string()),
     );
 
-    let result = trace_function::substitute_task_template(&template, &inputs);
+    let result = function::substitute_task_template(&template, &inputs);
 
     // Substituted fields
     assert_eq!(result.title, "Plan auth");
@@ -778,14 +778,14 @@ fn extract_single_done_task_produces_valid_function() {
     let func_path = dir.join("functions").join("config-func.yaml");
     assert!(func_path.exists());
 
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
     assert_eq!(func.id, "config-func");
     assert_eq!(func.kind, "trace-function");
     assert_eq!(func.version, 1);
     assert_eq!(func.tasks.len(), 1);
     assert_eq!(func.tasks[0].template_id, "impl-config");
     assert!(!func.outputs.is_empty(), "Should have outputs from artifacts");
-    trace_function::validate_function(&func).unwrap();
+    function::validate_function(&func).unwrap();
 }
 
 #[test]
@@ -822,7 +822,7 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
     );
 
     let func_path = dir.join("functions").join("my-workflow.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
     assert_eq!(func.tasks.len(), 3);
 
     // Check after edges remapped to template IDs
@@ -832,7 +832,7 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
     let build_tmpl = func.tasks.iter().find(|t| t.template_id == "build").unwrap();
     assert_eq!(build_tmpl.after, vec!["plan"]);
 
-    trace_function::validate_function(&func).unwrap();
+    function::validate_function(&func).unwrap();
 }
 
 
@@ -884,7 +884,7 @@ fn extract_detects_file_paths_and_commands() {
     wg_ok(&dir, &["func", "extract", "impl-auth", "--name", "auth-func"]);
 
     let func_path = dir.join("functions").join("auth-func.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
 
     assert!(func.inputs.iter().any(|i| i.name == "feature_name"));
     assert!(func.inputs.iter().any(|i| i.name == "source_files"));
@@ -1301,9 +1301,9 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
 
     // Step 3: Verify extraction
     let func_path = dir.join("functions").join("project-workflow.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
     assert_eq!(func.tasks.len(), 3);
-    trace_function::validate_function(&func).unwrap();
+    function::validate_function(&func).unwrap();
 
     // Step 4: Instantiate with new prefix
     wg_ok(
@@ -1323,7 +1323,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
 
     // Find the created task IDs based on the function's template IDs
     let func_path = dir.join("functions").join("project-workflow.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
     let template_ids: Vec<&str> = func.tasks.iter().map(|t| t.template_id.as_str()).collect();
 
     let created_ids: Vec<String> = template_ids
@@ -1406,7 +1406,7 @@ fn validate_function_with_bad_after_reference() {
     let mut func = sample_function();
     func.tasks[1].after = vec!["nonexistent-task".to_string()];
 
-    let err = trace_function::validate_function(&func).unwrap_err();
+    let err = function::validate_function(&func).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("nonexistent-task"));
@@ -1420,7 +1420,7 @@ fn validate_function_with_bad_loops_to_reference() {
     let mut func = sample_function();
     func.tasks[3].loops_to[0].target = "nonexistent-task".to_string();
 
-    let err = trace_function::validate_function(&func).unwrap_err();
+    let err = function::validate_function(&func).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("nonexistent-task"));
@@ -1434,7 +1434,7 @@ fn validate_function_with_duplicate_template_ids() {
     let mut func = sample_function();
     func.tasks[1].template_id = "plan".to_string(); // duplicate
 
-    let err = trace_function::validate_function(&func).unwrap_err();
+    let err = function::validate_function(&func).unwrap_err();
     match err {
         TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("Duplicate"));
@@ -1446,7 +1446,7 @@ fn validate_function_with_duplicate_template_ids() {
 #[test]
 fn validate_function_valid_passes() {
     let func = sample_function();
-    trace_function::validate_function(&func).unwrap();
+    function::validate_function(&func).unwrap();
 }
 
 // ===========================================================================
@@ -1497,7 +1497,7 @@ fn extract_filters_evaluate_tasks_from_subgraph() {
     );
 
     let func_path = dir.join("functions").join("filtered-func.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
 
     // Only root + root-impl; evaluate-root-impl and assign-root-impl filtered
     assert_eq!(
@@ -1551,7 +1551,7 @@ fn extract_include_evaluations_keeps_all_tasks() {
     );
 
     let func_path = dir.join("functions").join("unfiltered-func.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
     assert_eq!(func.tasks.len(), 3, "Should include all tasks with --include-evaluations");
 }
 
@@ -1583,7 +1583,7 @@ fn extract_does_not_detect_random_numbers_as_params() {
     );
 
     let func_path = dir.join("functions").join("no-random-nums.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
 
     // Should NOT extract random numbers (5, 3, 42, 7) as numeric parameters
     let numeric_inputs: Vec<_> = func
@@ -1621,7 +1621,7 @@ fn extract_detects_contextual_numbers_as_params() {
     );
 
     let func_path = dir.join("functions").join("contextual-nums.yaml");
-    let func = trace_function::load_function(&func_path).unwrap();
+    let func = function::load_function(&func_path).unwrap();
 
     // Should detect numbers that appear near parameterizable keywords
     let numeric_inputs: Vec<_> = func

@@ -7,7 +7,7 @@ use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::load_graph;
 use workgraph::provenance;
-use workgraph::trace_function::{
+use workgraph::function::{
     self, FunctionVisibility, TraceFunction, export_function, function_visible_at,
 };
 
@@ -185,8 +185,8 @@ pub fn run(
     let target_vis = FunctionVisibility::from_str_opt(visibility)
         .unwrap_or(FunctionVisibility::Internal);
     let functions: Vec<TraceFunction> = {
-        let funcs_dir = trace_function::functions_dir(dir);
-        let all_funcs = trace_function::load_all_functions(&funcs_dir).unwrap_or_default();
+        let funcs_dir = function::functions_dir(dir);
+        let all_funcs = function::load_all_functions(&funcs_dir).unwrap_or_default();
         all_funcs
             .into_iter()
             .filter(|f| function_visible_at(f, &target_vis))

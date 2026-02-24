@@ -214,30 +214,22 @@ fn render_identity_prompt_includes_resolved_skills() {
     // Skills section present
     assert!(prompt.contains("#### Skills"), "Missing Skills header");
 
-    // Name-based skill
+    // Name-based skill (name == content, renders as simple bullet)
     assert!(
-        prompt.contains("### debugging"),
-        "Missing Name skill heading"
+        prompt.contains("- debugging\n"),
+        "Missing Name skill bullet"
     );
 
-    // File-based skill name (file stem) and content
+    // File-based skill name (file stem) and content (renders as bold + content)
     assert!(
-        prompt.contains("### debugging"),
-        "Missing file skill heading"
-    );
-    assert!(
-        prompt.contains("Use systematic debugging with bisection"),
-        "Missing file skill content"
+        prompt.contains("- **debugging**\nUse systematic debugging with bisection"),
+        "Missing file skill heading/content"
     );
 
-    // Inline skill
+    // Inline skill (renders as bold + content)
     assert!(
-        prompt.contains("### inline"),
-        "Missing inline skill heading"
-    );
-    assert!(
-        prompt.contains("Always add regression tests"),
-        "Missing inline skill content"
+        prompt.contains("- **inline**\nAlways add regression tests"),
+        "Missing inline skill heading/content"
     );
 
     // Desired outcome

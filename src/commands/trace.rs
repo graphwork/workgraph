@@ -1168,7 +1168,6 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
 // ── Temporal trace reconstruction ────────────────────────────────────────
 
 /// A snapshot of the graph state at a point in time.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphSnapshot {
     pub timestamp: DateTime<Utc>,

@@ -84,6 +84,14 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     // This ensures the wrapper script runs with cwd = tmp_root, so bare `wg`
     // commands (which default to .workgraph in cwd) find the right workgraph.
     // PATH is overridden to ensure the test binary is found first.
+    // Disable auto_assign and auto_evaluate so the coordinator doesn't
+    // create blocking assignment/evaluation tasks that the shell executor
+    // can't handle.  Without this, a global ~/.workgraph/config.toml with
+    // auto_assign = true would cause every test task to be blocked behind an
+    // unexecutable assign-* task.
+    let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\n";
+    fs::write(wg_dir.join("config.toml"), config_content).unwrap();
+
     let executors_dir = wg_dir.join("executors");
     fs::create_dir_all(&executors_dir).unwrap();
     let shell_config = format!(
@@ -474,6 +482,10 @@ heartbeat_timeout = 5
 max_agents = 2
 poll_interval = 2
 executor = "shell"
+
+[agency]
+auto_assign = false
+auto_evaluate = false
 "#;
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 

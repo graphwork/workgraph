@@ -128,7 +128,7 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
     let state = ServiceState::load(dir)?;
 
     match state {
-        Some(s) if is_process_running(s.pid) => {
+        Some(s) if is_process_alive(s.pid) => {
             let uptime = chrono::DateTime::parse_from_rfc3339(&s.started_at)
                 .map(|started| {
                     let now = chrono::Utc::now();
@@ -428,8 +428,6 @@ fn print_status(status: &StatusOutput) {
         }
     }
 }
-
-use super::is_process_alive as is_process_running;
 
 #[cfg(test)]
 mod tests {

@@ -361,7 +361,7 @@ All references to destructured `blocked_by`, `add_blocked_by`, `remove_blocked_b
 | 320 | `for blocked in &task.blocks {` | `for dep in &task.before {` | Field access |
 | 405–580 | tests: `blocks`, `blocked_by` field inits | `before`, `after` | Test |
 
-### 6.7 `src/commands/trace_instantiate.rs`
+### 6.7 `src/commands/func_apply.rs`
 
 | Lines | Old | New | Type |
 |-------|-----|-----|------|
@@ -518,8 +518,8 @@ These files contain `blocked_by` or `blocks` field references in task constructi
 | `src/commands/spawn.rs` | `Status::Blocked` match — **keep**; `blocked_by` field init — rename |
 | `src/commands/evolve.rs` | field references |
 | `src/commands/trace.rs` | field references |
-| `src/commands/trace_function_cmd.rs` | field references |
-| `src/commands/trace_extract.rs` | field references |
+| `src/commands/func_cmd.rs` | field references |
+| `src/commands/func_extract.rs` | field references |
 | `src/commands/gc.rs` | field references |
 | `src/commands/impact.rs` | field references |
 | `src/commands/cost.rs` | field references |
@@ -582,7 +582,7 @@ These files contain `blocked_by` or `blocks` field references in task constructi
 
 ## 8. Other Source Files
 
-### 8.1 `src/trace_function.rs`
+### 8.1 `src/function.rs`
 
 | Lines | Old | New | Type |
 |-------|-----|-----|------|
@@ -796,7 +796,7 @@ Each file is independent and can be done by a separate agent:
 - `src/commands/done.rs`
 - `src/commands/service.rs`
 - `src/commands/replay.rs`
-- `src/commands/trace_instantiate.rs`
+- `src/commands/func_apply.rs`
 - `src/commands/viz.rs`
 - `src/commands/critical_path.rs`
 - `src/commands/forecast.rs`
@@ -809,7 +809,7 @@ Each file is independent and can be done by a separate agent:
 ### Batch 3: Non-command source (parallelizable after Batch 1)
 - `src/check.rs`
 - `src/tui/mod.rs` + `app.rs` + `graph_layout.rs`
-- `src/trace_function.rs`
+- `src/function.rs`
 - `src/matrix_commands.rs`
 - `src/service/executor.rs`
 - `src/commands/quickstart.rs` (help text strings)

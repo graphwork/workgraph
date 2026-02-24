@@ -198,8 +198,7 @@ When the coordinator spawns an agent for a task:
    - Runs the executor command (e.g., `claude --model opus --print "..."`)
    - Captures stdout/stderr to `output.log`
    - Sends heartbeats periodically
-   - On exit: checks task status, marks done/submitted/failed based on exit code
-   - For verified tasks (with `verify` field): uses `wg submit` instead of `wg done`
+   - On exit: checks task status, marks done/failed based on exit code
 5. **Detach**: Process is launched with `setsid()` so it survives daemon restarts
 6. **Register**: Agent is added to the registry with PID, task_id, executor, model, and start time
 

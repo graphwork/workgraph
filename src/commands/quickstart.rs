@@ -111,23 +111,31 @@ HOUSEKEEPING
   wg gc --dry-run               # Preview what would be removed
   wg gc --include-done          # Also remove done tasks (default: only failed+abandoned)
 
-GROWING THE GRAPH (autopoietic behavior)
+GROWING THE GRAPH
 ─────────────────────────────────────────
-  You are not just a task executor — you are part of a living system.
-  When you discover work that needs doing, ADD IT TO THE GRAPH.
+  The graph is a shared medium. Artifacts you write are read by other agents.
+  Tasks you create get dispatched to other agents. You are not isolated —
+  you are part of a living system.
 
-  Subtasks of your current work:
-    wg add "Fix edge case in parser" --after my-current-task -d "Found during impl"
+  Your job is not just to complete your task. It is to leave the system
+  better than you found it:
 
-  Independent work you noticed:
-    wg add "Refactor duplicate validation logic" -d "Spotted while reading auth.rs"
+  Found a bug while implementing?
+    wg add "Fix: edge case in parser" --after my-current-task -d "Found during impl"
 
-  Follow-up verification:
+  Documentation wrong or missing?
+    wg add "Fix docs for X" -d "Spotted while reading auth.rs"
+
+  Follow-up verification needed?
     wg add "Verify fix works end-to-end" --after my-current-task
 
-  The coordinator will dispatch agents for anything you add.
-  You don't need permission — if you see work, create it.
-  The graph grows organically. That's the point.
+  The loop: spec → implement → verify → improve → spec.
+  You may be any node. Use 'wg context' to see what came before.
+  Use 'wg add' to create what comes next.
+
+  The coordinator dispatches anything you add. You don't need permission.
+  Use judgment on size — if a fix takes 5 minutes, just do it inline.
+  Create tasks for work that benefits from separate focus.
 
 TIPS
 ─────────────────────────────────────────
@@ -155,14 +163,6 @@ EXECUTORS & MODELS
   wg add "Heavy task" --model anthropic/claude-opus-4
 
   Model hierarchy: task --model > executor model > coordinator model > 'default'
-
-  Browse available models:
-
-  wg models list                      # Show all models with tiers and costs
-  wg models list --tier heavy         # Filter by tier (light, medium, heavy)
-  wg models add <id> --tier medium \
-    --cost-in 3.0 --cost-out 15.0     # Register a custom model
-  wg models set-default <id>          # Set the coordinator's default model
 
 REUSABLE FUNCTIONS
 ─────────────────────────────────────────
@@ -243,6 +243,16 @@ fn json_output() -> serde_json::Value {
             "inspect": ["wg show <task-id>", "wg cycles"],
             "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a cycle when work is complete. Plain 'wg done' causes the cycle to iterate again."
         },
+        "growing_the_graph": {
+            "ethos": "The graph is a shared medium. You are not isolated — you are part of a living system. Your job is not just to complete your task, but to leave the system better than you found it.",
+            "the_loop": "spec → implement → verify → improve → spec. Use 'wg context' to see what came before. Use 'wg add' to create what comes next.",
+            "examples": {
+                "found_bug": "wg add \"Fix: ...\" --after <task-id> -d \"Found while working on <task-id>\"",
+                "docs_wrong": "wg add \"Fix docs for X\" -d \"Spotted while reading ...\"",
+                "followup": "wg add \"Verify: ...\" --after <task-id>"
+            },
+            "guidance": "The coordinator dispatches anything you add. If a fix takes 5 minutes, do it inline. Create tasks for work that benefits from separate focus."
+        },
         "tips": [
             "If the coordinator is running: add tasks with dependencies, it dispatches automatically",
             "If no coordinator: ready → claim → work → done",
@@ -255,13 +265,7 @@ fn json_output() -> serde_json::Value {
             "set_model_cli": "wg service start --model anthropic/claude-sonnet-4",
             "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4\"",
             "per_task_model": "wg add \"task\" --model google/gemini-2.5-flash",
-            "hierarchy": "task --model > executor model > coordinator model > 'default'",
-            "model_registry": {
-                "list": "wg models list",
-                "list_by_tier": "wg models list --tier heavy",
-                "add": "wg models add <id> --tier medium --cost-in 3.0 --cost-out 15.0",
-                "set_default": "wg models set-default <id>"
-            }
+            "hierarchy": "task --model > executor model > coordinator model > 'default'"
         },
         "housekeeping": {
             "archive": "wg archive",
@@ -403,6 +407,12 @@ mod tests {
         assert!(cycles.get("description").is_some());
         assert!(cycles.get("create").is_some());
         assert!(cycles.get("inspect").is_some());
+
+        // Check growing_the_graph section
+        let gtg = output.get("growing_the_graph").unwrap();
+        assert!(gtg.get("ethos").is_some());
+        assert!(gtg.get("the_loop").is_some());
+        assert!(gtg.get("examples").is_some());
 
         // Check tips is an array with entries
         let tips = output.get("tips").unwrap().as_array().unwrap();

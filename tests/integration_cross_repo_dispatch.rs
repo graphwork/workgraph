@@ -871,8 +871,8 @@ fn resolve_remote_task_status_peer_not_found() {
 //   4. Trace function portability (instantiate --from peer)
 
 /// Helper: save a trace function to a workgraph's functions directory.
-fn setup_trace_function(wg_dir: &Path) {
-    use workgraph::trace_function::{
+fn setup_function(wg_dir: &Path) {
+    use workgraph::function::{
         FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
     };
 
@@ -943,8 +943,8 @@ fn setup_trace_function(wg_dir: &Path) {
         redacted_fields: vec![],
     };
 
-    let func_dir = workgraph::trace_function::functions_dir(wg_dir);
-    workgraph::trace_function::save_function(&func, &func_dir).unwrap();
+    let func_dir = workgraph::function::functions_dir(wg_dir);
+    workgraph::function::save_function(&func, &func_dir).unwrap();
 }
 
 #[test]
@@ -1071,11 +1071,11 @@ fn end_to_end_cross_repo_all_four_subsystems() {
 
     // ── Step 7: Instantiate a trace function from the peer ─────────────
     // Save a trace function in project B
-    setup_trace_function(&wg_b);
+    setup_function(&wg_b);
 
     // Verify B has the function
-    let peer_func_dir = workgraph::trace_function::functions_dir(&wg_b);
-    let peer_funcs = workgraph::trace_function::load_all_functions(&peer_func_dir).unwrap();
+    let peer_func_dir = workgraph::function::functions_dir(&wg_b);
+    let peer_funcs = workgraph::function::load_all_functions(&peer_func_dir).unwrap();
     assert_eq!(peer_funcs.len(), 1);
     assert_eq!(peer_funcs[0].id, "deploy-service");
 
@@ -1232,7 +1232,7 @@ fn end_to_end_cross_repo_mixed_local_and_remote_deps() {
 }
 
 #[test]
-fn end_to_end_trace_function_list_includes_peers() {
+fn end_to_end_function_list_includes_peers() {
     //! Verify --include-peers on trace list-functions shows peer functions.
     use std::process::Command;
 
@@ -1245,7 +1245,7 @@ fn end_to_end_trace_function_list_includes_peers() {
     register_peer(&wg_a, "project-b", project_b.to_str().unwrap(), None);
 
     // Save a trace function in B
-    setup_trace_function(&wg_b);
+    setup_function(&wg_b);
 
     // List functions from A with --include-peers --json
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))

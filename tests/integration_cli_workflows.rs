@@ -1135,28 +1135,6 @@ fn test_context_json_no_deps() {
     assert!(ctx.is_empty());
 }
 
-// ── wg loops --json ─────────────────────────────────────────────────
-
-#[test]
-fn test_loops_json_clean_graph() {
-    let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(
-        &tmp,
-        vec![
-            make_task("t1", "Task 1", Status::Open),
-            make_task("t2", "Task 2", Status::Open),
-        ],
-    );
-
-    // `wg loops` now redirects to `wg cycles`
-    let output = wg_ok(&wg_dir, &["loops", "--json"]);
-    let parsed = parse_json(&output, "loops");
-    assert!(parsed.is_object());
-    assert_eq!(parsed["cycle_count"], 0);
-    assert!(parsed["cycles"].as_array().unwrap().is_empty());
-    assert!(parsed["back_edges"].as_array().unwrap().is_empty());
-}
-
 // ── wg check --json ─────────────────────────────────────────────────
 
 #[test]

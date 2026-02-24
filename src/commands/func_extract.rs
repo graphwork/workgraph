@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use workgraph::agency;
 use workgraph::graph::{LoopGuard, Status, Task, WorkGraph};
 use workgraph::provenance;
-use workgraph::trace_function::{
+use workgraph::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
     LoopEdgeTemplate, PlanningConfig, StructuralConstraints, TaskTemplate, TraceFunction,
 };
@@ -63,7 +63,7 @@ pub fn run(
             .unwrap_or(Path::new("."))
             .to_path_buf()
     } else {
-        trace_function::functions_dir(dir)
+        function::functions_dir(dir)
     };
 
     if output.is_none() {
@@ -173,7 +173,7 @@ pub fn run(
     };
 
     // Validate
-    trace_function::validate_function(&func)
+    function::validate_function(&func)
         .context("Extracted function failed validation")?;
 
     // Save
@@ -186,7 +186,7 @@ pub fn run(
         std::fs::write(&out_path, yaml)?;
         out_path
     } else {
-        trace_function::save_function(&func, &functions_dir)?
+        function::save_function(&func, &functions_dir)?
     };
 
     // Print summary
@@ -217,7 +217,7 @@ pub fn run(
             let example_str = input
                 .example
                 .as_ref()
-                .map(|e| format!(" — e.g. {}", trace_function::render_value(e)))
+                .map(|e| format!(" — e.g. {}", function::render_value(e)))
                 .unwrap_or_default();
             println!(
                 "  {} ({:?}{}){}",
@@ -664,7 +664,7 @@ fn pass2_rewrite_descriptions(
          instance.\n\n\
          Key principles:\n\
          - Extract the PATTERN, not the FOSSIL\n\
-         - \"Add FunctionVisibility enum to src/trace_function.rs\" becomes \
+         - \"Add FunctionVisibility enum to src/function.rs\" becomes \
            \"Define the core data types needed for {{{{input.feature_name}}}}\"\n\
          - \"Write tests for trace extraction\" becomes \
            \"Write unit and integration tests for {{{{input.feature_name}}}}\"\n\
@@ -1034,7 +1034,7 @@ pub fn run_generative(
     let functions_dir = if let Some(out) = output {
         PathBuf::from(out).parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        trace_function::functions_dir(dir)
+        function::functions_dir(dir)
     };
 
     if output.is_none() {
@@ -1076,7 +1076,7 @@ pub fn run_generative(
         redacted_fields: vec![],
     };
 
-    trace_function::validate_function(&func)
+    function::validate_function(&func)
         .context("Generated function failed validation")?;
 
     let saved_path = if let Some(out) = output {
@@ -1088,7 +1088,7 @@ pub fn run_generative(
         std::fs::write(&out_path, yaml)?;
         out_path
     } else {
-        trace_function::save_function(&func, &functions_dir)?
+        function::save_function(&func, &functions_dir)?
     };
 
     println!(
@@ -1733,7 +1733,7 @@ mod tests {
         let func_path = dir.join("functions").join("my-func.yaml");
         assert!(func_path.exists());
 
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.id, "my-func");
         assert_eq!(func.tasks.len(), 1);
         assert_eq!(func.tasks[0].template_id, "impl-config");
@@ -1793,7 +1793,7 @@ mod tests {
         assert!(result.is_ok());
 
         let func_path = dir.join("functions").join("subgraph-func.yaml");
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.tasks.len(), 3);
 
         // Check that after references are remapped to template IDs
@@ -2242,7 +2242,7 @@ mod tests {
 
         // Should produce version 1 (static) since topologies are identical
         let func_path = dir.join("functions").join("ident-test.yaml");
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.version, 1);
     }
 
@@ -2311,7 +2311,7 @@ mod tests {
         assert!(result.is_ok());
 
         let func_path = dir.join("functions").join("gen-diff.yaml");
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.version, 2);
         assert!(func.planning.is_some());
         assert!(func.constraints.is_some());
@@ -2401,14 +2401,14 @@ mod tests {
         let result = run(&dir, "root", Some("filtered"), true, false, None, false, false);
         assert!(result.is_ok());
         let func_path = dir.join("functions").join("filtered.yaml");
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.tasks.len(), 2); // root + root-impl only
 
         // With --include-evaluations: keeps all tasks
         let result = run(&dir, "root", Some("unfiltered"), true, false, None, false, true);
         assert!(result.is_ok());
         let func_path = dir.join("functions").join("unfiltered.yaml");
-        let func = trace_function::load_function(&func_path).unwrap();
+        let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.tasks.len(), 4); // all tasks included
     }
 }

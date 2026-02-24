@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 
-use workgraph::trace_function::{
+use workgraph::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, InputType, PlanningConfig,
     StructuralConstraints, TaskTemplate, TraceFunction, FunctionVisibility,
 };
@@ -13,11 +13,11 @@ use workgraph::trace_function::{
 /// generative function that describes the extraction process itself as a
 /// workgraph workflow.
 pub fn run(dir: &Path, force: bool) -> Result<()> {
-    let func_dir = trace_function::functions_dir(dir);
+    let func_dir = function::functions_dir(dir);
 
     // Check if it already exists
     if !force
-        && let Ok(_existing) = trace_function::find_function_by_prefix(&func_dir, "extract-function") {
+        && let Ok(_existing) = function::find_function_by_prefix(&func_dir, "extract-function") {
             anyhow::bail!(
                 "Meta-function 'extract-function' already exists. Use --force to overwrite."
             );
@@ -179,7 +179,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
     };
 
     // Save
-    let saved_path = trace_function::save_function(&func, &func_dir)?;
+    let saved_path = function::save_function(&func, &func_dir)?;
 
     println!("Bootstrapped meta-function 'extract-function' (version 2, generative)");
     println!();
@@ -210,7 +210,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::trace_function;
+    use workgraph::function;
 
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
@@ -226,8 +226,8 @@ mod tests {
 
         run(dir, false).unwrap();
 
-        let func_dir = trace_function::functions_dir(dir);
-        let func = trace_function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
+        let func_dir = function::functions_dir(dir);
+        let func = function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
         assert_eq!(func.id, "extract-function");
         assert_eq!(func.version, 2);
         assert!(func.planning.is_some());
@@ -258,8 +258,8 @@ mod tests {
         run(dir, false).unwrap();
         run(dir, true).unwrap();
 
-        let func_dir = trace_function::functions_dir(dir);
-        let func = trace_function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
+        let func_dir = function::functions_dir(dir);
+        let func = function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
         assert_eq!(func.id, "extract-function");
     }
 
@@ -271,9 +271,9 @@ mod tests {
 
         run(dir, false).unwrap();
 
-        let func_dir = trace_function::functions_dir(dir);
-        let func = trace_function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
-        trace_function::validate_function(&func).unwrap();
+        let func_dir = function::functions_dir(dir);
+        let func = function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
+        function::validate_function(&func).unwrap();
     }
 
     #[test]
@@ -284,8 +284,8 @@ mod tests {
 
         run(dir, false).unwrap();
 
-        let func_dir = trace_function::functions_dir(dir);
-        let func = trace_function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
+        let func_dir = function::functions_dir(dir);
+        let func = function::find_function_by_prefix(&func_dir, "extract-function").unwrap();
 
         let planning = func.planning.unwrap();
         assert_eq!(planning.planner_template.template_id, "plan-extraction");

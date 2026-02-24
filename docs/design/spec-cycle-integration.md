@@ -518,12 +518,12 @@ cycle_delay: Option<String>,
 - Add `cycle_config` info to the prompt context sent to spawned agents
 - ~10 lines
 
-#### `src/trace_function.rs` — MECHANICAL
+#### `src/function.rs` — MECHANICAL
 
 - Add `cycle_config` field to `TaskTemplate` struct (line ~105)
 - ~5 lines
 
-#### `src/commands/trace_instantiate.rs` — MECHANICAL
+#### `src/commands/func_apply.rs` — MECHANICAL
 
 - Handle `cycle_config` in template instantiation
 - ~10 lines
@@ -570,8 +570,8 @@ cycle_delay: Option<String>,
 | `src/commands/edit.rs` | Logic | ~30 | Cycle config editing |
 | `src/main.rs` | Mechanical | ~25 | New CLI flags + wiring |
 | `src/service/executor.rs` | Mechanical | ~10 | Cycle info in agent prompt |
-| `src/trace_function.rs` | Mechanical | ~5 | cycle_config in templates |
-| `src/commands/trace_instantiate.rs` | Mechanical | ~10 | Template instantiation |
+| `src/function.rs` | Mechanical | ~5 | cycle_config in templates |
+| `src/commands/func_apply.rs` | Mechanical | ~10 | Template instantiation |
 | `src/commands/show.rs` | Mechanical | ~15 | Display cycle_config |
 | Tests (unit + integration) | | ~200 | See test plan |
 | **Total** | | **~580** | |
@@ -901,24 +901,24 @@ Remove `LoopEdge`, `loops_to` field, `evaluate_loop_edges()`, and all `--loops-t
 - Replace with cycle metrics
 - ~10 lines
 
-#### `src/trace_function.rs` — LOGIC WORK
+#### `src/function.rs` — LOGIC WORK
 
 - Remove `LoopEdgeTemplate` struct
 - Remove `loops_to` field from `TaskTemplate`
 - Cycle config is already handled from Phase 2
 - ~15 lines deleted
 
-#### `src/commands/trace_instantiate.rs` — MECHANICAL
+#### `src/commands/func_apply.rs` — MECHANICAL
 
 - Remove loop template instantiation logic
 - ~15 lines deleted
 
-#### `src/commands/trace_extract.rs` — MECHANICAL
+#### `src/commands/func_extract.rs` — MECHANICAL
 
 - Remove loop edge extraction
 - ~10 lines deleted
 
-#### `src/commands/trace_function_cmd.rs` — MECHANICAL
+#### `src/commands/func_cmd.rs` — MECHANICAL
 
 - Update help text, remove loop documentation references
 - ~10 lines
@@ -978,10 +978,10 @@ All test files that reference `loops_to`, `LoopEdge`, or `evaluate_loop_edges` n
 | `src/commands/viz.rs` | Mechanical | -30 | Remove loop rendering |
 | `src/tui/mod.rs` | Mechanical | -30 | Remove loop visualization |
 | `src/commands/analyze.rs` | Mechanical | -10 | Remove loop metrics |
-| `src/trace_function.rs` | Logic | -15 | Remove LoopEdgeTemplate |
-| `src/commands/trace_instantiate.rs` | Mechanical | -15 | Remove loop instantiation |
-| `src/commands/trace_extract.rs` | Mechanical | -10 | Remove loop extraction |
-| `src/commands/trace_function_cmd.rs` | Mechanical | -10 | Remove loop help text |
+| `src/function.rs` | Logic | -15 | Remove LoopEdgeTemplate |
+| `src/commands/func_apply.rs` | Mechanical | -15 | Remove loop instantiation |
+| `src/commands/func_extract.rs` | Mechanical | -10 | Remove loop extraction |
+| `src/commands/func_cmd.rs` | Mechanical | -10 | Remove loop help text |
 | `src/commands/spawn.rs` | Mechanical | -5 | Remove loop info |
 | `src/commands/replay.rs` | Mechanical | -10 | Update for cycle_config |
 | Minor files (4) | Mechanical | -10 | Remove loops_to init |

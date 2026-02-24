@@ -9,7 +9,6 @@ use workgraph::config::Config;
 
 /// Choices gathered from the interactive wizard.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SetupChoices {
     pub executor: String,
     pub api_key: Option<String>,

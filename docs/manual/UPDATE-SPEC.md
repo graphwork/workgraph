@@ -18,7 +18,7 @@ These features were implemented in the most recent commits and are not yet docum
 | `wg trace import` | `docs/design/vx-integration-response.md` §6 | `src/commands/trace_import.rs` |
 | `wg trace show --animate` | — | `src/commands/trace_animate.rs` |
 | `wg done --converged` (loop convergence) | `docs/design/loop-convergence.md` | `src/commands/done.rs`, `src/graph.rs` |
-| `wg trace extract` / `wg trace instantiate` (trace functions) | `docs/design/trace-functions.md` | `src/commands/trace_extract.rs`, `src/commands/trace_instantiate.rs` |
+| `wg trace extract` / `wg trace instantiate` (trace functions) | `docs/design/trace-functions.md` | `src/commands/func_extract.rs`, `src/commands/func_apply.rs` |
 | `wg viz --graph` (2D spatial layout) | — | `src/commands/viz.rs:952+` |
 | Agency federation (`wg agency scan/pull/push/remote/merge`) | `docs/AGENCY.md` (not covered there either) | `src/federation.rs` |
 | External information flows / adapter pattern | `docs/design/vx-integration-response.md` §1-4 | various |

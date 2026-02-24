@@ -9,8 +9,19 @@ use workgraph::query::{build_reverse_index, ready_tasks};
 
 use super::collect_transitive_dependents;
 
-// Re-use cycle classification from loops module
-use super::loops::{ClassifiedCycle, CycleClassification};
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CycleClassification {
+    Intentional,
+    Warning,
+    Info,
+}
+
+#[allow(dead_code)]
+struct ClassifiedCycle {
+    pub nodes: Vec<String>,
+    pub classification: CycleClassification,
+    pub reason: String,
+}
 
 /// Severity level for issues
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -207,7 +218,7 @@ fn compute_summary(graph: &WorkGraph) -> Summary {
     }
 }
 
-/// Classify a cycle (duplicated from loops.rs to avoid complex imports)
+/// Classify a cycle based on its length and tags
 fn classify_cycle(cycle: &[String], graph: &WorkGraph) -> ClassifiedCycle {
     let len = cycle.len();
 

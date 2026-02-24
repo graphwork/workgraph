@@ -1243,22 +1243,8 @@ fn test_completion_iteration_less_than_guard() {
 }
 
 // ===========================================================================
-// 4. Migration tests
+// 4. Backward compatibility tests
 // ===========================================================================
-
-#[test]
-fn test_migrate_loops_command_noop() {
-    // The migrate-loops command is now a noop since loops_to was removed
-    let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(&tmp, vec![make_task("t1", "Task 1")]);
-
-    let output = wg_ok(&wg_dir, &["migrate-loops"]);
-    assert!(
-        output.contains("No loops_to edges to migrate"),
-        "Should report no migration needed. Output: {}",
-        output
-    );
-}
 
 #[test]
 fn test_backward_compat_old_loops_to_loads() {

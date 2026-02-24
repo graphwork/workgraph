@@ -289,8 +289,6 @@ wg evolve --dry-run                           # preview without applying
 
 ### `wg motivation`
 
-Also aliased as `wg mot`.
-
 | Command | Description |
 |---------|-------------|
 | `wg motivation add <name> --accept <text> --reject <text> [-d <text>]` | Create a new motivation |
@@ -562,7 +560,7 @@ wg agent lineage <id>        # shows agent + role + motivation ancestry
 ├── agents/
 │   └── <sha256>.yaml            # Agent definitions (role+motivation pairs)
 ├── evaluations/
-│   └── eval-<task-id>-<timestamp>.yaml  # Evaluation records
+│   └── eval-<task-id>-<timestamp>.json  # Evaluation records
 └── evolver-skills/
     ├── role-mutation.md
     ├── role-crossover.md
@@ -571,7 +569,7 @@ wg agent lineage <id>        # shows agent + role + motivation ancestry
     └── motivation-tuning.md
 ```
 
-Roles, motivations, and agents are stored as YAML. Evaluations are stored as YAML. All filenames are based on the entity's content-hash ID.
+Roles, motivations, and agents are stored as YAML. Evaluations are stored as JSON. All filenames are based on the entity's content-hash ID.
 
 ## Federation
 

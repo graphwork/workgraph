@@ -228,6 +228,12 @@ pub struct CoordinatorConfig {
     /// Overridden by role.default_context_scope and task.context_scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_context_scope: Option<String>,
+
+    /// Hard timeout for spawned agents (e.g., "30m", "1h", "90s").
+    /// Wraps the agent invocation with the `timeout` command.
+    /// Default: "30m". Set to empty string to disable.
+    #[serde(default = "default_agent_timeout")]
+    pub agent_timeout: String,
 }
 
 fn default_max_agents() -> usize {
@@ -242,6 +248,10 @@ fn default_poll_interval() -> u64 {
     60
 }
 
+fn default_agent_timeout() -> String {
+    "30m".to_string()
+}
+
 impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
@@ -251,6 +261,7 @@ impl Default for CoordinatorConfig {
             executor: default_executor(),
             model: None,
             default_context_scope: None,
+            agent_timeout: default_agent_timeout(),
         }
     }
 }

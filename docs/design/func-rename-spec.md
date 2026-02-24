@@ -173,7 +173,7 @@ Func {
 
 **Problem:** When extracting with `--subgraph` or `--generative`, the coordinator-generated `evaluate-*` tasks (LLM-based evaluation tasks) pollute the extracted function. These are internal coordinator infrastructure, not part of the user's workflow pattern.
 
-**Solution:** In `trace_extract.rs::collect_subgraph()`, filter out tasks whose ID matches the pattern `evaluate-*` or that have the tag `coordinator:evaluation`:
+**Solution:** In `func_extract.rs::collect_subgraph()`, filter out tasks whose ID matches the pattern `evaluate-*` or that have the tag `coordinator:evaluation`:
 
 ```rust
 fn collect_subgraph<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
@@ -204,7 +204,7 @@ Also filter in `run_generative()` where traces are collected.
 
 ### 2.2 Smarter Parameter Detection
 
-**Problem:** `detect_parameters()` in `trace_extract.rs` extracts every standalone number as `threshold`, `value_2`, `value_3`, etc. Most of these are noise (line numbers, iteration counts, max_retries values, etc.), not meaningful parameters.
+**Problem:** `detect_parameters()` in `func_extract.rs` extracts every standalone number as `threshold`, `value_2`, `value_3`, etc. Most of these are noise (line numbers, iteration counts, max_retries values, etc.), not meaningful parameters.
 
 **Current behavior (lines 920-944):**
 ```rust
@@ -285,7 +285,7 @@ Output ONLY the updated YAML tasks section.
 ```yaml
 # BAD: fossil
 - template_id: add-enum
-  title: "Add FunctionVisibility enum to src/trace_function.rs"
+  title: "Add FunctionVisibility enum to src/function.rs"
   description: "Add FunctionVisibility enum with Internal, Peer, Public variants..."
 
 # GOOD: pattern
@@ -326,16 +326,16 @@ Output ONLY the updated YAML tasks section.
 |------|--------|-------|
 | `src/main.rs` | Add `FuncCommands` enum, `Func` variant in `Commands`, match arm routing, hidden aliases in `TraceCommands` | Large — enum definitions + match routing (~150 lines) |
 | `src/commands/mod.rs` | No new modules needed (existing `trace_*.rs` modules are reused) | Tiny — no changes needed if we reuse existing modules |
-| `src/commands/trace_extract.rs` | Add `is_coordinator_noise()` filter, improve `detect_parameters()`, improve `generalize_with_executor()` with multi-pass, add role-based template IDs, add `--raw` flag support | Medium-large (~100 lines changed) |
-| `src/commands/trace_instantiate.rs` | No logic changes — just called from a new routing path | Tiny — no internal changes |
-| `src/commands/trace_function_cmd.rs` | Update help text hint (`wg trace extract` → `wg func extract`) | Tiny — string change on line 58 |
-| `src/commands/trace_bootstrap.rs` | Update help text hints (`wg trace instantiate` → `wg func apply`, `wg trace make-adaptive` → `wg func make-adaptive`) | Tiny — string changes on lines 199-204 |
-| `src/commands/trace_make_adaptive.rs` | No logic changes | None |
+| `src/commands/func_extract.rs` | Add `is_coordinator_noise()` filter, improve `detect_parameters()`, improve `generalize_with_executor()` with multi-pass, add role-based template IDs, add `--raw` flag support | Medium-large (~100 lines changed) |
+| `src/commands/func_apply.rs` | No logic changes — just called from a new routing path | Tiny — no internal changes |
+| `src/commands/func_cmd.rs` | Update help text hint (`wg trace extract` → `wg func extract`) | Tiny — string change on line 58 |
+| `src/commands/func_bootstrap.rs` | Update help text hints (`wg trace instantiate` → `wg func apply`, `wg trace make-adaptive` → `wg func make-adaptive`) | Tiny — string changes on lines 199-204 |
+| `src/commands/func_make_adaptive.rs` | No logic changes | None |
 | `src/commands/trace_export.rs` | No changes | None |
 | `src/commands/trace_import.rs` | No changes | None |
 | `src/commands/trace_animate.rs` | No changes | None |
 | `src/commands/trace.rs` | No changes | None |
-| `src/trace_function.rs` | No changes (library code, called from commands) | None |
+| `src/function.rs` | No changes (library code, called from commands) | None |
 | `docs/AGENT-GUIDE.md` | Update CLI examples | Small |
 | `CLAUDE.md` | No changes needed | None |
 
@@ -352,19 +352,19 @@ Tasks that edit **non-overlapping files** can run in parallel. Tasks that touch 
 
 These are all in `src/main.rs` — **must be one sequential task**.
 
-#### Group B: Extraction Quality (sequential — all in `trace_extract.rs`)
+#### Group B: Extraction Quality (sequential — all in `func_extract.rs`)
 1. Add `is_coordinator_noise()` filter
 2. Improve `detect_parameters()` with contextual number extraction
 3. Multi-pass `generalize_with_executor()`
 4. Role-based template IDs
 5. Add `--raw` flag
 
-These are all in `src/commands/trace_extract.rs` — **must be one sequential task**.
+These are all in `src/commands/func_extract.rs` — **must be one sequential task**.
 
 #### Group C: Help Text Updates (parallel-safe)
 These files are independent of each other and of Groups A/B:
-- `src/commands/trace_function_cmd.rs` — update hint text
-- `src/commands/trace_bootstrap.rs` — update hint text
+- `src/commands/func_cmd.rs` — update hint text
+- `src/commands/func_bootstrap.rs` — update hint text
 - `docs/AGENT-GUIDE.md` — update CLI examples
 
 **Each can be a separate parallel task**, or bundled into one small task.
@@ -400,8 +400,8 @@ These files are independent of each other and of Groups A/B:
 | Task ID | Title | Files | After |
 |---------|-------|-------|-------|
 | `func-cli-routing` | Add `wg func` CLI routing with hidden aliases | `src/main.rs` | `func-spec` |
-| `func-extract-quality` | Improve extraction quality (filter noise, smarter params, multi-pass generalize) | `src/commands/trace_extract.rs` | `func-spec` |
-| `func-help-text` | Update help text and docs for func rename | `src/commands/trace_function_cmd.rs`, `src/commands/trace_bootstrap.rs`, `docs/AGENT-GUIDE.md` | `func-spec` |
+| `func-extract-quality` | Improve extraction quality (filter noise, smarter params, multi-pass generalize) | `src/commands/func_extract.rs` | `func-spec` |
+| `func-help-text` | Update help text and docs for func rename | `src/commands/func_cmd.rs`, `src/commands/func_bootstrap.rs`, `docs/AGENT-GUIDE.md` | `func-spec` |
 | `func-integrate` | Build, test, install — verify everything works | all (read-only verification) | `func-cli-routing`, `func-extract-quality`, `func-help-text` |
 
 ---
@@ -417,27 +417,27 @@ Commands::Func { command } => match command {
     FuncCommands::Extract { task_ids, name, subgraph, recursive, generalize, generative, output, force } => {
         // Same logic as TraceCommands::Extract
         if generative {
-            commands::trace_extract::run_generative(...)
+            commands::func_extract::run_generative(...)
         } else if recursive {
-            commands::trace_extract::run_recursive(...)
+            commands::func_extract::run_recursive(...)
         } else {
-            commands::trace_extract::run(...)
+            commands::func_extract::run(...)
         }
     }
     FuncCommands::Apply { function_id, from, inputs, input_file, prefix, dry_run, after, model } => {
-        commands::trace_instantiate::run(...)
+        commands::func_apply::run(...)
     }
     FuncCommands::List { verbose, include_peers, visibility } => {
-        commands::trace_function_cmd::run_list(...)
+        commands::func_cmd::run_list(...)
     }
     FuncCommands::Show { id } => {
-        commands::trace_function_cmd::run_show(...)
+        commands::func_cmd::run_show(...)
     }
     FuncCommands::Bootstrap { force } => {
-        commands::trace_bootstrap::run(...)
+        commands::func_bootstrap::run(...)
     }
     FuncCommands::MakeAdaptive { function_id, max_runs } => {
-        commands::trace_make_adaptive::run(...)
+        commands::func_make_adaptive::run(...)
     }
 },
 ```
@@ -446,7 +446,7 @@ The hidden aliases in `TraceCommands` match arm print a deprecation warning, the
 
 ### 4.2 Extraction Quality — `detect_parameters()` Rewrite
 
-The key insight: the current `extract_numbers()` function (lines 1034-1062 in `trace_extract.rs`) scans all whitespace-delimited tokens for parseable numbers. This is far too aggressive.
+The key insight: the current `extract_numbers()` function (lines 1034-1062 in `func_extract.rs`) scans all whitespace-delimited tokens for parseable numbers. This is far too aggressive.
 
 Replace with:
 ```rust
@@ -540,7 +540,7 @@ fn role_based_id(task: &Task, index: usize, seen: &mut HashSet<String>) -> Strin
 
 ### 5.3 Existing Test Preservation
 
-All existing tests in `trace_extract.rs`, `trace_instantiate.rs`, `trace_function_cmd.rs`, `trace_bootstrap.rs`, and `trace_make_adaptive.rs` must continue to pass unchanged (they test the underlying logic, not the CLI routing).
+All existing tests in `func_extract.rs`, `func_apply.rs`, `func_cmd.rs`, `func_bootstrap.rs`, and `func_make_adaptive.rs` must continue to pass unchanged (they test the underlying logic, not the CLI routing).
 
 ---
 

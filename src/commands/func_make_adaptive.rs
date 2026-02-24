@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use workgraph::provenance;
-use workgraph::trace_function::{
+use workgraph::function::{
     self, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig,
 };
-use workgraph::trace_memory;
+use workgraph::function_memory;
 
 /// Run the `wg func make-adaptive <function-id>` command.
 ///
@@ -14,8 +14,8 @@ use workgraph::trace_memory;
 /// (version 3) by adding TraceMemoryConfig and scanning provenance for
 /// past application runs.
 pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
-    let func_dir = trace_function::functions_dir(dir);
-    let mut func = trace_function::find_function_by_prefix(&func_dir, function_id)
+    let func_dir = function::functions_dir(dir);
+    let mut func = function::find_function_by_prefix(&func_dir, function_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Require version >= 2 (generative)
@@ -153,7 +153,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
 
     // Save summaries to runs.jsonl
     for summary in &summaries {
-        trace_memory::append_run_summary(dir, &func.id, summary)
+        function_memory::append_run_summary(dir, &func.id, summary)
             .context("Failed to save run summary")?;
     }
 
@@ -186,7 +186,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
     func.version = 3;
 
     // Save updated function
-    trace_function::save_function(&func, &func_dir)?;
+    function::save_function(&func, &func_dir)?;
 
     // Print summary
     println!(
@@ -202,7 +202,7 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
     } else {
         println!("  No past applications found in provenance");
     }
-    let runs_path = trace_memory::runs_path(dir, &func.id);
+    let runs_path = function_memory::runs_path(dir, &func.id);
     println!("  Runs file: {}", runs_path.display());
 
     Ok(())
@@ -214,7 +214,7 @@ mod tests {
     use tempfile::TempDir;
     use workgraph::graph::WorkGraph;
     use workgraph::parser::save_graph;
-    use workgraph::trace_function::*;
+    use workgraph::function::*;
 
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
@@ -299,8 +299,8 @@ mod tests {
         let mut func = sample_generative_function();
         func.version = 1;
         func.id = "static-func".to_string();
-        let func_dir = trace_function::functions_dir(dir);
-        trace_function::save_function(&func, &func_dir).unwrap();
+        let func_dir = function::functions_dir(dir);
+        function::save_function(&func, &func_dir).unwrap();
 
         let result = run(dir, "static-func", 10);
         assert!(result.is_err());
@@ -314,12 +314,12 @@ mod tests {
         setup_workgraph(dir);
 
         let func = sample_generative_function();
-        let func_dir = trace_function::functions_dir(dir);
-        trace_function::save_function(&func, &func_dir).unwrap();
+        let func_dir = function::functions_dir(dir);
+        function::save_function(&func, &func_dir).unwrap();
 
         run(dir, "gen-func", 5).unwrap();
 
-        let loaded = trace_function::find_function_by_prefix(&func_dir, "gen-func").unwrap();
+        let loaded = function::find_function_by_prefix(&func_dir, "gen-func").unwrap();
         assert_eq!(loaded.version, 3);
         assert!(loaded.memory.is_some());
         let memory = loaded.memory.unwrap();
@@ -355,13 +355,13 @@ mod tests {
             },
             storage_path: None,
         });
-        let func_dir = trace_function::functions_dir(dir);
-        trace_function::save_function(&func, &func_dir).unwrap();
+        let func_dir = function::functions_dir(dir);
+        function::save_function(&func, &func_dir).unwrap();
 
         // Should not error, just update
         run(dir, "gen-func", 20).unwrap();
 
-        let loaded = trace_function::find_function_by_prefix(&func_dir, "gen-func").unwrap();
+        let loaded = function::find_function_by_prefix(&func_dir, "gen-func").unwrap();
         assert_eq!(loaded.memory.unwrap().max_runs, 20);
     }
 }

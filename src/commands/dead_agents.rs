@@ -6,7 +6,7 @@
 //! - Optionally kills the process if still running
 //!
 //! Usage:
-//!   wg dead-agents --check           # Just check, don't modify
+//!   wg dead-agents                   # Just check, don't modify (default)
 //!   wg dead-agents --cleanup         # Mark dead and unclaim tasks
 //!   wg dead-agents --threshold 10    # Use 10-minute threshold (default: from config)
 //!   wg dead-agents --purge           # Remove dead/done/failed entries from registry

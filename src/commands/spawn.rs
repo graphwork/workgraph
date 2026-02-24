@@ -53,6 +53,37 @@ pub struct SpawnResult {
     pub model: Option<String>,
 }
 
+/// Parse a timeout duration string like "30m", "1h", "90s" into seconds.
+/// Returns the number of seconds as a u64.
+fn parse_timeout_secs(timeout_str: &str) -> Result<u64> {
+    let timeout_str = timeout_str.trim();
+    if timeout_str.is_empty() {
+        anyhow::bail!("Empty timeout string");
+    }
+
+    let (num_str, unit) = if let Some(s) = timeout_str.strip_suffix('s') {
+        (s, "s")
+    } else if let Some(s) = timeout_str.strip_suffix('m') {
+        (s, "m")
+    } else if let Some(s) = timeout_str.strip_suffix('h') {
+        (s, "h")
+    } else {
+        // Default to seconds if no unit
+        (timeout_str, "s")
+    };
+
+    let num: u64 = num_str.parse().context("Invalid timeout number")?;
+
+    let secs = match unit {
+        "s" => num,
+        "m" => num * 60,
+        "h" => num * 3600,
+        _ => num,
+    };
+
+    Ok(secs)
+}
+
 /// Parse a timeout duration string like "30m", "1h", "90s"
 #[cfg(test)]
 fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
@@ -672,10 +703,42 @@ fn spawn_agent_inner(
         }
     };
 
+    // Resolve effective timeout: CLI param > executor config > coordinator config.
+    // Empty string means disabled.
+    let effective_timeout_secs: Option<u64> = if let Some(t) = timeout {
+        if t.is_empty() {
+            None
+        } else {
+            Some(parse_timeout_secs(t).context("Invalid --timeout value")?)
+        }
+    } else if let Some(t) = settings.timeout {
+        if t == 0 { None } else { Some(t) }
+    } else {
+        let agent_timeout = &config.coordinator.agent_timeout;
+        if agent_timeout.is_empty() {
+            None
+        } else {
+            Some(parse_timeout_secs(agent_timeout).context("Invalid coordinator.agent_timeout config")?)
+        }
+    };
+
+    // Build the actual command line, optionally wrapped with `timeout`
+    let timed_command = if let Some(secs) = effective_timeout_secs {
+        format!("timeout --signal=TERM --kill-after=30 {} {}", secs, inner_command)
+    } else {
+        inner_command.clone()
+    };
+
     // Create a wrapper script that runs the command and handles completion
     // This ensures tasks get marked done/failed even if the agent doesn't do it
     let complete_cmd = "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string();
     let complete_msg = "[wrapper] Agent exited successfully, marking task done";
+
+    let timeout_note = if let Some(secs) = effective_timeout_secs {
+        format!("\n# Hard timeout: {}s (SIGTERM, then SIGKILL after 30s)\n", secs)
+    } else {
+        String::new()
+    };
 
     let wrapper_script = format!(
         r#"#!/bin/bash
@@ -685,16 +748,20 @@ OUTPUT_FILE={escaped_output_file}
 # Allow nested Claude Code sessions (spawned agents are independent)
 unset CLAUDECODE
 unset CLAUDE_CODE_ENTRYPOINT
-
+{timeout_note}
 # Run the agent command
-{inner_command} >> "$OUTPUT_FILE" 2>&1
+{timed_command} >> "$OUTPUT_FILE" 2>&1
 EXIT_CODE=$?
 
 # Check if task is still in progress (agent didn't mark it done/failed)
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
 if [ "$TASK_STATUS" = "in-progress" ]; then
-    if [ $EXIT_CODE -eq 0 ]; then
+    if [ $EXIT_CODE -eq 124 ]; then
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Agent killed by hard timeout, marking task failed" >> "$OUTPUT_FILE"
+        wg fail "$TASK_ID" --reason "Agent exceeded hard timeout" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
+    elif [ $EXIT_CODE -eq 0 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "{complete_msg}" >> "$OUTPUT_FILE"
         {complete_cmd}
@@ -709,7 +776,8 @@ exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),
         escaped_output_file = shell_escape(&output_file_str),
-        inner_command = inner_command,
+        timed_command = timed_command,
+        timeout_note = timeout_note,
         complete_cmd = complete_cmd,
         complete_msg = complete_msg,
     );
@@ -864,7 +932,7 @@ exit $EXIT_CODE
         "executor": executor_name,
         "model": &effective_model,
         "started_at": Utc::now().to_rfc3339(),
-        "timeout": timeout,
+        "timeout_secs": effective_timeout_secs,
     });
     fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
@@ -1589,5 +1657,96 @@ mod tests {
         config.coordinator.default_context_scope = Some("graph".to_string());
         let scope = resolve_task_scope(&task, &config, wg_dir);
         assert_eq!(scope, ContextScope::Graph, "Config scope should be used as fallback");
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_minutes() {
+        assert_eq!(parse_timeout_secs("30m").unwrap(), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_hours() {
+        assert_eq!(parse_timeout_secs("2h").unwrap(), 7200);
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_seconds() {
+        assert_eq!(parse_timeout_secs("90s").unwrap(), 90);
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_no_unit() {
+        assert_eq!(parse_timeout_secs("120").unwrap(), 120);
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_empty_fails() {
+        assert!(parse_timeout_secs("").is_err());
+    }
+
+    #[test]
+    fn test_wrapper_script_includes_timeout() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        // Spawn with explicit timeout
+        run(temp_dir.path(), "t1", "shell", Some("5m"), None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        // Verify the timeout command wraps the inner command
+        assert!(
+            script.contains("timeout --signal=TERM --kill-after=30 300"),
+            "Wrapper should contain timeout command with 300s (5m). Script:\n{}",
+            script
+        );
+        // Verify timeout exit code handling
+        assert!(
+            script.contains("EXIT_CODE -eq 124"),
+            "Wrapper should handle timeout exit code 124"
+        );
+        assert!(
+            script.contains("Agent exceeded hard timeout"),
+            "Wrapper should report timeout in failure reason"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_script_default_timeout_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        // Default config has agent_timeout = "30m", no explicit timeout
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        // Default timeout is 30m = 1800s
+        assert!(
+            script.contains("timeout --signal=TERM --kill-after=30 1800"),
+            "Wrapper should contain default timeout of 1800s (30m). Script:\n{}",
+            script
+        );
+    }
+
+    #[test]
+    fn test_metadata_records_effective_timeout() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", Some("10m"), None, false).unwrap();
+
+        let metadata_path = agent_output_dir(temp_dir.path(), "agent-1").join("metadata.json");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
+        assert_eq!(metadata["timeout_secs"], 600, "Metadata should record 600s (10m)");
     }
 }

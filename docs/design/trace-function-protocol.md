@@ -8,13 +8,13 @@
 
 The workgraph codebase has a working first-generation trace function system:
 
-**Core data model** (`src/trace_function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.workgraph/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
+**Core data model** (`src/function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.workgraph/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
 
-**Extraction** (`src/commands/trace_extract.rs`): `wg trace extract <task-id>` extracts a trace function from a completed (Done) task. Supports `--subgraph` to capture the full descendant DAG, `--generalize` (stubbed, prints a warning), `--name`, `--output`, `--force`. Parameter detection is heuristic: scans task text for file paths, URLs, commands, and numbers.
+**Extraction** (`src/commands/func_extract.rs`): `wg trace extract <task-id>` extracts a trace function from a completed (Done) task. Supports `--subgraph` to capture the full descendant DAG, `--generalize` (stubbed, prints a warning), `--name`, `--output`, `--force`. Parameter detection is heuristic: scans task text for file paths, URLs, commands, and numbers.
 
-**Instantiation** (`src/commands/trace_instantiate.rs`): `wg trace instantiate <function-id>` creates real tasks from a function definition. Supports `--input key=value`, `--input-file`, `--prefix`, `--dry-run`, `--after`, `--model`, `--from` (peer or file path). Template substitution uses `{{input.<name>}}` placeholders via `str::replace()`.
+**Instantiation** (`src/commands/func_apply.rs`): `wg trace instantiate <function-id>` creates real tasks from a function definition. Supports `--input key=value`, `--input-file`, `--prefix`, `--dry-run`, `--after`, `--model`, `--from` (peer or file path). Template substitution uses `{{input.<name>}}` placeholders via `str::replace()`.
 
-**Listing and display** (`src/commands/trace_function_cmd.rs`): `wg trace list-functions` and `wg trace show-function <id>` with `--include-peers` for federation-aware discovery.
+**Listing and display** (`src/commands/func_cmd.rs`): `wg trace list-functions` and `wg trace show-function <id>` with `--include-peers` for federation-aware discovery.
 
 **Trace viewing** (`src/commands/trace.rs`): `wg trace show <id>` with modes: Summary, Full, Json, OpsOnly. Also supports `--recursive` (execution tree), `--timeline` (parallel lanes), `--graph` (2D box layout), `--animate` (terminal TUI replay).
 
@@ -493,7 +493,7 @@ wg trace instantiate extract-function \
 4. Run tracking: record function_id + prefix → created task IDs in `.workgraph/functions/<id>.runs.jsonl`
 5. Test coverage for edge cases
 
-**Files:** `trace_function.rs`, `trace_extract.rs`, `trace_function_cmd.rs`, `trace_instantiate.rs`
+**Files:** `function.rs`, `func_extract.rs`, `func_cmd.rs`, `func_apply.rs`
 
 ### Phase 2: Generative Functions (3-4 weeks)
 
@@ -507,12 +507,12 @@ wg trace instantiate extract-function \
 
 ### Phase 3: Trace Memory and Adaptive Functions (2-3 weeks)
 
-1. New `src/trace_memory.rs` module
+1. New `src/function_memory.rs` module
 2. Memory injection during instantiation: `{{memory.run_summaries}}`
 3. Automatic post-run recording of `RunSummary`
 4. `wg trace make-adaptive` command
 
-**New files:** `trace_memory.rs`, `tests/integration_adaptive_functions.rs`
+**New files:** `function_memory.rs`, `tests/integration_adaptive_functions.rs`
 
 ### Phase 4: Self-Bootstrapping (1-2 weeks)
 
@@ -538,11 +538,11 @@ Notes on how the implementation diverges from or extends the spec above.
 
 ### 9.1 Trace Memory: Dual Storage Strategy
 
-The spec (§3.4) describes a per-run JSON directory at `.workgraph/functions/<id>.memory/`. The implementation adds a second, parallel strategy: `.workgraph/functions/<id>.runs.jsonl` (one JSON line per run summary). The JSONL strategy is what `trace_instantiate` and `trace_make_adaptive` actually use for reading/writing run history. The per-run JSON directory (`trace_memory::memory_dir`, `save_run_summary`, `load_recent_summaries`) exists alongside it but is used by `build_run_summary` for spec-compliant individual run storage. Both strategies coexist; consumers should prefer the JSONL path for operational use.
+The spec (§3.4) describes a per-run JSON directory at `.workgraph/functions/<id>.memory/`. The implementation adds a second, parallel strategy: `.workgraph/functions/<id>.runs.jsonl` (one JSON line per run summary). The JSONL strategy is what `trace_instantiate` and `trace_make_adaptive` actually use for reading/writing run history. The per-run JSON directory (`function_memory::memory_dir`, `save_run_summary`, `load_recent_summaries`) exists alongside it but is used by `build_run_summary` for spec-compliant individual run storage. Both strategies coexist; consumers should prefer the JSONL path for operational use.
 
 ### 9.2 Generative Extraction: Trace Alignment Heuristic
 
-The spec (§4.2) describes an abstract "align traces: identify shared vs variable task topology" step. The implementation in `trace_extract::run_generative()` implements this as:
+The spec (§4.2) describes an abstract "align traces: identify shared vs variable task topology" step. The implementation in `func_extract::run_generative()` implements this as:
 1. Collect subgraphs for each trace.
 2. Compare task counts and ordered skill-set tuples across all traces.
 3. If all traces have identical topology (same count AND same skills in order), fall back to static extraction.
@@ -553,7 +553,7 @@ This is more heuristic than a formal structural alignment algorithm but works we
 
 ### 9.3 Planner Output Capture
 
-The spec (§4.2) doesn't detail how the planning node's output is captured. The implementation in `trace_instantiate::execute_plan_or_fallback()` uses a two-step search:
+The spec (§4.2) doesn't detail how the planning node's output is captured. The implementation in `func_apply::execute_plan_or_fallback()` uses a two-step search:
 1. Check the planner task's artifacts for files ending in `.yaml` or `.yml`, parse the first one found.
 2. If no artifact, scan the task's log entries for ` ```yaml ` fenced code blocks.
 3. Parse the YAML as `Vec<TaskTemplate>`.
@@ -562,11 +562,11 @@ The spec (§4.2) doesn't detail how the planning node's output is captured. The 
 
 ### 9.4 The `--generalize` Flag Is Wired
 
-The spec (§1.2) notes that `--generalize` is "stubbed and not wired to an LLM." As of the current implementation, it is wired: `trace_extract::generalize_with_executor()` calls `claude --print` via subprocess, sending the raw function YAML with a prompt to replace instance-specific values with `{{input.<name>}}` placeholders. Requires the coordinator executor to be `claude`.
+The spec (§1.2) notes that `--generalize` is "stubbed and not wired to an LLM." As of the current implementation, it is wired: `func_extract::generalize_with_executor()` calls `claude --print` via subprocess, sending the raw function YAML with a prompt to replace instance-specific values with `{{input.<name>}}` placeholders. Requires the coordinator executor to be `claude`.
 
 ### 9.5 Intervention Detection
 
-The spec (§3.4) defines `InterventionSummary` but doesn't specify which provenance operations constitute interventions. The implementation (`trace_memory::build_run_summary()`) detects four operation types as interventions: `retry`, `edit`, `reassign`, and `manual_override`.
+The spec (§3.4) defines `InterventionSummary` but doesn't specify which provenance operations constitute interventions. The implementation (`function_memory::build_run_summary()`) detects four operation types as interventions: `retry`, `edit`, `reassign`, and `manual_override`.
 
 ### 9.6 TaskTemplate YAML Aliases
 

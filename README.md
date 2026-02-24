@@ -381,7 +381,7 @@ Killing an agent automatically unclaims its task so another agent can pick it up
 **Dead agent detection:** Agents send heartbeats while working. If an agent's process exits or its heartbeat goes stale (default: 5 minutes), the coordinator marks it dead and unclaims its task. You can also check manually:
 
 ```bash
-wg dead-agents --check     # check for dead agents (read-only)
+wg dead-agents             # check for dead agents (read-only, default)
 wg dead-agents --cleanup   # mark dead and unclaim their tasks
 wg dead-agents --remove    # remove dead agents from registry
 ```
@@ -803,7 +803,7 @@ See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference includin
 ```bash
 wg log <id> "message"     # add progress notes to a task
 wg artifact <id> path     # record a file produced by a task
-wg viz --mermaid          # generate DOT/mermaid/ASCII graph
+wg viz --mermaid          # generate Mermaid flowchart output
 wg viz --graph            # 2D spatial layout with box-drawing characters
 wg archive                # archive completed tasks
 wg check                  # check graph for cycles and issues

@@ -10,12 +10,11 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use std::time::Duration;
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::{AgentRegistry, AgentStatus};
 
-use super::graph_path;
+use super::{graph_path, kill_process_force, kill_process_graceful};
 
 /// Default wait time between SIGTERM and SIGKILL
 const DEFAULT_WAIT_SECS: u64 = 5;
@@ -35,7 +34,7 @@ pub fn run(dir: &Path, agent_id: &str, force: bool, json: bool) -> Result<()> {
     if force {
         kill_process_force(pid)?;
     } else {
-        kill_process_graceful(pid)?;
+        kill_process_graceful(pid, DEFAULT_WAIT_SECS)?;
     }
 
     // Update registry
@@ -101,7 +100,7 @@ pub fn run_all(dir: &Path, force: bool, json: bool) -> Result<()> {
         let kill_result = if force {
             kill_process_force(*pid)
         } else {
-            kill_process_graceful(*pid)
+            kill_process_graceful(*pid, DEFAULT_WAIT_SECS)
         };
 
         if let Err(e) = kill_result {
@@ -167,85 +166,6 @@ pub fn run_all(dir: &Path, force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Send SIGTERM, wait, then SIGKILL if process is still alive
-#[cfg(unix)]
-fn kill_process_graceful(pid: u32) -> Result<()> {
-    use std::thread;
-
-    let pid_i32 = pid as i32;
-
-    // First check if process exists
-    if unsafe { libc::kill(pid_i32, 0) } != 0 {
-        // Process doesn't exist - that's fine, consider it killed
-        return Ok(());
-    }
-
-    // Send SIGTERM
-    if unsafe { libc::kill(pid_i32, libc::SIGTERM) } != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            // Process already gone
-            return Ok(());
-        }
-        return Err(err).context(format!("Failed to send SIGTERM to PID {}", pid));
-    }
-
-    // Wait for process to exit
-    for _ in 0..DEFAULT_WAIT_SECS {
-        thread::sleep(Duration::from_secs(1));
-        if unsafe { libc::kill(pid_i32, 0) } != 0 {
-            // Process is gone
-            return Ok(());
-        }
-    }
-
-    // Still alive, send SIGKILL
-    if unsafe { libc::kill(pid_i32, libc::SIGKILL) } != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            // Process gone between check and kill
-            return Ok(());
-        }
-        return Err(err).context(format!("Failed to send SIGKILL to PID {}", pid));
-    }
-
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn kill_process_graceful(_pid: u32) -> Result<()> {
-    anyhow::bail!("Process killing is only supported on Unix systems")
-}
-
-/// Send SIGKILL immediately
-#[cfg(unix)]
-fn kill_process_force(pid: u32) -> Result<()> {
-    let pid_i32 = pid as i32;
-
-    // Check if process exists first
-    if unsafe { libc::kill(pid_i32, 0) } != 0 {
-        // Process doesn't exist - that's fine
-        return Ok(());
-    }
-
-    // Send SIGKILL
-    if unsafe { libc::kill(pid_i32, libc::SIGKILL) } != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            // Process already gone
-            return Ok(());
-        }
-        return Err(err).context(format!("Failed to send SIGKILL to PID {}", pid));
-    }
-
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn kill_process_force(_pid: u32) -> Result<()> {
-    anyhow::bail!("Process killing is only supported on Unix systems")
-}
-
 /// Unclaim the task that was being worked on by the killed agent
 fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
     let path = graph_path(dir);
@@ -277,8 +197,6 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-use super::is_process_alive as is_process_running;
 
 #[cfg(test)]
 mod tests {
@@ -286,6 +204,7 @@ mod tests {
     use tempfile::TempDir;
     use workgraph::graph::{Node, Task, WorkGraph};
     use workgraph::parser::save_graph;
+    use workgraph::service::is_process_alive;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -316,17 +235,17 @@ mod tests {
     }
 
     #[test]
-    fn test_is_process_running() {
+    fn test_is_process_alive() {
         // Current process should always be running
         #[cfg(unix)]
         {
             let pid = std::process::id();
-            assert!(is_process_running(pid));
+            assert!(is_process_alive(pid));
         }
 
         // Random high PID likely doesn't exist
         #[cfg(unix)]
-        assert!(!is_process_running(999999999));
+        assert!(!is_process_alive(999999999));
     }
 
     #[test]

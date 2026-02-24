@@ -47,8 +47,7 @@ You MUST use these commands to track your work:
 ## Important
 - Run `wg log` commands BEFORE doing work to track progress
 - Run `wg done` BEFORE you finish responding
-- If the task description is unclear, do your best interpretation
-- Focus only on this specific task\n";
+- If the task description is unclear, do your best interpretation\n";
 
 /// Graph Patterns section: vocabulary, golden rule, subtask guidance.
 pub const GRAPH_PATTERNS_SECTION: &str = "\
@@ -93,6 +92,27 @@ You are working within **workgraph**, a task orchestration system. Key concepts:
 - **Cycles/Loops**: Tasks can form cycles with `--max-iterations`. Use `wg done --converged` when a cycle's work is complete.
 - **Trace Functions**: Reusable workflow patterns (`wg func list/apply/show`) that can instantiate pre-wired task subgraphs.
 - **Context Scopes**: Agents receive different amounts of context (clean < task < graph < full) based on task requirements.\n";
+
+/// Ethos section: the philosophical dimension of working within a living graph.
+/// Injected at task+ scope to encourage autopoietic behavior.
+/// Contains {{task_id}} placeholders for variable substitution.
+pub const ETHOS_SECTION: &str = "\
+## The Graph is Alive
+
+You are not isolated. The graph is a shared medium — artifacts you write are read by other agents, \
+tasks you create get dispatched to other agents. You are one node in a living system.
+
+**Your job is not just to complete your task.** It is to leave the system better than you found it:
+- Found a bug? `wg add \"Fix: ...\" --after {{task_id}} -d \"Found while working on {{task_id}}\"`
+- Documentation wrong? Fix it, or flag it with `wg add`
+- Task too large? Decompose it into subtasks
+- Follow-up needed? `wg add \"Verify: ...\" --after {{task_id}}`
+
+The coordinator dispatches anything you add. You don't need permission.
+
+**The loop:** spec \u{2192} implement \u{2192} verify \u{2192} improve \u{2192} spec. \
+You may be any node. Use `wg context` to see what came before. \
+Use `wg add` to create what comes next.\n";
 
 /// Hint for task+ scopes about using wg context/show to get more info (R2).
 const WG_CONTEXT_HINT: &str = "\
@@ -179,6 +199,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
     // Task+ scope: workflow sections (with {{task_id}} substitution)
     if scope >= ContextScope::Task {
         parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
+        parts.push(vars.apply(ETHOS_SECTION));
         parts.push(GRAPH_PATTERNS_SECTION.to_string());
         parts.push(REUSABLE_FUNCTIONS_SECTION.to_string());
         parts.push(vars.apply(CRITICAL_WG_CLI_SECTION));

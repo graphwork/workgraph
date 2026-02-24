@@ -1,6 +1,6 @@
 # Workgraph Command Reference
 
-Complete reference for all `wg` commands. All commands support `--json` for machine-readable output and `--dir <path>` to specify a custom workgraph directory.
+Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom workgraph directory.
 
 ## Table of Contents
 
@@ -53,6 +53,16 @@ wg add <TITLE> [OPTIONS]
 | `--max-iterations <N>` | Maximum cycle iterations — sets `CycleConfig` on this task, making it a cycle header |
 | `--cycle-guard <EXPR>` | Guard condition for cycle iteration: `task:<id>=<status>` or `always` |
 | `--cycle-delay <DUR>` | Delay between cycle iterations (e.g., `30s`, `5m`, `1h`) |
+| `--context-scope <SCOPE>` | Context scope for prompt assembly: `clean`, `task`, `graph`, `full` (see below) |
+
+**Context scopes** control how much context the coordinator assembles into the agent's prompt. Each level includes everything from the previous level:
+
+| Scope | Includes |
+|-------|----------|
+| `clean` | Core task info only (title, description, dependency context) |
+| `task` | + workflow sections, tags/skills, downstream awareness |
+| `graph` | + project description, subgraph summary (1-hop neighborhood) |
+| `full` | + system awareness preamble, full graph summary, CLAUDE.md content |
 
 **Examples:**
 
@@ -82,6 +92,12 @@ wg add "Review draft" --after write --id review
 # Cycle header with guard and delay
 wg add "Write" --after review --max-iterations 5 \
   --cycle-guard "task:review=failed" --cycle-delay "5m"
+
+# Minimal prompt for a focused, low-context task
+wg add "Format config file" --context-scope clean
+
+# Full context for a task that needs project-wide awareness
+wg add "Architect new module" --context-scope full
 ```
 
 ---
@@ -110,6 +126,7 @@ wg edit <ID> [OPTIONS]
 | `--cycle-guard <EXPR>` | Set guard condition for cycle iteration |
 | `--cycle-delay <DUR>` | Set delay between cycle iterations |
 | `--visibility <LEVEL>` | Set task visibility zone: `internal`, `peer`, `public` |
+| `--context-scope <SCOPE>` | Set context scope for prompt assembly: `clean`, `task`, `graph`, `full` |
 
 Triggers a `graph_changed` IPC notification to the service daemon, so the coordinator picks up changes immediately.
 
@@ -132,6 +149,9 @@ wg edit my-task --model opus
 wg edit my-task --max-iterations 5
 wg edit my-task --cycle-guard "task:review=failed"
 wg edit my-task --cycle-delay "5m"
+
+# Reduce context for a simple task
+wg edit my-task --context-scope clean
 ```
 
 ---
@@ -161,38 +181,6 @@ wg done review-task
 
 # In a cycle: signal convergence (stops the cycle)
 wg done review-task --converged
-```
-
----
-
-### `wg submit`
-
-Submit a verified task for review.
-
-```bash
-wg submit <ID> [--actor <ACTOR>]
-```
-
-**DEPRECATED**: Behaves like `wg done`. Use `wg done` instead.
-
----
-
-### `wg approve`
-
-**DEPRECATED**: Behaves like `wg done`. Use `wg done` instead.
-
-```bash
-wg approve <ID> [--actor <ACTOR>]
-```
-
----
-
-### `wg reject`
-
-**DEPRECATED**: Sends a done/in-progress task back to open for rework.
-
-```bash
-wg reject <ID> [--reason <TEXT>] [--actor <ACTOR>]
 ```
 
 ---

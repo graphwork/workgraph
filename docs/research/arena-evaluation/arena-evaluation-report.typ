@@ -224,7 +224,7 @@ Context arena runs offline as a batch experiment, not per-dispatch. Cache result
 
 == Application to Function Generalization
 
-`wg func extract --generalize` (`trace_extract.rs:473--548`) runs three LLM passes to convert raw traces into reusable templates. For each pass, arena can compare prompt variants --- e.g., different abstraction levels, example counts, or output formats. FLIP scores whether the generalized template, when re-instantiated, produces descriptions that recover the original task intent. A bad generalization that strips too much specificity scores low.
+`wg func extract --generalize` (`func_extract.rs:473--548`) runs three LLM passes to convert raw traces into reusable templates. For each pass, arena can compare prompt variants --- e.g., different abstraction levels, example counts, or output formats. FLIP scores whether the generalized template, when re-instantiated, produces descriptions that recover the original task intent. A bad generalization that strips too much specificity scores low.
 
 == Application to Func Planning
 

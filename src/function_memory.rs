@@ -9,12 +9,12 @@
 //! Both formats are supported. The per-run JSON approach (`save_run_summary` /
 //! `load_recent_summaries`) is the protocol-specified storage for §4.3 MAKE_ADAPTIVE.
 //! The JSONL approach (`append_run_summary` / `load_run_summaries`) is the existing
-//! integration point used by `func_apply` and `trace_make_adaptive`.
+//! integration point used by `func_apply` and `func_make_adaptive`.
 
 use crate::agency::{load_all_evaluations, Evaluation};
 use crate::graph::WorkGraph;
 use crate::provenance::{read_all_operations, OperationEntry};
-use crate::trace_function::{
+use crate::function::{
     InterventionSummary, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig,
     FUNCTIONS_DIR,
 };
@@ -445,7 +445,7 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
                 .inputs
                 .iter()
                 .map(|(k, v)| {
-                    let rendered = crate::trace_function::render_value(v);
+                    let rendered = crate::function::render_value(v);
                     let truncated = if rendered.len() > 80 {
                         format!("{}...", &rendered[..77])
                     } else {
@@ -541,7 +541,7 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_function::{
+    use crate::function::{
         InterventionSummary, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig,
     };
     use std::collections::HashMap;

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::agency::{
     Agent, AgencyStore, EvaluationRef, Lineage, LocalStore, Motivation, PerformanceRecord, Role,
 };
+use crate::service::is_process_alive;
 
 // ---------------------------------------------------------------------------
 // Federation config: named remotes stored in .workgraph/federation.yaml
@@ -347,7 +348,7 @@ pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
         }
     };
 
-    let alive = is_pid_alive(state.pid);
+    let alive = is_process_alive(state.pid);
 
     PeerServiceStatus {
         running: alive,
@@ -357,16 +358,6 @@ pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
     }
 }
 
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-fn is_pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-#[cfg(not(unix))]
-fn is_pid_alive(_pid: u32) -> bool {
-    true
-}
 
 // ---------------------------------------------------------------------------
 // Cross-repo dependency resolution

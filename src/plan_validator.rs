@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::graph::{CycleAnalysis, Node, Task, WorkGraph};
-use crate::trace_function::{ForbiddenPattern, StructuralConstraints, TaskTemplate};
+use crate::function::{ForbiddenPattern, StructuralConstraints, TaskTemplate};
 
 /// An error discovered during plan validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,7 +239,7 @@ fn compute_max_depth(tasks: &[TaskTemplate]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_function::LoopEdgeTemplate;
+    use crate::function::LoopEdgeTemplate;
 
     fn template(id: &str) -> TaskTemplate {
         TaskTemplate {

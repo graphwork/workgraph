@@ -41,9 +41,7 @@ pub mod init;
 pub mod kill;
 pub mod list;
 pub mod log;
-pub mod loops;
 pub mod match_cmd;
-pub mod migrate_loops;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
 pub mod motivation;
@@ -73,14 +71,13 @@ pub mod status;
 pub mod structure;
 pub mod trace;
 pub mod trace_animate;
-pub mod trace_bootstrap;
+pub mod func_bootstrap;
 pub mod trace_export;
-pub mod trace_extract;
-pub mod trace_function_cmd;
+pub mod func_extract;
+pub mod func_cmd;
 pub mod trace_import;
 pub mod func_apply;
-pub use func_apply as trace_instantiate;
-pub mod trace_make_adaptive;
+pub mod func_make_adaptive;
 pub mod trajectory;
 pub mod velocity;
 pub mod viz;
@@ -111,19 +108,7 @@ pub fn load_workgraph_mut(dir: &Path) -> Result<(workgraph::graph::WorkGraph, Pa
     load_workgraph(dir)
 }
 
-/// Check if a process with the given PID is alive.
-///
-/// Uses `kill(pid, 0)` on Unix to probe without sending a signal.
-/// On non-Unix platforms, conservatively assumes the process is alive.
-#[cfg(unix)]
-pub fn is_process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-#[cfg(not(unix))]
-pub fn is_process_alive(_pid: u32) -> bool {
-    true
-}
+pub use workgraph::service::{is_process_alive, kill_process_force, kill_process_graceful};
 
 pub fn graph_path(dir: &Path) -> std::path::PathBuf {
     dir.join("graph.jsonl")

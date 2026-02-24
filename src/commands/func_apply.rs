@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use workgraph::graph::{Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::trace_function::{
+use workgraph::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
 
@@ -24,19 +24,19 @@ fn resolve_function_source(
     if let Some((peer_name, remote_func_id)) = source.split_once(':') {
         // peer:function-id syntax
         let resolved = workgraph::federation::resolve_peer(peer_name, workgraph_dir)?;
-        let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
-        trace_function::find_function_by_prefix(&peer_func_dir, remote_func_id)
+        let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
+        function::find_function_by_prefix(&peer_func_dir, remote_func_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", peer_name, e))
     } else if source.ends_with(".yaml") || source.ends_with(".yml") {
         // Direct file path
         let path = resolve_file_path(source)?;
-        trace_function::load_function(&path)
+        function::load_function(&path)
             .map_err(|e| anyhow::anyhow!("Failed to load function from '{}': {}", source, e))
     } else {
         // Treat as a peer name, with function_id as the function to look up
         let resolved = workgraph::federation::resolve_peer(source, workgraph_dir)?;
-        let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
-        trace_function::find_function_by_prefix(&peer_func_dir, function_id)
+        let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
+        function::find_function_by_prefix(&peer_func_dir, function_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", source, e))
     }
 }
@@ -81,8 +81,8 @@ pub fn run(
     let func = if let Some(source) = from {
         resolve_function_source(source, function_id, dir)?
     } else {
-        let func_dir = trace_function::functions_dir(dir);
-        trace_function::find_function_by_prefix(&func_dir, function_id)
+        let func_dir = function::functions_dir(dir);
+        function::find_function_by_prefix(&func_dir, function_id)
             .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
@@ -104,7 +104,7 @@ pub fn run(
     }
 
     // 3. Validate inputs against function schema
-    let resolved = trace_function::validate_inputs(&func.inputs, &provided)
+    let resolved = function::validate_inputs(&func.inputs, &provided)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // 4. For file_content type: read file at provided path and substitute content
@@ -114,8 +114,8 @@ pub fn run(
     let memory_text = if func.version >= 3 {
         if let Some(ref memory_config) = func.memory {
             let summaries =
-                workgraph::trace_memory::load_run_summaries(dir, &func.id, memory_config);
-            workgraph::trace_memory::render_run_summaries(&summaries, &memory_config.include)
+                workgraph::function_memory::load_run_summaries(dir, &func.id, memory_config);
+            workgraph::function_memory::render_run_summaries(&summaries, &memory_config.include)
         } else {
             "No previous runs recorded.".to_string()
         }
@@ -188,7 +188,7 @@ pub fn run(
     }
 
     for template in &task_templates {
-        let mut rendered = trace_function::substitute_task_template(template, &final_inputs);
+        let mut rendered = function::substitute_task_template(template, &final_inputs);
         if !memory_text.is_empty() {
             rendered.description =
                 rendered.description.replace("{{memory.run_summaries}}", &memory_text);
@@ -312,7 +312,7 @@ pub fn run(
         .map(|(k, v)| {
             (
                 k.clone(),
-                serde_json::Value::String(trace_function::render_value(v)),
+                serde_json::Value::String(function::render_value(v)),
             )
         })
         .collect::<serde_json::Map<String, serde_json::Value>>()
@@ -633,7 +633,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::graph::WorkGraph;
-    use workgraph::trace_function::*;
+    use workgraph::function::*;
 
     fn sample_function() -> TraceFunction {
         TraceFunction {
@@ -742,8 +742,8 @@ mod tests {
     }
 
     fn setup_function(dir: &Path, func: &TraceFunction) {
-        let func_dir = trace_function::functions_dir(dir);
-        trace_function::save_function(func, &func_dir).unwrap();
+        let func_dir = function::functions_dir(dir);
+        function::save_function(func, &func_dir).unwrap();
     }
 
     #[test]
@@ -1384,7 +1384,7 @@ mod tests {
         let peer_wg_dir = peer_project.join(".workgraph");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();
         let peer_func_dir = peer_wg_dir.join("functions");
-        trace_function::save_function(&sample_function(), &peer_func_dir).unwrap();
+        function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
         let config = workgraph::federation::FederationConfig {
@@ -1434,7 +1434,7 @@ mod tests {
         let peer_wg_dir = peer_project.join(".workgraph");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();
         let peer_func_dir = peer_wg_dir.join("functions");
-        trace_function::save_function(&sample_function(), &peer_func_dir).unwrap();
+        function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
         let config = workgraph::federation::FederationConfig {

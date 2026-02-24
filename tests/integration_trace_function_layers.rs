@@ -7,7 +7,7 @@
 //! Layer 2 — Generative functions: PlanningConfig, StructuralConstraints,
 //!   plan validation against constraints, constraint violations.
 //!
-//! Layer 3 — Adaptive functions: RunSummary save/load via trace_memory,
+//! Layer 3 — Adaptive functions: RunSummary save/load via function_memory,
 //!   render_summaries_text output verification, memory injection into
 //!   template substitution.
 //!
@@ -20,13 +20,13 @@ use tempfile::TempDir;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::plan_validator::{self, ValidationError};
-use workgraph::trace_function::{
+use workgraph::function::{
     self, ExtractionSource, ForbiddenPattern, FunctionInput, FunctionOutput, FunctionVisibility,
     InputType, InterventionSummary, LoopEdgeTemplate, MemoryInclusions, PlanningConfig,
     RunSummary, StructuralConstraints, TaskOutcome, TaskTemplate, TraceFunction,
     TraceMemoryConfig,
 };
-use workgraph::trace_memory;
+use workgraph::function_memory;
 
 // ===========================================================================
 // Helpers
@@ -39,8 +39,8 @@ fn setup_workgraph(dir: &Path) {
 }
 
 fn setup_function(dir: &Path, func: &TraceFunction) {
-    let func_dir = trace_function::functions_dir(dir);
-    trace_function::save_function(func, &func_dir).unwrap();
+    let func_dir = function::functions_dir(dir);
+    function::save_function(func, &func_dir).unwrap();
 }
 
 fn make_template(id: &str) -> TaskTemplate {
@@ -346,8 +346,8 @@ fn layer1_save_load_preserves_visibility_fields() {
     let tmp = TempDir::new().unwrap();
     let func = sample_v1_with_visibility(FunctionVisibility::Public);
 
-    let path = trace_function::save_function(&func, tmp.path()).unwrap();
-    let loaded = trace_function::load_function(&path).unwrap();
+    let path = function::save_function(&func, tmp.path()).unwrap();
+    let loaded = function::load_function(&path).unwrap();
 
     assert_eq!(loaded.visibility, FunctionVisibility::Public);
     assert_eq!(loaded.redacted_fields, vec!["extracted_by"]);
@@ -373,10 +373,10 @@ fn layer1_apply_v1_with_visibility_creates_tasks() {
         "feature_name".to_string(),
         serde_yaml::Value::String("auth".to_string()),
     );
-    let resolved = trace_function::validate_inputs(&func.inputs, &inputs).unwrap();
+    let resolved = function::validate_inputs(&func.inputs, &inputs).unwrap();
 
     for template in &func.tasks {
-        let rendered = trace_function::substitute_task_template(template, &resolved);
+        let rendered = function::substitute_task_template(template, &resolved);
         let task_id = format!("auth-{}", template.template_id);
 
         let mut real_after = vec![];
@@ -684,7 +684,7 @@ fn layer2_validate_plan_max_total_iterations_exceeded() {
 #[test]
 fn layer2_v2_function_validation_passes() {
     let func = sample_v2_generative();
-    trace_function::validate_function(&func).unwrap();
+    function::validate_function(&func).unwrap();
 }
 
 #[test]
@@ -724,7 +724,7 @@ fn layer3_save_and_load_run_summary_via_per_run_json() {
     let tmp = TempDir::new().unwrap();
     let summary = sample_run_summary();
 
-    let path = trace_memory::save_run_summary("my-func", &summary, tmp.path()).unwrap();
+    let path = function_memory::save_run_summary("my-func", &summary, tmp.path()).unwrap();
     assert!(path.exists());
     assert!(path
         .file_name()
@@ -733,7 +733,7 @@ fn layer3_save_and_load_run_summary_via_per_run_json() {
         .unwrap()
         .ends_with(".json"));
 
-    let loaded = trace_memory::load_recent_summaries("my-func", 10, tmp.path()).unwrap();
+    let loaded = function_memory::load_recent_summaries("my-func", 10, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].prefix, "auth");
     assert!(loaded[0].all_succeeded);
@@ -747,14 +747,14 @@ fn layer3_save_load_jsonl_round_trip() {
     let tmp = TempDir::new().unwrap();
     let summary = sample_run_summary();
 
-    trace_memory::append_run_summary(tmp.path(), "test-func", &summary).unwrap();
+    function_memory::append_run_summary(tmp.path(), "test-func", &summary).unwrap();
 
     let config = TraceMemoryConfig {
         max_runs: 10,
         include: default_inclusions(),
         storage_path: None,
     };
-    let loaded = trace_memory::load_run_summaries(tmp.path(), "test-func", &config);
+    let loaded = function_memory::load_run_summaries(tmp.path(), "test-func", &config);
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].prefix, "auth");
 }
@@ -765,17 +765,17 @@ fn layer3_load_recent_summaries_sorted_newest_first() {
 
     let mut s1 = sample_run_summary();
     s1.applied_at = "2026-02-18T10:00:00Z".to_string();
-    trace_memory::save_run_summary("func-a", &s1, tmp.path()).unwrap();
+    function_memory::save_run_summary("func-a", &s1, tmp.path()).unwrap();
 
     let mut s2 = sample_run_summary();
     s2.applied_at = "2026-02-20T12:00:00Z".to_string();
-    trace_memory::save_run_summary("func-a", &s2, tmp.path()).unwrap();
+    function_memory::save_run_summary("func-a", &s2, tmp.path()).unwrap();
 
     let mut s3 = sample_run_summary();
     s3.applied_at = "2026-02-19T08:00:00Z".to_string();
-    trace_memory::save_run_summary("func-a", &s3, tmp.path()).unwrap();
+    function_memory::save_run_summary("func-a", &s3, tmp.path()).unwrap();
 
-    let loaded = trace_memory::load_recent_summaries("func-a", 10, tmp.path()).unwrap();
+    let loaded = function_memory::load_recent_summaries("func-a", 10, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 3);
     assert_eq!(loaded[0].applied_at, "2026-02-20T12:00:00Z");
     assert_eq!(loaded[1].applied_at, "2026-02-19T08:00:00Z");
@@ -788,10 +788,10 @@ fn layer3_load_recent_respects_max_runs() {
     for i in 0..5u32 {
         let mut s = sample_run_summary();
         s.applied_at = format!("2026-02-{:02}T12:00:00Z", 15 + i);
-        trace_memory::save_run_summary("func-b", &s, tmp.path()).unwrap();
+        function_memory::save_run_summary("func-b", &s, tmp.path()).unwrap();
     }
 
-    let loaded = trace_memory::load_recent_summaries("func-b", 2, tmp.path()).unwrap();
+    let loaded = function_memory::load_recent_summaries("func-b", 2, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 2);
     // Should be the two newest
     assert_eq!(loaded[0].applied_at, "2026-02-19T12:00:00Z");
@@ -803,7 +803,7 @@ fn layer3_jsonl_respects_max_runs() {
     let tmp = TempDir::new().unwrap();
     let summary = sample_run_summary();
     for _ in 0..5 {
-        trace_memory::append_run_summary(tmp.path(), "test-func", &summary).unwrap();
+        function_memory::append_run_summary(tmp.path(), "test-func", &summary).unwrap();
     }
 
     let config = TraceMemoryConfig {
@@ -811,20 +811,20 @@ fn layer3_jsonl_respects_max_runs() {
         include: default_inclusions(),
         storage_path: None,
     };
-    let loaded = trace_memory::load_run_summaries(tmp.path(), "test-func", &config);
+    let loaded = function_memory::load_run_summaries(tmp.path(), "test-func", &config);
     assert_eq!(loaded.len(), 2);
 }
 
 #[test]
 fn layer3_render_summaries_text_empty() {
-    let text = trace_memory::render_summaries_text(&[]);
+    let text = function_memory::render_summaries_text(&[]);
     assert_eq!(text, "No previous runs recorded.");
 }
 
 #[test]
 fn layer3_render_summaries_text_single_run() {
     let summary = sample_run_summary();
-    let text = trace_memory::render_summaries_text(&[summary]);
+    let text = function_memory::render_summaries_text(&[summary]);
 
     assert!(text.contains("Past Runs (1 total)"));
     assert!(text.contains("Run 1"));
@@ -846,7 +846,7 @@ fn layer3_render_summaries_text_multiple_runs() {
     s2.all_succeeded = false;
     s2.task_outcomes[1].status = "Failed".to_string();
 
-    let text = trace_memory::render_summaries_text(&[s1, s2]);
+    let text = function_memory::render_summaries_text(&[s1, s2]);
     assert!(text.contains("Past Runs (2 total)"));
     assert!(text.contains("Run 1"));
     assert!(text.contains("Run 2"));
@@ -859,7 +859,7 @@ fn layer3_render_run_summaries_config_aware() {
     let summary = sample_run_summary();
 
     // With all inclusions
-    let text = trace_memory::render_run_summaries(std::slice::from_ref(&summary), &default_inclusions());
+    let text = function_memory::render_run_summaries(std::slice::from_ref(&summary), &default_inclusions());
     assert!(text.contains("SUCCESS"));
     assert!(text.contains("2/2 succeeded"));
     assert!(text.contains("0.88"));
@@ -874,7 +874,7 @@ fn layer3_render_run_summaries_config_aware() {
         retries: false,
         artifacts: false,
     };
-    let text = trace_memory::render_run_summaries(&[summary], &no_include);
+    let text = function_memory::render_run_summaries(&[summary], &no_include);
     assert!(!text.contains("SUCCESS"));
     assert!(!text.contains("Avg Score"));
     assert!(!text.contains("Duration"));
@@ -888,7 +888,7 @@ fn layer3_render_run_summaries_with_retries() {
         retries: true,
         ..default_inclusions()
     };
-    let text = trace_memory::render_run_summaries(&[summary], &inclusions);
+    let text = function_memory::render_run_summaries(&[summary], &inclusions);
     assert!(text.contains("Total Retries: 1"));
 }
 
@@ -900,7 +900,7 @@ fn layer3_memory_injection_into_template_substitution() {
     // 3. Replace {{memory.run_summaries}} with rendered text
 
     let summaries = vec![sample_run_summary()];
-    let memory_text = trace_memory::render_summaries_text(&summaries);
+    let memory_text = function_memory::render_summaries_text(&summaries);
 
     let mut inputs = HashMap::new();
     inputs.insert(
@@ -909,7 +909,7 @@ fn layer3_memory_injection_into_template_substitution() {
     );
 
     let template = "Plan {{input.feature_name}}\n\nPast runs:\n{{memory.run_summaries}}";
-    let after_input_sub = trace_function::substitute(template, &inputs);
+    let after_input_sub = function::substitute(template, &inputs);
     let final_text = after_input_sub.replace("{{memory.run_summaries}}", &memory_text);
 
     assert!(final_text.contains("Plan auth"));
@@ -946,7 +946,7 @@ fn layer3_v3_yaml_round_trip() {
 #[test]
 fn layer3_memory_dir_path() {
     let wg = Path::new("/tmp/.workgraph");
-    let dir = trace_memory::memory_dir(wg, "deploy-prod");
+    let dir = function_memory::memory_dir(wg, "deploy-prod");
     assert_eq!(
         dir.to_str().unwrap(),
         "/tmp/.workgraph/functions/deploy-prod.memory"
@@ -957,7 +957,7 @@ fn layer3_memory_dir_path() {
 fn layer3_load_empty_returns_empty() {
     let tmp = TempDir::new().unwrap();
     let loaded =
-        trace_memory::load_recent_summaries("nonexistent", 10, tmp.path()).unwrap();
+        function_memory::load_recent_summaries("nonexistent", 10, tmp.path()).unwrap();
     assert!(loaded.is_empty());
 
     let config = TraceMemoryConfig {
@@ -965,7 +965,7 @@ fn layer3_load_empty_returns_empty() {
         include: default_inclusions(),
         storage_path: None,
     };
-    let jsonl_loaded = trace_memory::load_run_summaries(tmp.path(), "nonexistent", &config);
+    let jsonl_loaded = function_memory::load_run_summaries(tmp.path(), "nonexistent", &config);
     assert!(jsonl_loaded.is_empty());
 }
 
@@ -996,7 +996,7 @@ fn layer3_build_run_summary_from_graph() {
     std::fs::create_dir_all(&eval_dir).unwrap();
 
     let task_ids = vec!["pfx/build".to_string(), "pfx/test".to_string()];
-    let summary = trace_memory::build_run_summary(
+    let summary = function_memory::build_run_summary(
         &task_ids,
         &graph,
         &eval_dir,
@@ -1060,7 +1060,7 @@ fn visibility_serde_kebab_case() {
 fn export_internal_at_internal_no_redaction() {
     let func = sample_v1_with_visibility(FunctionVisibility::Internal);
     let exported =
-        trace_function::export_function(&func, &FunctionVisibility::Internal).unwrap();
+        function::export_function(&func, &FunctionVisibility::Internal).unwrap();
 
     assert_eq!(exported.extracted_by, Some("scout-abc123".to_string()));
     assert_eq!(
@@ -1076,9 +1076,9 @@ fn export_internal_at_internal_no_redaction() {
 #[test]
 fn export_internal_at_peer_fails() {
     let func = sample_v1_with_visibility(FunctionVisibility::Internal);
-    let err = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap_err();
+    let err = function::export_function(&func, &FunctionVisibility::Peer).unwrap_err();
     match err {
-        trace_function::TraceFunctionError::Validation(msg) => {
+        function::TraceFunctionError::Validation(msg) => {
             assert!(msg.contains("internal"));
             assert!(msg.contains("peer"));
         }
@@ -1089,13 +1089,13 @@ fn export_internal_at_peer_fails() {
 #[test]
 fn export_internal_at_public_fails() {
     let func = sample_v1_with_visibility(FunctionVisibility::Internal);
-    assert!(trace_function::export_function(&func, &FunctionVisibility::Public).is_err());
+    assert!(function::export_function(&func, &FunctionVisibility::Public).is_err());
 }
 
 #[test]
 fn export_peer_at_peer_redacts_correctly() {
     let func = sample_v1_with_visibility(FunctionVisibility::Peer);
-    let exported = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
 
     // extracted_by generalized to "agent", but then redacted_fields contains "extracted_by"
     // so it gets stripped to None
@@ -1117,7 +1117,7 @@ fn export_peer_at_peer_redacts_correctly() {
 fn export_peer_at_internal_no_redaction() {
     let func = sample_v1_with_visibility(FunctionVisibility::Peer);
     let exported =
-        trace_function::export_function(&func, &FunctionVisibility::Internal).unwrap();
+        function::export_function(&func, &FunctionVisibility::Internal).unwrap();
 
     assert_eq!(exported.extracted_by, Some("scout-abc123".to_string()));
     assert!(exported.extracted_from[0].run_id.is_some());
@@ -1126,7 +1126,7 @@ fn export_peer_at_internal_no_redaction() {
 #[test]
 fn export_peer_at_public_fails() {
     let func = sample_v1_with_visibility(FunctionVisibility::Peer);
-    assert!(trace_function::export_function(&func, &FunctionVisibility::Public).is_err());
+    assert!(function::export_function(&func, &FunctionVisibility::Public).is_err());
 }
 
 #[test]
@@ -1139,7 +1139,7 @@ fn export_public_at_public_strips_provenance() {
     });
 
     let exported =
-        trace_function::export_function(&func, &FunctionVisibility::Public).unwrap();
+        function::export_function(&func, &FunctionVisibility::Public).unwrap();
 
     // extracted_by and extracted_at stripped
     assert!(exported.extracted_by.is_none());
@@ -1166,7 +1166,7 @@ fn export_public_at_public_strips_provenance() {
 #[test]
 fn export_public_at_peer_applies_peer_redaction() {
     let func = sample_v1_with_visibility(FunctionVisibility::Public);
-    let exported = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
 
     // Peer redaction: extracted_by generalized then stripped by redacted_fields
     assert!(exported.extracted_by.is_none());
@@ -1186,7 +1186,7 @@ fn export_public_preserves_non_path_defaults() {
     func.inputs[1].example = Some(serde_yaml::Value::String("my-feature".to_string()));
 
     let exported =
-        trace_function::export_function(&func, &FunctionVisibility::Public).unwrap();
+        function::export_function(&func, &FunctionVisibility::Public).unwrap();
     assert_eq!(
         exported.inputs[1].default,
         Some(serde_yaml::Value::String("cargo test".to_string()))
@@ -1200,43 +1200,43 @@ fn export_public_preserves_non_path_defaults() {
 #[test]
 fn function_visible_at_levels() {
     let internal_fn = sample_v1_with_visibility(FunctionVisibility::Internal);
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &internal_fn,
         &FunctionVisibility::Internal
     ));
-    assert!(!trace_function::function_visible_at(
+    assert!(!function::function_visible_at(
         &internal_fn,
         &FunctionVisibility::Peer
     ));
-    assert!(!trace_function::function_visible_at(
+    assert!(!function::function_visible_at(
         &internal_fn,
         &FunctionVisibility::Public
     ));
 
     let peer_fn = sample_v1_with_visibility(FunctionVisibility::Peer);
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &peer_fn,
         &FunctionVisibility::Internal
     ));
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &peer_fn,
         &FunctionVisibility::Peer
     ));
-    assert!(!trace_function::function_visible_at(
+    assert!(!function::function_visible_at(
         &peer_fn,
         &FunctionVisibility::Public
     ));
 
     let public_fn = sample_v1_with_visibility(FunctionVisibility::Public);
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &public_fn,
         &FunctionVisibility::Internal
     ));
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &public_fn,
         &FunctionVisibility::Peer
     ));
-    assert!(trace_function::function_visible_at(
+    assert!(function::function_visible_at(
         &public_fn,
         &FunctionVisibility::Public
     ));
@@ -1251,7 +1251,7 @@ fn export_v2_function_peer_with_memory() {
         storage_path: Some("/secret/path/runs.jsonl".to_string()),
     });
 
-    let exported = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
 
     // Memory config retained at peer level but storage_path stripped
     let mem = exported.memory.unwrap();
@@ -1268,7 +1268,7 @@ fn export_peer_redacted_fields_strips_tags() {
         "tags".to_string(),
     ];
 
-    let exported = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
     assert!(exported.extracted_by.is_none());
     assert!(exported.tags.is_empty());
 }
@@ -1313,19 +1313,19 @@ fn cross_layer_v3_function_with_runs_full_cycle() {
     s1.applied_at = "2026-02-18T10:00:00Z".to_string();
     s1.all_succeeded = false;
     s1.task_outcomes[1].status = "Failed".to_string();
-    trace_memory::append_run_summary(dir, &func.id, &s1).unwrap();
+    function_memory::append_run_summary(dir, &func.id, &s1).unwrap();
 
     let mut s2 = sample_run_summary();
     s2.applied_at = "2026-02-19T10:00:00Z".to_string();
-    trace_memory::append_run_summary(dir, &func.id, &s2).unwrap();
+    function_memory::append_run_summary(dir, &func.id, &s2).unwrap();
 
     // Load run summaries through the config
     let config = func.memory.as_ref().unwrap();
-    let summaries = trace_memory::load_run_summaries(dir, &func.id, config);
+    let summaries = function_memory::load_run_summaries(dir, &func.id, config);
     assert_eq!(summaries.len(), 2);
 
     // Render and inject
-    let memory_text = trace_memory::render_run_summaries(&summaries, &config.include);
+    let memory_text = function_memory::render_run_summaries(&summaries, &config.include);
     assert!(memory_text.contains("2 Previous Run"));
     assert!(memory_text.contains("PARTIAL")); // s1 failed
     assert!(memory_text.contains("SUCCESS")); // s2 succeeded
@@ -1338,7 +1338,7 @@ fn cross_layer_v3_function_with_runs_full_cycle() {
     );
 
     if let Some(ref planning) = func.planning {
-        let rendered = trace_function::substitute(&planning.planner_template.description, &inputs);
+        let rendered = function::substitute(&planning.planner_template.description, &inputs);
         let final_desc = rendered.replace("{{memory.run_summaries}}", &memory_text);
 
         assert!(final_desc.contains("Plan the deployment"));
@@ -1378,7 +1378,7 @@ fn cross_layer_validate_generated_plan_against_v2_constraints() {
 #[test]
 fn cross_layer_export_v2_function_with_constraints_peer() {
     let func = sample_v2_generative();
-    let exported = trace_function::export_function(&func, &FunctionVisibility::Peer).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
 
     // Verify planning and constraints survive export
     assert!(exported.planning.is_some());

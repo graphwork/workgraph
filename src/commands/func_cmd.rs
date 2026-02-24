@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::trace_function::{
+use workgraph::function::{
     self, FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
 };
 
@@ -20,8 +20,8 @@ pub fn run_list(
         None => None,
     };
 
-    let func_dir = trace_function::functions_dir(dir);
-    let mut local_functions = trace_function::load_all_functions(&func_dir)?;
+    let func_dir = function::functions_dir(dir);
+    let mut local_functions = function::load_all_functions(&func_dir)?;
 
     // Apply visibility filter to local functions
     if let Some(ref vis) = vis_filter {
@@ -122,8 +122,8 @@ fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> 
     for name in config.peers.keys() {
         match workgraph::federation::resolve_peer(name, dir) {
             Ok(resolved) => {
-                let peer_func_dir = trace_function::functions_dir(&resolved.workgraph_dir);
-                let funcs = trace_function::load_all_functions(&peer_func_dir).unwrap_or_default();
+                let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
+                let funcs = function::load_all_functions(&peer_func_dir).unwrap_or_default();
                 results.push((name.clone(), funcs));
             }
             Err(_) => {
@@ -202,9 +202,9 @@ fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: O
 
 /// Show details of a single function.
 pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
-    let func_dir = trace_function::functions_dir(dir);
+    let func_dir = function::functions_dir(dir);
     let func =
-        trace_function::find_function_by_prefix(&func_dir, id).map_err(|e| anyhow::anyhow!("{}", e))?;
+        function::find_function_by_prefix(&func_dir, id).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&func)?);
@@ -368,7 +368,7 @@ fn print_function_details(func: &TraceFunction, func_dir: &Path) {
     }
 
     // Run history
-    let runs = trace_function::load_runs(func_dir, &func.id);
+    let runs = function::load_runs(func_dir, &func.id);
     if !runs.is_empty() {
         println!();
         println!("Runs: {} recorded", runs.len());
@@ -530,7 +530,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use workgraph::trace_function::*;
+    use workgraph::function::*;
 
     fn sample_function() -> TraceFunction {
         TraceFunction {

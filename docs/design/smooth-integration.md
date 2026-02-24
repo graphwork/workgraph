@@ -355,7 +355,7 @@ An external tool (VX adapter, federation peer, or any integration) can ask "what
   "features": {
     "agency": true,
     "federation": true,
-    "trace_functions": true,
+    "functions": true,
     "veracity": false,
     "canon": false,
     "watch": true

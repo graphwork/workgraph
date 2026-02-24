@@ -128,6 +128,7 @@ enum Commands {
     /// Edit an existing task
     Edit {
         /// Task ID to edit
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Update task title
@@ -190,6 +191,7 @@ enum Commands {
     /// Mark a task as done
     Done {
         /// Task ID to mark as done
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Signal that the task's iterative loop has converged (stops loop edges from firing)
@@ -200,6 +202,7 @@ enum Commands {
     /// Mark a task as failed (can be retried)
     Fail {
         /// Task ID to mark as failed
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Reason for failure
@@ -210,6 +213,7 @@ enum Commands {
     /// Mark a task as abandoned (will not be retried)
     Abandon {
         /// Task ID to abandon
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Reason for abandonment
@@ -220,12 +224,14 @@ enum Commands {
     /// Retry a failed task (resets to open status)
     Retry {
         /// Task ID to retry
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
     /// Claim a task for work (sets status to InProgress)
     Claim {
         /// Task ID to claim
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Assign to a specific actor
@@ -236,24 +242,28 @@ enum Commands {
     /// Release a claimed task (sets status back to Open)
     Unclaim {
         /// Task ID to unclaim
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
     /// Pause a task (coordinator will skip it until resumed)
     Pause {
         /// Task ID to pause
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
     /// Resume a paused task
     Resume {
         /// Task ID to resume
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
     /// Reclaim a task from a dead/unresponsive agent
     Reclaim {
         /// Task ID to reclaim
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// The actor currently holding the task
@@ -271,12 +281,14 @@ enum Commands {
     /// Show what's blocking a task
     Blocked {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
     /// Show the full transitive chain explaining why a task is blocked
     WhyBlocked {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
@@ -351,6 +363,7 @@ enum Commands {
     /// Calculate cost of a task including dependencies
     Cost {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
@@ -377,6 +390,7 @@ enum Commands {
     /// Reschedule a task (set not_before timestamp)
     Reschedule {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Hours from now until task is ready (e.g., 24 for tomorrow)
@@ -391,17 +405,8 @@ enum Commands {
     /// Show impact analysis - what tasks depend on this one
     Impact {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
-    },
-
-    /// [Deprecated] Use 'cycles' instead. Redirects to cycles command.
-    Loops,
-
-    /// Migrate loops_to edges to structural cycles (after edges + cycle_config)
-    MigrateLoops {
-        /// Show what would be migrated without making changes
-        #[arg(long)]
-        dry_run: bool,
     },
 
     /// Analyze graph structure: entry points (no dependencies), dead ends
@@ -471,6 +476,7 @@ enum Commands {
     /// Show detailed information about a single task
     Show {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
@@ -526,6 +532,7 @@ enum Commands {
     /// Add progress log/notes to a task
     Log {
         /// Task ID (not required with --operations)
+        #[arg(value_name = "TASK")]
         id: Option<String>,
 
         /// Log message (if not provided, lists log entries)
@@ -1029,6 +1036,7 @@ enum TraceCommands {
     /// Show the execution history of a task
     Show {
         /// Task ID to trace
+        #[arg(value_name = "TASK")]
         id: String,
 
         /// Show complete agent conversation output
@@ -1333,6 +1341,7 @@ enum SkillCommands {
     /// Show skills for a specific task
     Task {
         /// Task ID
+        #[arg(value_name = "TASK")]
         id: String,
     },
 
@@ -1917,7 +1926,20 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
         print_curated_help(&subcommands, show_all);
     } else if let Some(usage_data) = usage::load_command_order(dir) {
         // Use personalized usage-based ordering with tiers
-        let (frequent, occasional, rare) = usage::group_by_tier(&usage_data);
+        let (frequent, occasional, mut rare) = usage::group_by_tier(&usage_data);
+
+        // Add commands with zero usage to the rare tier so they still appear in --help-all
+        let mut zero_usage: Vec<&str> = subcommands
+            .iter()
+            .filter(|(n, _)| {
+                !frequent.contains(&n.as_str())
+                    && !occasional.contains(&n.as_str())
+                    && !rare.contains(&n.as_str())
+            })
+            .map(|(n, _)| n.as_str())
+            .collect();
+        zero_usage.sort();
+        rare.extend(zero_usage);
 
         let mut shown = 0;
         let max_show = if show_all {
@@ -2070,8 +2092,6 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Plan { .. } => "plan",
         Commands::Reschedule { .. } => "reschedule",
         Commands::Impact { .. } => "impact",
-        Commands::Loops => "loops",
-        Commands::MigrateLoops { .. } => "migrate-loops",
         Commands::Structure => "structure",
         Commands::Bottlenecks => "bottlenecks",
         Commands::Velocity { .. } => "velocity",
@@ -2135,7 +2155,6 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Coordinate { .. }
             | Commands::Plan { .. }
             | Commands::Impact { .. }
-            | Commands::Loops
             | Commands::Structure
             | Commands::Bottlenecks
             | Commands::Velocity { .. }
@@ -2433,13 +2452,6 @@ fn main() -> Result<()> {
             commands::reschedule::run(&workgraph_dir, &id, after, at.as_deref())
         }
         Commands::Impact { id } => commands::impact::run(&workgraph_dir, &id, cli.json),
-        Commands::Loops => {
-            eprintln!("Warning: 'wg loops' is deprecated. Use 'wg cycles' instead.");
-            commands::cycles::run(&workgraph_dir, cli.json)
-        }
-        Commands::MigrateLoops { dry_run } => {
-            commands::migrate_loops::run(&workgraph_dir, dry_run)
-        }
         Commands::Structure => commands::structure::run(&workgraph_dir, cli.json),
         Commands::Bottlenecks => commands::bottlenecks::run(&workgraph_dir, cli.json),
         Commands::Velocity { weeks } => commands::velocity::run(&workgraph_dir, cli.json, weeks),
@@ -2516,7 +2528,7 @@ fn main() -> Result<()> {
             } => {
                 eprintln!("Warning: 'wg trace extract' is deprecated. Use 'wg func extract' instead.");
                 if generative {
-                    commands::trace_extract::run_generative(
+                    commands::func_extract::run_generative(
                         &workgraph_dir,
                         &task_ids,
                         name.as_deref(),
@@ -2525,7 +2537,7 @@ fn main() -> Result<()> {
                         include_evaluations,
                     )
                 } else {
-                    commands::trace_extract::run(
+                    commands::func_extract::run(
                         &workgraph_dir,
                         &task_ids[0],
                         name.as_deref(),
@@ -2548,7 +2560,7 @@ fn main() -> Result<()> {
                 model,
             } => {
                 eprintln!("Warning: 'wg trace instantiate' is deprecated. Use 'wg func apply' instead.");
-                commands::trace_instantiate::run(
+                commands::func_apply::run(
                     &workgraph_dir,
                     &function_id,
                     from.as_deref(),
@@ -2563,40 +2575,40 @@ fn main() -> Result<()> {
             }
             TraceCommands::ListFunctionsAlias { verbose, include_peers, visibility } => {
                 eprintln!("Warning: 'wg trace list-functions' is deprecated. Use 'wg func list' instead.");
-                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
+                commands::func_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
             }
             TraceCommands::ShowFunctionAlias { id } => {
                 eprintln!("Warning: 'wg trace show-function' is deprecated. Use 'wg func show' instead.");
-                commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
+                commands::func_cmd::run_show(&workgraph_dir, &id, cli.json)
             }
             TraceCommands::BootstrapAlias { force } => {
                 eprintln!("Warning: 'wg trace bootstrap' is deprecated. Use 'wg func bootstrap' instead.");
-                commands::trace_bootstrap::run(&workgraph_dir, force)
+                commands::func_bootstrap::run(&workgraph_dir, force)
             }
             TraceCommands::MakeAdaptiveAlias {
                 function_id,
                 max_runs,
             } => {
                 eprintln!("Warning: 'wg trace make-adaptive' is deprecated. Use 'wg func make-adaptive' instead.");
-                commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
+                commands::func_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
             }
         },
         Commands::Func { command } => match command {
             FuncCommands::List { verbose, include_peers, visibility } => {
-                commands::trace_function_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
+                commands::func_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
             }
             FuncCommands::Show { id } => {
-                commands::trace_function_cmd::run_show(&workgraph_dir, &id, cli.json)
+                commands::func_cmd::run_show(&workgraph_dir, &id, cli.json)
             }
             FuncCommands::Extract {
                 task_ids, name, subgraph, recursive, generalize, generative, output, force, include_evaluations,
             } => {
                 if generative {
-                    commands::trace_extract::run_generative(
+                    commands::func_extract::run_generative(
                         &workgraph_dir, &task_ids, name.as_deref(), output.as_deref(), force, include_evaluations,
                     )
                 } else {
-                    commands::trace_extract::run(
+                    commands::func_extract::run(
                         &workgraph_dir, &task_ids[0], name.as_deref(), subgraph || recursive,
                         generalize, output.as_deref(), force, include_evaluations,
                     )
@@ -2604,15 +2616,15 @@ fn main() -> Result<()> {
             }
             FuncCommands::Apply {
                 function_id, from, inputs, input_file, prefix, dry_run, after, model,
-            } => commands::trace_instantiate::run(
+            } => commands::func_apply::run(
                 &workgraph_dir, &function_id, from.as_deref(), &inputs,
                 input_file.as_deref(), prefix.as_deref(), dry_run, &after, model.as_deref(), cli.json,
             ),
             FuncCommands::Bootstrap { force } => {
-                commands::trace_bootstrap::run(&workgraph_dir, force)
+                commands::func_bootstrap::run(&workgraph_dir, force)
             }
             FuncCommands::MakeAdaptive { function_id, max_runs } => {
-                commands::trace_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
+                commands::func_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
             }
         },
         Commands::Replay {
