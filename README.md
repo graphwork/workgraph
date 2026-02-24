@@ -42,18 +42,24 @@ wg --help
 
 ## Setup
 
-### 1. Initialize in your project
+### 1. Global config (once, after install)
+
+```bash
+wg setup    # interactive wizard — executor, model, agency defaults
+```
+
+Writes `~/.workgraph/config.toml`. Configures your executor (claude/amplifier), default model, whether to auto-assign agents and auto-evaluate, and which lightweight model to use for assignment/evaluation (haiku recommended).
+
+### 2. Initialize a project
 
 ```bash
 cd your-project
-wg setup    # interactive wizard — configures executor, model, agency
-# or manually:
 wg init
 ```
 
-This creates `.workgraph/` with your task graph.
+Creates `.workgraph/` with your task graph. Inherits global config; override per-project with `wg config --local`.
 
-### 2. Add some tasks
+### 3. Add some tasks
 
 ```bash
 # Simple task
@@ -79,7 +85,7 @@ wg add "Security audit" --verify "All findings documented with severity ratings"
 wg add "Public API design" --visibility public
 ```
 
-### 3. Edit tasks after creation
+### 4. Edit tasks after creation
 
 ```bash
 wg edit my-task --title "Better title"
@@ -89,7 +95,7 @@ wg edit my-task --model opus
 wg edit my-task --add-skill security --remove-skill docs
 ```
 
-### 4. Register yourself (or your AI agent)
+### 5. Register yourself (or your AI agent)
 
 ```bash
 # Human
@@ -106,7 +112,7 @@ wg agent create "Claude Coder" \
   --capabilities coding,testing,docs
 ```
 
-### 5. Start working
+### 6. Start working
 
 ```bash
 # Service mode (recommended) — auto-spawns agents on ready tasks
@@ -119,7 +125,7 @@ wg claim set-up-ci-pipeline --actor erik
 wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 ```
 
-### 6. Verification workflow
+### 7. Verification workflow
 
 Tasks created with `--verify` require human approval before completion:
 
