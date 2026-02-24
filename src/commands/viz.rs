@@ -200,10 +200,14 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
             }
         }
 
-        // Find which root components have active (non-done) tasks
+        // Find which root components have active (non-done, non-internal) tasks.
+        // Internal tasks (assign-*, evaluate-*) don't count — otherwise failed
+        // evaluations would make every tree appear "active."
         let mut active_roots: HashSet<usize> = HashSet::new();
         for task in graph.tasks() {
-            if task.status != Status::Done && task.status != Status::Abandoned {
+            if task.status != Status::Done && task.status != Status::Abandoned
+                && !is_internal_task(task)
+            {
                 let root = find(&mut components, &mut merged, task.id.as_str());
                 active_roots.insert(root);
             }
