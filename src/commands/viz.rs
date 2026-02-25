@@ -654,7 +654,7 @@ struct BackEdgeArc {
 ///
 /// Layout:
 /// - LEFT: tree structure (├→, └→, │) shows primary forward edges flowing down
-/// - RIGHT: arc channels (◀, →┤, →┘, │) show all other edges flowing up
+/// - RIGHT: arc channels (◀, ┤, ┘, │) show all other edges flowing up
 ///   (both back-edges and fan-in from secondary parents)
 /// - Arrowheads: → on left (tree connectors), ← on right (arc targets)
 /// - Dash fill (─) connects node text to right-side arcs
@@ -1050,8 +1050,8 @@ fn fill_line_to(line: &mut String, target_len: usize, dim: &str, reset: &str) {
 ///
 /// Same-target arcs are collapsed into a single column:
 /// - Target line: `◀` (arrowhead at target)
-/// - Intermediate sources: `→┤` (departs here, vertical continues)
-/// - Furthest source: `→┘` (departs here, bottom of arc)
+/// - Intermediate sources: `┤` (departs here, vertical continues)
+/// - Furthest source: `┘` (departs here, bottom of arc)
 /// - Between: `│` (vertical channel)
 /// Dash fill (`─`) connects node text to the arc column.
 fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color: bool) {
@@ -1146,15 +1146,15 @@ fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color:
             }
         }
 
-        // Source lines: →┘ (furthest) or →┤ (intermediate)
+        // Source lines: ─┘ (furthest) or ─┤ (intermediate)
         for (i, &source) in column.sources.iter().enumerate() {
             if source < lines.len() {
                 if i == column.sources.len() - 1 {
-                    fill_line_to(&mut lines[source], col_x, dim, reset);
-                    lines[source].push_str(&format!("{}→┘{}", dim, reset));
+                    fill_line_to(&mut lines[source], col_x + 1, dim, reset);
+                    lines[source].push_str(&format!("{}┘{}", dim, reset));
                 } else {
-                    fill_line_to(&mut lines[source], col_x, dim, reset);
-                    lines[source].push_str(&format!("{}→┤{}", dim, reset));
+                    fill_line_to(&mut lines[source], col_x + 1, dim, reset);
+                    lines[source].push_str(&format!("{}┤{}", dim, reset));
                 }
             }
         }
@@ -2001,9 +2001,9 @@ mod tests {
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
         assert!(result.contains('c'));
-        // Fan-in is now shown via right-side arcs (◀/→┘) instead of text annotations
+        // Fan-in is now shown via right-side arcs (◀/┘) instead of text annotations
         assert!(
-            result.contains("◀") || result.contains("→┘"),
+            result.contains("◀") || result.contains("┘"),
             "Fan-in should produce a right-side arc.\nOutput:\n{}",
             result
         );
@@ -2744,9 +2744,9 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
 
-        // Should have ◀ at target and →┘ at source
+        // Should have ◀ at target and ┘ at source
         assert!(result.contains("◀"), "Back-edge target should have ◀\nOutput:\n{}", result);
-        assert!(result.contains("→┘"), "Back-edge source should have →┘\nOutput:\n{}", result);
+        assert!(result.contains("┘"), "Back-edge source should have ┘\nOutput:\n{}", result);
         // Should NOT have old-style cycle-back text
         assert!(!result.contains("cycles back"), "No old-style text\nOutput:\n{}", result);
         // Should NOT have fan-in annotations
@@ -2778,7 +2778,7 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
 
         // Fan-in should produce a right-side arc (not a text annotation)
-        assert!(result.contains("◀") || result.contains("→┘"),
+        assert!(result.contains("◀") || result.contains("┘"),
             "Diamond fan-in should have right-side arcs\nOutput:\n{}", result);
         assert!(!result.contains("(←"), "No fan-in text annotation\nOutput:\n{}", result);
         assert!(!result.contains("..."), "No duplicate 'already shown' entries\nOutput:\n{}", result);
@@ -2857,9 +2857,9 @@ mod tests {
         let target_count = result.matches("◀").count();
         assert_eq!(target_count, 1,
             "Multiple sources to same target should collapse to 1 column\nOutput:\n{}", result);
-        // Should have →┤ for intermediate sources and →┘ for the last
-        assert!(result.contains("→┤"), "Intermediate sources should have →┤\nOutput:\n{}", result);
-        assert!(result.contains("→┘"), "Last source should have →┘\nOutput:\n{}", result);
+        // Should have ┤ for intermediate sources and ┘ for the last
+        assert!(result.contains("┤"), "Intermediate sources should have ┤\nOutput:\n{}", result);
+        assert!(result.contains("┘"), "Last source should have ┘\nOutput:\n{}", result);
     }
 
     #[test]
@@ -2886,7 +2886,7 @@ mod tests {
 
         // Lines with arcs should have space before the dash fill
         for line in result.lines() {
-            if line.contains("◀") || line.contains("→┘") {
+            if line.contains("◀") || line.contains("┘") {
                 // The text content shouldn't run directly into ─
                 assert!(
                     !line.contains(")─") && !line.contains(")←"),

@@ -3593,7 +3593,7 @@ fn test_deep_cli_viz_no_duplicate_nodes() {
 #[test]
 fn test_viz_cycle_back_edge_no_duplicate_node_rendering() {
     // Cycle: A → B → C → A (back-edge from C to A).
-    // Back-edges are now rendered as right-side arcs (◀ / →┘), NOT as
+    // Back-edges are now rendered as right-side arcs (◀ / ┘), NOT as
     // duplicate child nodes. Verify no duplicate node lines appear.
     let tmp = TempDir::new().unwrap();
     let a = make_task("a", "Task A");
@@ -3615,8 +3615,8 @@ fn test_viz_cycle_back_edge_no_duplicate_node_rendering() {
 
     // Back-edges should produce right-side arcs, not duplicate nodes
     assert!(
-        output.contains("◀") || output.contains("→┘"),
-        "Back-edge should render as right-side arc (◀ / →┘). Output:\n{}",
+        output.contains("◀") || output.contains("┘"),
+        "Back-edge should render as right-side arc (◀ / ┘). Output:\n{}",
         output
     );
 
