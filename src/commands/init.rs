@@ -76,6 +76,31 @@ pub fn run(dir: &Path) -> Result<()> {
             println!("No global config found. Run `wg setup` to configure defaults.");
         }
 
+    // Check skill/bundle status for the configured executor
+    let config = workgraph::config::Config::load_global()?.unwrap_or_default();
+    let executor = &config.coordinator.executor;
+    match executor.as_str() {
+        "claude" => {
+            if !super::setup::is_claude_skill_installed() {
+                println!();
+                println!("Hint: The wg skill for Claude Code is not installed.");
+                println!("  Spawned agents won't know wg commands without it.");
+                println!("  Run: wg skill install");
+            }
+        }
+        "amplifier" => {
+            // Check if executor config exists in the newly created .workgraph
+            let executor_toml = dir.join("executors/amplifier.toml");
+            if !executor_toml.exists() {
+                println!();
+                println!("Hint: Amplifier executor is configured but not installed in this project.");
+                println!("  Spawned agents won't know wg commands without the workgraph bundle.");
+                println!("  Run: cd ~/amplifier-bundle-workgraph && ./setup.sh");
+            }
+        }
+        _ => {} // Custom executor — user knows what they're doing
+    }
+
     Ok(())
 }
 

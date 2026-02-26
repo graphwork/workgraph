@@ -8,9 +8,31 @@ const QUICKSTART_TEXT: &str = r#"
 GETTING STARTED
 ─────────────────────────────────────────
   wg init                     # Create a .workgraph directory
+  wg setup                    # Interactive config wizard (executor, model, agency)
   wg agency init              # Bootstrap roles, motivations, and a default agent
   wg service start            # Start the coordinator
   wg add "My first task"      # Add work — the service dispatches automatically
+
+SKILL & BUNDLE SETUP (required for agents to use wg)
+─────────────────────────────────────────
+  Spawned agents need to know how to use workgraph. Without the right
+  skill or bundle installed, agents won't know wg commands exist.
+
+  Claude Code executor:
+    wg skill install             # Installs ~/.claude/skills/wg/SKILL.md
+                                 # This is injected into every Claude Code session
+
+  Amplifier executor:
+    cd ~/amplifier-bundle-workgraph && ./setup.sh
+                                 # Installs the workgraph bundle and executor
+                                 # Then use: amplifier run -B workgraph
+
+  Custom executor:
+    Ensure your executor's agent prompt includes wg CLI instructions.
+    See 'wg quickstart' (this text) for the command reference.
+
+  ⚠ If agents are spawned without the skill/bundle, they will not know
+    how to call wg log, wg done, wg artifact, etc. — and tasks will fail.
 
 AGENCY SETUP
 ─────────────────────────────────────────
@@ -185,10 +207,25 @@ fn json_output() -> serde_json::Value {
     serde_json::json!({
         "getting_started": [
             "wg init",
+            "wg setup",
             "wg agency init",
             "wg service start",
             "wg add \"My first task\""
         ],
+        "skill_bundle_setup": {
+            "description": "Spawned agents need the right skill or bundle installed to understand wg commands.",
+            "claude": {
+                "install": "wg skill install",
+                "location": "~/.claude/skills/wg/SKILL.md",
+                "note": "Injected into every Claude Code session automatically"
+            },
+            "amplifier": {
+                "install": "cd ~/amplifier-bundle-workgraph && ./setup.sh",
+                "alternative": "amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph",
+                "usage": "amplifier run -B workgraph"
+            },
+            "custom": "Ensure your executor's agent prompt includes wg CLI instructions"
+        },
         "agency": {
             "description": "Agency gives the service agents to assign to tasks.",
             "quick_setup": "wg agency init",
@@ -469,6 +506,23 @@ mod tests {
     }
 
     #[test]
+    fn test_quickstart_text_contains_skill_bundle_setup() {
+        assert!(QUICKSTART_TEXT.contains("SKILL & BUNDLE SETUP"));
+        assert!(QUICKSTART_TEXT.contains("wg skill install"));
+        assert!(QUICKSTART_TEXT.contains("amplifier run -B workgraph"));
+    }
+
+    #[test]
+    fn test_json_output_has_skill_bundle_setup() {
+        let output = json_output();
+        let sbs = output.get("skill_bundle_setup").expect("missing skill_bundle_setup");
+        assert!(sbs.get("claude").is_some());
+        assert!(sbs.get("amplifier").is_some());
+        assert!(sbs.get("custom").is_some());
+        assert!(sbs["claude"]["install"].as_str().unwrap().contains("wg skill install"));
+    }
+
+    #[test]
     fn test_quickstart_converged_prominent() {
         // The CYCLES section must contain IMPORTANT and --converged prominently
         assert!(
@@ -507,6 +561,7 @@ mod tests {
         let required_sections = [
             "WORKGRAPH AGENT QUICKSTART",
             "GETTING STARTED",
+            "SKILL & BUNDLE SETUP",
             "AGENCY SETUP",
             "COORDINATOR SERVICE REMINDER",
             "SERVICE MODE",

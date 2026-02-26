@@ -5,6 +5,7 @@
 use anyhow::{bail, Result};
 use dialoguer::{Confirm, Input, Select};
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use workgraph::config::Config;
 
 /// Choices gathered from the interactive wizard.
@@ -233,10 +234,95 @@ pub fn run() -> Result<()> {
     let config = build_config(&choices, Some(&existing));
     config.save_global()?;
 
+    // Post-save: guide skill/bundle installation based on executor
     println!();
-    println!("Setup complete. Run `wg init` in a project directory to get started.");
+    let skill_status = guide_skill_bundle_install(&choices.executor)?;
+
+    println!();
+    println!("Setup complete.");
+    println!();
+    println!("Summary:");
+    println!("  Executor: {}", choices.executor);
+    println!("  Model:    {}", choices.model);
+    println!("  Agents:   {} max parallel", choices.max_agents);
+    println!("  Skill:    {}", skill_status);
+    println!();
+    println!("Run `wg init` in a project directory to get started.");
 
     Ok(())
+}
+
+/// Check if the wg Claude Code skill is installed.
+pub fn is_claude_skill_installed() -> bool {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+            .join(".claude/skills/wg/SKILL.md")
+            .exists()
+    } else {
+        false
+    }
+}
+
+/// Check if the amplifier-bundle-workgraph setup script exists in common locations.
+fn find_amplifier_bundle_setup() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = PathBuf::from(&home).join("amplifier-bundle-workgraph/setup.sh");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// After executor selection, guide the user to install the appropriate skill or bundle.
+/// Returns a status string for the summary.
+fn guide_skill_bundle_install(executor: &str) -> Result<String> {
+    match executor {
+        "claude" => {
+            if is_claude_skill_installed() {
+                Ok("wg skill installed ✓".to_string())
+            } else {
+                println!("Spawned Claude Code agents need the wg skill to understand workgraph commands.");
+                let install = Confirm::new()
+                    .with_prompt("Install wg skill for Claude Code? (recommended)")
+                    .default(true)
+                    .interact()?;
+                if install {
+                    super::skills::run_install()?;
+                    Ok("wg skill installed ✓".to_string())
+                } else {
+                    println!("  You can install it later with: wg skill install");
+                    Ok("wg skill NOT installed — run `wg skill install`".to_string())
+                }
+            }
+        }
+        "amplifier" => {
+            if let Some(setup_path) = find_amplifier_bundle_setup() {
+                println!("Found amplifier-bundle-workgraph at: {}", setup_path.parent().unwrap().display());
+                println!("  Run the setup script to install the executor and bundle:");
+                println!("    {}", setup_path.display());
+                println!();
+                println!("  Then start sessions with: amplifier run -B workgraph");
+            } else {
+                println!("Spawned Amplifier agents need the workgraph bundle to understand wg commands.");
+                println!();
+                println!("  Install the bundle:");
+                println!("    git clone https://github.com/graphwork/amplifier-bundle-workgraph ~/amplifier-bundle-workgraph");
+                println!("    cd ~/amplifier-bundle-workgraph && ./setup.sh");
+                println!();
+                println!("  Or add it directly:");
+                println!("    amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph");
+                println!();
+                println!("  Then start sessions with: amplifier run -B workgraph");
+            }
+            Ok("amplifier bundle — see instructions above".to_string())
+        }
+        _ => {
+            println!("Custom executor selected. Make sure your agents know about wg commands.");
+            println!("  For reference, see: wg quickstart");
+            Ok(format!("custom executor '{}' — manual setup needed", executor))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +514,29 @@ mod tests {
         assert!(reloaded.agency.auto_evaluate);
         assert_eq!(reloaded.agency.evaluator_model, Some("sonnet".to_string()));
         assert_eq!(reloaded.agency.assigner_model, Some("haiku".to_string()));
+    }
+
+    #[test]
+    fn test_format_summary_includes_executor_and_model() {
+        let choices = SetupChoices {
+            executor: "claude".to_string(),
+            model: "sonnet".to_string(),
+            agency_enabled: false,
+            evaluator_model: None,
+            assigner_model: None,
+            max_agents: 3,
+        };
+        let summary = format_summary(&choices);
+        assert!(summary.contains("executor = \"claude\""));
+        assert!(summary.contains("model = \"sonnet\""));
+        assert!(summary.contains("max_agents = 3"));
+    }
+
+    #[test]
+    fn test_is_claude_skill_installed_returns_bool() {
+        // Just verify the function runs without panicking.
+        // Actual result depends on the test environment.
+        let _installed = super::is_claude_skill_installed();
     }
 
     #[test]
