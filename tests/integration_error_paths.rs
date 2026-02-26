@@ -778,9 +778,10 @@ fn test_orphan_requires_reference() {
 }
 
 #[test]
-fn test_ready_tasks_treats_missing_blocker_as_unblocked() {
-    // If after references a task that doesn't exist, ready_tasks treats it as unblocked
-    // (the blocker is gone, so the dependency is satisfied)
+fn test_ready_tasks_treats_missing_blocker_as_blocked() {
+    // If after references a task that doesn't exist, ready_tasks treats it as BLOCKED.
+    // This prevents premature dispatch when tasks reference dependencies that
+    // haven't been created yet during burst graph construction.
     let mut graph = WorkGraph::new();
 
     let mut t = make_task("has-phantom-dep");
@@ -790,10 +791,9 @@ fn test_ready_tasks_treats_missing_blocker_as_unblocked() {
     let ready = ready_tasks(&graph);
     assert_eq!(
         ready.len(),
-        1,
-        "Task with nonexistent blocker should be ready (orphan treated as unblocked)"
+        0,
+        "Task with nonexistent blocker should NOT be ready (dangling deps block)"
     );
-    assert_eq!(ready[0].id, "has-phantom-dep");
 }
 
 #[test]

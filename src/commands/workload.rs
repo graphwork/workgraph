@@ -38,7 +38,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let mut agent_workloads: HashMap<String, AgentWorkload> = HashMap::new();
 
     // Initialize with known agents from the agency directory
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     if let Ok(agents) = agency::load_all_agents(&agents_dir) {
         for agent in agents {
             agent_workloads.insert(
@@ -223,13 +223,9 @@ mod tests {
         Agent {
             id: id.to_string(),
             role_id: String::new(),
-            motivation_id: String::new(),
+            tradeoff_id: String::new(),
             name: name.to_string(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             capabilities: vec![],
             rate: None,
@@ -237,6 +233,9 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 

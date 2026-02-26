@@ -132,7 +132,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
         if let Ok(store) = &store_result {
             if store.is_valid() {
                 let roles = store.load_roles().unwrap_or_default();
-                let motivations = store.load_motivations().unwrap_or_default();
+                let motivations = store.load_tradeoffs().unwrap_or_default();
                 let agents = store.load_agents().unwrap_or_default();
                 let evaluations = store.load_evaluations().unwrap_or_default();
 
@@ -171,7 +171,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
         Ok(store) if store.is_valid() => {
             println!("  Store:       {}", store.store_path().display());
             let roles = store.load_roles().unwrap_or_default();
-            let motivations = store.load_motivations().unwrap_or_default();
+            let motivations = store.load_tradeoffs().unwrap_or_default();
             let agents = store.load_agents().unwrap_or_default();
             let evaluations = store.load_evaluations().unwrap_or_default();
             println!(
@@ -285,8 +285,8 @@ mod tests {
                 id: "r1".to_string(),
                 name: "test-role".to_string(),
                 description: "test".to_string(),
-                skills: Vec::new(),
-                desired_outcome: "test".to_string(),
+                component_ids: Vec::new(),
+                outcome_id: "test".to_string(),
                 performance: PerformanceRecord::default(),
                 lineage: Lineage::default(),
                 default_context_scope: None,

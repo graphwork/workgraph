@@ -2,6 +2,7 @@ pub mod abandon;
 pub mod add;
 pub mod agency_init;
 pub mod agency_merge;
+pub mod agency_migrate;
 pub mod agency_pull;
 pub mod agency_push;
 pub mod agency_remote;

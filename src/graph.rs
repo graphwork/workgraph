@@ -231,6 +231,192 @@ pub struct Task {
     /// Context scope for prompt assembly: clean, task, graph, full
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_scope: Option<String>,
+    /// Token usage and cost data extracted from agent output.log
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+}
+
+/// Token usage and cost data from a Claude CLI agent run.
+/// Extracted from the final `type=result` line in the agent's output.log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Total cost in USD
+    #[serde(default, skip_serializing_if = "is_f64_zero")]
+    pub cost_usd: f64,
+    /// Input tokens (non-cached)
+    #[serde(default, skip_serializing_if = "is_u64_zero")]
+    pub input_tokens: u64,
+    /// Output tokens
+    #[serde(default, skip_serializing_if = "is_u64_zero")]
+    pub output_tokens: u64,
+    /// Cache read input tokens
+    #[serde(default, skip_serializing_if = "is_u64_zero")]
+    pub cache_read_input_tokens: u64,
+    /// Cache creation input tokens
+    #[serde(default, skip_serializing_if = "is_u64_zero")]
+    pub cache_creation_input_tokens: u64,
+}
+
+fn is_f64_zero(val: &f64) -> bool {
+    *val == 0.0
+}
+
+fn is_u64_zero(val: &u64) -> bool {
+    *val == 0
+}
+
+impl TokenUsage {
+    /// Total tokens (input + output + cache read + cache creation)
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens + self.cache_read_input_tokens + self.cache_creation_input_tokens
+    }
+}
+
+/// Parse token usage data from a Claude CLI output.log file.
+///
+/// Reads the file from the end, looking for the last JSON line with `"type":"result"`.
+/// Returns `None` if the file doesn't exist, is empty, or has no result line.
+pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage> {
+    let content = std::fs::read_to_string(output_log_path).ok()?;
+
+    // Find the last line that parses as JSON with type=result
+    for line in content.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let val: serde_json::Value = serde_json::from_str(line).ok()?;
+        if val.get("type").and_then(|v| v.as_str()) != Some("result") {
+            continue;
+        }
+
+        let cost_usd = val.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let usage = val.get("usage");
+
+        let input_tokens = usage
+            .and_then(|u| u.get("input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_tokens = usage
+            .and_then(|u| u.get("output_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_read = usage
+            .and_then(|u| {
+                u.get("cache_read_input_tokens")
+                    .or_else(|| u.get("cacheReadInputTokens"))
+            })
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_creation = usage
+            .and_then(|u| {
+                u.get("cache_creation_input_tokens")
+                    .or_else(|| u.get("cacheCreationInputTokens"))
+            })
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        return Some(TokenUsage {
+            cost_usd,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+        });
+    }
+
+    None
+}
+
+/// Parse token usage from a Claude CLI output.log, including mid-run data.
+///
+/// First tries to find a `type=result` line (completed runs). If none exists,
+/// sums up `message.usage` blocks from `type=assistant` lines (in-progress runs).
+/// Returns `None` if the file doesn't exist or has no usable data.
+pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<TokenUsage> {
+    // Try the fast path first: completed result line
+    if let Some(usage) = parse_token_usage(output_log_path) {
+        return Some(usage);
+    }
+
+    // Fall back: sum per-turn usage from assistant messages
+    let content = std::fs::read_to_string(output_log_path).ok()?;
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_creation = 0u64;
+    let mut found_any = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        // Quick check before full parse
+        if !line.contains("\"type\":\"assistant\"") {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if val.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        // Usage is nested under message.usage
+        let usage = val
+            .get("message")
+            .and_then(|m| m.get("usage"));
+        if let Some(usage) = usage {
+            found_any = true;
+            total_input += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            total_output += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            total_cache_read += usage
+                .get("cache_read_input_tokens")
+                .or_else(|| usage.get("cacheReadInputTokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            total_cache_creation += usage
+                .get("cache_creation_input_tokens")
+                .or_else(|| usage.get("cacheCreationInputTokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+        }
+    }
+
+    if found_any {
+        Some(TokenUsage {
+            cost_usd: 0.0, // Per-turn messages don't include cumulative cost
+            input_tokens: total_input,
+            output_tokens: total_output,
+            cache_read_input_tokens: total_cache_read,
+            cache_creation_input_tokens: total_cache_creation,
+        })
+    } else {
+        None
+    }
+}
+
+/// Format a token count in a human-readable abbreviated form (e.g., "11k", "1.2M").
+pub fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let m = tokens as f64 / 1_000_000.0;
+        if m >= 10.0 {
+            format!("{:.0}M", m)
+        } else {
+            format!("{:.1}M", m)
+        }
+    } else if tokens >= 1_000 {
+        let k = tokens as f64 / 1_000.0;
+        if k >= 10.0 {
+            format!("{:.0}k", k)
+        } else {
+            format!("{:.1}k", k)
+        }
+    } else {
+        format!("{}", tokens)
+    }
 }
 
 fn default_visibility() -> String {
@@ -363,6 +549,8 @@ struct TaskHelper {
     visibility: String,
     #[serde(default)]
     context_scope: Option<String>,
+    #[serde(default)]
+    token_usage: Option<TokenUsage>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -418,6 +606,7 @@ impl<'de> Deserialize<'de> for Task {
             paused: helper.paused,
             visibility: helper.visibility,
             context_scope: helper.context_scope,
+            token_usage: helper.token_usage,
         })
     }
 }
@@ -1349,5 +1538,184 @@ mod tests {
             "should suggest prefix match: {}",
             msg
         );
+    }
+
+    #[test]
+    fn test_format_tokens_small() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(500), "500");
+        assert_eq!(format_tokens(999), "999");
+    }
+
+    #[test]
+    fn test_format_tokens_thousands() {
+        assert_eq!(format_tokens(1000), "1.0k");
+        assert_eq!(format_tokens(1500), "1.5k");
+        assert_eq!(format_tokens(11228), "11k");
+        assert_eq!(format_tokens(99999), "100k");
+    }
+
+    #[test]
+    fn test_format_tokens_millions() {
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+        assert_eq!(format_tokens(10_000_000), "10M");
+    }
+
+    #[test]
+    fn test_token_usage_total() {
+        let usage = TokenUsage {
+            cost_usd: 1.0,
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 400,
+        };
+        assert_eq!(usage.total_tokens(), 1000);
+    }
+
+    #[test]
+    fn test_parse_token_usage_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"assistant","content":"hello"}
+{"type":"result","total_cost_usd":2.18,"usage":{"input_tokens":55,"output_tokens":11228,"cache_read_input_tokens":3096388,"cache_creation_input_tokens":6204}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.cost_usd, 2.18);
+        assert_eq!(usage.input_tokens, 55);
+        assert_eq!(usage.output_tokens, 11228);
+        assert_eq!(usage.cache_read_input_tokens, 3096388);
+        assert_eq!(usage.cache_creation_input_tokens, 6204);
+    }
+
+    #[test]
+    fn test_parse_token_usage_camel_case_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":100,"cacheReadInputTokens":5000,"cacheCreationInputTokens":200}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.cache_read_input_tokens, 5000);
+        assert_eq!(usage.cache_creation_input_tokens, 200);
+    }
+
+    #[test]
+    fn test_parse_token_usage_missing_file() {
+        let result = parse_token_usage(std::path::Path::new("/nonexistent/output.log"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_token_usage_no_result_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"assistant","content":"hello"}"#,
+        )
+        .unwrap();
+
+        assert!(parse_token_usage(&log_path).is_none());
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_sums_assistant_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        // Simulate an in-progress run with two assistant messages (no result line)
+        std::fs::write(
+            &log_path,
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":50,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}
+{"type":"tool_result","content":"ok"}
+{"type":"assistant","message":{"usage":{"input_tokens":15,"output_tokens":30,"cache_read_input_tokens":200,"cache_creation_input_tokens":10}}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage_live(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 25);
+        assert_eq!(usage.output_tokens, 80);
+        assert_eq!(usage.cache_read_input_tokens, 300);
+        assert_eq!(usage.cache_creation_input_tokens, 30);
+        assert_eq!(usage.cost_usd, 0.0); // no cost in per-turn messages
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_prefers_result_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        // If a result line exists, it should be preferred over summing assistant messages
+        std::fs::write(
+            &log_path,
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":50}}}
+{"type":"result","total_cost_usd":1.5,"usage":{"input_tokens":100,"output_tokens":200}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage_live(&log_path).unwrap();
+        assert_eq!(usage.cost_usd, 1.5);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 200);
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_missing_file() {
+        let result = parse_token_usage_live(std::path::Path::new("/nonexistent/output.log"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_token_usage_serialization_skips_zeros() {
+        let usage = TokenUsage {
+            cost_usd: 1.5,
+            input_tokens: 0,
+            output_tokens: 100,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(json.contains("cost_usd"));
+        assert!(json.contains("output_tokens"));
+        assert!(!json.contains("input_tokens"));
+        assert!(!json.contains("cache_read"));
+        assert!(!json.contains("cache_creation"));
+    }
+
+    #[test]
+    fn test_task_with_token_usage_roundtrip() {
+        let mut task = make_task("t1", "Test");
+        task.token_usage = Some(TokenUsage {
+            cost_usd: 0.5,
+            input_tokens: 10,
+            output_tokens: 200,
+            cache_read_input_tokens: 5000,
+            cache_creation_input_tokens: 100,
+        });
+
+        // Serialize as a Node (JSONL format used by parser)
+        let node = Node::Task(task);
+        let json = serde_json::to_string(&node).unwrap();
+        let node2: Node = serde_json::from_str(&json).unwrap();
+
+        if let Node::Task(t) = node2 {
+            let usage = t.token_usage.as_ref().unwrap();
+            assert_eq!(usage.cost_usd, 0.5);
+            assert_eq!(usage.output_tokens, 200);
+            assert_eq!(usage.total_tokens(), 5310);
+        } else {
+            panic!("Expected Task node");
+        }
     }
 }

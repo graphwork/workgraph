@@ -250,6 +250,8 @@ fn render_frame(
         task_ids,
         annotations,
         &status_overrides,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
     );
 
     // Compute elapsed time

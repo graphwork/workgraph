@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::agency::{self, Evaluation, Motivation, Role};
+use workgraph::agency::{self, Evaluation, TradeoffConfig, Role};
 use workgraph::parser::load_graph;
 
 /// A (role_id, motivation_id) pair used as a key in the synergy matrix.
@@ -21,7 +21,7 @@ struct EntityStats {
 /// Synergy cell: stats for a specific (role, motivation) pair.
 struct SynergyCell {
     role_id: String,
-    motivation_id: String,
+    tradeoff_id: String,
     count: u32,
     avg_score: f64,
 }
@@ -64,13 +64,13 @@ fn trend(scores: &[f64]) -> &'static str {
 /// Run `wg agency stats [--json] [--min-evals N] [--by-model]`.
 pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
     let evals_dir = agency_dir.join("evaluations");
 
     let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
     let motivations =
-        agency::load_all_motivations(&motivations_dir).context("Failed to load motivations")?;
+        agency::load_all_tradeoffs(&motivations_dir).context("Failed to load motivations")?;
     let evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
@@ -131,7 +131,7 @@ fn build_role_stats(roles: &[Role]) -> Vec<EntityStats> {
         .collect()
 }
 
-fn build_motivation_stats(motivations: &[Motivation]) -> Vec<EntityStats> {
+fn build_motivation_stats(motivations: &[TradeoffConfig]) -> Vec<EntityStats> {
     motivations
         .iter()
         .map(|m| EntityStats {
@@ -147,17 +147,17 @@ fn build_motivation_stats(motivations: &[Motivation]) -> Vec<EntityStats> {
 fn build_synergy_matrix(evaluations: &[Evaluation]) -> Vec<SynergyCell> {
     let mut map: HashMap<Pair, Vec<f64>> = HashMap::new();
     for eval in evaluations {
-        map.entry((eval.role_id.clone(), eval.motivation_id.clone()))
+        map.entry((eval.role_id.clone(), eval.tradeoff_id.clone()))
             .or_default()
             .push(eval.score);
     }
     let mut cells: Vec<SynergyCell> = map
         .into_iter()
-        .map(|((role_id, motivation_id), scores)| {
+        .map(|((role_id, tradeoff_id), scores)| {
             let avg = scores.iter().sum::<f64>() / scores.len() as f64;
             SynergyCell {
                 role_id,
-                motivation_id,
+                tradeoff_id,
                 count: scores.len() as u32,
                 avg_score: avg,
             }
@@ -182,7 +182,7 @@ fn build_tag_breakdown(
         let entity_id = if by_role {
             &eval.role_id
         } else {
-            &eval.motivation_id
+            &eval.tradeoff_id
         };
         if let Some(tags) = task_tags.get(&eval.task_id) {
             for tag in tags {
@@ -236,7 +236,7 @@ fn build_model_stats(evaluations: &[Evaluation]) -> Vec<ModelStats> {
 
 fn find_underexplored(
     roles: &[Role],
-    motivations: &[Motivation],
+    motivations: &[TradeoffConfig],
     evaluations: &[Evaluation],
     min_evals: u32,
 ) -> Vec<(String, String, u32)> {
@@ -244,7 +244,7 @@ fn find_underexplored(
     let mut counts: HashMap<Pair, u32> = HashMap::new();
     for eval in evaluations {
         *counts
-            .entry((eval.role_id.clone(), eval.motivation_id.clone()))
+            .entry((eval.role_id.clone(), eval.tradeoff_id.clone()))
             .or_insert(0) += 1;
     }
 
@@ -270,7 +270,7 @@ fn find_underexplored(
 
 fn output_text(
     roles: &[Role],
-    motivations: &[Motivation],
+    motivations: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
@@ -288,7 +288,7 @@ fn output_text(
 
     println!("=== Agency Performance Stats ===\n");
     println!("  Roles:        {}", total_roles);
-    println!("  Motivations:  {}", total_motivations);
+    println!("  TradeoffConfigs:  {}", total_motivations);
     println!("  Evaluations:  {}", total_evaluations);
     println!(
         "  Avg score:    {}",
@@ -330,7 +330,7 @@ fn output_text(
         );
     }
 
-    // 3. Motivation leaderboard
+    // 3. TradeoffConfig leaderboard
     let mut mot_stats = build_motivation_stats(motivations);
     mot_stats.sort_by(|a, b| {
         b.avg_score
@@ -338,10 +338,10 @@ fn output_text(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    println!("\n--- Motivation Leaderboard ---\n");
+    println!("\n--- TradeoffConfig Leaderboard ---\n");
     println!(
         "  {:<20} {:>8} {:>6} {:>6}",
-        "Motivation", "Avg", "Tasks", "Trend"
+        "TradeoffConfig", "Avg", "Tasks", "Trend"
     );
     println!("  {}", "-".repeat(44));
     for s in &mot_stats {
@@ -361,10 +361,10 @@ fn output_text(
     // 4. Synergy matrix
     let synergy = build_synergy_matrix(evaluations);
     if !synergy.is_empty() {
-        println!("\n--- Synergy Matrix (Role x Motivation) ---\n");
+        println!("\n--- Synergy Matrix (Role x TradeoffConfig) ---\n");
         println!(
             "  {:<20} {:<20} {:>8} {:>6} {:>8}",
-            "Role", "Motivation", "Avg", "Count", "Rating"
+            "Role", "TradeoffConfig", "Avg", "Count", "Rating"
         );
         println!("  {}", "-".repeat(66));
         for cell in &synergy {
@@ -378,7 +378,7 @@ fn output_text(
             println!(
                 "  {:<20} {:<20} {:>8.2} {:>6} {:>8}",
                 agency::short_hash(&cell.role_id),
-                agency::short_hash(&cell.motivation_id),
+                agency::short_hash(&cell.tradeoff_id),
                 cell.avg_score,
                 cell.count,
                 rating,
@@ -405,10 +405,10 @@ fn output_text(
 
     let mot_tags = build_tag_breakdown(evaluations, task_tags, false);
     if !mot_tags.is_empty() {
-        println!("\n--- Score by Motivation x Tag ---\n");
+        println!("\n--- Score by TradeoffConfig x Tag ---\n");
         println!(
             "  {:<20} {:<20} {:>8} {:>6}",
-            "Motivation", "Tag", "Avg", "Count"
+            "TradeoffConfig", "Tag", "Avg", "Count"
         );
         println!("  {}", "-".repeat(58));
         for cell in &mot_tags {
@@ -429,7 +429,7 @@ fn output_text(
             "\n--- Under-explored Combinations (< {} evals) ---\n",
             min_evals
         );
-        println!("  {:<20} {:<20} {:>6}", "Role", "Motivation", "Evals");
+        println!("  {:<20} {:<20} {:>6}", "Role", "TradeoffConfig", "Evals");
         println!("  {}", "-".repeat(50));
         for (role_id, mot_id, count) in &under {
             println!(
@@ -468,7 +468,7 @@ fn output_text(
 
 fn output_json(
     roles: &[Role],
-    motivations: &[Motivation],
+    motivations: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
@@ -503,7 +503,7 @@ fn output_json(
         })
         .collect();
 
-    // Motivation leaderboard
+    // TradeoffConfig leaderboard
     let mut mot_stats = build_motivation_stats(motivations);
     mot_stats.sort_by(|a, b| {
         b.avg_score
@@ -537,7 +537,7 @@ fn output_json(
             };
             serde_json::json!({
                 "role_id": c.role_id,
-                "motivation_id": c.motivation_id,
+                "motivation_id": c.tradeoff_id,
                 "avg_score": c.avg_score,
                 "count": c.count,
                 "rating": rating,
@@ -655,7 +655,7 @@ mod tests {
                 task_id: "t1".into(),
                 agent_id: String::new(),
                 role_id: "r1".into(),
-                motivation_id: "m1".into(),
+                tradeoff_id: "m1".into(),
                 score: 0.8,
                 dimensions: HashMap::new(),
                 notes: String::new(),
@@ -669,7 +669,7 @@ mod tests {
                 task_id: "t2".into(),
                 agent_id: String::new(),
                 role_id: "r1".into(),
-                motivation_id: "m1".into(),
+                tradeoff_id: "m1".into(),
                 score: 0.6,
                 dimensions: HashMap::new(),
                 notes: String::new(),
@@ -683,7 +683,7 @@ mod tests {
         let cells = build_synergy_matrix(&evals);
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].role_id, "r1");
-        assert_eq!(cells[0].motivation_id, "m1");
+        assert_eq!(cells[0].tradeoff_id, "m1");
         assert_eq!(cells[0].count, 2);
         assert!((cells[0].avg_score - 0.7).abs() < f64::EPSILON);
     }
@@ -696,28 +696,23 @@ mod tests {
             id: "r1".into(),
             name: "Role 1".into(),
             description: String::new(),
-            skills: vec![],
-            desired_outcome: String::new(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            component_ids: vec![],
+            outcome_id: String::new(),
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
         }];
-        let motivations = vec![Motivation {
+        let motivations = vec![TradeoffConfig {
             id: "m1".into(),
             name: "Mot 1".into(),
             description: String::new(),
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
+            access_control: workgraph::agency::AccessControl::default(),
+            former_agents: vec![],
+            former_deployments: vec![],
         }];
 
         let under = find_underexplored(&roles, &motivations, &[], 3);
@@ -732,7 +727,7 @@ mod tests {
             task_id: "t1".into(),
             agent_id: String::new(),
             role_id: "r1".into(),
-            motivation_id: "m1".into(),
+            tradeoff_id: "m1".into(),
             score: 0.9,
             dimensions: HashMap::new(),
             notes: String::new(),

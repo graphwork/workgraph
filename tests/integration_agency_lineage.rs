@@ -11,7 +11,7 @@
 
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Lineage, SkillRef};
+use workgraph::agency::{self, Lineage};
 
 /// Helper: set up agency storage and return (tmp, agency_dir).
 fn setup() -> (TempDir, std::path::PathBuf) {
@@ -28,7 +28,7 @@ fn setup() -> (TempDir, std::path::PathBuf) {
 #[test]
 fn test_role_no_parents_generation_zero() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let role = agency::build_role("Root Role", "A manually created role", vec![], "Outcome");
     agency::save_role(&role, &roles_dir).unwrap();
@@ -50,16 +50,16 @@ fn test_role_no_parents_generation_zero() {
 #[test]
 fn test_motivation_no_parents_generation_zero() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let mot = agency::build_motivation("Root Motivation", "Manual", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("Root Motivation", "Manual", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     assert!(mot.lineage.parent_ids.is_empty());
     assert_eq!(mot.lineage.generation, 0);
     assert_eq!(mot.lineage.created_by, "human");
 
-    let ancestry = agency::motivation_ancestry(&mot.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&mot.id, &motivations_dir).unwrap();
     assert_eq!(ancestry.len(), 1);
     assert_eq!(ancestry[0].id, mot.id);
     assert_eq!(ancestry[0].generation, 0);
@@ -72,7 +72,7 @@ fn test_motivation_no_parents_generation_zero() {
 #[test]
 fn test_role_mutation_single_parent() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Parent role (gen 0)
     let parent = agency::build_role("Parent", "Original role", vec![], "Outcome A");
@@ -102,19 +102,19 @@ fn test_role_mutation_single_parent() {
 #[test]
 fn test_motivation_mutation_single_parent() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let parent = agency::build_motivation("Parent Mot", "Original", vec![], vec![]);
-    agency::save_motivation(&parent, &motivations_dir).unwrap();
+    let parent = agency::build_tradeoff("Parent Mot", "Original", vec![], vec![]);
+    agency::save_tradeoff(&parent, &motivations_dir).unwrap();
 
-    let mut child = agency::build_motivation("Child Mot", "Mutated", vec![], vec![]);
+    let mut child = agency::build_tradeoff("Child Mot", "Mutated", vec![], vec![]);
     child.lineage = Lineage::mutation(&parent.id, parent.lineage.generation, "run-2");
-    agency::save_motivation(&child, &motivations_dir).unwrap();
+    agency::save_tradeoff(&child, &motivations_dir).unwrap();
 
     assert_eq!(child.lineage.parent_ids, vec![parent.id.clone()]);
     assert_eq!(child.lineage.generation, 1);
 
-    let ancestry = agency::motivation_ancestry(&child.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&child.id, &motivations_dir).unwrap();
     assert_eq!(ancestry.len(), 2);
     assert_eq!(ancestry[0].id, child.id);
     assert_eq!(ancestry[1].id, parent.id);
@@ -127,7 +127,7 @@ fn test_motivation_mutation_single_parent() {
 #[test]
 fn test_role_deep_ancestry_chain() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Create a chain: gen0 -> gen1 -> gen2 -> gen3
     let gen0 = agency::build_role("Gen0", "root", vec![], "outcome-0");
@@ -140,7 +140,7 @@ fn test_role_deep_ancestry_chain() {
     let mut gen2 = agency::build_role(
         "Gen2",
         "second mutation",
-        vec![SkillRef::Name("extra".to_string())],
+        vec!["extra".to_string()],
         "outcome-2",
     );
     gen2.lineage = Lineage::mutation(&gen1.id, 1, "evo-2");
@@ -175,24 +175,24 @@ fn test_role_deep_ancestry_chain() {
 #[test]
 fn test_motivation_deep_ancestry_chain() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let gen0 = agency::build_motivation("M0", "root", vec![], vec![]);
-    agency::save_motivation(&gen0, &motivations_dir).unwrap();
+    let gen0 = agency::build_tradeoff("M0", "root", vec![], vec![]);
+    agency::save_tradeoff(&gen0, &motivations_dir).unwrap();
 
-    let mut gen1 = agency::build_motivation("M1", "mut-1", vec!["trade1".into()], vec![]);
+    let mut gen1 = agency::build_tradeoff("M1", "mut-1", vec!["trade1".into()], vec![]);
     gen1.lineage = Lineage::mutation(&gen0.id, 0, "e1");
-    agency::save_motivation(&gen1, &motivations_dir).unwrap();
+    agency::save_tradeoff(&gen1, &motivations_dir).unwrap();
 
-    let mut gen2 = agency::build_motivation("M2", "mut-2", vec![], vec!["no-trade".into()]);
+    let mut gen2 = agency::build_tradeoff("M2", "mut-2", vec![], vec!["no-trade".into()]);
     gen2.lineage = Lineage::mutation(&gen1.id, 1, "e2");
-    agency::save_motivation(&gen2, &motivations_dir).unwrap();
+    agency::save_tradeoff(&gen2, &motivations_dir).unwrap();
 
-    let mut gen3 = agency::build_motivation("M3", "mut-3", vec![], vec![]);
+    let mut gen3 = agency::build_tradeoff("M3", "mut-3", vec![], vec![]);
     gen3.lineage = Lineage::mutation(&gen2.id, 2, "e3");
-    agency::save_motivation(&gen3, &motivations_dir).unwrap();
+    agency::save_tradeoff(&gen3, &motivations_dir).unwrap();
 
-    let ancestry = agency::motivation_ancestry(&gen3.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&gen3.id, &motivations_dir).unwrap();
     assert_eq!(ancestry.len(), 4);
     assert_eq!(ancestry[0].id, gen3.id);
     assert_eq!(ancestry[0].generation, 3);
@@ -205,7 +205,7 @@ fn test_motivation_deep_ancestry_chain() {
 #[test]
 fn test_role_crossover_two_parents() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let parent_a = agency::build_role("Parent A", "first parent", vec![], "outcome-a");
     agency::save_role(&parent_a, &roles_dir).unwrap();
@@ -213,7 +213,7 @@ fn test_role_crossover_two_parents() {
     let parent_b = agency::build_role(
         "Parent B",
         "second parent",
-        vec![SkillRef::Name("python".to_string())],
+        vec!["python".to_string()],
         "outcome-b",
     );
     agency::save_role(&parent_b, &roles_dir).unwrap();
@@ -242,19 +242,19 @@ fn test_role_crossover_two_parents() {
 #[test]
 fn test_motivation_crossover_two_parents() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let parent_a = agency::build_motivation("MA", "first", vec![], vec![]);
-    agency::save_motivation(&parent_a, &motivations_dir).unwrap();
+    let parent_a = agency::build_tradeoff("MA", "first", vec![], vec![]);
+    agency::save_tradeoff(&parent_a, &motivations_dir).unwrap();
 
-    let parent_b = agency::build_motivation("MB", "second", vec!["tradeoff".into()], vec![]);
-    agency::save_motivation(&parent_b, &motivations_dir).unwrap();
+    let parent_b = agency::build_tradeoff("MB", "second", vec!["tradeoff".into()], vec![]);
+    agency::save_tradeoff(&parent_b, &motivations_dir).unwrap();
 
-    let mut crossover = agency::build_motivation("MC", "merged", vec![], vec![]);
+    let mut crossover = agency::build_tradeoff("MC", "merged", vec![], vec![]);
     crossover.lineage = Lineage::crossover(&[&parent_a.id, &parent_b.id], 0, "cross-mot-1");
-    agency::save_motivation(&crossover, &motivations_dir).unwrap();
+    agency::save_tradeoff(&crossover, &motivations_dir).unwrap();
 
-    let ancestry = agency::motivation_ancestry(&crossover.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&crossover.id, &motivations_dir).unwrap();
     assert_eq!(ancestry.len(), 3);
     assert_eq!(ancestry[0].id, crossover.id);
     let parent_ids: Vec<&str> = ancestry[1..].iter().map(|n| n.id.as_str()).collect();
@@ -293,7 +293,7 @@ fn test_generation_increments_crossover() {
 #[test]
 fn test_generation_increments_through_deep_chain() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let mut roles = vec![];
     let root = agency::build_role("R0", "gen-0", vec![], "o0");
@@ -332,7 +332,7 @@ fn test_generation_increments_through_deep_chain() {
 #[test]
 fn test_crossover_generation_from_mixed_gen_parents() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Parent A at gen 0
     let parent_a = agency::build_role("PA", "gen0 parent", vec![], "oa");
@@ -368,7 +368,7 @@ fn test_crossover_generation_from_mixed_gen_parents() {
 #[test]
 fn test_role_ancestry_missing_intermediate_parent() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Create grandparent (gen 0)
     let grandparent = agency::build_role("GP", "grandparent", vec![], "o-gp");
@@ -406,24 +406,24 @@ fn test_role_ancestry_missing_intermediate_parent() {
 #[test]
 fn test_motivation_ancestry_missing_intermediate_parent() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let grandparent = agency::build_motivation("GP", "grandparent", vec![], vec![]);
-    agency::save_motivation(&grandparent, &motivations_dir).unwrap();
+    let grandparent = agency::build_tradeoff("GP", "grandparent", vec![], vec![]);
+    agency::save_tradeoff(&grandparent, &motivations_dir).unwrap();
 
-    let mut parent = agency::build_motivation("P", "parent", vec![], vec![]);
+    let mut parent = agency::build_tradeoff("P", "parent", vec![], vec![]);
     parent.lineage = Lineage::mutation(&grandparent.id, 0, "e-p");
-    agency::save_motivation(&parent, &motivations_dir).unwrap();
+    agency::save_tradeoff(&parent, &motivations_dir).unwrap();
 
-    let mut child = agency::build_motivation("C", "child", vec![], vec![]);
+    let mut child = agency::build_tradeoff("C", "child", vec![], vec![]);
     child.lineage = Lineage::mutation(&parent.id, 1, "e-c");
-    agency::save_motivation(&child, &motivations_dir).unwrap();
+    agency::save_tradeoff(&child, &motivations_dir).unwrap();
 
     // Delete parent
     let parent_path = motivations_dir.join(format!("{}.yaml", parent.id));
     std::fs::remove_file(&parent_path).unwrap();
 
-    let ancestry = agency::motivation_ancestry(&child.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&child.id, &motivations_dir).unwrap();
     assert_eq!(ancestry.len(), 1);
     assert_eq!(ancestry[0].id, child.id);
 }
@@ -431,7 +431,7 @@ fn test_motivation_ancestry_missing_intermediate_parent() {
 #[test]
 fn test_role_ancestry_missing_one_crossover_parent() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let parent_a = agency::build_role("PA", "parent a", vec![], "oa");
     agency::save_role(&parent_a, &roles_dir).unwrap();
@@ -458,7 +458,7 @@ fn test_role_ancestry_missing_one_crossover_parent() {
 #[test]
 fn test_role_ancestry_target_does_not_exist() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Query ancestry for an ID that doesn't exist
     let ancestry = agency::role_ancestry("nonexistent-id", &roles_dir).unwrap();
@@ -471,9 +471,9 @@ fn test_role_ancestry_target_does_not_exist() {
 #[test]
 fn test_motivation_ancestry_target_does_not_exist() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let ancestry = agency::motivation_ancestry("nonexistent-id", &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry("nonexistent-id", &motivations_dir).unwrap();
     assert!(ancestry.is_empty());
 }
 
@@ -484,7 +484,7 @@ fn test_motivation_ancestry_target_does_not_exist() {
 #[test]
 fn test_ancestry_node_fields_populated() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let parent = agency::build_role("Root Role", "The root", vec![], "Root outcome");
     agency::save_role(&parent, &roles_dir).unwrap();
@@ -492,7 +492,7 @@ fn test_ancestry_node_fields_populated() {
     let mut child = agency::build_role(
         "Evolved Role",
         "A mutated descendant",
-        vec![SkillRef::Name("rust".to_string())],
+        vec!["rust".to_string()],
         "Better outcome",
     );
     child.lineage = Lineage::mutation(&parent.id, 0, "evo-42");
@@ -524,19 +524,19 @@ fn test_ancestry_node_fields_populated() {
 #[test]
 fn test_ancestry_node_crossover_parent_ids() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let pa = agency::build_motivation("A", "first", vec![], vec![]);
-    agency::save_motivation(&pa, &motivations_dir).unwrap();
+    let pa = agency::build_tradeoff("A", "first", vec![], vec![]);
+    agency::save_tradeoff(&pa, &motivations_dir).unwrap();
 
-    let pb = agency::build_motivation("B", "second", vec!["trade".into()], vec![]);
-    agency::save_motivation(&pb, &motivations_dir).unwrap();
+    let pb = agency::build_tradeoff("B", "second", vec!["trade".into()], vec![]);
+    agency::save_tradeoff(&pb, &motivations_dir).unwrap();
 
-    let mut cross = agency::build_motivation("AB", "combined", vec![], vec![]);
+    let mut cross = agency::build_tradeoff("AB", "combined", vec![], vec![]);
     cross.lineage = Lineage::crossover(&[&pa.id, &pb.id], 0, "cross-99");
-    agency::save_motivation(&cross, &motivations_dir).unwrap();
+    agency::save_tradeoff(&cross, &motivations_dir).unwrap();
 
-    let ancestry = agency::motivation_ancestry(&cross.id, &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry(&cross.id, &motivations_dir).unwrap();
     let cross_node = &ancestry[0];
 
     // The crossover node should list both parent IDs
@@ -583,7 +583,7 @@ fn test_ancestry_no_duplicate_visits() {
     // If a diamond pattern exists (A -> B, A -> C, B -> D, C -> D),
     // the ancestry walker should visit D only once.
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // D is the common ancestor (gen 0)
     let d = agency::build_role("D", "common ancestor", vec![], "od");
@@ -594,7 +594,7 @@ fn test_ancestry_no_duplicate_visits() {
     b.lineage = Lineage::mutation(&d.id, 0, "e-b");
     agency::save_role(&b, &roles_dir).unwrap();
 
-    let mut c = agency::build_role("C", "branch c", vec![SkillRef::Name("extra".into())], "oc");
+    let mut c = agency::build_role("C", "branch c", vec!["extra".to_string()], "oc");
     c.lineage = Lineage::mutation(&d.id, 0, "e-c");
     agency::save_role(&c, &roles_dir).unwrap();
 
@@ -622,7 +622,7 @@ fn test_ancestry_no_duplicate_visits() {
 #[test]
 fn test_role_ancestry_empty_directory() {
     let (_tmp, agency_dir) = setup();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // No roles saved — ancestry of any ID returns empty
     let ancestry = agency::role_ancestry("anything", &roles_dir).unwrap();
@@ -632,8 +632,8 @@ fn test_role_ancestry_empty_directory() {
 #[test]
 fn test_motivation_ancestry_empty_directory() {
     let (_tmp, agency_dir) = setup();
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
-    let ancestry = agency::motivation_ancestry("anything", &motivations_dir).unwrap();
+    let ancestry = agency::tradeoff_ancestry("anything", &motivations_dir).unwrap();
     assert!(ancestry.is_empty());
 }

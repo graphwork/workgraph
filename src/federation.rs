@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::agency::{
-    Agent, AgencyStore, EvaluationRef, Lineage, LocalStore, Motivation, PerformanceRecord, Role,
+    AccessPolicy, Agent, AgencyStore, DesiredOutcome, EvaluationRef, Lineage, LocalStore,
+    PerformanceRecord, Role, RoleComponent, TradeoffConfig,
 };
 use crate::service::is_process_alive;
 
@@ -93,8 +94,10 @@ pub fn touch_remote_sync(workgraph_dir: &Path, name: &str) -> Result<(), anyhow:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityFilter {
     All,
+    Components,
+    Outcomes,
     Roles,
-    Motivations,
+    Tradeoffs,
     Agents,
 }
 
@@ -131,21 +134,62 @@ impl Default for TransferOptions {
 /// Summary of what was transferred.
 #[derive(Debug, Clone, Default)]
 pub struct TransferSummary {
+    pub components_added: usize,
+    pub components_updated: usize,
+    pub components_skipped: usize,
+    pub components_access_denied: usize,
+    pub outcomes_added: usize,
+    pub outcomes_updated: usize,
+    pub outcomes_skipped: usize,
+    pub outcomes_access_denied: usize,
     pub roles_added: usize,
     pub roles_updated: usize,
     pub roles_skipped: usize,
-    pub motivations_added: usize,
-    pub motivations_updated: usize,
-    pub motivations_skipped: usize,
+    pub tradeoffs_added: usize,
+    pub tradeoffs_updated: usize,
+    pub tradeoffs_skipped: usize,
+    pub tradeoffs_access_denied: usize,
     pub agents_added: usize,
     pub agents_updated: usize,
     pub agents_skipped: usize,
     pub evaluations_added: usize,
     pub evaluations_skipped: usize,
+    pub org_evaluations_added: usize,
+    pub org_evaluations_skipped: usize,
 }
 
 impl std::fmt::Display for TransferSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  Components:   +{} new, {} updated, {} skipped{}",
+            self.components_added, self.components_updated, self.components_skipped,
+            if self.components_access_denied > 0 {
+                format!(", {} denied (access policy)", self.components_access_denied)
+            } else {
+                String::new()
+            }
+        )?;
+        writeln!(
+            f,
+            "  Outcomes:     +{} new, {} updated, {} skipped{}",
+            self.outcomes_added, self.outcomes_updated, self.outcomes_skipped,
+            if self.outcomes_access_denied > 0 {
+                format!(", {} denied (access policy)", self.outcomes_access_denied)
+            } else {
+                String::new()
+            }
+        )?;
+        writeln!(
+            f,
+            "  Tradeoffs:    +{} new, {} updated, {} skipped{}",
+            self.tradeoffs_added, self.tradeoffs_updated, self.tradeoffs_skipped,
+            if self.tradeoffs_access_denied > 0 {
+                format!(", {} denied (access policy)", self.tradeoffs_access_denied)
+            } else {
+                String::new()
+            }
+        )?;
         writeln!(
             f,
             "  Roles:        +{} new, {} updated, {} skipped",
@@ -153,18 +197,18 @@ impl std::fmt::Display for TransferSummary {
         )?;
         writeln!(
             f,
-            "  Motivations:  +{} new, {} updated, {} skipped",
-            self.motivations_added, self.motivations_updated, self.motivations_skipped
-        )?;
-        writeln!(
-            f,
             "  Agents:       +{} new, {} updated, {} skipped",
             self.agents_added, self.agents_updated, self.agents_skipped
         )?;
-        write!(
+        writeln!(
             f,
             "  Evaluations:  +{} new, {} skipped",
             self.evaluations_added, self.evaluations_skipped
+        )?;
+        write!(
+            f,
+            "  Org evals:    +{} new, {} skipped",
+            self.org_evaluations_added, self.org_evaluations_skipped
         )
     }
 }
@@ -194,18 +238,23 @@ pub fn resolve_store(reference: &str) -> Result<LocalStore, anyhow::Error> {
     let path = path.canonicalize().unwrap_or(path);
 
     // Check for agency store in several locations:
-    // 1. path itself has roles/ (it IS the agency dir)
-    // 2. path/agency/ has roles/ (bare store)
-    // 3. path/.workgraph/agency/ has roles/ (project store)
-    if path.join("roles").is_dir() {
+    // 1. path itself is the agency dir (has roles/ or cache/roles/ or evaluations/)
+    // 2. path/agency/ is the agency dir
+    // 3. path/.workgraph/agency/ is the agency dir
+    let is_agency_dir = |p: &PathBuf| {
+        p.join("cache/roles").is_dir()
+            || p.join("cache/roles").is_dir()
+            || p.join("evaluations").is_dir()
+    };
+    if is_agency_dir(&path) {
         return Ok(LocalStore::new(path));
     }
     let agency_sub = path.join("agency");
-    if agency_sub.join("roles").is_dir() {
+    if is_agency_dir(&agency_sub) {
         return Ok(LocalStore::new(agency_sub));
     }
     let wg_agency = path.join(".workgraph").join("agency");
-    if wg_agency.join("roles").is_dir() {
+    if is_agency_dir(&wg_agency) {
         return Ok(LocalStore::new(wg_agency));
     }
 
@@ -573,9 +622,22 @@ pub fn ensure_store_dirs(store: &LocalStore) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// Check whether a primitive's access policy allows federation transfer.
+///
+/// - `Private` primitives are never shared.
+/// - `Shared` primitives are shared (the `shared_peers` list is advisory metadata;
+///   enforcement of per-peer restrictions is a future extension).
+/// - `Open` primitives are always shared.
+fn access_policy_allows_transfer(policy: &AccessPolicy) -> bool {
+    !matches!(policy, AccessPolicy::Private)
+}
+
 /// Transfer entities from `source` to `target`.
 ///
 /// This is the core operation used by both pull (remote→local) and push (local→remote).
+/// Transfers primitives (components, outcomes, tradeoffs), cache entries (roles, agents),
+/// evaluations, and org-evaluations. AccessPolicy is enforced on primitives: Private
+/// primitives are never transferred.
 pub fn transfer(
     source: &LocalStore,
     target: &LocalStore,
@@ -592,14 +654,26 @@ pub fn transfer(
         opts.entity_ids.iter().any(|prefix| id.starts_with(prefix.as_str()))
     };
 
-    // Load source entities as needed
+    // --- Load source primitives ---
+    let source_components = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Components) {
+        source.load_components().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let source_outcomes = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Outcomes) {
+        source.load_outcomes().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // --- Load source cache + composition entities ---
     let source_roles = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Roles | EntityFilter::Agents) {
         source.load_roles().unwrap_or_default()
     } else {
         Vec::new()
     };
-    let source_motivations = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Motivations | EntityFilter::Agents) {
-        source.load_motivations().unwrap_or_default()
+    let source_tradeoffs = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Tradeoffs | EntityFilter::Agents) {
+        source.load_tradeoffs().unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -611,12 +685,41 @@ pub fn transfer(
 
     // Build lookup maps
     let role_map: HashMap<String, &Role> = source_roles.iter().map(|r| (r.id.clone(), r)).collect();
-    let motivation_map: HashMap<String, &Motivation> =
-        source_motivations.iter().map(|m| (m.id.clone(), m)).collect();
+    let motivation_map: HashMap<String, &TradeoffConfig> =
+        source_tradeoffs.iter().map(|m| (m.id.clone(), m)).collect();
 
-    // Determine which entities to transfer (with referential integrity for agents)
+    // --- Collect primitives to transfer (with AccessPolicy enforcement) ---
+    let mut components_to_transfer: Vec<&RoleComponent> = Vec::new();
+    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Components) {
+        for comp in &source_components {
+            if has_filter && !matches_filter(&comp.id) {
+                continue;
+            }
+            if !access_policy_allows_transfer(&comp.access_control.policy) {
+                summary.components_access_denied += 1;
+                continue;
+            }
+            components_to_transfer.push(comp);
+        }
+    }
+
+    let mut outcomes_to_transfer: Vec<&DesiredOutcome> = Vec::new();
+    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Outcomes) {
+        for outcome in &source_outcomes {
+            if has_filter && !matches_filter(&outcome.id) {
+                continue;
+            }
+            if !access_policy_allows_transfer(&outcome.access_control.policy) {
+                summary.outcomes_access_denied += 1;
+                continue;
+            }
+            outcomes_to_transfer.push(outcome);
+        }
+    }
+
+    // Determine which cache/composition entities to transfer
     let mut roles_to_transfer: Vec<&Role> = Vec::new();
-    let mut motivations_to_transfer: Vec<&Motivation> = Vec::new();
+    let mut tradeoffs_to_transfer: Vec<&TradeoffConfig> = Vec::new();
     let mut agents_to_transfer: Vec<&Agent> = Vec::new();
 
     // Collect agents
@@ -638,12 +741,17 @@ pub fn transfer(
             roles_to_transfer.push(role);
         }
     }
-    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Motivations) {
-        for motivation in &source_motivations {
+    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Tradeoffs) {
+        for motivation in &source_tradeoffs {
             if has_filter && !matches_filter(&motivation.id) {
                 continue;
             }
-            motivations_to_transfer.push(motivation);
+            // AccessPolicy enforcement on tradeoff primitives
+            if !access_policy_allows_transfer(&motivation.access_control.policy) {
+                summary.tradeoffs_access_denied += 1;
+                continue;
+            }
+            tradeoffs_to_transfer.push(motivation);
         }
     }
 
@@ -651,13 +759,25 @@ pub fn transfer(
     // integrity checks and the transfer phase (avoids repeated filesystem reads).
     // Errors are propagated — if target YAML is corrupt, we must not silently
     // treat it as empty (which would cause overwrites instead of merges).
+    let target_component_map: HashMap<String, RoleComponent> = target
+        .load_components()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+    let target_outcome_map: HashMap<String, DesiredOutcome> = target
+        .load_outcomes()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|o| (o.id.clone(), o))
+        .collect();
     let target_role_map: HashMap<String, Role> = target
         .load_roles()?
         .into_iter()
         .map(|r| (r.id.clone(), r))
         .collect();
-    let target_motivation_map: HashMap<String, Motivation> = target
-        .load_motivations()?
+    let target_tradeoff_map: HashMap<String, TradeoffConfig> = target
+        .load_tradeoffs()?
         .into_iter()
         .map(|m| (m.id.clone(), m))
         .collect();
@@ -670,13 +790,13 @@ pub fn transfer(
     // Referential integrity: when transferring agents, also transfer their
     // referenced roles and motivations if not already in the target.
     let mut dep_role_ids: HashSet<String> = HashSet::new();
-    let mut dep_motivation_ids: HashSet<String> = HashSet::new();
+    let mut dep_tradeoff_ids: HashSet<String> = HashSet::new();
     for agent in &agents_to_transfer {
         if !target_role_map.contains_key(&agent.role_id) {
             dep_role_ids.insert(agent.role_id.clone());
         }
-        if !target_motivation_map.contains_key(&agent.motivation_id) {
-            dep_motivation_ids.insert(agent.motivation_id.clone());
+        if !target_tradeoff_map.contains_key(&agent.tradeoff_id) {
+            dep_tradeoff_ids.insert(agent.tradeoff_id.clone());
         }
     }
     // Add dependency roles not already in the transfer set.
@@ -695,12 +815,12 @@ pub fn transfer(
             }
         }
     }
-    let existing_motivation_ids: HashSet<String> =
-        motivations_to_transfer.iter().map(|m| m.id.clone()).collect();
-    for dep_id in &dep_motivation_ids {
-        if !existing_motivation_ids.contains(dep_id) {
+    let existing_tradeoff_ids: HashSet<String> =
+        tradeoffs_to_transfer.iter().map(|m| m.id.clone()).collect();
+    for dep_id in &dep_tradeoff_ids {
+        if !existing_tradeoff_ids.contains(dep_id) {
             if let Some(motivation) = motivation_map.get(dep_id) {
-                motivations_to_transfer.push(motivation);
+                tradeoffs_to_transfer.push(motivation);
             } else {
                 return Err(anyhow::anyhow!(
                     "Agent references motivation '{}' which does not exist in source store \
@@ -708,6 +828,76 @@ pub fn transfer(
                     dep_id
                 ));
             }
+        }
+    }
+
+    // --- Transfer components (primitives) ---
+    for comp in &components_to_transfer {
+        if let Some(existing) = target_component_map.get(&comp.id) {
+            if opts.force || opts.no_performance {
+                let mut merged = (*comp).clone();
+                if opts.no_performance {
+                    merged.performance = existing.performance.clone();
+                }
+                if !opts.dry_run {
+                    target.save_component(&merged)?;
+                }
+                summary.components_updated += 1;
+            } else {
+                let merged = merge_component(existing, comp);
+                if merged_component_differs(existing, &merged) {
+                    if !opts.dry_run {
+                        target.save_component(&merged)?;
+                    }
+                    summary.components_updated += 1;
+                } else {
+                    summary.components_skipped += 1;
+                }
+            }
+        } else {
+            let mut to_save = (*comp).clone();
+            if opts.no_performance {
+                to_save.performance = PerformanceRecord::default();
+            }
+            if !opts.dry_run {
+                target.save_component(&to_save)?;
+            }
+            summary.components_added += 1;
+        }
+    }
+
+    // --- Transfer outcomes (primitives) ---
+    for outcome in &outcomes_to_transfer {
+        if let Some(existing) = target_outcome_map.get(&outcome.id) {
+            if opts.force || opts.no_performance {
+                let mut merged = (*outcome).clone();
+                if opts.no_performance {
+                    merged.performance = existing.performance.clone();
+                }
+                if !opts.dry_run {
+                    target.save_outcome(&merged)?;
+                }
+                summary.outcomes_updated += 1;
+            } else {
+                let merged = merge_outcome(existing, outcome);
+                if merged_outcome_differs(existing, &merged) {
+                    if !opts.dry_run {
+                        target.save_outcome(&merged)?;
+                    }
+                    summary.outcomes_updated += 1;
+                } else {
+                    summary.outcomes_skipped += 1;
+                }
+            }
+        } else {
+            let mut to_save = (*outcome).clone();
+            if opts.no_performance {
+                to_save.performance = PerformanceRecord::default();
+            }
+            if !opts.dry_run {
+                target.save_outcome(&to_save)?;
+            }
+            summary.outcomes_added += 1;
         }
     }
 
@@ -749,26 +939,26 @@ pub fn transfer(
     }
 
     // Transfer motivations
-    for motivation in &motivations_to_transfer {
-        if let Some(existing) = target_motivation_map.get(&motivation.id) {
+    for motivation in &tradeoffs_to_transfer {
+        if let Some(existing) = target_tradeoff_map.get(&motivation.id) {
             if opts.force || opts.no_performance {
                 let mut merged = (*motivation).clone();
                 if opts.no_performance {
                     merged.performance = existing.performance.clone();
                 }
                 if !opts.dry_run {
-                    target.save_motivation(&merged)?;
+                    target.save_tradeoff(&merged)?;
                 }
-                summary.motivations_updated += 1;
+                summary.tradeoffs_updated += 1;
             } else {
-                let merged = merge_motivation(existing, motivation);
-                if merged_motivation_differs(existing, &merged) {
+                let merged = merge_tradeoff(existing, motivation);
+                if merged_tradeoff_differs(existing, &merged) {
                     if !opts.dry_run {
-                        target.save_motivation(&merged)?;
+                        target.save_tradeoff(&merged)?;
                     }
-                    summary.motivations_updated += 1;
+                    summary.tradeoffs_updated += 1;
                 } else {
-                    summary.motivations_skipped += 1;
+                    summary.tradeoffs_skipped += 1;
                 }
             }
         } else {
@@ -777,9 +967,9 @@ pub fn transfer(
                 to_save.performance = PerformanceRecord::default();
             }
             if !opts.dry_run {
-                target.save_motivation(&to_save)?;
+                target.save_tradeoff(&to_save)?;
             }
-            summary.motivations_added += 1;
+            summary.tradeoffs_added += 1;
         }
     }
 
@@ -831,15 +1021,15 @@ pub fn transfer(
         // Build filter sets ONCE outside the eval loop
         let eval_agent_ids: HashSet<&String> = agents_to_transfer.iter().map(|a| &a.id).collect();
         let eval_role_ids: HashSet<&String> = roles_to_transfer.iter().map(|r| &r.id).collect();
-        let eval_motivation_ids: HashSet<&String> =
-            motivations_to_transfer.iter().map(|m| &m.id).collect();
+        let eval_tradeoff_ids: HashSet<&String> =
+            tradeoffs_to_transfer.iter().map(|m| &m.id).collect();
 
         for eval in &source_evals {
             // If filtering by entity, only transfer evals for transferred agents/roles/motivations
             if has_filter {
                 let relevant = eval_agent_ids.contains(&eval.agent_id)
                     || eval_role_ids.contains(&eval.role_id)
-                    || eval_motivation_ids.contains(&eval.motivation_id);
+                    || eval_tradeoff_ids.contains(&eval.tradeoff_id);
                 if !relevant {
                     continue;
                 }
@@ -852,6 +1042,42 @@ pub fn transfer(
                     target.save_evaluation(eval)?;
                 }
                 summary.evaluations_added += 1;
+            }
+        }
+    }
+
+    // Transfer org-evaluations (included in federation scope)
+    if !opts.no_evaluations && matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Agents) {
+        let source_org_evals = crate::agency::load_all_org_evaluations_or_warn(
+            &source.store_path().join("org-evaluations"),
+        );
+        let target_org_eval_ids: HashSet<String> = crate::agency::load_all_org_evaluations_or_warn(
+            &target.store_path().join("org-evaluations"),
+        )
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+
+        for org_eval in &source_org_evals {
+            if has_filter {
+                let eval_agent_ids: HashSet<&String> =
+                    agents_to_transfer.iter().map(|a| &a.id).collect();
+                let relevant = eval_agent_ids.contains(&org_eval.agent_id);
+                if !relevant {
+                    continue;
+                }
+            }
+
+            if target_org_eval_ids.contains(&org_eval.id) {
+                summary.org_evaluations_skipped += 1;
+            } else {
+                if !opts.dry_run {
+                    crate::agency::save_org_evaluation(
+                        org_eval,
+                        &target.store_path().join("org-evaluations"),
+                    )?;
+                }
+                summary.org_evaluations_added += 1;
             }
         }
     }
@@ -887,6 +1113,7 @@ fn merge_performance(target: &PerformanceRecord, source: &PerformanceRecord) -> 
         task_count,
         avg_score,
         evaluations: merged_evals,
+        org_performance: None,
     }
 }
 
@@ -904,23 +1131,71 @@ fn merge_lineage(target: &Lineage, source: &Lineage) -> Lineage {
     }
 }
 
+/// Merge a component: target name wins, performance is unioned, lineage prefers richer.
+fn merge_component(target: &RoleComponent, source: &RoleComponent) -> RoleComponent {
+    RoleComponent {
+        id: target.id.clone(),
+        name: target.name.clone(),
+        description: target.description.clone(),
+        category: target.category.clone(),
+        content: target.content.clone(),
+        performance: merge_performance(&target.performance, &source.performance),
+        lineage: merge_lineage(&target.lineage, &source.lineage),
+        access_control: target.access_control.clone(),
+        former_agents: target.former_agents.clone(),
+        former_deployments: target.former_deployments.clone(),
+    }
+}
+
+/// Check if merged component has different metadata from original.
+fn merged_component_differs(original: &RoleComponent, merged: &RoleComponent) -> bool {
+    original.performance.task_count != merged.performance.task_count
+        || original.performance.evaluations.len() != merged.performance.evaluations.len()
+        || original.lineage.generation != merged.lineage.generation
+        || original.lineage.parent_ids.len() != merged.lineage.parent_ids.len()
+}
+
+/// Merge an outcome: target name wins, performance is unioned, lineage prefers richer.
+fn merge_outcome(target: &DesiredOutcome, source: &DesiredOutcome) -> DesiredOutcome {
+    DesiredOutcome {
+        id: target.id.clone(),
+        name: target.name.clone(),
+        description: target.description.clone(),
+        success_criteria: target.success_criteria.clone(),
+        performance: merge_performance(&target.performance, &source.performance),
+        lineage: merge_lineage(&target.lineage, &source.lineage),
+        access_control: target.access_control.clone(),
+        requires_human_oversight: target.requires_human_oversight,
+        former_agents: target.former_agents.clone(),
+        former_deployments: target.former_deployments.clone(),
+    }
+}
+
+/// Check if merged outcome has different metadata from original.
+fn merged_outcome_differs(original: &DesiredOutcome, merged: &DesiredOutcome) -> bool {
+    original.performance.task_count != merged.performance.task_count
+        || original.performance.evaluations.len() != merged.performance.evaluations.len()
+        || original.lineage.generation != merged.lineage.generation
+        || original.lineage.parent_ids.len() != merged.lineage.parent_ids.len()
+}
+
 /// Merge a role: target name wins, performance is unioned, lineage prefers richer.
 fn merge_role(target: &Role, source: &Role) -> Role {
     Role {
         id: target.id.clone(),
         name: target.name.clone(), // keep target name
         description: target.description.clone(),
-        skills: target.skills.clone(),
-        desired_outcome: target.desired_outcome.clone(),
+        component_ids: target.component_ids.clone(),
+        outcome_id: target.outcome_id.clone(),
         performance: merge_performance(&target.performance, &source.performance),
         lineage: merge_lineage(&target.lineage, &source.lineage),
         default_context_scope: target.default_context_scope.clone(),
     }
 }
 
-/// Merge a motivation: target name wins, performance is unioned, lineage prefers richer.
-fn merge_motivation(target: &Motivation, source: &Motivation) -> Motivation {
-    Motivation {
+/// Merge a tradeoff: target name wins, performance is unioned, lineage prefers richer.
+fn merge_tradeoff(target: &TradeoffConfig, source: &TradeoffConfig) -> TradeoffConfig {
+    TradeoffConfig {
         id: target.id.clone(),
         name: target.name.clone(),
         description: target.description.clone(),
@@ -928,6 +1203,9 @@ fn merge_motivation(target: &Motivation, source: &Motivation) -> Motivation {
         unacceptable_tradeoffs: target.unacceptable_tradeoffs.clone(),
         performance: merge_performance(&target.performance, &source.performance),
         lineage: merge_lineage(&target.lineage, &source.lineage),
+        access_control: target.access_control.clone(),
+        former_agents: target.former_agents.clone(),
+        former_deployments: target.former_deployments.clone(),
     }
 }
 
@@ -936,7 +1214,7 @@ fn merge_agent(target: &Agent, source: &Agent) -> Agent {
     Agent {
         id: target.id.clone(),
         role_id: target.role_id.clone(),
-        motivation_id: target.motivation_id.clone(),
+        tradeoff_id: target.tradeoff_id.clone(),
         name: target.name.clone(),
         performance: merge_performance(&target.performance, &source.performance),
         lineage: merge_lineage(&target.lineage, &source.lineage),
@@ -946,6 +1224,9 @@ fn merge_agent(target: &Agent, source: &Agent) -> Agent {
         trust_level: target.trust_level.clone(),
         contact: target.contact.clone(),
         executor: target.executor.clone(),
+        deployment_history: target.deployment_history.clone(),
+        attractor_weight: target.attractor_weight,
+        staleness_flags: target.staleness_flags.clone(),
     }
 }
 
@@ -957,8 +1238,8 @@ fn merged_role_differs(original: &Role, merged: &Role) -> bool {
         || original.lineage.parent_ids.len() != merged.lineage.parent_ids.len()
 }
 
-/// Check if merged motivation has different metadata from original.
-fn merged_motivation_differs(original: &Motivation, merged: &Motivation) -> bool {
+/// Check if merged tradeoff has different metadata from original.
+fn merged_tradeoff_differs(original: &TradeoffConfig, merged: &TradeoffConfig) -> bool {
     original.performance.task_count != merged.performance.task_count
         || original.performance.evaluations.len() != merged.performance.evaluations.len()
         || original.lineage.generation != merged.lineage.generation
@@ -990,16 +1271,16 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: "test role".to_string(),
-            skills: Vec::new(),
-            desired_outcome: "test outcome".to_string(),
+            component_ids: Vec::new(),
+            outcome_id: "test outcome".to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
         }
     }
 
-    fn make_motivation(id: &str, name: &str) -> Motivation {
-        Motivation {
+    fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
+        TradeoffConfig {
             id: id.to_string(),
             name: name.to_string(),
             description: "test motivation".to_string(),
@@ -1007,14 +1288,17 @@ mod tests {
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
+            access_control: agency::AccessControl::default(),
+            former_agents: Vec::new(),
+            former_deployments: Vec::new(),
         }
     }
 
-    fn make_agent(id: &str, name: &str, role_id: &str, motivation_id: &str) -> Agent {
+    fn make_agent(id: &str, name: &str, role_id: &str, tradeoff_id: &str) -> Agent {
         Agent {
             id: id.to_string(),
             role_id: role_id.to_string(),
-            motivation_id: motivation_id.to_string(),
+            tradeoff_id: tradeoff_id.to_string(),
             name: name.to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
@@ -1024,6 +1308,9 @@ mod tests {
             trust_level: crate::graph::TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: Vec::new(),
+            attractor_weight: 0.5,
+            staleness_flags: Vec::new(),
         }
     }
 
@@ -1108,7 +1395,7 @@ mod tests {
         let agent = make_agent("a1", "agent1", "r1", "m1");
 
         source.save_role(&role).unwrap();
-        source.save_motivation(&motivation).unwrap();
+        source.save_tradeoff(&motivation).unwrap();
         source.save_agent(&agent).unwrap();
 
         // Transfer only agents — should auto-include role and motivation
@@ -1120,9 +1407,9 @@ mod tests {
 
         assert_eq!(summary.agents_added, 1);
         assert_eq!(summary.roles_added, 1);
-        assert_eq!(summary.motivations_added, 1);
+        assert_eq!(summary.tradeoffs_added, 1);
         assert!(target.exists_role("r1"));
-        assert!(target.exists_motivation("m1"));
+        assert!(target.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -1136,12 +1423,12 @@ mod tests {
         let agent = make_agent("a1", "agent1", "r1", "m1");
 
         source.save_role(&role).unwrap();
-        source.save_motivation(&motivation).unwrap();
+        source.save_tradeoff(&motivation).unwrap();
         source.save_agent(&agent).unwrap();
 
         // Pre-populate target with deps
         target.save_role(&role).unwrap();
-        target.save_motivation(&motivation).unwrap();
+        target.save_tradeoff(&motivation).unwrap();
 
         let opts = TransferOptions {
             entity_filter: EntityFilter::Agents,
@@ -1153,7 +1440,7 @@ mod tests {
         // Deps already exist in target — referential integrity check skips them
         // (they were never added to the transfer set, so no count increment)
         assert_eq!(summary.roles_added, 0);
-        assert_eq!(summary.motivations_added, 0);
+        assert_eq!(summary.tradeoffs_added, 0);
     }
 
     #[test]
@@ -1226,6 +1513,7 @@ mod tests {
                 timestamp: "2026-01-01".to_string(),
                 context_id: String::new(),
             }],
+            org_performance: None,
         };
         let b = PerformanceRecord {
             task_count: 2,
@@ -1244,6 +1532,7 @@ mod tests {
                     context_id: String::new(),
                 },
             ],
+            org_performance: None,
         };
         let merged = merge_performance(&a, &b);
         assert_eq!(merged.task_count, 2); // deduped
@@ -1332,7 +1621,7 @@ mod tests {
 
         // Create an agent that references a role not in source
         let motivation = make_motivation("m1", "motivation1");
-        source.save_motivation(&motivation).unwrap();
+        source.save_tradeoff(&motivation).unwrap();
 
         let agent = make_agent("a1", "agent1", "nonexistent-role", "m1");
         source.save_agent(&agent).unwrap();

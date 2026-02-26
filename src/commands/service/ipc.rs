@@ -502,6 +502,7 @@ fn handle_reconfigure(
                 daemon_cfg.executor = config.coordinator.executor;
                 daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
                 daemon_cfg.model = config.coordinator.model;
+                daemon_cfg.settling_delay = Duration::from_millis(config.coordinator.settling_delay_ms);
             }
             Err(e) => {
                 logger.error(&format!("Failed to reload config.toml: {}", e));
@@ -647,6 +648,7 @@ fn handle_add_task(
         visibility: "internal".to_string(),
         context_scope: None,
         cycle_config: None,
+        token_usage: None,
     };
 
     graph.add_node(Node::Task(task));
@@ -854,6 +856,7 @@ mod tests {
             poll_interval: Duration::from_secs(60),
             model: None,
             paused: false,
+            settling_delay: Duration::from_millis(2000),
         };
 
         let logger = DaemonLogger::open(dir).unwrap();
@@ -908,6 +911,7 @@ poll_interval = 120
             poll_interval: Duration::from_secs(60),
             model: None,
             paused: false,
+            settling_delay: Duration::from_millis(2000),
         };
 
         let logger = DaemonLogger::open(dir).unwrap();

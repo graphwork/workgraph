@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::AgencyConfig;
 use super::store::*;
 use super::types::*;
 
@@ -33,13 +34,13 @@ pub fn update_performance(record: &mut PerformanceRecord, eval_ref: EvaluationRe
     record.avg_score = recalculate_avg_score(&record.evaluations);
 }
 
-/// Record an evaluation: persist the eval JSON, and update agent, role, and motivation performance.
+/// Record an evaluation: persist the eval JSON, and update agent, role, and tradeoff performance.
 ///
 /// Steps:
 /// 1. Save the `Evaluation` as JSON in `agency_dir/evaluations/eval-{task_id}-{timestamp}.json`.
 /// 2. Load the agent (if agent_id is set), add an `EvaluationRef`, recalculate scores, save.
-/// 3. Load the role, add an `EvaluationRef` (with motivation_id as context), recalculate scores, save.
-/// 4. Load the motivation, add an `EvaluationRef` (with role_id as context), recalculate scores, save.
+/// 3. Load the role, add an `EvaluationRef` (with tradeoff_id as context), recalculate scores, save.
+/// 4. Load the tradeoff, add an `EvaluationRef` (with role_id as context), recalculate scores, save.
 ///
 /// Returns the path to the saved evaluation JSON.
 pub fn record_evaluation(
@@ -49,9 +50,9 @@ pub fn record_evaluation(
     init(agency_dir)?;
 
     let evals_dir = agency_dir.join("evaluations");
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
-    let agents_dir = agency_dir.join("agents");
+    let roles_dir = agency_dir.join("cache/roles");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
 
     // 1. Save the full Evaluation JSON with task_id-timestamp naming
     let safe_ts = evaluation.timestamp.replace(':', "-");
@@ -80,24 +81,129 @@ pub fn record_evaluation(
             score: evaluation.score,
             task_id: evaluation.task_id.clone(),
             timestamp: evaluation.timestamp.clone(),
-            context_id: evaluation.motivation_id.clone(),
+            context_id: evaluation.tradeoff_id.clone(),
         };
         update_performance(&mut role.performance, role_eval_ref);
         save_role(&role, &roles_dir)?;
     }
 
-    // 4. Update motivation performance
-    if let Ok(mut motivation) =
-        find_motivation_by_prefix(&motivations_dir, &evaluation.motivation_id)
+    // 4. Update tradeoff performance
+    if let Ok(mut tradeoff) =
+        find_tradeoff_by_prefix(&tradeoffs_dir, &evaluation.tradeoff_id)
     {
-        let motivation_eval_ref = EvaluationRef {
+        let tradeoff_eval_ref = EvaluationRef {
             score: evaluation.score,
             task_id: evaluation.task_id.clone(),
             timestamp: evaluation.timestamp.clone(),
             context_id: evaluation.role_id.clone(),
         };
-        update_performance(&mut motivation.performance, motivation_eval_ref);
-        save_motivation(&motivation, &motivations_dir)?;
+        update_performance(&mut tradeoff.performance, tradeoff_eval_ref);
+        save_tradeoff(&tradeoff, &tradeoffs_dir)?;
+    }
+
+    Ok(eval_path)
+}
+
+/// Record an evaluation and trigger retrospective inference for learning assignments.
+///
+/// This is the recommended entry point when the run mode continuum is active.
+/// It calls `record_evaluation` for normal score propagation, then
+/// `process_retrospective_inference` to update primitive scores and
+/// attractor weights for learning experiments.
+pub fn record_evaluation_with_inference(
+    evaluation: &Evaluation,
+    agency_dir: &Path,
+    config: &AgencyConfig,
+) -> Result<PathBuf, AgencyError> {
+    let eval_path = record_evaluation(evaluation, agency_dir)?;
+
+    // Trigger retrospective inference for learning assignments
+    if let Err(e) = super::run_mode::process_retrospective_inference(
+        agency_dir,
+        &evaluation.task_id,
+        evaluation.score,
+        config,
+    ) {
+        eprintln!(
+            "Warning: retrospective inference failed for task '{}': {}",
+            evaluation.task_id, e
+        );
+    }
+
+    Ok(eval_path)
+}
+
+/// Recalculate the average score from a list of OrgEvalRefs.
+pub fn recalculate_org_avg_score(evaluations: &[OrgEvalRef]) -> Option<f64> {
+    let valid: Vec<f64> = evaluations.iter().map(|e| e.score).filter(|s| s.is_finite()).collect();
+    if valid.is_empty() { return None; }
+    let avg = valid.iter().sum::<f64>() / valid.len() as f64;
+    if avg.is_finite() { Some(avg) } else { None }
+}
+
+/// Update an OrgPerformanceRecord with a new org evaluation reference.
+pub fn update_org_performance(record: &mut OrgPerformanceRecord, eval_ref: OrgEvalRef) {
+    record.task_count = record.task_count.saturating_add(1);
+    record.evaluations.push(eval_ref);
+    record.avg_score = recalculate_org_avg_score(&record.evaluations);
+}
+
+/// Record an org evaluation: persist the JSON, and update agent, role, and tradeoff
+/// org_performance records.
+///
+/// Steps:
+/// 1. Save `OrgEvaluation` as JSON in `agency_dir/org-evaluations/org-eval-{task_id}-{timestamp}.json`.
+/// 2. Load the agent (if agent_id is set), update org_performance, save.
+/// 3. Load the role, update org_performance, save.
+/// 4. Load the tradeoff, update org_performance, save.
+///
+/// Returns the path to the saved org evaluation JSON.
+pub fn record_org_evaluation(
+    org_eval: &OrgEvaluation,
+    agency_dir: &Path,
+) -> Result<PathBuf, AgencyError> {
+    init(agency_dir)?;
+
+    let org_evals_dir = agency_dir.join("org-evaluations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
+
+    // 1. Save the OrgEvaluation JSON
+    let safe_ts = org_eval.timestamp.replace(':', "-");
+    let filename = format!("org-eval-{}-{}.json", org_eval.task_id, safe_ts);
+    let eval_path = org_evals_dir.join(&filename);
+    fs::create_dir_all(&org_evals_dir)?;
+    fs::write(&eval_path, serde_json::to_string_pretty(org_eval)?)?;
+
+    let org_ref = OrgEvalRef {
+        score: org_eval.score,
+        task_id: org_eval.task_id.clone(),
+        timestamp: org_eval.timestamp.clone(),
+        downstream_task_count: org_eval.downstream_task_count,
+    };
+
+    // 2. Update agent org_performance (if agent_id is present)
+    if !org_eval.agent_id.is_empty()
+        && let Ok(mut agent) = find_agent_by_prefix(&agents_dir, &org_eval.agent_id)
+    {
+        let record = agent.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
+        update_org_performance(record, org_ref.clone());
+        save_agent(&agent, &agents_dir)?;
+    }
+
+    // 3. Update role org_performance
+    if let Ok(mut role) = find_role_by_prefix(&roles_dir, &org_eval.role_id) {
+        let record = role.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
+        update_org_performance(record, org_ref.clone());
+        save_role(&role, &roles_dir)?;
+    }
+
+    // 4. Update tradeoff org_performance
+    if let Ok(mut tradeoff) = find_tradeoff_by_prefix(&tradeoffs_dir, &org_eval.tradeoff_id) {
+        let record = tradeoff.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
+        update_org_performance(record, org_ref);
+        save_tradeoff(&tradeoff, &tradeoffs_dir)?;
     }
 
     Ok(eval_path)
@@ -105,7 +211,7 @@ pub fn record_evaluation(
 
 #[cfg(test)]
 mod tests {
-    use super::super::starters::{build_motivation, build_role};
+    use super::super::starters::{build_role, build_tradeoff};
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
@@ -115,15 +221,15 @@ mod tests {
             "Implementer",
             "Writes code to fulfil task requirements.",
             vec![
-                SkillRef::Name("rust".into()),
-                SkillRef::Inline("fn main() {}".into()),
+                "rust".to_string(),
+                "inline:fn main() {}".to_string(),
             ],
             "Working, tested code merged to main.",
         )
     }
 
-    fn sample_motivation() -> Motivation {
-        build_motivation(
+    fn sample_tradeoff() -> TradeoffConfig {
+        build_tradeoff(
             "Quality First",
             "Prioritise correctness and maintainability.",
             vec!["Slower delivery for higher quality".into()],
@@ -175,11 +281,7 @@ mod tests {
 
     #[test]
     fn test_update_performance_increments_and_recalculates() {
-        let mut record = PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        };
+        let mut record = PerformanceRecord::default();
 
         update_performance(&mut record, make_eval_ref(0.8, "t1", "m1"));
         assert_eq!(record.task_count, 1);
@@ -206,6 +308,7 @@ mod tests {
                 make_eval_ref(0.6, "t1", "m1"),
                 make_eval_ref(0.8, "t2", "m1"),
             ],
+            org_performance: None,
         };
 
         update_performance(&mut record, make_eval_ref(0.9, "t3", "m1"));
@@ -222,17 +325,17 @@ mod tests {
 
         let role = sample_role();
         let role_id = role.id.clone();
-        save_role(&role, &agency_dir.join("roles")).unwrap();
-        let motivation = sample_motivation();
-        let motivation_id = motivation.id.clone();
-        save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+        save_role(&role, &agency_dir.join("cache/roles")).unwrap();
+        let tradeoff = sample_tradeoff();
+        let tradeoff_id = tradeoff.id.clone();
+        save_tradeoff(&tradeoff, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
         let eval = Evaluation {
             id: "eval-test-1".into(),
             task_id: "task-42".into(),
             agent_id: String::new(),
             role_id: role_id.clone(),
-            motivation_id: motivation_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
             score: 0.85,
             dimensions: HashMap::new(),
             notes: "Good work".into(),
@@ -251,7 +354,7 @@ mod tests {
         assert_eq!(saved_eval.task_id, "task-42");
 
         // 2. Role performance was updated
-        let role_path = agency_dir.join("roles").join(format!("{}.yaml", role_id));
+        let role_path = agency_dir.join("cache/roles").join(format!("{}.yaml", role_id));
         let updated_role = load_role(&role_path).unwrap();
         assert_eq!(updated_role.performance.task_count, 1);
         assert!((updated_role.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON);
@@ -259,19 +362,19 @@ mod tests {
         assert_eq!(updated_role.performance.evaluations[0].task_id, "task-42");
         assert_eq!(
             updated_role.performance.evaluations[0].context_id,
-            motivation_id
+            tradeoff_id
         );
 
         // 3. Motivation performance was updated
-        let motivation_path = agency_dir
-            .join("motivations")
-            .join(format!("{}.yaml", motivation_id));
-        let updated_motivation = load_motivation(&motivation_path).unwrap();
-        assert_eq!(updated_motivation.performance.task_count, 1);
-        assert!((updated_motivation.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON);
-        assert_eq!(updated_motivation.performance.evaluations.len(), 1);
+        let tradeoff_path = agency_dir
+            .join("primitives/tradeoffs")
+            .join(format!("{}.yaml", tradeoff_id));
+        let updated_tradeoff = load_tradeoff(&tradeoff_path).unwrap();
+        assert_eq!(updated_tradeoff.performance.task_count, 1);
+        assert!((updated_tradeoff.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON);
+        assert_eq!(updated_tradeoff.performance.evaluations.len(), 1);
         assert_eq!(
-            updated_motivation.performance.evaluations[0].context_id,
+            updated_tradeoff.performance.evaluations[0].context_id,
             role_id
         );
     }
@@ -284,17 +387,17 @@ mod tests {
 
         let role = sample_role();
         let role_id = role.id.clone();
-        save_role(&role, &agency_dir.join("roles")).unwrap();
-        let motivation = sample_motivation();
-        let motivation_id = motivation.id.clone();
-        save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+        save_role(&role, &agency_dir.join("cache/roles")).unwrap();
+        let tradeoff = sample_tradeoff();
+        let tradeoff_id = tradeoff.id.clone();
+        save_tradeoff(&tradeoff, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
         let eval1 = Evaluation {
             id: "eval-1".into(),
             task_id: "task-1".into(),
             agent_id: String::new(),
             role_id: role_id.clone(),
-            motivation_id: motivation_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
             score: 0.6,
             dimensions: HashMap::new(),
             notes: "".into(),
@@ -309,7 +412,7 @@ mod tests {
             task_id: "task-2".into(),
             agent_id: String::new(),
             role_id: role_id.clone(),
-            motivation_id: motivation_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
             score: 1.0,
             dimensions: HashMap::new(),
             notes: "".into(),
@@ -322,18 +425,18 @@ mod tests {
         record_evaluation(&eval1, &agency_dir).unwrap();
         record_evaluation(&eval2, &agency_dir).unwrap();
 
-        let role_path = agency_dir.join("roles").join(format!("{}.yaml", role_id));
+        let role_path = agency_dir.join("cache/roles").join(format!("{}.yaml", role_id));
         let updated_role = load_role(&role_path).unwrap();
         assert_eq!(updated_role.performance.task_count, 2);
         assert!((updated_role.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
         assert_eq!(updated_role.performance.evaluations.len(), 2);
 
-        let motivation_path = agency_dir
-            .join("motivations")
-            .join(format!("{}.yaml", motivation_id));
-        let updated_motivation = load_motivation(&motivation_path).unwrap();
-        assert_eq!(updated_motivation.performance.task_count, 2);
-        assert!((updated_motivation.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
+        let tradeoff_path = agency_dir
+            .join("primitives/tradeoffs")
+            .join(format!("{}.yaml", tradeoff_id));
+        let updated_tradeoff = load_tradeoff(&tradeoff_path).unwrap();
+        assert_eq!(updated_tradeoff.performance.task_count, 2);
+        assert!((updated_tradeoff.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -342,16 +445,16 @@ mod tests {
         let agency_dir = tmp.path().join("agency");
         init(&agency_dir).unwrap();
 
-        let motivation = sample_motivation();
-        let motivation_id = motivation.id.clone();
-        save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+        let tradeoff = sample_tradeoff();
+        let tradeoff_id = tradeoff.id.clone();
+        save_tradeoff(&tradeoff, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
         let eval = Evaluation {
             id: "eval-orphan".into(),
             task_id: "task-99".into(),
             agent_id: String::new(),
             role_id: "nonexistent-role".into(),
-            motivation_id: motivation_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
             score: 0.5,
             dimensions: HashMap::new(),
             notes: "".into(),
@@ -364,10 +467,10 @@ mod tests {
         let result = record_evaluation(&eval, &agency_dir);
         assert!(result.is_ok());
 
-        let motivation_path = agency_dir
-            .join("motivations")
-            .join(format!("{}.yaml", motivation_id));
-        let updated = load_motivation(&motivation_path).unwrap();
+        let tradeoff_path = agency_dir
+            .join("primitives/tradeoffs")
+            .join(format!("{}.yaml", tradeoff_id));
+        let updated = load_tradeoff(&tradeoff_path).unwrap();
         assert_eq!(updated.performance.task_count, 1);
     }
 

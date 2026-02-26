@@ -488,8 +488,8 @@ fn resolve_task_scope(
     // Get role's default_context_scope if task has an agent
     let role_scope = task.agent.as_ref().and_then(|agent_hash| {
         let agency_dir = workgraph_dir.join("agency");
-        let agents_dir = agency_dir.join("agents");
-        let roles_dir = agency_dir.join("roles");
+        let agents_dir = agency_dir.join("cache/agents");
+        let roles_dir = agency_dir.join("cache/roles");
         let agent = workgraph::agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()?;
         let role = workgraph::agency::find_role_by_prefix(&roles_dir, &agent.role_id).ok()?;
         role.default_context_scope

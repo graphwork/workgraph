@@ -264,6 +264,7 @@ pub fn run(
                 visibility: "internal".to_string(),
                 context_scope: None,
                 cycle_config: None,
+                token_usage: None,
             };
 
             graph.add_node(Node::Task(task));

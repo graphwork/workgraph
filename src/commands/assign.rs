@@ -32,7 +32,7 @@ pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> 
 /// Explicitly assign an agent (by hash or prefix) to a task.
 fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str) -> Result<()> {
     let agency_dir = dir.join("agency");
-    let agents_dir = agency_dir.join("agents");
+    let agents_dir = agency_dir.join("cache/agents");
 
     // Resolve agent by prefix
     let agent = agency::find_agent_by_prefix(&agents_dir, agent_hash).with_context(|| {
@@ -65,13 +65,13 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     );
 
     // Resolve role/motivation names for display
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
     let role_name = agency::find_role_by_prefix(&roles_dir, &agent.role_id)
         .map(|r| r.name)
         .unwrap_or_else(|_| "(not found)".to_string());
-    let motivation_name = agency::find_motivation_by_prefix(&motivations_dir, &agent.motivation_id)
+    let motivation_name = agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id)
         .map(|m| m.name)
         .unwrap_or_else(|_| "(not found)".to_string());
 
@@ -89,7 +89,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     println!(
         "  Motivation: {} ({})",
         motivation_name,
-        agency::short_hash(&agent.motivation_id)
+        agency::short_hash(&agent.tradeoff_id)
     );
 
     Ok(())
@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::agency::{Lineage, PerformanceRecord, SkillRef};
+    use workgraph::agency::{Lineage, PerformanceRecord};
     use workgraph::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -176,13 +176,13 @@ mod tests {
         let role = agency::build_role(
             "Implementer",
             "Writes code",
-            vec![SkillRef::Name("rust".to_string())],
+            vec!["rust".to_string()],
             "Working code",
         );
         let role_id = role.id.clone();
-        agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+        agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-        let mut motivation = agency::build_motivation(
+        let mut motivation = agency::build_tradeoff(
             "Quality First",
             "Prioritise correctness",
             vec!["Slower delivery".to_string()],
@@ -191,20 +191,16 @@ mod tests {
         motivation.performance.task_count = 2;
         motivation.performance.avg_score = Some(0.9);
         let mot_id = motivation.id.clone();
-        agency::save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+        agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
         // Create an agent for this role+motivation pair
         let agent_id = agency::content_hash_agent(&role_id, &mot_id);
         let agent = agency::Agent {
             id: agent_id.clone(),
             role_id: role_id.clone(),
-            motivation_id: mot_id.clone(),
+            tradeoff_id: mot_id.clone(),
             name: "test-agent".to_string(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             capabilities: Vec::new(),
             rate: None,
@@ -212,8 +208,11 @@ mod tests {
             trust_level: Default::default(),
             contact: None,
             executor: "claude".to_string(),
+            attractor_weight: 1.0,
+            deployment_history: vec![],
+            staleness_flags: vec![],
         };
-        agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
+        agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
         (agent_id, role_id, mot_id)
     }

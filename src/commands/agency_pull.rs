@@ -38,10 +38,12 @@ fn local_store(workgraph_dir: &Path, global: bool) -> Result<LocalStore> {
 
 fn parse_entity_filter(entity_type: Option<&str>) -> Result<EntityFilter> {
     match entity_type {
+        Some("component" | "components") => Ok(EntityFilter::Components),
+        Some("outcome" | "outcomes") => Ok(EntityFilter::Outcomes),
         Some("role" | "roles") => Ok(EntityFilter::Roles),
-        Some("motivation" | "motivations") => Ok(EntityFilter::Motivations),
+        Some("motivation" | "motivations" | "tradeoff" | "tradeoffs") => Ok(EntityFilter::Tradeoffs),
         Some("agent" | "agents") => Ok(EntityFilter::Agents),
-        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: role, motivation, or agent", other),
+        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent", other),
         None => Ok(EntityFilter::All),
     }
 }
@@ -89,9 +91,9 @@ pub fn run(workgraph_dir: &Path, opts: &PullOptions) -> Result<()> {
                 "skipped": summary.roles_skipped,
             },
             "motivations": {
-                "added": summary.motivations_added,
-                "updated": summary.motivations_updated,
-                "skipped": summary.motivations_skipped,
+                "added": summary.tradeoffs_added,
+                "updated": summary.tradeoffs_updated,
+                "skipped": summary.tradeoffs_skipped,
             },
             "agents": {
                 "added": summary.agents_added,
@@ -129,7 +131,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::agency::{
-        Agent, AgencyStore, EvaluationRef, Lineage, Motivation, PerformanceRecord, Role,
+        Agent, AgencyStore, EvaluationRef, Lineage, TradeoffConfig, PerformanceRecord, Role,
     };
     use workgraph::graph::TrustLevel;
 
@@ -144,16 +146,16 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: "test role".to_string(),
-            skills: Vec::new(),
-            desired_outcome: "test outcome".to_string(),
+            component_ids: Vec::new(),
+            outcome_id: "test outcome".to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
         }
     }
 
-    fn make_motivation(id: &str, name: &str) -> Motivation {
-        Motivation {
+    fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
+        TradeoffConfig {
             id: id.to_string(),
             name: name.to_string(),
             description: "test motivation".to_string(),
@@ -161,14 +163,17 @@ mod tests {
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
+            access_control: workgraph::agency::AccessControl::default(),
+            former_agents: vec![],
+            former_deployments: vec![],
         }
     }
 
-    fn make_agent(id: &str, name: &str, role_id: &str, motivation_id: &str) -> Agent {
+    fn make_agent(id: &str, name: &str, role_id: &str, tradeoff_id: &str) -> Agent {
         Agent {
             id: id.to_string(),
             role_id: role_id.to_string(),
-            motivation_id: motivation_id.to_string(),
+            tradeoff_id: tradeoff_id.to_string(),
             name: name.to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
@@ -178,6 +183,9 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 
@@ -189,16 +197,16 @@ mod tests {
 
         source.save_role(&make_role("r1", "analyst")).unwrap();
         source
-            .save_motivation(&make_motivation("m1", "quality"))
+            .save_tradeoff(&make_motivation("m1", "quality"))
             .unwrap();
 
         let opts = TransferOptions::default();
         let summary = federation::transfer(&source, &target, &opts).unwrap();
 
         assert_eq!(summary.roles_added, 1);
-        assert_eq!(summary.motivations_added, 1);
+        assert_eq!(summary.tradeoffs_added, 1);
         assert!(target.exists_role("r1"));
-        assert!(target.exists_motivation("m1"));
+        assert!(target.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -218,6 +226,7 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-1".to_string(),
             }],
+            org_performance: None,
         };
         target.save_role(&target_role).unwrap();
 
@@ -232,6 +241,7 @@ mod tests {
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "mot-2".to_string(),
             }],
+            org_performance: None,
         };
         source.save_role(&source_role).unwrap();
 
@@ -252,7 +262,7 @@ mod tests {
 
         source.save_role(&make_role("r1", "builder")).unwrap();
         source
-            .save_motivation(&make_motivation("m1", "speed"))
+            .save_tradeoff(&make_motivation("m1", "speed"))
             .unwrap();
         source
             .save_agent(&make_agent("a1", "fast-builder", "r1", "m1"))
@@ -267,9 +277,9 @@ mod tests {
 
         assert_eq!(summary.agents_added, 1);
         assert_eq!(summary.roles_added, 1);
-        assert_eq!(summary.motivations_added, 1);
+        assert_eq!(summary.tradeoffs_added, 1);
         assert!(target.exists_role("r1"));
-        assert!(target.exists_motivation("m1"));
+        assert!(target.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -305,6 +315,7 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-x".to_string(),
             }],
+            org_performance: None,
         };
         source.save_role(&role).unwrap();
 
@@ -327,7 +338,7 @@ mod tests {
 
         source.save_role(&make_role("r1", "tester")).unwrap();
         source
-            .save_motivation(&make_motivation("m1", "quality"))
+            .save_tradeoff(&make_motivation("m1", "quality"))
             .unwrap();
 
         // Set up a workgraph dir for the target
@@ -353,7 +364,7 @@ mod tests {
 
         let result = LocalStore::new(&agency_dir);
         assert!(result.exists_role("r1"));
-        assert!(result.exists_motivation("m1"));
+        assert!(result.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -401,7 +412,7 @@ mod tests {
 
         source.save_role(&make_role("r1", "role")).unwrap();
         source
-            .save_motivation(&make_motivation("m1", "mot"))
+            .save_tradeoff(&make_motivation("m1", "mot"))
             .unwrap();
 
         // Pull only roles
@@ -411,9 +422,9 @@ mod tests {
         };
         let summary = federation::transfer(&source, &target, &opts).unwrap();
         assert_eq!(summary.roles_added, 1);
-        assert_eq!(summary.motivations_added, 0);
+        assert_eq!(summary.tradeoffs_added, 0);
         assert!(target.exists_role("r1"));
-        assert!(!target.exists_motivation("m1"));
+        assert!(!target.exists_tradeoff("m1"));
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::hash::short_hash;
+use super::run_mode::AssignmentPath;
 use super::types::*;
 
 /// Expand `~` at the start of a path to the user's home directory.
@@ -23,13 +24,22 @@ fn expand_tilde(path: &Path) -> PathBuf {
 /// - `Inline`: returns the content directly.
 ///
 /// `workgraph_root` is the project root directory (parent of `.workgraph/`).
-pub fn resolve_skill(skill: &SkillRef, workgraph_root: &Path) -> Result<ResolvedSkill, String> {
+pub fn resolve_skill(skill: &ContentRef, workgraph_root: &Path) -> Result<ResolvedSkill, String> {
     match skill {
-        SkillRef::Name(name) => Ok(ResolvedSkill {
-            name: name.clone(),
-            content: name.clone(),
-        }),
-        SkillRef::File(path) => {
+        ContentRef::Name(name) => {
+            if let Some(content) = name.strip_prefix("inline:") {
+                Ok(ResolvedSkill {
+                    name: "inline".to_string(),
+                    content: content.to_string(),
+                })
+            } else {
+                Ok(ResolvedSkill {
+                    name: name.clone(),
+                    content: name.clone(),
+                })
+            }
+        }
+        ContentRef::File(path) => {
             let expanded = expand_tilde(path);
             let resolved = if expanded.is_absolute() {
                 expanded
@@ -44,8 +54,8 @@ pub fn resolve_skill(skill: &SkillRef, workgraph_root: &Path) -> Result<Resolved
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             Ok(ResolvedSkill { name, content })
         }
-        SkillRef::Url(url) => resolve_url(url),
-        SkillRef::Inline(content) => Ok(ResolvedSkill {
+        ContentRef::Url(url) => resolve_url(url),
+        ContentRef::Inline(content) => Ok(ResolvedSkill {
             name: "inline".to_string(),
             content: content.clone(),
         }),
@@ -77,16 +87,33 @@ fn resolve_url(url: &str) -> Result<ResolvedSkill, String> {
 ///
 /// Skills that fail to resolve produce a warning on stderr but do not abort.
 pub fn resolve_all_skills(role: &Role, workgraph_root: &Path) -> Vec<ResolvedSkill> {
-    role.skills
+    role.component_ids
         .iter()
-        .filter_map(|skill_ref| match resolve_skill(skill_ref, workgraph_root) {
-            Ok(resolved) => Some(resolved),
-            Err(warning) => {
-                eprintln!("Warning: {}", warning);
-                None
+        .filter_map(|id| {
+            let content_ref = parse_component_id(id);
+            match resolve_skill(&content_ref, workgraph_root) {
+                Ok(resolved) => Some(resolved),
+                Err(warning) => {
+                    eprintln!("Warning: {}", warning);
+                    None
+                }
             }
         })
         .collect()
+}
+
+/// Parse a component ID string into a ContentRef, detecting prefixes like
+/// `inline:`, `file:///`, `https://`, `http://`.
+fn parse_component_id(id: &str) -> ContentRef {
+    if let Some(content) = id.strip_prefix("inline:") {
+        ContentRef::Inline(content.to_string())
+    } else if let Some(rest) = id.strip_prefix("file:///") {
+        ContentRef::File(PathBuf::from(format!("/{}", rest)))
+    } else if id.starts_with("https://") || id.starts_with("http://") {
+        ContentRef::Url(id.to_string())
+    } else {
+        ContentRef::Name(id.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +125,7 @@ pub fn resolve_all_skills(role: &Role, workgraph_root: &Path) -> Vec<ResolvedSki
 /// The output is placed between system context and task description in the prompt.
 pub fn render_identity_prompt(
     role: &Role,
-    motivation: &Motivation,
+    tradeoff: &TradeoffConfig,
     resolved_skills: &[ResolvedSkill],
 ) -> String {
     let mut out = String::new();
@@ -120,25 +147,25 @@ pub fn render_identity_prompt(
     }
 
     out.push_str("#### Desired Outcome\n");
-    let _ = writeln!(out, "{}\n", role.desired_outcome);
+    let _ = writeln!(out, "{}\n", role.outcome_id);
 
-    let has_tradeoffs = !motivation.acceptable_tradeoffs.is_empty();
-    let has_constraints = !motivation.unacceptable_tradeoffs.is_empty();
+    let has_tradeoffs = !tradeoff.acceptable_tradeoffs.is_empty();
+    let has_constraints = !tradeoff.unacceptable_tradeoffs.is_empty();
 
     if has_tradeoffs || has_constraints {
         out.push_str("### Operational Parameters\n");
 
         if has_tradeoffs {
             out.push_str("#### Acceptable Trade-offs\n");
-            for tradeoff in &motivation.acceptable_tradeoffs {
-                let _ = writeln!(out, "- {}", tradeoff);
+            for t in &tradeoff.acceptable_tradeoffs {
+                let _ = writeln!(out, "- {}", t);
             }
             out.push('\n');
         }
 
         if has_constraints {
             out.push_str("#### Non-negotiable Constraints\n");
-            for constraint in &motivation.unacceptable_tradeoffs {
+            for constraint in &tradeoff.unacceptable_tradeoffs {
                 let _ = writeln!(out, "- {}", constraint);
             }
             out.push('\n');
@@ -164,8 +191,8 @@ pub struct EvaluatorInput<'a> {
     pub agent: Option<&'a Agent>,
     /// Role used by the agent (if identity was assigned)
     pub role: Option<&'a Role>,
-    /// Motivation used by the agent (if identity was assigned)
-    pub motivation: Option<&'a Motivation>,
+    /// Tradeoff config used by the agent (if identity was assigned)
+    pub tradeoff: Option<&'a TradeoffConfig>,
     /// Produced artifacts (file paths / references)
     pub artifacts: &'a [String],
     /// Progress log entries
@@ -174,6 +201,12 @@ pub struct EvaluatorInput<'a> {
     pub started_at: Option<&'a str>,
     /// Time the task completed (ISO 8601, if available)
     pub completed_at: Option<&'a str>,
+    /// Git diff of artifact files at completion time (ground truth for evaluator)
+    pub artifact_diff: Option<&'a str>,
+    /// Pre-rendered identity prompt for the evaluator agent itself (if configured).
+    /// When present, replaces the generic system instruction with the evaluator's
+    /// own role components and tradeoff configuration.
+    pub evaluator_identity: Option<&'a str>,
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -183,13 +216,22 @@ pub struct EvaluatorInput<'a> {
 pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     let mut out = String::new();
 
-    // -- System instructions --
-    out.push_str("# Evaluator Instructions\n\n");
-    out.push_str(
-        "You are an evaluator assessing the quality of work performed by an AI agent.\n\
-         Review the task definition, the agent identity that was used, the produced artifacts,\n\
-         and the task log. Then produce a JSON evaluation.\n\n",
-    );
+    // -- System instructions / evaluator identity --
+    if let Some(identity) = input.evaluator_identity {
+        out.push_str(identity);
+        out.push_str("\n\n");
+        out.push_str(
+            "Review the task definition, the agent identity that was used, the produced artifacts,\n\
+             and the task log. Then produce a JSON evaluation.\n\n",
+        );
+    } else {
+        out.push_str("# Evaluator Instructions\n\n");
+        out.push_str(
+            "You are an evaluator assessing the quality of work performed by an AI agent.\n\
+             Review the task definition, the agent identity that was used, the produced artifacts,\n\
+             and the task log. Then produce a JSON evaluation.\n\n",
+        );
+    }
 
     // -- Task definition --
     out.push_str("## Task Definition\n\n");
@@ -221,27 +263,27 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     if let Some(role) = input.role {
         let _ = writeln!(out, "**Role:** {} ({})", role.name, role.id);
         let _ = writeln!(out, "{}\n", role.description);
-        let _ = writeln!(out, "**Desired Outcome:** {}\n", role.desired_outcome);
+        let _ = writeln!(out, "**Desired Outcome:** {}\n", role.outcome_id);
     } else {
         out.push_str("*No role was assigned.*\n\n");
     }
-    if let Some(motivation) = input.motivation {
+    if let Some(tradeoff) = input.tradeoff {
         let _ = writeln!(
             out,
             "**Motivation:** {} ({})",
-            motivation.name, motivation.id
+            tradeoff.name, tradeoff.id
         );
-        let _ = writeln!(out, "{}\n", motivation.description);
-        if !motivation.acceptable_tradeoffs.is_empty() {
+        let _ = writeln!(out, "{}\n", tradeoff.description);
+        if !tradeoff.acceptable_tradeoffs.is_empty() {
             out.push_str("**Acceptable Trade-offs:**\n");
-            for t in &motivation.acceptable_tradeoffs {
+            for t in &tradeoff.acceptable_tradeoffs {
                 let _ = writeln!(out, "- {}", t);
             }
             out.push('\n');
         }
-        if !motivation.unacceptable_tradeoffs.is_empty() {
+        if !tradeoff.unacceptable_tradeoffs.is_empty() {
             out.push_str("**Non-negotiable Constraints:**\n");
-            for c in &motivation.unacceptable_tradeoffs {
+            for c in &tradeoff.unacceptable_tradeoffs {
                 let _ = writeln!(out, "- {}", c);
             }
             out.push('\n');
@@ -332,21 +374,148 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Run mode context for assigner prompts
+// ---------------------------------------------------------------------------
+
+/// Input data for assigner mode context.
+pub struct AssignerModeContext<'a> {
+    /// Current run_mode value.
+    pub run_mode: f64,
+    /// Effective exploration rate (max of run_mode and min_exploration_rate).
+    pub effective_exploration_rate: f64,
+    /// Which assignment path was selected.
+    pub assignment_path: AssignmentPath,
+    /// For learning mode: the experiment specification.
+    pub experiment: Option<&'a AssignmentExperiment>,
+    /// For performance mode: top cached agents with scores.
+    pub cached_agents: &'a [(String, f64)],
+    /// Total assignment count so far.
+    pub total_assignments: u32,
+}
+
+/// Render mode context for the assigner prompt.
+///
+/// Extends the assigner prompt with:
+/// 1. Mode context (run_mode, effective rate, selected path).
+/// 2. Experiment specification (learning mode).
+/// 3. Cache contents (performance mode).
+pub fn render_assigner_mode_context(ctx: &AssignerModeContext) -> String {
+    let mut out = String::new();
+
+    out.push_str("## Assignment Mode Context\n\n");
+    let _ = writeln!(out, "- **Run mode:** {:.2}", ctx.run_mode);
+    let _ = writeln!(
+        out,
+        "- **Effective exploration rate:** {:.2}",
+        ctx.effective_exploration_rate
+    );
+    let _ = writeln!(
+        out,
+        "- **Assignment path:** {}",
+        match ctx.assignment_path {
+            AssignmentPath::Performance => "Performance (cache-first)",
+            AssignmentPath::Learning => "Learning (structured experiment)",
+            AssignmentPath::ForcedExploration => "Forced Exploration (interval trigger)",
+        }
+    );
+    let _ = writeln!(out, "- **Total assignments:** {}\n", ctx.total_assignments);
+
+    match ctx.assignment_path {
+        AssignmentPath::Performance => {
+            if ctx.cached_agents.is_empty() {
+                out.push_str(
+                    "### Cache Status\n\n\
+                     No cached agents available. Use best-guess composition.\n\n",
+                );
+            } else {
+                out.push_str("### Cached Agents (ranked by fit)\n\n");
+                for (name, score) in ctx.cached_agents {
+                    let _ = writeln!(out, "- {} (score: {:.2})", name, score);
+                }
+                out.push('\n');
+                out.push_str(
+                    "Deploy the highest-scoring cached agent if its score meets the threshold.\n\
+                     Do NOT vary composition dimensions — deterministic selection only.\n\n",
+                );
+            }
+        }
+        AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
+            if let Some(exp) = ctx.experiment {
+                out.push_str("### Experiment Specification\n\n");
+                if exp.bizarre_ideation {
+                    out.push_str(
+                        "**Bizarre ideation mode:** Compose from random primitives with no\n\
+                         attractor guidance. Maximise novelty.\n\n",
+                    );
+                } else {
+                    match &exp.dimension {
+                        ExperimentDimension::RoleComponent {
+                            replaced,
+                            introduced,
+                        } => {
+                            let _ = writeln!(
+                                out,
+                                "**Experiment type:** ComponentSwap"
+                            );
+                            if let Some(r) = replaced {
+                                let _ = writeln!(out, "- Replace component: `{}`", r);
+                            } else {
+                                out.push_str("- Add new component (no replacement)\n");
+                            }
+                            let _ = writeln!(out, "- Introduce component: `{}`", introduced);
+                        }
+                        ExperimentDimension::TradeoffConfig {
+                            replaced,
+                            introduced,
+                        } => {
+                            let _ = writeln!(
+                                out,
+                                "**Experiment type:** ConfigSwap"
+                            );
+                            if let Some(r) = replaced {
+                                let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
+                            }
+                            let _ = writeln!(
+                                out,
+                                "- Introduce tradeoff: `{}`",
+                                introduced
+                            );
+                        }
+                        ExperimentDimension::NovelComposition => {
+                            out.push_str(
+                                "**Experiment type:** NovelComposition\n\
+                                 Compose entirely from primitives. No base composition.\n",
+                            );
+                        }
+                    }
+                    if let Some(base) = &exp.base_composition {
+                        let _ = writeln!(out, "\n**Base composition:** `{}`", base);
+                    }
+                }
+                out.push('\n');
+                out.push_str(
+                    "Your role is to construct a coherent agent from the specified primitives.\n\
+                     The experiment design (what to vary) is algorithmic — do NOT override it.\n\n",
+                );
+            }
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write as IoWrite;
     use tempfile::TempDir;
 
-    use super::super::starters::{build_motivation, build_role};
-
-    fn test_role(skills: Vec<SkillRef>) -> Role {
-        build_role("Test Role", "A test role", skills, "Testing")
-    }
+    use super::super::starters::{build_tradeoff, build_role};
 
     #[test]
     fn resolve_name_returns_name_as_content() {
-        let skill = SkillRef::Name("my-skill".to_string());
+        let skill = ContentRef::Name("my-skill".to_string());
         let resolved = resolve_skill(&skill, Path::new("/tmp")).unwrap();
         assert_eq!(resolved.name, "my-skill");
         assert_eq!(resolved.content, "my-skill");
@@ -354,7 +523,7 @@ mod tests {
 
     #[test]
     fn resolve_inline_returns_content_directly() {
-        let skill = SkillRef::Inline("do the thing well".to_string());
+        let skill = ContentRef::Inline("do the thing well".to_string());
         let resolved = resolve_skill(&skill, Path::new("/tmp")).unwrap();
         assert_eq!(resolved.name, "inline");
         assert_eq!(resolved.content, "do the thing well");
@@ -367,7 +536,7 @@ mod tests {
         let mut f = fs::File::create(&file_path).unwrap();
         write!(f, "# Skill\nDo stuff").unwrap();
 
-        let skill = SkillRef::File(file_path.clone());
+        let skill = ContentRef::File(file_path.clone());
         let resolved = resolve_skill(&skill, Path::new("/nonexistent")).unwrap();
         assert_eq!(resolved.name, "skill");
         assert_eq!(resolved.content, "# Skill\nDo stuff");
@@ -380,7 +549,7 @@ mod tests {
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         fs::write(&file_path, "Write good code").unwrap();
 
-        let skill = SkillRef::File(PathBuf::from("skills/coding.txt"));
+        let skill = ContentRef::File(PathBuf::from("skills/coding.txt"));
         let resolved = resolve_skill(&skill, dir.path()).unwrap();
         assert_eq!(resolved.name, "coding");
         assert_eq!(resolved.content, "Write good code");
@@ -388,32 +557,28 @@ mod tests {
 
     #[test]
     fn resolve_file_missing_returns_error() {
-        let skill = SkillRef::File(PathBuf::from("/no/such/file.md"));
+        let skill = ContentRef::File(PathBuf::from("/no/such/file.md"));
         let result = resolve_skill(&skill, Path::new("/tmp"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to read skill file"));
     }
 
     #[test]
-    fn resolve_all_skips_failures_gracefully() {
-        let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("good.md");
-        fs::write(&file_path, "good content").unwrap();
+    fn resolve_all_returns_component_ids_as_names() {
+        let role = build_role(
+            "Test Role",
+            "A test role",
+            vec!["comp-1".to_string(), "comp-2".to_string()],
+            "Testing",
+        );
 
-        let role = test_role(vec![
-            SkillRef::Name("tag-only".to_string()),
-            SkillRef::File(PathBuf::from("/no/such/file.md")),
-            SkillRef::File(file_path),
-            SkillRef::Inline("inline content".to_string()),
-        ]);
-
-        let resolved = resolve_all_skills(&role, dir.path());
-        // The missing file should be skipped, leaving 3 resolved skills
-        assert_eq!(resolved.len(), 3);
-        assert_eq!(resolved[0].name, "tag-only");
-        assert_eq!(resolved[1].name, "good");
-        assert_eq!(resolved[1].content, "good content");
-        assert_eq!(resolved[2].name, "inline");
+        let resolved = resolve_all_skills(&role, Path::new("/tmp"));
+        // Each component_id is resolved as ContentRef::Name, returning it as-is
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].name, "comp-1");
+        assert_eq!(resolved[0].content, "comp-1");
+        assert_eq!(resolved[1].name, "comp-2");
+        assert_eq!(resolved[1].content, "comp-2");
     }
 
     #[test]
@@ -439,15 +604,15 @@ mod tests {
             "Implementer",
             "Writes code to fulfil task requirements.",
             vec![
-                SkillRef::Name("rust".into()),
-                SkillRef::Inline("fn main() {}".into()),
+                "rust".to_string(),
+                "inline:fn main() {}".to_string(),
             ],
             "Working, tested code merged to main.",
         )
     }
 
-    fn sample_motivation() -> Motivation {
-        build_motivation(
+    fn sample_tradeoff() -> TradeoffConfig {
+        build_tradeoff(
             "Quality First",
             "Prioritise correctness and maintainability.",
             vec!["Slower delivery for higher quality".into()],
@@ -463,7 +628,7 @@ mod tests {
             vec![],
             "Working, tested code merged to main.",
         );
-        let motivation = build_motivation(
+        let tradeoff = build_tradeoff(
             "Quality First",
             "Prioritise correctness and maintainability.",
             vec![
@@ -483,7 +648,7 @@ mod tests {
             },
         ];
 
-        let output = render_identity_prompt(&role, &motivation, &skills);
+        let output = render_identity_prompt(&role, &tradeoff, &skills);
 
         // Verify structure
         assert!(output.starts_with("## Agent Identity\n"));
@@ -512,14 +677,14 @@ mod tests {
             vec![],
             "All code reviewed.",
         );
-        let motivation = build_motivation(
+        let tradeoff = build_tradeoff(
             "Fast",
             "Be fast.",
             vec!["Less thorough reviews".into()],
             vec!["Missing security issues".into()],
         );
 
-        let output = render_identity_prompt(&role, &motivation, &[]);
+        let output = render_identity_prompt(&role, &tradeoff, &[]);
 
         // No Skills header when empty
         assert!(!output.contains("#### Skills\n"));
@@ -535,9 +700,9 @@ mod tests {
     #[test]
     fn test_render_identity_prompt_empty_tradeoffs() {
         let role = build_role("Minimal", "A minimal role.", vec![], "Done.");
-        let motivation = build_motivation("Minimal Motivation", "Minimal.", vec![], vec![]);
+        let tradeoff = build_tradeoff("Minimal Motivation", "Minimal.", vec![], vec![]);
 
-        let output = render_identity_prompt(&role, &motivation, &[]);
+        let output = render_identity_prompt(&role, &tradeoff, &[]);
 
         // Empty sections should be omitted entirely to save tokens
         assert!(!output.contains("### Operational Parameters\n"));
@@ -549,13 +714,13 @@ mod tests {
     #[test]
     fn test_render_identity_prompt_section_order() {
         let role = sample_role();
-        let motivation = sample_motivation();
+        let tradeoff = sample_tradeoff();
         let skills = vec![ResolvedSkill {
             name: "Coding".into(),
             content: "Write code.".into(),
         }];
 
-        let output = render_identity_prompt(&role, &motivation, &skills);
+        let output = render_identity_prompt(&role, &tradeoff, &skills);
 
         // Verify sections appear in the correct order
         let agent_identity_pos = output.find("## Agent Identity").unwrap();
@@ -579,7 +744,7 @@ mod tests {
     #[test]
     fn test_render_identity_prompt_name_only_skills() {
         let role = build_role("Worker", "Does work.", vec![], "Work done.");
-        let motivation = build_motivation("Fast", "Be fast.", vec!["Skip docs".into()], vec![]);
+        let tradeoff = build_tradeoff("Fast", "Be fast.", vec!["Skip docs".into()], vec![]);
         let skills = vec![
             ResolvedSkill {
                 name: "rust".into(),
@@ -591,7 +756,7 @@ mod tests {
             },
         ];
 
-        let output = render_identity_prompt(&role, &motivation, &skills);
+        let output = render_identity_prompt(&role, &tradeoff, &skills);
 
         // Name-only skills should render as simple bullet items
         assert!(output.contains("- rust\n"));
@@ -605,9 +770,9 @@ mod tests {
     fn test_render_identity_prompt_partial_tradeoffs() {
         let role = build_role("Worker", "Does work.", vec![], "Work done.");
         // Only acceptable tradeoffs, no constraints
-        let motivation = build_motivation("Fast", "Be fast.", vec!["Skip docs".into()], vec![]);
+        let tradeoff = build_tradeoff("Fast", "Be fast.", vec!["Skip docs".into()], vec![]);
 
-        let output = render_identity_prompt(&role, &motivation, &[]);
+        let output = render_identity_prompt(&role, &tradeoff, &[]);
 
         assert!(output.contains("### Operational Parameters\n"));
         assert!(output.contains("#### Acceptable Trade-offs\n"));
@@ -636,7 +801,7 @@ mod tests {
     #[test]
     fn test_render_evaluator_prompt_full() {
         let role = sample_role();
-        let motivation = sample_motivation();
+        let tradeoff = sample_tradeoff();
         let artifacts = vec!["src/main.rs".to_string(), "tests/test_main.rs".to_string()];
         let log = sample_log_entries();
 
@@ -647,11 +812,13 @@ mod tests {
             verify: Some("All tests pass and code compiles without warnings."),
             agent: None,
             role: Some(&role),
-            motivation: Some(&motivation),
+            tradeoff: Some(&tradeoff),
             artifacts: &artifacts,
             log_entries: &log,
             started_at: Some("2025-05-01T10:00:00Z"),
             completed_at: Some("2025-05-01T11:00:00Z"),
+            artifact_diff: None,
+            evaluator_identity: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -675,7 +842,7 @@ mod tests {
         assert!(output.contains("**Desired Outcome:** Working, tested code merged to main."));
         assert!(output.contains(&format!(
             "**Motivation:** Quality First ({})",
-            motivation.id
+            tradeoff.id
         )));
         assert!(output.contains("**Acceptable Trade-offs:**"));
         assert!(output.contains("- Slower delivery for higher quality"));
@@ -725,11 +892,13 @@ mod tests {
             verify: None,
             agent: None,
             role: None,
-            motivation: None,
+            tradeoff: None,
             artifacts: &[],
             log_entries: &[],
             started_at: None,
             completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -751,7 +920,7 @@ mod tests {
     #[test]
     fn test_render_evaluator_prompt_section_order() {
         let role = sample_role();
-        let motivation = sample_motivation();
+        let tradeoff = sample_tradeoff();
         let log = sample_log_entries();
 
         let input = EvaluatorInput {
@@ -761,11 +930,13 @@ mod tests {
             verify: Some("verify"),
             agent: None,
             role: Some(&role),
-            motivation: Some(&motivation),
+            tradeoff: Some(&tradeoff),
             artifacts: &["file.rs".to_string()],
             log_entries: &log,
             started_at: Some("2025-01-01T00:00:00Z"),
             completed_at: Some("2025-01-01T01:00:00Z"),
+            artifact_diff: None,
+            evaluator_identity: None,
         };
 
         let output = render_evaluator_prompt(&input);

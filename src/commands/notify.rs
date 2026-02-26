@@ -348,6 +348,7 @@ mod tests {
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         }
     }
 

@@ -108,8 +108,80 @@ impl Default for ReplayConfig {
     }
 }
 
+/// Dimension weights for the organisational reward signal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgRewardWeights {
+    /// Weight on downstream usability dimension (default: 0.50)
+    #[serde(default = "default_w_downstream_usability")]
+    pub downstream_usability: f64,
+    /// Weight on coordination overhead dimension (default: 0.30)
+    #[serde(default = "default_w_coordination_overhead")]
+    pub coordination_overhead: f64,
+    /// Weight on blocking behaviour dimension (default: 0.20)
+    #[serde(default = "default_w_blocking_behaviour")]
+    pub blocking_behaviour: f64,
+}
+
+fn default_w_downstream_usability() -> f64 { 0.50 }
+fn default_w_coordination_overhead() -> f64 { 0.30 }
+fn default_w_blocking_behaviour() -> f64 { 0.20 }
+
+impl Default for OrgRewardWeights {
+    fn default() -> Self {
+        Self {
+            downstream_usability: default_w_downstream_usability(),
+            coordination_overhead: default_w_coordination_overhead(),
+            blocking_behaviour: default_w_blocking_behaviour(),
+        }
+    }
+}
+
+/// Configuration for the two-level organisational reward signal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgRewardConfig {
+    /// How much weight to give org-level score vs task-level score in evolution (0.0–1.0).
+    /// 0.0 = ignore org level entirely, 1.0 = weight equally with task level.
+    #[serde(default = "default_org_weight")]
+    pub org_weight: f64,
+
+    /// Default observation window in seconds (0 = wait for all direct dependents to complete).
+    #[serde(default)]
+    pub observation_window_secs: u64,
+
+    /// Downstream hop horizon for downstream_usability calculation (default: 3).
+    #[serde(default = "default_hop_horizon")]
+    pub downstream_hop_horizon: u32,
+
+    /// Dimension weights for the composite org score.
+    #[serde(default)]
+    pub weights: OrgRewardWeights,
+}
+
+fn default_run_mode() -> f64 { 0.2 }
+fn default_min_exploration_rate() -> f64 { 0.05 }
+fn default_exploration_interval() -> u32 { 20 }
+fn default_cache_population_threshold() -> f64 { 0.8 }
+fn default_ucb_exploration_constant() -> f64 { std::f64::consts::SQRT_2 }
+fn default_novelty_bonus_multiplier() -> f64 { 1.5 }
+fn default_bizarre_ideation_interval() -> u32 { 10 }
+fn default_performance_threshold() -> f64 { 0.7 }
+
+fn default_org_weight() -> f64 { 0.4 }
+fn default_hop_horizon() -> u32 { 3 }
+
+impl Default for OrgRewardConfig {
+    fn default() -> Self {
+        Self {
+            org_weight: default_org_weight(),
+            observation_window_secs: 0,
+            downstream_hop_horizon: default_hop_horizon(),
+            weights: OrgRewardWeights::default(),
+        }
+    }
+}
+
 /// Agency (evolutionary identity system) configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgencyConfig {
     /// Automatically trigger evaluation when a task completes
     #[serde(default)]
@@ -146,6 +218,15 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolver_agent: Option<String>,
 
+    /// Content-hash of agent to use as agent creator (None = not configured)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_agent: Option<String>,
+
+    /// Model to use for agent creator (None = use default agent model).
+    /// Fallback when creator_agent is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_model: Option<String>,
+
     /// Prose policy for the evolver describing retention heuristics
     /// (e.g. when to retire underperforming roles/motivations)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +247,84 @@ pub struct AgencyConfig {
     /// Maximum bytes to read from agent output log for triage (default: 50000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
+
+    /// Two-level organisational reward signal configuration.
+    #[serde(default)]
+    pub org_reward: OrgRewardConfig,
+
+    /// Run mode on the performance/learning continuum.
+    /// 0.0 = pure performance, 1.0 = pure learning.
+    /// Default: 0.2
+    #[serde(default = "default_run_mode")]
+    pub run_mode: f64,
+
+    /// Minimum fraction of assignments routed through learning path
+    /// even when run_mode is low. Guards against exploitation drift
+    /// (March, 1991). Default: 0.05
+    #[serde(default = "default_min_exploration_rate")]
+    pub min_exploration_rate: f64,
+
+    /// Force a learning assignment every N tasks in performance mode.
+    /// 0 = disabled. Default: 20
+    #[serde(default = "default_exploration_interval")]
+    pub exploration_interval: u32,
+
+    /// Cache score threshold for populating composition cache from
+    /// learning experiments. Default: 0.8
+    #[serde(default = "default_cache_population_threshold")]
+    pub cache_population_threshold: f64,
+
+    /// UCB exploration constant C for primitive selection in learning mode.
+    /// Higher values favour uncertainty; lower values favour known performance.
+    /// Default: sqrt(2) ≈ 1.414
+    #[serde(default = "default_ucb_exploration_constant")]
+    pub ucb_exploration_constant: f64,
+
+    /// Multiplier applied to UCB score for low-attractor-weight primitives.
+    /// Counteracts attractor-area drift. Default: 1.5
+    #[serde(default = "default_novelty_bonus_multiplier")]
+    pub novelty_bonus_multiplier: f64,
+
+    /// Force a bizarre ideation composition every N learning assignments.
+    /// 0 = disabled. Default: 10
+    #[serde(default = "default_bizarre_ideation_interval")]
+    pub bizarre_ideation_interval: u32,
+
+    /// Performance threshold for cache-hit deployment in performance mode.
+    /// Default: 0.7
+    #[serde(default = "default_performance_threshold")]
+    pub performance_threshold: f64,
+}
+
+impl Default for AgencyConfig {
+    fn default() -> Self {
+        Self {
+            auto_evaluate: false,
+            auto_assign: false,
+            assigner_agent: None,
+            evaluator_agent: None,
+            assigner_model: None,
+            evaluator_model: None,
+            evolver_model: None,
+            evolver_agent: None,
+            creator_agent: None,
+            creator_model: None,
+            retention_heuristics: None,
+            auto_triage: false,
+            triage_model: None,
+            triage_timeout: None,
+            triage_max_log_bytes: None,
+            org_reward: OrgRewardConfig::default(),
+            run_mode: default_run_mode(),
+            min_exploration_rate: default_min_exploration_rate(),
+            exploration_interval: default_exploration_interval(),
+            cache_population_threshold: default_cache_population_threshold(),
+            ucb_exploration_constant: default_ucb_exploration_constant(),
+            novelty_bonus_multiplier: default_novelty_bonus_multiplier(),
+            bizarre_ideation_interval: default_bizarre_ideation_interval(),
+            performance_threshold: default_performance_threshold(),
+        }
+    }
 }
 
 /// Agent-specific configuration
@@ -234,6 +393,13 @@ pub struct CoordinatorConfig {
     /// Default: "30m". Set to empty string to disable.
     #[serde(default = "default_agent_timeout")]
     pub agent_timeout: String,
+
+    /// Settling delay in milliseconds after a GraphChanged event before the
+    /// coordinator tick fires. During burst graph construction (rapid task
+    /// additions), this prevents premature dispatch by waiting for the burst
+    /// to settle. Default: 2000ms (2 seconds).
+    #[serde(default = "default_settling_delay_ms")]
+    pub settling_delay_ms: u64,
 }
 
 fn default_max_agents() -> usize {
@@ -242,6 +408,10 @@ fn default_max_agents() -> usize {
 
 fn default_coordinator_interval() -> u64 {
     30
+}
+
+fn default_settling_delay_ms() -> u64 {
+    2000
 }
 
 fn default_poll_interval() -> u64 {
@@ -262,6 +432,7 @@ impl Default for CoordinatorConfig {
             model: None,
             default_context_scope: None,
             agent_timeout: default_agent_timeout(),
+            settling_delay_ms: default_settling_delay_ms(),
         }
     }
 }
@@ -802,6 +973,15 @@ name = "My Project"
         assert!(config.agency.evolver_model.is_none());
         assert!(config.agency.evolver_agent.is_none());
         assert!(config.agency.retention_heuristics.is_none());
+        // Run mode continuum defaults
+        assert!((config.agency.run_mode - 0.2).abs() < f64::EPSILON);
+        assert!((config.agency.min_exploration_rate - 0.05).abs() < f64::EPSILON);
+        assert_eq!(config.agency.exploration_interval, 20);
+        assert!((config.agency.cache_population_threshold - 0.8).abs() < f64::EPSILON);
+        assert!((config.agency.ucb_exploration_constant - std::f64::consts::SQRT_2).abs() < f64::EPSILON);
+        assert!((config.agency.novelty_bonus_multiplier - 1.5).abs() < f64::EPSILON);
+        assert_eq!(config.agency.bizarre_ideation_interval, 10);
+        assert!((config.agency.performance_threshold - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]

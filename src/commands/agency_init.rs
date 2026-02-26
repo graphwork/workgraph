@@ -21,11 +21,11 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     // 2. Create a default agent: Programmer + Careful
-    let agents_dir = agency_dir.join("agents");
+    let agents_dir = agency_dir.join("cache/agents");
     std::fs::create_dir_all(&agents_dir).context("Failed to create agents directory")?;
 
     let roles = agency::starter_roles();
-    let motivations = agency::starter_motivations();
+    let motivations = agency::starter_tradeoffs();
 
     let programmer = roles
         .iter()
@@ -53,13 +53,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         let agent = Agent {
             id: agent_id.clone(),
             role_id: programmer.id.clone(),
-            motivation_id: careful.id.clone(),
+            tradeoff_id: careful.id.clone(),
             name: "Careful Programmer".to_string(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             capabilities: vec![],
             rate: None,
@@ -67,6 +63,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
             trust_level: TrustLevel::default(),
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         };
 
         agency::save_agent(&agent, &agents_dir).context("Failed to save default agent")?;
@@ -108,6 +107,18 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         println!("Enabled auto_assign and auto_evaluate in config.");
     }
 
+    // 4. Register the creator-pipeline function if it doesn't exist
+    let func_dir = workgraph::function::functions_dir(workgraph_dir);
+    let pipeline_path = func_dir.join("creator-pipeline.yaml");
+    if !pipeline_path.exists() {
+        let func = agency::creator_pipeline_function();
+        if let Err(e) = workgraph::function::save_function(&func, &func_dir) {
+            eprintln!("Warning: failed to register creator-pipeline function: {}", e);
+        } else {
+            println!("Registered creator-pipeline function (creator → evolver → assigner).");
+        }
+    }
+
     // Summary
     if roles_created == 0 && motivations_created == 0 && !agent_created && !config_changed {
         println!("Agency already initialized.");
@@ -134,7 +145,7 @@ mod tests {
         run(&wg_dir).unwrap();
 
         // Verify roles were created
-        let roles_dir = wg_dir.join("agency").join("roles");
+        let roles_dir = wg_dir.join("agency").join("cache/roles");
         let role_count = std::fs::read_dir(&roles_dir).unwrap().count();
         assert!(
             role_count >= 4,
@@ -142,17 +153,17 @@ mod tests {
             role_count
         );
 
-        // Verify motivations were created
-        let motivations_dir = wg_dir.join("agency").join("motivations");
-        let motivation_count = std::fs::read_dir(&motivations_dir).unwrap().count();
+        // Verify tradeoffs were created
+        let tradeoffs_dir = wg_dir.join("agency").join("primitives/tradeoffs");
+        let tradeoff_count = std::fs::read_dir(&tradeoffs_dir).unwrap().count();
         assert!(
-            motivation_count >= 4,
-            "Expected at least 4 motivations, got {}",
-            motivation_count
+            tradeoff_count >= 4,
+            "Expected at least 4 tradeoffs, got {}",
+            tradeoff_count
         );
 
         // Verify agent was created
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
         assert_eq!(agent_count, 1, "Expected 1 default agent");
 
@@ -173,7 +184,7 @@ mod tests {
         run(&wg_dir).unwrap();
 
         // Should still have exactly 1 agent
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
         assert_eq!(agent_count, 1);
     }

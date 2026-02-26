@@ -11,7 +11,7 @@ fn agency_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
 
 /// Get the motivations subdirectory.
 fn motivations_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
-    Ok(agency_dir(workgraph_dir)?.join("motivations"))
+    Ok(agency_dir(workgraph_dir)?.join("primitives/tradeoffs"))
 }
 
 /// `wg motivation add <name> --accept ... --reject ... [--description ...]`
@@ -24,7 +24,7 @@ pub fn run_add(
 ) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         name,
         description.unwrap_or(""),
         accept.to_vec(),
@@ -40,7 +40,7 @@ pub fn run_add(
         );
     }
 
-    let path = agency::save_motivation(&motivation, &dir)?;
+    let path = agency::save_tradeoff(&motivation, &dir)?;
     println!(
         "Created motivation: {} ({})",
         name,
@@ -53,7 +53,7 @@ pub fn run_add(
 /// `wg motivation list [--json]`
 pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
-    let motivations = agency::load_all_motivations(&dir)?;
+    let motivations = agency::load_all_tradeoffs(&dir)?;
 
     if json {
         let output: Vec<serde_json::Value> = motivations
@@ -99,7 +99,7 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
 /// `wg motivation show <id> [--json]`
 pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_motivation_by_prefix(&dir, id)
+    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
         .with_context(|| format!("Failed to find motivation '{}'", id))?;
 
     if json {
@@ -153,10 +153,10 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
 
     // Resolve prefix to full ID first
-    let motivation = agency::find_motivation_by_prefix(&dir, id)
+    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
         .with_context(|| format!("Failed to find motivation '{}'", id))?;
 
-    let ancestry = agency::motivation_ancestry(&motivation.id, &dir)?;
+    let ancestry = agency::tradeoff_ancestry(&motivation.id, &dir)?;
 
     if ancestry.is_empty() {
         anyhow::bail!("Motivation '{}' not found", id);
@@ -232,7 +232,7 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
 /// renamed to the new hash and the old file is removed.
 pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_motivation_by_prefix(&dir, id)
+    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
         .with_context(|| format!("Failed to find motivation '{}'", id))?;
 
     let mot_path = dir.join(format!("{}.yaml", motivation.id));
@@ -249,10 +249,10 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
     }
 
     // Validate and re-hash
-    let mut edited = agency::load_motivation(&mot_path)
+    let mut edited = agency::load_tradeoff(&mot_path)
         .context("Edited file is not valid motivation YAML - changes may be malformed")?;
 
-    let new_id = agency::content_hash_motivation(
+    let new_id = agency::content_hash_tradeoff(
         &edited.acceptable_tradeoffs,
         &edited.unacceptable_tradeoffs,
         &edited.description,
@@ -261,7 +261,7 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
         // Content changed — rename to new hash
         let old_path = mot_path;
         edited.id = new_id;
-        agency::save_motivation(&edited, &dir)?;
+        agency::save_tradeoff(&edited, &dir)?;
         std::fs::remove_file(&old_path).ok();
         println!(
             "Motivation content changed, new ID: {}",
@@ -269,7 +269,7 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
         );
     } else {
         // Mutable fields (name, etc.) may have changed; re-save in place
-        agency::save_motivation(&edited, &dir)?;
+        agency::save_tradeoff(&edited, &dir)?;
         println!("Motivation '{}' updated", agency::short_hash(&edited.id));
     }
 
@@ -279,7 +279,7 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
 /// `wg motivation rm <id>`
 pub fn run_rm(workgraph_dir: &Path, id: &str) -> Result<()> {
     let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_motivation_by_prefix(&dir, id)
+    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
         .with_context(|| format!("Failed to find motivation '{}'", id))?;
 
     let path = dir.join(format!("{}.yaml", motivation.id));
@@ -300,17 +300,17 @@ mod tests {
     fn setup() -> TempDir {
         let tmp = TempDir::new().unwrap();
         // Create the workgraph dir structure
-        std::fs::create_dir_all(tmp.path().join("agency").join("motivations")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("agency").join("primitives/tradeoffs")).unwrap();
         tmp
     }
 
     #[test]
     fn test_content_hash_deterministic() {
-        let h1 = agency::content_hash_motivation(&["Slow".into()], &["Broken".into()], "desc");
-        let h2 = agency::content_hash_motivation(&["Slow".into()], &["Broken".into()], "desc");
+        let h1 = agency::content_hash_tradeoff(&["Slow".into()], &["Broken".into()], "desc");
+        let h2 = agency::content_hash_tradeoff(&["Slow".into()], &["Broken".into()], "desc");
         assert_eq!(h1, h2);
         // Different content produces different hash
-        let h3 = agency::content_hash_motivation(&["Fast".into()], &["Broken".into()], "desc");
+        let h3 = agency::content_hash_tradeoff(&["Fast".into()], &["Broken".into()], "desc");
         assert_ne!(h1, h3);
     }
 
@@ -327,7 +327,7 @@ mod tests {
         .unwrap();
 
         let dir = motivations_dir(tmp.path()).unwrap();
-        let all = agency::load_all_motivations(&dir).unwrap();
+        let all = agency::load_all_tradeoffs(&dir).unwrap();
         assert_eq!(all.len(), 1);
         // ID is now a content hash, not a slug
         assert_eq!(all[0].id.len(), 64); // SHA-256 hex = 64 chars
@@ -374,7 +374,7 @@ mod tests {
 
         // Look up by full hash
         let dir = motivations_dir(tmp.path()).unwrap();
-        let all = agency::load_all_motivations(&dir).unwrap();
+        let all = agency::load_all_tradeoffs(&dir).unwrap();
         let full_id = &all[0].id;
         let result = run_show(tmp.path(), full_id, false);
         assert!(result.is_ok());
@@ -391,12 +391,12 @@ mod tests {
         run_add(tmp.path(), "Temp Motivation", &[], &[], None).unwrap();
 
         let dir = motivations_dir(tmp.path()).unwrap();
-        let all = agency::load_all_motivations(&dir).unwrap();
+        let all = agency::load_all_tradeoffs(&dir).unwrap();
         assert_eq!(all.len(), 1);
         let full_id = all[0].id.clone();
 
         run_rm(tmp.path(), &full_id).unwrap();
-        assert_eq!(agency::load_all_motivations(&dir).unwrap().len(), 0);
+        assert_eq!(agency::load_all_tradeoffs(&dir).unwrap().len(), 0);
     }
 
     #[test]
@@ -441,7 +441,7 @@ mod tests {
         let tmp = setup();
         run_add(tmp.path(), "Test Mot", &[], &[], Some("desc")).unwrap();
         let dir = motivations_dir(tmp.path()).unwrap();
-        let all = agency::load_all_motivations(&dir).unwrap();
+        let all = agency::load_all_tradeoffs(&dir).unwrap();
         let result = run_show(tmp.path(), &all[0].id, true);
         assert!(result.is_ok());
     }

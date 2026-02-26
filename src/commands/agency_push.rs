@@ -26,7 +26,7 @@ fn local_store(workgraph_dir: &Path, global: bool) -> Result<LocalStore> {
     } else {
         workgraph_dir.join("agency")
     };
-    if !path.join("roles").is_dir() {
+    if !LocalStore::new(&path).is_valid() {
         if global {
             anyhow::bail!("No global agency store found at ~/.workgraph/agency/. Run 'wg agency init' first.");
         } else {
@@ -44,10 +44,12 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
     let target_store = federation::resolve_store_with_remotes(opts.target, workgraph_dir)?;
 
     let entity_filter = match opts.entity_type {
+        Some("component" | "components") => EntityFilter::Components,
+        Some("outcome" | "outcomes") => EntityFilter::Outcomes,
         Some("role" | "roles") => EntityFilter::Roles,
-        Some("motivation" | "motivations") => EntityFilter::Motivations,
+        Some("motivation" | "motivations" | "tradeoff" | "tradeoffs") => EntityFilter::Tradeoffs,
         Some("agent" | "agents") => EntityFilter::Agents,
-        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: role, motivation, or agent", other),
+        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent", other),
         None => EntityFilter::All,
     };
 
@@ -77,9 +79,9 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
                 "skipped": summary.roles_skipped,
             },
             "motivations": {
-                "added": summary.motivations_added,
-                "updated": summary.motivations_updated,
-                "skipped": summary.motivations_skipped,
+                "added": summary.tradeoffs_added,
+                "updated": summary.tradeoffs_updated,
+                "skipped": summary.tradeoffs_skipped,
             },
             "agents": {
                 "added": summary.agents_added,
@@ -107,7 +109,7 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::{self, Agent, AgencyStore, Motivation, PerformanceRecord, Role, Lineage};
+    use workgraph::agency::{self, Agent, AgencyStore, TradeoffConfig, PerformanceRecord, Role, Lineage};
     use workgraph::graph::TrustLevel;
 
     fn setup_store(tmp: &TempDir, name: &str) -> LocalStore {
@@ -121,16 +123,16 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: "test role".to_string(),
-            skills: Vec::new(),
-            desired_outcome: "test outcome".to_string(),
+            component_ids: Vec::new(),
+            outcome_id: "test outcome".to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
         }
     }
 
-    fn make_motivation(id: &str, name: &str) -> Motivation {
-        Motivation {
+    fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
+        TradeoffConfig {
             id: id.to_string(),
             name: name.to_string(),
             description: "test motivation".to_string(),
@@ -138,14 +140,17 @@ mod tests {
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
+            access_control: workgraph::agency::AccessControl::default(),
+            former_agents: vec![],
+            former_deployments: vec![],
         }
     }
 
-    fn make_agent(id: &str, name: &str, role_id: &str, motivation_id: &str) -> Agent {
+    fn make_agent(id: &str, name: &str, role_id: &str, tradeoff_id: &str) -> Agent {
         Agent {
             id: id.to_string(),
             role_id: role_id.to_string(),
-            motivation_id: motivation_id.to_string(),
+            tradeoff_id: tradeoff_id.to_string(),
             name: name.to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
@@ -155,6 +160,9 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 
@@ -184,7 +192,7 @@ mod tests {
 
         let source = LocalStore::new(&agency_dir);
         source.save_role(&make_role("r1", "tester")).unwrap();
-        source.save_motivation(&make_motivation("m1", "quality")).unwrap();
+        source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
 
         // Target doesn't exist yet — push should create it
         let target_path = tmp.path().join("target");
@@ -194,7 +202,7 @@ mod tests {
 
         let target = LocalStore::new(target_path.join("agency"));
         assert!(target.exists_role("r1"));
-        assert!(target.exists_motivation("m1"));
+        assert!(target.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -296,7 +304,7 @@ mod tests {
 
         let source = LocalStore::new(&agency_dir);
         source.save_role(&make_role("r1", "role")).unwrap();
-        source.save_motivation(&make_motivation("m1", "mot")).unwrap();
+        source.save_tradeoff(&make_motivation("m1", "mot")).unwrap();
 
         let target = setup_store(&tmp, "target");
 
@@ -307,7 +315,7 @@ mod tests {
         }).unwrap();
 
         assert!(target.exists_role("r1"));
-        assert!(!target.exists_motivation("m1"));
+        assert!(!target.exists_tradeoff("m1"));
     }
 
     #[test]
@@ -320,7 +328,7 @@ mod tests {
 
         let source = LocalStore::new(&agency_dir);
         source.save_role(&make_role("r1", "builder")).unwrap();
-        source.save_motivation(&make_motivation("m1", "speed")).unwrap();
+        source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
         source.save_agent(&make_agent("a1", "fast-builder", "r1", "m1")).unwrap();
 
         let target = setup_store(&tmp, "target");
@@ -333,6 +341,6 @@ mod tests {
 
         assert!(target.exists_agent("a1"));
         assert!(target.exists_role("r1"));
-        assert!(target.exists_motivation("m1"));
+        assert!(target.exists_tradeoff("m1"));
     }
 }

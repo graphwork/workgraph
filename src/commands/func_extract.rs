@@ -326,8 +326,8 @@ fn build_template(
 /// Look up the role name for a task's agent from the agency storage.
 fn lookup_role_hint(task: &Task, dir: &Path) -> Option<String> {
     let agent_hash = task.agent.as_ref()?;
-    let agents_dir = dir.join("agency").join("agents");
-    let roles_dir = dir.join("agency").join("roles");
+    let agents_dir = dir.join("agency").join("cache/agents");
+    let roles_dir = dir.join("agency").join("cache/roles");
 
     let agent = agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()?;
     let role = agency::find_role_by_prefix(&roles_dir, &agent.role_id).ok()?;

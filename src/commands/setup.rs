@@ -11,7 +11,6 @@ use workgraph::config::Config;
 #[derive(Debug, Clone)]
 pub struct SetupChoices {
     pub executor: String,
-    pub api_key: Option<String>,
     pub model: String,
     pub agency_enabled: bool,
     pub evaluator_model: Option<String>,
@@ -112,18 +111,7 @@ pub fn run() -> Result<()> {
         executor_options[executor_idx].to_string()
     };
 
-    // 2. API key for amplifier
-    let api_key = if executor == "amplifier" {
-        let key: String = Input::new()
-            .with_prompt("OpenRouter API key? (stored in config)")
-            .allow_empty(true)
-            .interact_text()?;
-        if key.is_empty() { None } else { Some(key) }
-    } else {
-        None
-    };
-
-    // 3. Default model
+    // 2. Default model
     let model_options = &[
         ("opus", "Most capable, best for complex tasks"),
         ("sonnet", "Balanced capability and speed"),
@@ -216,7 +204,6 @@ pub fn run() -> Result<()> {
 
     let choices = SetupChoices {
         executor,
-        api_key,
         model,
         agency_enabled,
         evaluator_model,
@@ -261,7 +248,7 @@ mod tests {
     fn test_build_config_defaults() {
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "opus".to_string(),
             agency_enabled: true,
             evaluator_model: Some("sonnet".to_string()),
@@ -285,7 +272,7 @@ mod tests {
     fn test_build_config_amplifier() {
         let choices = SetupChoices {
             executor: "amplifier".to_string(),
-            api_key: Some("sk-test-key".to_string()),
+
             model: "sonnet".to_string(),
             agency_enabled: false,
             evaluator_model: None,
@@ -313,7 +300,7 @@ mod tests {
 
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "haiku".to_string(),
             agency_enabled: true,
             evaluator_model: Some("sonnet".to_string()),
@@ -341,7 +328,7 @@ mod tests {
     fn test_build_config_agency_disabled() {
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "opus".to_string(),
             agency_enabled: false,
             evaluator_model: None,
@@ -361,7 +348,7 @@ mod tests {
         // When user picks "same as default", evaluator/assigner models are None
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "sonnet".to_string(),
             agency_enabled: true,
             evaluator_model: None,
@@ -380,7 +367,7 @@ mod tests {
     fn test_format_summary_basic() {
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "opus".to_string(),
             agency_enabled: true,
             evaluator_model: Some("sonnet".to_string()),
@@ -402,7 +389,7 @@ mod tests {
     fn test_format_summary_agency_disabled() {
         let choices = SetupChoices {
             executor: "amplifier".to_string(),
-            api_key: None,
+
             model: "sonnet".to_string(),
             agency_enabled: false,
             evaluator_model: None,
@@ -422,7 +409,7 @@ mod tests {
     fn test_build_config_roundtrip_through_toml() {
         let choices = SetupChoices {
             executor: "claude".to_string(),
-            api_key: None,
+
             model: "opus".to_string(),
             agency_enabled: true,
             evaluator_model: Some("sonnet".to_string()),
@@ -447,7 +434,7 @@ mod tests {
     fn test_build_config_custom_executor() {
         let choices = SetupChoices {
             executor: "my-custom-executor".to_string(),
-            api_key: None,
+
             model: "haiku".to_string(),
             agency_enabled: false,
             evaluator_model: None,

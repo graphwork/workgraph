@@ -61,10 +61,10 @@ fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
         let dir = entry.path();
         let dir_name = entry.file_name().to_string_lossy();
 
-        // Check for project store: .workgraph/agency/roles/ exists
+        // Check for project store: .workgraph/agency/ exists and is a valid store
         if dir_name == ".workgraph" {
             let agency_dir = dir.join("agency");
-            if agency_dir.join("roles").is_dir() {
+            if LocalStore::new(&agency_dir).is_valid() {
                 if let Ok(canonical) = agency_dir.canonicalize() {
                     seen.insert(canonical);
                 }
@@ -73,8 +73,8 @@ fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
             continue;
         }
 
-        // Check for bare store: agency/roles/ exists but parent is NOT .workgraph
-        if dir_name == "agency" && dir.join("roles").is_dir() {
+        // Check for bare store: agency/ exists and is a valid store, but parent is NOT .workgraph
+        if dir_name == "agency" && LocalStore::new(dir).is_valid() {
             // Skip if parent is .workgraph (already handled above)
             if dir.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy()) == Some(".workgraph".into()) {
                 continue;
@@ -113,7 +113,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         let local = LocalStore::new(store_path);
         let counts = local.entity_counts();
         total.roles += counts.roles;
-        total.motivations += counts.motivations;
+        total.tradeoffs += counts.tradeoffs;
         total.agents += counts.agents;
         total.evaluations += counts.evaluations;
 
@@ -148,7 +148,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
             println!(
                 "    Roles: {}  Motivations: {}  Agents: {}  Evaluations: {}",
                 store.counts.roles,
-                store.counts.motivations,
+                store.counts.tradeoffs,
                 store.counts.agents,
                 store.counts.evaluations,
             );
@@ -161,7 +161,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         if discovered.len() > 1 {
             println!(
                 "Totals: {} roles, {} motivations, {} agents, {} evaluations",
-                total.roles, total.motivations, total.agents, total.evaluations,
+                total.roles, total.tradeoffs, total.agents, total.evaluations,
             );
         }
     }
@@ -176,24 +176,24 @@ mod tests {
 
     fn create_project_store(dir: &Path) {
         let agency = dir.join(".workgraph").join("agency");
-        std::fs::create_dir_all(agency.join("roles")).unwrap();
-        std::fs::create_dir_all(agency.join("motivations")).unwrap();
-        std::fs::create_dir_all(agency.join("agents")).unwrap();
+        std::fs::create_dir_all(agency.join("cache/roles")).unwrap();
+        std::fs::create_dir_all(agency.join("primitives/tradeoffs")).unwrap();
+        std::fs::create_dir_all(agency.join("cache/agents")).unwrap();
         std::fs::create_dir_all(agency.join("evaluations")).unwrap();
     }
 
     fn create_bare_store(dir: &Path) {
         let agency = dir.join("agency");
-        std::fs::create_dir_all(agency.join("roles")).unwrap();
-        std::fs::create_dir_all(agency.join("motivations")).unwrap();
-        std::fs::create_dir_all(agency.join("agents")).unwrap();
+        std::fs::create_dir_all(agency.join("cache/roles")).unwrap();
+        std::fs::create_dir_all(agency.join("primitives/tradeoffs")).unwrap();
+        std::fs::create_dir_all(agency.join("cache/agents")).unwrap();
     }
 
     fn write_dummy_role(roles_dir: &Path, id: &str) {
         std::fs::write(
             roles_dir.join(format!("{}.yaml", id)),
             format!(
-                "id: \"{}\"\nname: test\nskills: []\ndesired_outcome: test\ndescription: test\nperformance: null\nlineage: null\n",
+                "id: \"{}\"\nname: test\ncomponent_ids: []\noutcome_id: test\ndescription: test\nperformance: null\nlineage: null\n",
                 id
             ),
         )
@@ -206,7 +206,7 @@ mod tests {
         let project = tmp.path().join("myproject");
         create_project_store(&project);
         write_dummy_role(
-            &project.join(".workgraph").join("agency").join("roles"),
+            &project.join(".workgraph").join("agency").join("cache/roles"),
             "abc123",
         );
 
@@ -224,7 +224,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let bare = tmp.path().join("shared");
         create_bare_store(&bare);
-        write_dummy_role(&bare.join("agency").join("roles"), "def456");
+        write_dummy_role(&bare.join("agency").join("cache/roles"), "def456");
 
         let stores = find_agency_stores(tmp.path(), 10);
         assert_eq!(stores.len(), 1);
@@ -238,7 +238,7 @@ mod tests {
         let proj_a = tmp.path().join("alpha");
         create_project_store(&proj_a);
         write_dummy_role(
-            &proj_a.join(".workgraph").join("agency").join("roles"),
+            &proj_a.join(".workgraph").join("agency").join("cache/roles"),
             "role1",
         );
 
@@ -247,8 +247,8 @@ mod tests {
 
         let bare = tmp.path().join("shared");
         create_bare_store(&bare);
-        write_dummy_role(&bare.join("agency").join("roles"), "role2");
-        write_dummy_role(&bare.join("agency").join("roles"), "role3");
+        write_dummy_role(&bare.join("agency").join("cache/roles"), "role2");
+        write_dummy_role(&bare.join("agency").join("cache/roles"), "role3");
 
         let stores = find_agency_stores(tmp.path(), 10);
         assert_eq!(stores.len(), 3);
@@ -310,7 +310,7 @@ mod tests {
         let local = LocalStore::new(&stores[0].0);
         let counts = local.entity_counts();
         assert_eq!(counts.roles, 0);
-        assert_eq!(counts.motivations, 0);
+        assert_eq!(counts.tradeoffs, 0);
         assert_eq!(counts.agents, 0);
         assert_eq!(counts.evaluations, 0);
     }

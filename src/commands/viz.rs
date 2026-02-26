@@ -4,7 +4,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use workgraph::format_hours;
-use workgraph::graph::{Status, Task, WorkGraph};
+use workgraph::graph::{format_tokens, parse_token_usage_live, Status, Task, TokenUsage, WorkGraph};
 
 /// Output format for visualization
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,8 @@ pub struct VizOptions {
     pub show_internal: bool,
     /// Focus on specific task IDs — show only their containing subgraphs
     pub focus: Vec<String>,
+    /// TUI mode: sort subgraphs by most-recently-updated first (LRU ordering)
+    pub tui_mode: bool,
 }
 
 impl Default for VizOptions {
@@ -55,6 +57,7 @@ impl Default for VizOptions {
             output: None,
             show_internal: false,
             focus: Vec::new(),
+            tui_mode: false,
         }
     }
 }
@@ -129,9 +132,20 @@ fn filter_internal_tasks<'a>(
     (filtered, annotations)
 }
 
-pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
+/// Generate the ASCII viz output string for the given directory and options.
+/// Used by both the CLI `wg viz` command and the TUI viewer.
+pub fn generate_viz_output(dir: &Path, options: &VizOptions) -> Result<String> {
     let (graph, _path) = super::load_workgraph(dir)?;
+    generate_viz_output_from_graph(&graph, dir, options)
+}
 
+/// Generate viz output from an already-loaded graph. Useful when the caller
+/// already has the graph loaded (e.g., the TUI viewer for task counting).
+pub fn generate_viz_output_from_graph(
+    graph: &WorkGraph,
+    dir: &Path,
+    options: &VizOptions,
+) -> Result<String> {
     // Compute cycle analysis so we can preserve cycle members in filtered views
     let cycle_analysis = graph.compute_cycle_analysis();
 
@@ -244,6 +258,43 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
         filter_internal_tasks(&graph, tasks_to_show, &empty_annotations)
     };
 
+    // Resolve cross-repo peer dependencies: create synthetic Task nodes for peer refs
+    // so they appear in the graph with their resolved remote status.
+    let peer_tasks: Vec<Task> = {
+        let mut seen = HashSet::new();
+        let mut peers = Vec::new();
+        for task in &tasks_to_show {
+            for dep in &task.after {
+                if let Some((peer_name, remote_task_id)) =
+                    workgraph::federation::parse_remote_ref(dep)
+                {
+                    if seen.insert(dep.clone()) {
+                        let remote = workgraph::federation::resolve_remote_task_status(
+                            peer_name,
+                            remote_task_id,
+                            dir,
+                        );
+                        let title = remote
+                            .title
+                            .unwrap_or_else(|| remote_task_id.to_string());
+                        peers.push(Task {
+                            id: dep.clone(),
+                            title,
+                            status: remote.status,
+                            ..Task::default()
+                        });
+                    }
+                }
+            }
+        }
+        peers
+    };
+
+    // Extend tasks_to_show with peer task references
+    let mut tasks_to_show = tasks_to_show;
+    for pt in &peer_tasks {
+        tasks_to_show.push(pt);
+    }
     let task_ids: HashSet<&str> = tasks_to_show.iter().map(|t| t.id.as_str()).collect();
 
     // Calculate critical path if requested
@@ -251,6 +302,57 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
         calculate_critical_path(&graph, &task_ids)
     } else {
         HashSet::new()
+    };
+
+    // Enrich in-progress/done tasks with live token usage from agent output logs
+    let agents_dir = dir.join("agents");
+    let live_token_usage: HashMap<String, TokenUsage> = tasks_to_show
+        .iter()
+        .filter(|t| t.token_usage.is_none())
+        .filter(|t| t.status == Status::InProgress || t.status == Status::Done)
+        .filter_map(|t| {
+            let agent_id = t.assigned.as_deref()?;
+            let log_path = agents_dir.join(agent_id).join("output.log");
+            let usage = parse_token_usage_live(&log_path)?;
+            Some((t.id.clone(), usage))
+        })
+        .collect();
+
+    // Build validation token usage (assign + evaluate agents) for each visible task
+    let validation_token_usage: HashMap<String, TokenUsage> = {
+        let mut vtok_map: HashMap<String, TokenUsage> = HashMap::new();
+        for task in graph.tasks() {
+            if !is_internal_task(task) {
+                continue;
+            }
+            let parent_id = if task.tags.iter().any(|t| t == "assignment") {
+                task.id.strip_prefix("assign-").map(|s| s.to_string())
+            } else {
+                task.id.strip_prefix("evaluate-").map(|s| s.to_string())
+            };
+            let Some(pid) = parent_id else { continue };
+            // Get token usage: from stored field, live map, or parse from output log
+            let usage = task.token_usage.as_ref().cloned().or_else(|| {
+                let agent_id = task.assigned.as_deref()?;
+                let log_path = agents_dir.join(agent_id).join("output.log");
+                parse_token_usage_live(&log_path)
+            });
+            if let Some(u) = usage {
+                let entry = vtok_map.entry(pid).or_insert_with(|| TokenUsage {
+                    cost_usd: 0.0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                });
+                entry.cost_usd += u.cost_usd;
+                entry.output_tokens += u.output_tokens;
+                entry.input_tokens += u.input_tokens;
+                entry.cache_read_input_tokens += u.cache_read_input_tokens;
+                entry.cache_creation_input_tokens += u.cache_creation_input_tokens;
+            }
+        }
+        vtok_map
     };
 
     // Generate output
@@ -269,9 +371,15 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
             &critical_path_set,
             &annotations,
         ),
-        OutputFormat::Ascii => generate_ascii(&graph, &tasks_to_show, &task_ids, &annotations),
-        OutputFormat::Graph => generate_graph(&graph, &tasks_to_show, &task_ids, &annotations),
+        OutputFormat::Ascii => generate_ascii(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &validation_token_usage, options.tui_mode),
+        OutputFormat::Graph => generate_graph(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &validation_token_usage),
     };
+
+    Ok(output)
+}
+
+pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
+    let output = generate_viz_output(dir, options)?;
 
     // If output file is specified, render with dot
     if let Some(ref output_path) = options.output {
@@ -645,8 +753,8 @@ fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 
 /// Back-edge arc info for Phase 2 rendering of right-side arcs.
 struct BackEdgeArc {
-    source_line: usize, // line index where source node was rendered (below)
-    target_line: usize, // line index where target node was rendered (above)
+    blocker_line: usize,   // line index where the blocking node was rendered
+    dependent_line: usize, // line index where the dependent node was rendered
 }
 
 /// Generate an ASCII visualization that shows the dependency graph
@@ -654,9 +762,9 @@ struct BackEdgeArc {
 ///
 /// Layout:
 /// - LEFT: tree structure (├→, └→, │) shows primary forward edges flowing down
-/// - RIGHT: arc channels (◀, ┤, ┘, │) show all other edges flowing up
-///   (both back-edges and fan-in from secondary parents)
-/// - Arrowheads: → on left (tree connectors), ← on right (arc targets)
+/// - RIGHT: arc channels (←, ┐, ┘, ┤, │) show non-tree edges (direction-aware)
+///   ← always marks the dependent node regardless of vertical position
+/// - Arrowheads: → on left (tree connectors), ← on right (arc dependents)
 /// - Dash fill (─) connects node text to right-side arcs
 #[allow(clippy::only_used_in_recursion)]
 fn generate_ascii(
@@ -664,6 +772,9 @@ fn generate_ascii(
     tasks: &[&workgraph::graph::Task],
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    validation_token_usage: &HashMap<String, TokenUsage>,
+    tui_mode: bool,
 ) -> String {
     if tasks.is_empty() {
         return String::from("(no tasks to display)");
@@ -758,9 +869,26 @@ fn generate_ascii(
             .get(id)
             .map(|a| format!(" {}", a))
             .unwrap_or_default();
+        let usage = task
+            .and_then(|t| t.token_usage.as_ref().or_else(|| live_token_usage.get(&t.id)));
+        let vtok_usage = validation_token_usage.get(id);
+        let status_with_tokens = if let Some(u) = usage {
+            let wtok = format_tokens(u.output_tokens);
+            if let Some(v) = vtok_usage {
+                let vtok = format_tokens(v.output_tokens);
+                format!("{} · {} wtok, {} vtok", status, wtok, vtok)
+            } else {
+                format!("{} · {} tok", status, wtok)
+            }
+        } else if let Some(v) = vtok_usage {
+            let vtok = format_tokens(v.output_tokens);
+            format!("{} · {} vtok", status, vtok)
+        } else {
+            status.to_string()
+        };
         format!(
             "{}{}{}  ({}){}{}",
-            color, id, reset, status, phase_info, loop_info
+            color, id, reset, status_with_tokens, phase_info, loop_info
         )
     };
 
@@ -809,24 +937,69 @@ fn generate_ascii(
     let mut lines: Vec<String> = Vec::new();
     let mut rendered: HashSet<&str> = HashSet::new();
 
-    // Sort components deterministically by creation time
+    // Track line ranges and task IDs per WCC for per-component summaries
+    struct WccRange<'a> {
+        end_line: usize, // line index after last line of this WCC
+        task_ids: Vec<&'a str>,
+    }
+    let mut wcc_ranges: Vec<WccRange> = Vec::new();
+
+    // Sort components: TUI mode uses LRU ordering (most-recently-updated first),
+    // static mode uses chronological ordering (earliest creation time first).
     let mut component_list: Vec<Vec<&str>> = components.into_values().collect();
     component_list.retain(|c| !c.is_empty());
-    component_list.sort_by(|a, b| {
-        let a_time = a
-            .iter()
-            .filter_map(|id| task_map.get(id).and_then(|t| t.created_at.as_deref()))
-            .min();
-        let b_time = b
-            .iter()
-            .filter_map(|id| task_map.get(id).and_then(|t| t.created_at.as_deref()))
-            .min();
-        a_time.cmp(&b_time).then_with(|| {
-            let a_min = a.iter().min().unwrap_or(&"");
-            let b_min = b.iter().min().unwrap_or(&"");
-            a_min.cmp(b_min)
-        })
-    });
+    if tui_mode {
+        // LRU: sort by most-recently-updated timestamp (descending)
+        component_list.sort_by(|a, b| {
+            let latest = |ids: &[&str]| -> Option<String> {
+                ids.iter()
+                    .filter_map(|id| task_map.get(id))
+                    .flat_map(|t| {
+                        let mut timestamps: Vec<&str> = Vec::new();
+                        if let Some(ts) = t.completed_at.as_deref() {
+                            timestamps.push(ts);
+                        }
+                        if let Some(ts) = t.started_at.as_deref() {
+                            timestamps.push(ts);
+                        }
+                        for entry in &t.log {
+                            timestamps.push(entry.timestamp.as_str());
+                        }
+                        if let Some(ts) = t.created_at.as_deref() {
+                            timestamps.push(ts);
+                        }
+                        timestamps
+                    })
+                    .max()
+                    .map(String::from)
+            };
+            let a_latest = latest(a);
+            let b_latest = latest(b);
+            // Reverse: most recent first
+            b_latest.cmp(&a_latest).then_with(|| {
+                let a_min = a.iter().min().unwrap_or(&"");
+                let b_min = b.iter().min().unwrap_or(&"");
+                a_min.cmp(b_min)
+            })
+        });
+    } else {
+        // Chronological: sort by earliest creation time (ascending)
+        component_list.sort_by(|a, b| {
+            let a_time = a
+                .iter()
+                .filter_map(|id| task_map.get(id).and_then(|t| t.created_at.as_deref()))
+                .min();
+            let b_time = b
+                .iter()
+                .filter_map(|id| task_map.get(id).and_then(|t| t.created_at.as_deref()))
+                .min();
+            a_time.cmp(&b_time).then_with(|| {
+                let a_min = a.iter().min().unwrap_or(&"");
+                let b_min = b.iter().min().unwrap_or(&"");
+                a_min.cmp(b_min)
+            })
+        });
+    }
 
     for component in &component_list {
         // Find roots: tasks with no parents outside their SCC
@@ -929,11 +1102,11 @@ fn generate_ascii(
                 // Already rendered: record arc, emit nothing
                 if rendered.contains(id) {
                     if let Some(pid) = parent_id {
-                        if let Some(&source_line) = node_line_map.get(pid) {
-                            if let Some(&target_line) = node_line_map.get(id) {
+                        if let Some(&blocker_line) = node_line_map.get(pid) {
+                            if let Some(&dependent_line) = node_line_map.get(id) {
                                 back_edge_arcs.push(BackEdgeArc {
-                                    source_line,
-                                    target_line,
+                                    blocker_line,
+                                    dependent_line,
                                 });
                             }
                         }
@@ -999,6 +1172,12 @@ fn generate_ascii(
                 &invisible_visits,
             );
         }
+
+        // Record this WCC's line range for per-component summary
+        wcc_ranges.push(WccRange {
+            end_line: lines.len(),
+            task_ids: component.to_vec(),
+        });
     }
 
     // Render independent tasks
@@ -1013,15 +1192,114 @@ fn generate_ascii(
         if !lines.is_empty() {
             lines.push(String::new());
         }
-        for id in independents {
+        for id in &independents {
             lines.push(format!("{}  (independent)", format_node(id)));
         }
+        wcc_ranges.push(WccRange {
+            end_line: lines.len(),
+            task_ids: independents,
+        });
     }
 
     // Phase 2: Draw right-side arcs for all non-tree edges
     draw_back_edge_arcs(&mut lines, &back_edge_arcs, use_color);
 
+    // Phase 3: Insert per-WCC summary lines (reverse order to preserve indices)
+    let dim = if use_color { "\x1b[2m" } else { "" };
+    for wcc in wcc_ranges.iter().rev() {
+        let summary = format_wcc_summary(&wcc.task_ids, &task_map, live_token_usage, validation_token_usage, dim, reset);
+        lines.insert(wcc.end_line, summary);
+    }
+
     lines.join("\n")
+}
+
+/// Format a per-WCC summary line showing task counts and cycle iterations.
+fn format_wcc_summary(
+    task_ids: &[&str],
+    task_map: &HashMap<&str, &Task>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    validation_token_usage: &HashMap<String, TokenUsage>,
+    dim: &str,
+    reset: &str,
+) -> String {
+    let mut done = 0u32;
+    let mut open = 0u32;
+    let mut in_progress = 0u32;
+    let mut blocked = 0u32;
+    let mut failed = 0u32;
+    let mut max_iteration = 0u32;
+
+    for &id in task_ids {
+        if let Some(task) = task_map.get(id) {
+            match task.status {
+                Status::Done => done += 1,
+                Status::Open => open += 1,
+                Status::InProgress => in_progress += 1,
+                Status::Blocked => blocked += 1,
+                Status::Failed => failed += 1,
+                Status::Abandoned => {} // not counted
+            }
+            if task.loop_iteration > max_iteration {
+                max_iteration = task.loop_iteration;
+            }
+        }
+    }
+
+    let total = done + open + in_progress + blocked + failed;
+
+    let mut parts: Vec<String> = Vec::new();
+    if done > 0 {
+        parts.push(format!("{} done", done));
+    }
+    if in_progress > 0 {
+        parts.push(format!("{} in-progress", in_progress));
+    }
+    if open > 0 {
+        parts.push(format!("{} open", open));
+    }
+    if blocked > 0 {
+        parts.push(format!("{} blocked", blocked));
+    }
+    if failed > 0 {
+        parts.push(format!("{} failed", failed));
+    }
+
+    let mut summary = format!("{} tasks ╌╌ {}", total, parts.join(", "));
+    if max_iteration > 0 {
+        summary.push_str(&format!(" ╌╌ iter {}", max_iteration));
+    }
+
+    // Aggregate token usage and cost (including live data from in-progress agents)
+    // Include validation (assign + evaluate) costs in the total
+    let mut total_cost = 0.0f64;
+    let mut total_tokens = 0u64;
+    let mut has_usage = false;
+    for &id in task_ids {
+        if let Some(task) = task_map.get(id) {
+            let usage = task.token_usage.as_ref().or_else(|| live_token_usage.get(id));
+            if let Some(usage) = usage {
+                total_cost += usage.cost_usd;
+                total_tokens += usage.output_tokens;
+                has_usage = true;
+            }
+        }
+        // Add validation costs (assign + evaluate agents)
+        if let Some(vtok) = validation_token_usage.get(id) {
+            total_cost += vtok.cost_usd;
+            total_tokens += vtok.output_tokens;
+            has_usage = true;
+        }
+    }
+    if has_usage {
+        summary.push_str(&format!(
+            " ╌╌ {} tokens, ${:.2}",
+            format_tokens(total_tokens),
+            total_cost,
+        ));
+    }
+
+    format!("{}  ╌╌ {} ╌╌{}", dim, summary, reset)
 }
 
 /// Pad a line with spaces so its visible length reaches at least `target_len`.
@@ -1046,13 +1324,17 @@ fn fill_line_to(line: &mut String, target_len: usize, dim: &str, reset: &str) {
     }
 }
 
-/// Phase 2: Draw right-side arcs for non-tree edges.
+/// Phase 2: Draw right-side arcs for non-tree edges (direction-aware).
 ///
-/// Same-target arcs are collapsed into a single column:
-/// - Target line: `◀` (arrowhead at target)
-/// - Intermediate sources: `┤` (departs here, vertical continues)
-/// - Furthest source: `┘` (departs here, bottom of arc)
+/// Same-dependent arcs are collapsed into a single column:
+/// - Dependent line: `←` (arrowhead marks the receiver)
+/// - Blocker lines: plain dash fill to corner/junction
 /// - Between: `│` (vertical channel)
+///
+/// The arrowhead always goes at the dependent node regardless of its
+/// vertical position (top, middle, or bottom of the arc span).
+///
+/// Corner characters: `┐` at top, `┘` at bottom, `┤` at intermediate.
 /// Dash fill (`─`) connects node text to the arc column.
 fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color: bool) {
     if arcs.is_empty() {
@@ -1063,8 +1345,8 @@ fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color:
     let mut self_loops: Vec<usize> = Vec::new();
     let mut real_arcs: Vec<&BackEdgeArc> = Vec::new();
     for arc in arcs {
-        if arc.source_line == arc.target_line {
-            self_loops.push(arc.source_line);
+        if arc.blocker_line == arc.dependent_line {
+            self_loops.push(arc.blocker_line);
         } else {
             real_arcs.push(arc);
         }
@@ -1080,92 +1362,206 @@ fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color:
         return;
     }
 
-    // Group arcs by target line, collapse same-target into one column
-    let mut by_target: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Group arcs by dependent line — all edges pointing to the same dependent
+    // share one column, regardless of whether blockers are above or below.
+    let mut by_dependent: HashMap<usize, Vec<usize>> = HashMap::new();
     for arc in &real_arcs {
-        let target = arc.target_line.min(arc.source_line);
-        let source = arc.target_line.max(arc.source_line);
-        by_target.entry(target).or_default().push(source);
+        by_dependent
+            .entry(arc.dependent_line)
+            .or_default()
+            .push(arc.blocker_line);
     }
-    for sources in by_target.values_mut() {
-        sources.sort();
-        sources.dedup();
+    for blockers in by_dependent.values_mut() {
+        blockers.sort();
+        blockers.dedup();
     }
 
     struct ArcColumn {
-        target: usize,
-        sources: Vec<usize>,
+        dependent: usize,
+        blockers: Vec<usize>,
+        top: usize,
+        bottom: usize,
     }
 
-    let mut columns: Vec<ArcColumn> = by_target
+    let mut columns: Vec<ArcColumn> = by_dependent
         .into_iter()
-        .map(|(target, sources)| ArcColumn { target, sources })
+        .map(|(dependent, blockers)| {
+            let min_blocker = *blockers.first().unwrap();
+            let max_blocker = *blockers.last().unwrap();
+            let top = dependent.min(min_blocker);
+            let bottom = dependent.max(max_blocker);
+            ArcColumn {
+                dependent,
+                blockers,
+                top,
+                bottom,
+            }
+        })
         .collect();
 
     // Sort by span (shortest first → innermost)
-    columns.sort_by_key(|c| {
-        let max_source = *c.sources.last().unwrap();
-        max_source - c.target
-    });
-
-    let max_width = lines.iter().map(|l| visible_len(l)).max().unwrap_or(0);
-    let margin_start = max_width + 2; // +2 = space + at least one dash
+    columns.sort_by_key(|c| c.bottom - c.top);
 
     let dim = if use_color { "\x1b[90m" } else { "" };
     let reset = if use_color { "\x1b[0m" } else { "" };
 
-    let source_set: HashSet<(usize, usize)> = columns
-        .iter()
-        .enumerate()
-        .flat_map(|(col_idx, c)| c.sources.iter().map(move |&s| (col_idx, s)))
-        .collect();
+    // Each arc column is 2 chars wide (e.g. ←┐). Use 3-char stride so adjacent
+    // columns have a 1-char gap for readability when multiple arcs stack up.
+    let col_stride = 3;
 
-    for (col_idx, column) in columns.iter().enumerate() {
-        let col_x = margin_start + col_idx * 2;
-        let max_source = *column.sources.last().unwrap();
+    // Group columns into non-overlapping bands so each band computes its own
+    // margin from only the lines it spans. This prevents arcs in small subgraphs
+    // from stretching to the width of the widest line in a different subgraph.
+    struct Band {
+        col_indices: Vec<usize>,
+        top: usize,
+        bottom: usize,
+    }
 
-        // Target line: ◀───┐ (arrowhead near node, dashes right, corner at col_x+1)
-        if column.target < lines.len() {
-            let line = &mut lines[column.target];
-            let current = visible_len(line);
-            // Need to reach col_x + 2 total (col_x for dash, col_x+1 for ┐)
-            let end = col_x + 2;
-            if current < end {
-                let gap = end - current;
-                if gap >= 3 {
-                    // space + ◀ + dashes + ┐
-                    line.push(' ');
-                    line.push_str(&format!("{}◀{}┐{}", dim, "─".repeat(gap - 3), reset));
-                } else if gap == 2 {
-                    // ◀┐
-                    line.push_str(&format!("{}◀┐{}", dim, reset));
-                } else {
-                    // gap == 1, just ┐
-                    line.push_str(&format!("{}┐{}", dim, reset));
+    let mut bands: Vec<Band> = Vec::new();
+    // Process columns sorted by top line for band grouping
+    let mut col_order: Vec<usize> = (0..columns.len()).collect();
+    col_order.sort_by_key(|&i| (columns[i].top, columns[i].bottom));
+
+    for &ci in &col_order {
+        let col = &columns[ci];
+        let mut merged_into = None;
+        for (bi, band) in bands.iter_mut().enumerate() {
+            if col.top <= band.bottom + 1 && col.bottom + 1 >= band.top {
+                band.top = band.top.min(col.top);
+                band.bottom = band.bottom.max(col.bottom);
+                band.col_indices.push(ci);
+                merged_into = Some(bi);
+                break;
+            }
+        }
+        if merged_into.is_none() {
+            bands.push(Band {
+                col_indices: vec![ci],
+                top: col.top,
+                bottom: col.bottom,
+            });
+        }
+    }
+
+    // Merge any bands that now overlap after expansion
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'outer: for i in 0..bands.len() {
+            for j in (i + 1)..bands.len() {
+                if bands[i].top <= bands[j].bottom + 1 && bands[i].bottom + 1 >= bands[j].top {
+                    let merged_top = bands[i].top.min(bands[j].top);
+                    let merged_bottom = bands[i].bottom.max(bands[j].bottom);
+                    bands[i].top = merged_top;
+                    bands[i].bottom = merged_bottom;
+                    let moved = std::mem::take(&mut bands[j].col_indices);
+                    bands[i].col_indices.extend(moved);
+                    bands.remove(j);
+                    merged = true;
+                    break 'outer;
                 }
             }
         }
+    }
 
-        // Source lines: ─┘ (furthest) or ─┤ (intermediate)
-        for (i, &source) in column.sources.iter().enumerate() {
-            if source < lines.len() {
-                if i == column.sources.len() - 1 {
-                    fill_line_to(&mut lines[source], col_x + 1, dim, reset);
-                    lines[source].push_str(&format!("{}┘{}", dim, reset));
-                } else {
-                    fill_line_to(&mut lines[source], col_x + 1, dim, reset);
-                    lines[source].push_str(&format!("{}┤{}", dim, reset));
+    for band in &bands {
+        let band_max_width = lines[band.top..=band.bottom.min(lines.len() - 1)]
+            .iter()
+            .map(|l| visible_len(l))
+            .max()
+            .unwrap_or(0);
+        let band_margin_start = band_max_width + 2;
+
+        // Build node_set for this band's columns (using band-local indices)
+        let node_set: HashSet<(usize, usize)> = band.col_indices
+            .iter()
+            .enumerate()
+            .flat_map(|(local_idx, &ci)| {
+                let c = &columns[ci];
+                let dep = std::iter::once((local_idx, c.dependent));
+                let blk = c.blockers.iter().map(move |&b| (local_idx, b));
+                dep.chain(blk)
+            })
+            .collect();
+
+        for (local_idx, &col_idx) in band.col_indices.iter().enumerate() {
+            let column = &columns[col_idx];
+            let col_x = band_margin_start + local_idx * col_stride;
+
+            for line_idx in column.top..=column.bottom {
+                if line_idx >= lines.len() {
+                    continue;
                 }
-            }
-        }
 
-        // Vertical segments
-        for line_idx in (column.target + 1)..max_source {
-            if line_idx < lines.len() && !source_set.contains(&(col_idx, line_idx)) {
-                pad_line_to(&mut lines[line_idx], col_x + 1);
-                let current_vis = visible_len(&lines[line_idx]);
-                if current_vis == col_x + 1 {
-                    lines[line_idx].push_str(&format!("{}│{}", dim, reset));
+                let is_dep = line_idx == column.dependent;
+                let is_blocker = column.blockers.contains(&line_idx);
+                let is_top = line_idx == column.top;
+                let is_bottom = line_idx == column.bottom;
+
+                if is_dep || is_blocker {
+                    // This line participates in the arc — needs dash fill + glyph
+                    let line = &mut lines[line_idx];
+                    let end = col_x + 2;
+
+                    // Determine the corner/junction glyph
+                    let glyph = if is_top && is_bottom {
+                        unreachable!("dependent == blocker filtered as self-loop");
+                    } else if is_top {
+                        if is_dep { "←┐" } else { "─┐" }
+                    } else if is_bottom {
+                        if is_dep { "←┘" } else { "─┘" }
+                    } else {
+                        if is_dep { "←┤" } else { "─┤" }
+                    };
+
+                    let current = visible_len(line);
+                    if current < end {
+                        let gap = end - current;
+                        if gap >= 3 && glyph.starts_with('←') {
+                            line.push(' ');
+                            line.push_str(&format!(
+                                "{}←{}{}{}",
+                                dim,
+                                "─".repeat(gap - 3),
+                                &glyph[glyph.char_indices().nth(1).unwrap().0..],
+                                reset
+                            ));
+                        } else if gap >= 2 && glyph.starts_with('←') {
+                            line.push_str(&format!("{}{}{}", dim, glyph, reset));
+                        } else {
+                            fill_line_to(line, col_x + 1, dim, reset);
+                            line.push_str(&format!("{}{}{}", dim, &glyph[glyph.char_indices().last().unwrap().0..], reset));
+                        }
+                    }
+                } else {
+                    // Vertical pass-through
+                    let line = &mut lines[line_idx];
+                    if !node_set.contains(&(local_idx, line_idx)) {
+                        // Check if any outer (later) column in this band has a
+                        // horizontal on this line — if so, use ┼ with dash fill.
+                        let has_crossing = band.col_indices[local_idx + 1..].iter().any(|&k| {
+                            let c = &columns[k];
+                            line_idx >= c.top
+                                && line_idx <= c.bottom
+                                && (line_idx == c.dependent
+                                    || c.blockers.contains(&line_idx))
+                        });
+
+                        if has_crossing {
+                            fill_line_to(line, col_x + 1, dim, reset);
+                            let current_vis = visible_len(line);
+                            if current_vis == col_x + 1 {
+                                line.push_str(&format!("{}┼{}", dim, reset));
+                            }
+                        } else {
+                            pad_line_to(line, col_x + 1);
+                            let current_vis = visible_len(line);
+                            if current_vis == col_x + 1 {
+                                line.push_str(&format!("{}│{}", dim, reset));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1185,8 +1581,10 @@ pub fn generate_graph(
     tasks: &[&Task],
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    validation_token_usage: &HashMap<String, TokenUsage>,
 ) -> String {
-    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new())
+    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new(), live_token_usage, validation_token_usage)
 }
 
 /// Like generate_graph but allows overriding the displayed status for each task.
@@ -1197,6 +1595,8 @@ pub fn generate_graph_with_overrides(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     status_overrides: &HashMap<&str, Status>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    validation_token_usage: &HashMap<String, TokenUsage>,
 ) -> String {
     if tasks.is_empty() {
         return String::from("(no tasks to display)");
@@ -1356,8 +1756,19 @@ pub fn generate_graph_with_overrides(
             String::new()
         };
 
+        let usage = task.token_usage.as_ref().or_else(|| live_token_usage.get(id));
+        let vtok_usage = validation_token_usage.get(id);
+        let token_info = match (usage, vtok_usage) {
+            (Some(u), Some(v)) => {
+                format!(" · {} wtok, {} vtok", format_tokens(u.output_tokens), format_tokens(v.output_tokens))
+            }
+            (Some(u), None) => format!(" · {} tok", format_tokens(u.output_tokens)),
+            (None, Some(v)) => format!(" · {} vtok", format_tokens(v.output_tokens)),
+            (None, None) => String::new(),
+        };
+
         let line1 = display_id;
-        let line2 = format!("{}{}{}", status, phase, loop_info);
+        let line2 = format!("{}{}{}{}", status, token_info, phase, loop_info);
         let width = line1.len().max(line2.len());
 
         let color = status_color(&effective_status);
@@ -1727,39 +2138,11 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
-            description: None,
-            status: Status::Open,
-            assigned: None,
             estimate: Some(Estimate {
                 hours: Some(hours),
                 cost: None,
             }),
-            before: vec![],
-            after: vec![],
-            requires: vec![],
-            tags: vec![],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: None,
-            not_before: None,
-            created_at: None,
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: None,
-            verify: None,
-            agent: None,
-            loop_iteration: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-        cycle_config: None,
+            ..Task::default()
         }
     }
 
@@ -1933,7 +2316,7 @@ mod tests {
         let tasks: Vec<&workgraph::graph::Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
         assert_eq!(result, "(no tasks to display)");
     }
 
@@ -1949,7 +2332,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // Tree output: src is root, tgt is child
         assert!(result.contains("src"));
@@ -1973,7 +2356,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // a is root with two children
         assert!(result.contains("├→"));
@@ -1997,13 +2380,13 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
         assert!(result.contains('c'));
-        // Fan-in is now shown via right-side arcs (◀/┘) instead of text annotations
+        // Fan-in is now shown via right-side arcs (←/┘) instead of text annotations
         assert!(
-            result.contains("◀") || result.contains("┘"),
+            result.contains("←") || result.contains("┘"),
             "Fan-in should produce a right-side arc.\nOutput:\n{}",
             result
         );
@@ -2018,7 +2401,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         assert!(result.contains("solo"));
         assert!(result.contains("(independent)"));
@@ -2038,7 +2421,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         assert!(result.contains("(in-progress)"));
         assert!(result.contains("(blocked)"));
@@ -2059,7 +2442,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // Should show indented chain: a -> b -> c
         assert!(result.contains("a"));
@@ -2154,7 +2537,7 @@ mod tests {
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots);
+        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), false);
 
         // Internal task should NOT appear
         assert!(!result.contains("assign-my-task"));
@@ -2183,7 +2566,7 @@ mod tests {
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots);
+        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), false);
 
         assert!(!result.contains("evaluate-my-task"));
         assert!(result.contains("my-task"));
@@ -2268,7 +2651,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let annots = HashMap::new();
 
-        let result = generate_ascii(&graph, &tasks, &task_ids, &annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &annots, &HashMap::new(), &HashMap::new(), false);
 
         // Both tasks should be visible
         assert!(result.contains("assign-my-task"));
@@ -2298,7 +2681,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // The source task (which has cycle_config) should show the ↺ symbol
         assert!(
@@ -2331,7 +2714,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // Should show ↺ symbol in the node label
         assert!(
@@ -2365,7 +2748,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // Task with cycle_config should show the ↺ symbol
         assert!(
@@ -2384,7 +2767,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), false);
 
         // No loop symbol on tasks without loops
         assert!(
@@ -2435,7 +2818,7 @@ mod tests {
         let tasks: Vec<&Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
         assert_eq!(result, "(no tasks to display)");
     }
 
@@ -2448,7 +2831,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("alpha"), "Should contain task id:\n{}", result);
         assert!(result.contains("open"), "Should contain status:\n{}", result);
@@ -2468,7 +2851,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         // Both boxes should appear
         assert!(result.contains('a'), "Should contain 'a':\n{}", result);
@@ -2495,7 +2878,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         // All children should appear
         assert!(result.contains("c1"), "Should contain c1:\n{}", result);
@@ -2519,7 +2902,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         // All nodes should be present
         assert!(result.contains('a'), "Should contain a:\n{}", result);
@@ -2545,7 +2928,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         // All 4 nodes
         assert!(result.contains("start"), "Should contain start:\n{}", result);
@@ -2571,7 +2954,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("in-progress"), "Should show in-progress status:\n{}", result);
         assert!(result.contains("blocked"), "Should show blocked status:\n{}", result);
@@ -2597,7 +2980,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("↺"), "Should show loop annotation:\n{}", result);
         assert!(result.contains("2/5"), "Should show iteration count:\n{}", result);
@@ -2612,7 +2995,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots);
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
 
         // ID should be truncated with ellipsis
         assert!(result.contains('…'), "Should truncate long id:\n{}", result);
@@ -2666,6 +3049,7 @@ mod tests {
             show_internal: true,
             critical_path: false,
             focus: Vec::new(),
+            tui_mode: false,
         };
         // We test via run() output by checking generate_ascii directly
         // with the same filter logic
@@ -2742,10 +3126,10 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
 
-        // Should have ◀ at target and ┘ at source
-        assert!(result.contains("◀"), "Back-edge target should have ◀\nOutput:\n{}", result);
+        // Should have ← at target and ┘ at source
+        assert!(result.contains("←"), "Back-edge target should have ←\nOutput:\n{}", result);
         assert!(result.contains("┘"), "Back-edge source should have ┘\nOutput:\n{}", result);
         // Should NOT have old-style cycle-back text
         assert!(!result.contains("cycles back"), "No old-style text\nOutput:\n{}", result);
@@ -2775,10 +3159,10 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
 
         // Fan-in should produce a right-side arc (not a text annotation)
-        assert!(result.contains("◀") || result.contains("┘"),
+        assert!(result.contains("←") || result.contains("┘"),
             "Diamond fan-in should have right-side arcs\nOutput:\n{}", result);
         assert!(!result.contains("(←"), "No fan-in text annotation\nOutput:\n{}", result);
         assert!(!result.contains("..."), "No duplicate 'already shown' entries\nOutput:\n{}", result);
@@ -2806,7 +3190,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
 
         let tree_lines: Vec<&str> = result.lines().collect();
         // The child should use └→ (last visible child), not ├→
@@ -2851,10 +3235,10 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
 
-        // Should have exactly one ◀ (same-target collapse)
-        let target_count = result.matches("◀").count();
+        // Should have exactly one ← (same-target collapse)
+        let target_count = result.matches("←").count();
         assert_eq!(target_count, 1,
             "Multiple sources to same target should collapse to 1 column\nOutput:\n{}", result);
         // Should have ┤ for intermediate sources and ┘ for the last
@@ -2882,11 +3266,11 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
 
         // Lines with arcs should have space before the dash fill
         for line in result.lines() {
-            if line.contains("◀") || line.contains("┘") {
+            if line.contains("←") || line.contains("┘") {
                 // The text content shouldn't run directly into ─
                 assert!(
                     !line.contains(")─") && !line.contains(")←"),
@@ -2895,5 +3279,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_arc_forward_skip_edge() {
+        // Graph: A→B→C, A→C (forward skip: A blocks C directly)
+        // The arrowhead should be at C (dependent), not at A (blocker).
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("aaa", "A");
+        a.created_at = Some("2024-01-01T00:00:00Z".to_string());
+        let mut b = make_task("bbb", "B");
+        b.after = vec!["aaa".to_string()];
+        b.created_at = Some("2024-01-01T00:01:00Z".to_string());
+        let mut c = make_task("ccc", "C");
+        c.after = vec!["bbb".to_string(), "aaa".to_string()]; // C depends on both B and A
+        c.created_at = Some("2024-01-01T00:02:00Z".to_string());
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
+
+        // Find the lines
+        let lines: Vec<&str> = result.lines().collect();
+        let a_line = lines.iter().find(|l| l.contains("aaa")).expect("A should appear");
+        let c_line = lines.iter().find(|l| l.contains("ccc")).expect("C should appear");
+
+        // C (dependent) should have ← arrowhead
+        assert!(c_line.contains("←"),
+            "Forward skip: dependent C should have ←\nOutput:\n{}", result);
+        // A (blocker) should NOT have ←
+        assert!(!a_line.contains("←"),
+            "Forward skip: blocker A should NOT have ←\nOutput:\n{}", result);
+        // A should have ┐ (top corner for downward arc)
+        assert!(a_line.contains("┐"),
+            "Forward skip: blocker A should have ┐\nOutput:\n{}", result);
+    }
+
+    #[test]
+    fn test_arc_mixed_direction_same_dependent() {
+        // Graph: A→B→D, A→D, and E→D where E is rendered below D
+        // D is the dependent from both A (above) and E (below)
+        // Should produce a single column with ←┤ at D's line
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("aaa", "A");
+        a.created_at = Some("2024-01-01T00:00:00Z".to_string());
+        let mut b = make_task("bbb", "B");
+        b.after = vec!["aaa".to_string()];
+        b.created_at = Some("2024-01-01T00:01:00Z".to_string());
+        let mut d = make_task("ddd", "D");
+        d.after = vec!["bbb".to_string(), "aaa".to_string()]; // D depends on B and A (A is forward skip)
+        d.created_at = Some("2024-01-01T00:02:00Z".to_string());
+        // E is a sibling of B under A, and D also depends on E
+        let mut e = make_task("eee", "E");
+        e.after = vec!["aaa".to_string()];
+        e.created_at = Some("2024-01-01T00:03:00Z".to_string());
+        d.after.push("eee".to_string()); // D also depends on E
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(d));
+        graph.add_node(Node::Task(e));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
+
+        // D should have exactly one ← (same-dependent collapse)
+        let arrow_count = result.matches("←").count();
+        assert_eq!(arrow_count, 1,
+            "Mixed direction arcs to same dependent should collapse to 1 column\nOutput:\n{}", result);
+
+        // D's line should have ←
+        let lines: Vec<&str> = result.lines().collect();
+        let d_line = lines.iter().find(|l| l.contains("ddd")).expect("D should appear");
+        assert!(d_line.contains("←"),
+            "Mixed direction: D should have ←\nOutput:\n{}", result);
+    }
+
+    #[test]
+    fn test_arc_multiple_forward_edges_from_same_source() {
+        // Graph: A→{B,C} via tree, plus A→B and A→C as non-tree forward skips
+        // Each dependent gets its own column with ← at the dependent
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("root", "Root");
+        a.created_at = Some("2024-01-01T00:00:00Z".to_string());
+        let mut b = make_task("mid", "Mid");
+        b.after = vec!["root".to_string()];
+        b.created_at = Some("2024-01-01T00:01:00Z".to_string());
+        let mut c = make_task("leaf-a", "Leaf A");
+        c.after = vec!["mid".to_string(), "root".to_string()]; // forward skip from root
+        c.created_at = Some("2024-01-01T00:02:00Z".to_string());
+        let mut d = make_task("leaf-b", "Leaf B");
+        d.after = vec!["mid".to_string(), "root".to_string()]; // forward skip from root
+        d.created_at = Some("2024-01-01T00:03:00Z".to_string());
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), false);
+
+        // Each dependent (leaf-a, leaf-b) should have ←
+        let lines: Vec<&str> = result.lines().collect();
+        let c_line = lines.iter().find(|l| l.contains("leaf-a")).expect("leaf-a should appear");
+        let d_line = lines.iter().find(|l| l.contains("leaf-b")).expect("leaf-b should appear");
+        assert!(c_line.contains("←"),
+            "leaf-a should have ← arrowhead\nOutput:\n{}", result);
+        assert!(d_line.contains("←"),
+            "leaf-b should have ← arrowhead\nOutput:\n{}", result);
+
+        // Root (blocker) should NOT have ←
+        let root_line = lines.iter().find(|l| l.contains("root")).expect("root should appear");
+        assert!(!root_line.contains("←"),
+            "root (blocker) should NOT have ←\nOutput:\n{}", result);
+    }
+
+    #[test]
+    fn test_arc_crossing_characters() {
+        // Create a scenario where an outer column's horizontal passes through
+        // an inner column's vertical:
+        // Arc A (inner, span 2): ccc ← eee
+        // Arc B (outer, span 4): aaa ← {eee, fff}
+        // On eee's line: Arc A has blocker (─┘), Arc B has blocker (─┤)
+        // On ddd's line: Arc A has vertical (│), Arc B has... we need B to have a horizontal there
+        //
+        // Better: make Arc B longer so it has a blocker INSIDE Arc A's span.
+        // Arc A (inner, span 3): bbb ← eee, lines 1-4
+        // Arc B (outer, span 5): aaa ← {ccc, fff}, lines 0-5
+        // On ccc's line (inside A's span): A has vertical, B has horizontal blocker → crossing!
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("aaa", "A");
+        a.created_at = Some("2024-01-01T00:00:00Z".to_string());
+        let mut b = make_task("bbb", "B");
+        b.after = vec!["aaa".to_string()];
+        b.created_at = Some("2024-01-01T00:01:00Z".to_string());
+        let mut c = make_task("ccc", "C");
+        c.after = vec!["bbb".to_string()];
+        c.created_at = Some("2024-01-01T00:02:00Z".to_string());
+        let mut d = make_task("ddd", "D");
+        d.after = vec!["ccc".to_string()];
+        d.created_at = Some("2024-01-01T00:03:00Z".to_string());
+        let mut e = make_task("eee", "E");
+        e.after = vec!["ddd".to_string()];
+        e.created_at = Some("2024-01-01T00:04:00Z".to_string());
+        // E also blocks B (non-tree forward skip) → Arc A
+        b.after.push("eee".to_string());
+        let mut f = make_task("fff", "F");
+        f.after = vec!["eee".to_string()];
+        f.created_at = Some("2024-01-01T00:05:00Z".to_string());
+        // C also blocks A (non-tree) → part of Arc B
+        a.after.push("ccc".to_string());
+        a.cycle_config = Some(workgraph::graph::CycleConfig {
+            max_iterations: 2,
+            guard: None,
+            delay: None,
+        });
+        // F also blocks A (non-tree) → part of Arc B
+        a.after.push("fff".to_string());
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+        graph.add_node(Node::Task(e));
+        graph.add_node(Node::Task(f));
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph, &tasks, &task_ids,
+            &HashMap::new(), &HashMap::new(), &HashMap::new(), false,
+        );
+        eprintln!("CROSSING OUTPUT:\n{}", result);
+        // Should contain crossing character ┼ where verticals cross horizontals
+        assert!(result.contains("┼"),
+            "Should have crossing character ┼ where arcs cross\nOutput:\n{}", result);
     }
 }

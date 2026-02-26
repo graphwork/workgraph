@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{CycleConfig, LogEntry, LoopGuard, Status};
+use workgraph::graph::{CycleConfig, LogEntry, LoopGuard, Status, TokenUsage};
 use workgraph::query::build_reverse_index;
 
 /// Blocker info with status
@@ -78,6 +78,8 @@ struct TaskDetails {
     visibility: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_usage: Option<TokenUsage>,
 }
 
 fn is_default_visibility(val: &str) -> bool {
@@ -186,6 +188,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         paused: task.paused,
         visibility: task.visibility.clone(),
         context_scope: task.context_scope.clone(),
+        token_usage: task.token_usage.clone(),
     };
 
     if json {
@@ -351,6 +354,18 @@ fn print_human_readable(details: &TaskDetails) {
         );
     }
 
+    // Token usage
+    if let Some(ref usage) = details.token_usage {
+        println!();
+        println!("Token usage:");
+        println!("  Input tokens: {}", usage.input_tokens);
+        println!("  Output tokens: {}", usage.output_tokens);
+        println!("  Cache read: {}", usage.cache_read_input_tokens);
+        println!("  Cache creation: {}", usage.cache_creation_input_tokens);
+        println!("  Total output: {}", usage.output_tokens);
+        println!("  Cost: ${:.4}", usage.cost_usd);
+    }
+
     // Log entries
     if !details.log.is_empty() {
         println!();
@@ -471,6 +486,7 @@ mod tests {
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

@@ -693,7 +693,7 @@ pub fn run_start(
 
     // Warn if auto_assign is enabled but no agency agents are defined
     let no_agents_defined = {
-        let agents_dir = dir.join("agency").join("agents");
+        let agents_dir = dir.join("agency").join("cache/agents");
         agency::load_all_agents_or_warn(&agents_dir).is_empty()
     };
     let warn_no_agents = config.agency.auto_assign && no_agents_defined;
@@ -774,6 +774,11 @@ pub(crate) struct DaemonConfig {
     poll_interval: Duration,
     model: Option<String>,
     paused: bool,
+    /// Settling delay after GraphChanged events. During burst graph construction,
+    /// multiple adds fire in rapid succession. Instead of ticking immediately on
+    /// each GraphChanged, the coordinator waits this long after the *last* event
+    /// before dispatching. This prevents premature dispatch on partially-wired graphs.
+    settling_delay: Duration,
 }
 
 /// Run the actual daemon loop (called by forked process)
@@ -844,6 +849,7 @@ pub fn run_daemon(
             .map(std::string::ToString::to_string)
             .or_else(|| config.coordinator.model.clone()),
         paused: false,
+        settling_delay: Duration::from_millis(config.coordinator.settling_delay_ms),
     };
 
     logger.info(&format!(
@@ -887,6 +893,11 @@ pub fn run_daemon(
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
+    // Settling deadline: when a GraphChanged event arrives, we schedule a tick
+    // after a settling delay. Each subsequent GraphChanged resets the deadline,
+    // debouncing burst additions so the coordinator sees the full graph.
+    let mut settling_deadline: Option<Instant> = None;
+
     while running {
         // Reap zombie child processes (agents that have exited).
         // Even though agents call setsid() to create a new session, they are
@@ -909,9 +920,23 @@ pub fn run_daemon(
                     logger.error(&format!("Error handling connection: {}", e));
                 }
                 if wake_coordinator {
-                    logger.info("GraphChanged received, scheduling immediate coordinator tick");
-                    // Force an immediate coordinator tick
-                    last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
+                    // Debounce: (re)set the settling deadline. Each GraphChanged
+                    // pushes the deadline forward, so burst additions all land
+                    // before the coordinator tick fires.
+                    let new_deadline = Instant::now() + daemon_cfg.settling_delay;
+                    let was_pending = settling_deadline.is_some();
+                    settling_deadline = Some(new_deadline);
+                    if !was_pending {
+                        logger.info(&format!(
+                            "GraphChanged received, scheduling coordinator tick in {}ms (settling delay)",
+                            daemon_cfg.settling_delay.as_millis()
+                        ));
+                    } else {
+                        logger.info(&format!(
+                            "GraphChanged received, resetting settling deadline ({}ms from now)",
+                            daemon_cfg.settling_delay.as_millis()
+                        ));
+                    }
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -923,9 +948,24 @@ pub fn run_daemon(
             }
         }
 
-        // Background safety-net tick: runs on poll_interval even without IPC events.
-        // The fast-path is GraphChanged IPC which resets last_coordinator_tick.
-        if !daemon_cfg.paused && last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
+        // Determine whether to run a coordinator tick.
+        // Two triggers: (1) settling deadline expired, (2) background poll interval.
+        let mut should_tick = false;
+        if !daemon_cfg.paused {
+            // Settled tick: the settling deadline has passed after GraphChanged events.
+            if let Some(deadline) = settling_deadline {
+                if Instant::now() >= deadline {
+                    settling_deadline = None;
+                    should_tick = true;
+                    logger.info("Settling delay elapsed, running coordinator tick now");
+                }
+            }
+            // Background safety-net tick: runs on poll_interval even without IPC events.
+            if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
+                should_tick = true;
+            }
+        }
+        if should_tick {
             last_coordinator_tick = Instant::now();
 
             // Aggregate usage stats periodically
@@ -1135,7 +1175,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let idle_count = registry.idle_count();
 
     // Check if any agency agents are defined (YAML definitions, not runtime processes)
-    let agency_agents_dir = dir.join("agency").join("agents");
+    let agency_agents_dir = dir.join("agency").join("cache/agents");
     let agency_agents_defined = !agency::load_all_agents_or_warn(&agency_agents_dir).is_empty();
 
     // Calculate uptime
@@ -1649,7 +1689,7 @@ mod tests {
         // the service start output should include a warning.
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path();
-        fs::create_dir_all(wg_dir.join("agency").join("agents")).unwrap();
+        fs::create_dir_all(wg_dir.join("agency").join("cache/agents")).unwrap();
 
         // Enable auto_assign in config
         let mut config = Config::load_or_default(wg_dir);
@@ -1657,7 +1697,7 @@ mod tests {
         config.save(wg_dir).unwrap();
 
         // Check: no agency agents defined
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agents = agency::load_all_agents_or_warn(&agents_dir);
         assert!(agents.is_empty(), "Expected no agents defined");
 
@@ -1683,7 +1723,7 @@ mod tests {
         config.agency.auto_assign = true;
         config.save(wg_dir).unwrap();
 
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agents = agency::load_all_agents_or_warn(&agents_dir);
         assert!(!agents.is_empty(), "Expected at least one agent");
 
@@ -1698,9 +1738,9 @@ mod tests {
         // rather than just showing agents_alive=0.
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path();
-        fs::create_dir_all(wg_dir.join("agency").join("agents")).unwrap();
+        fs::create_dir_all(wg_dir.join("agency").join("cache/agents")).unwrap();
 
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agency_agents_defined = !agency::load_all_agents_or_warn(&agents_dir).is_empty();
 
         // No agents defined — should show the "No agents defined" message
@@ -1728,7 +1768,7 @@ mod tests {
         // Create an agent via agency init
         super::super::agency_init::run(wg_dir).unwrap();
 
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agency_agents_defined = !agency::load_all_agents_or_warn(&agents_dir).is_empty();
         assert!(agency_agents_defined);
 

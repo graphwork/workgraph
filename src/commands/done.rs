@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, evaluate_cycle_iteration};
+use workgraph::graph::{LogEntry, Status, evaluate_cycle_iteration, parse_token_usage};
 use workgraph::parser::save_graph;
 use workgraph::query;
+use workgraph::service::registry::AgentRegistry;
 
 #[cfg(test)]
 use super::graph_path;
@@ -135,6 +136,24 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
         },
     });
 
+    // Extract token usage from agent output.log if available
+    if task.token_usage.is_none() {
+        if let Ok(registry) = AgentRegistry::load(dir) {
+            if let Some(agent) = registry.get_agent_by_task(id) {
+                let output_path = std::path::Path::new(&agent.output_file);
+                // output_file may be relative to the project root (parent of .workgraph)
+                let abs_path = if output_path.is_absolute() {
+                    output_path.to_path_buf()
+                } else {
+                    dir.parent().unwrap_or(dir).join(output_path)
+                };
+                if let Some(usage) = parse_token_usage(&abs_path) {
+                    task.token_usage = Some(usage);
+                }
+            }
+        }
+    }
+
     // Evaluate structural cycle iteration
     let id_owned = id.to_string();
     let cycle_analysis = graph.compute_cycle_analysis();
@@ -186,6 +205,19 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
             Err(e) => {
                 eprintln!("Warning: output capture failed: {}", e);
             }
+        }
+    }
+
+    // Soft validation nudge: if no log entry mentions validation, print a tip.
+    if let Some(task) = graph.get_task(id) {
+        let has_validation = task.log.iter().any(|entry| {
+            entry.message.to_lowercase().contains("validat")
+        });
+        if !has_validation {
+            eprintln!(
+                "Tip: Log validation steps before wg done (e.g., wg log {} \"Validated: tests pass\")",
+                id
+            );
         }
     }
 
@@ -595,5 +627,58 @@ mod tests {
             task.tags.contains(&"converged".to_string()),
             "converged tag should be added when no guard is set"
         );
+    }
+
+    #[test]
+    fn test_done_without_validation_log_still_succeeds() {
+        // The soft validation tip should never block completion.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
+
+        let result = run(dir_path, "t1", false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+
+        // No log entry contains "validat" — the tip would fire, but must not block
+        let has_validation = task
+            .log
+            .iter()
+            .any(|e| e.message.to_lowercase().contains("validat"));
+        assert!(!has_validation);
+    }
+
+    #[test]
+    fn test_done_with_validation_log_suppresses_tip() {
+        // When a log entry contains a validation mention, no tip should fire.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Test task", Status::Open);
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            message: "Validated: all tests pass".to_string(),
+        });
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+
+        // Log contains "Validated" — tip should be suppressed
+        let has_validation = task
+            .log
+            .iter()
+            .any(|e| e.message.to_lowercase().contains("validat"));
+        assert!(has_validation);
     }
 }

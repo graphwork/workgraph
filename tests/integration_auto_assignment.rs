@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Lineage, PerformanceRecord, SkillRef};
+use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
@@ -76,32 +76,28 @@ fn setup_agency(dir: &Path) -> (String, String, String) {
     let role = agency::build_role(
         "Implementer",
         "Writes production-quality Rust code",
-        vec![SkillRef::Name("rust".to_string())],
+        vec!["rust".to_string()],
         "Working, tested code",
     );
     let role_id = role.id.clone();
-    agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Quality First",
         "Prioritise correctness over speed",
         vec!["Slower delivery".to_string()],
         vec!["Skipping tests".to_string()],
     );
     let mot_id = motivation.id.clone();
-    agency::save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+    agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
     let agent_id = agency::content_hash_agent(&role_id, &mot_id);
     let agent = Agent {
         id: agent_id.clone(),
         role_id: role_id.clone(),
-        motivation_id: mot_id.clone(),
+        tradeoff_id: mot_id.clone(),
         name: "impl-agent".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -109,8 +105,11 @@ fn setup_agency(dir: &Path) -> (String, String, String) {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+            attractor_weight: 0.5,
+            deployment_history: vec![],
+            staleness_flags: vec![],
     };
-    agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
+    agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
     (agent_id, role_id, mot_id)
 }
@@ -122,32 +121,28 @@ fn setup_second_agent(dir: &Path) -> String {
     let role = agency::build_role(
         "Reviewer",
         "Reviews code for correctness",
-        vec![SkillRef::Name("code-review".to_string())],
+        vec!["code-review".to_string()],
         "Reviewed, approved code",
     );
     let role_id = role.id.clone();
-    agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Thoroughness",
         "Leave no stone unturned",
         vec!["Takes longer".to_string()],
         vec!["Rubber-stamping".to_string()],
     );
     let mot_id = motivation.id.clone();
-    agency::save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+    agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
     let agent_id = agency::content_hash_agent(&role_id, &mot_id);
     let agent = Agent {
         id: agent_id.clone(),
         role_id: role_id.clone(),
-        motivation_id: mot_id.clone(),
+        tradeoff_id: mot_id.clone(),
         name: "review-agent".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -155,8 +150,11 @@ fn setup_second_agent(dir: &Path) -> String {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+            attractor_weight: 0.5,
+            deployment_history: vec![],
+            staleness_flags: vec![],
     };
-    agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
+    agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
     agent_id
 }
@@ -243,6 +241,7 @@ fn build_assign_subgraph(dir: &Path) {
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));
@@ -575,7 +574,7 @@ fn test_assign_sets_agent_field() {
 
     // Simulate what `wg assign cli-1 <agent-hash>` does:
     // find agent by prefix, then set task.agent
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let found = agency::find_agent_by_prefix(&agents_dir, &agent_id).unwrap();
     assert_eq!(found.id, agent_id);
 
@@ -619,7 +618,7 @@ fn test_assign_cli_prefix_matching() {
     let (agent_id, _, _) = setup_agency(dir);
 
     // Prefix match via agency API (same logic as assign command)
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let prefix = &agent_id[..8];
     let found = agency::find_agent_by_prefix(&agents_dir, prefix).unwrap();
     assert_eq!(found.id, agent_id);
@@ -742,31 +741,32 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
     let role = agency::build_role(
         "Implementer",
         "Writes Rust code",
-        vec![SkillRef::Name("rust".to_string())],
+        vec!["rust".to_string()],
         "Working code",
     );
     let role_id = role.id.clone();
-    agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Quality First",
         "Prioritise correctness",
         vec!["Slower delivery".to_string()],
         vec!["Skipping tests".to_string()],
     );
     let mot_id = motivation.id.clone();
-    agency::save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+    agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
     let agent_id = agency::content_hash_agent(&role_id, &mot_id);
     let agent = Agent {
         id: agent_id.clone(),
         role_id,
-        motivation_id: mot_id,
+        tradeoff_id: mot_id,
         name: "prompt-test-agent".to_string(),
         performance: PerformanceRecord {
             task_count: 5,
             avg_score: Some(0.85),
             evaluations: vec![],
+            org_performance: None,
         },
         lineage: Lineage::default(),
         capabilities: Vec::new(),
@@ -775,8 +775,11 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+            attractor_weight: 0.5,
+            deployment_history: vec![],
+            staleness_flags: vec![],
     };
-    agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
+    agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
     // Create a task with the agent assigned
     let mut task = make_task("prompt-task", "Build the widget");

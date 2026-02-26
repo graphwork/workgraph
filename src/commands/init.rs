@@ -177,8 +177,8 @@ mod tests {
 
         let agency_dir = wg_dir.join("agency");
         assert!(agency_dir.exists());
-        let roles_dir = agency_dir.join("roles");
-        let motivations_dir = agency_dir.join("motivations");
+        let roles_dir = agency_dir.join("cache/roles");
+        let motivations_dir = agency_dir.join("primitives/tradeoffs");
         assert!(roles_dir.exists(), "agency/roles should be created");
         assert!(
             motivations_dir.exists(),

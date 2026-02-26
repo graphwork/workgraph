@@ -62,6 +62,12 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(ref agent) = config.agency.evolver_agent {
             println!("  evolver_agent = \"{}\"", agent);
         }
+        if let Some(ref agent) = config.agency.creator_agent {
+            println!("  creator_agent = \"{}\"", agent);
+        }
+        if let Some(ref model) = config.agency.creator_model {
+            println!("  creator_model = \"{}\"", model);
+        }
         if let Some(ref heuristics) = config.agency.retention_heuristics {
             println!("  retention_heuristics = \"{}\"", heuristics);
         }
@@ -128,6 +134,8 @@ pub fn update(
     assigner_agent: Option<&str>,
     evaluator_agent: Option<&str>,
     evolver_agent: Option<&str>,
+    creator_agent: Option<&str>,
+    creator_model: Option<&str>,
     retention_heuristics: Option<&str>,
     auto_triage: Option<bool>,
     triage_model: Option<&str>,
@@ -230,6 +238,18 @@ pub fn update(
     if let Some(v) = evolver_agent {
         config.agency.evolver_agent = Some(v.to_string());
         println!("Set agency.evolver_agent = \"{}\"", v);
+        changed = true;
+    }
+
+    if let Some(v) = creator_agent {
+        config.agency.creator_agent = Some(v.to_string());
+        println!("Set agency.creator_agent = \"{}\"", v);
+        changed = true;
+    }
+
+    if let Some(v) = creator_model {
+        config.agency.creator_model = Some(v.to_string());
+        println!("Set agency.creator_model = \"{}\"", v);
         changed = true;
     }
 
@@ -573,6 +593,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -597,6 +619,8 @@ mod tests {
             Some(60),
             None,
             Some("shell"),
+            None,
+            None,
             None,
             None,
             None,
@@ -647,6 +671,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -677,6 +703,8 @@ mod tests {
             Some("assigner-hash"),
             Some("evaluator-hash"),
             Some("evolver-hash"),
+            Some("creator-hash"),
+            Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
             None,
             None,
@@ -702,6 +730,14 @@ mod tests {
         assert_eq!(
             config.agency.evolver_agent,
             Some("evolver-hash".to_string())
+        );
+        assert_eq!(
+            config.agency.creator_agent,
+            Some("creator-hash".to_string())
+        );
+        assert_eq!(
+            config.agency.creator_model,
+            Some("haiku".to_string())
         );
         assert_eq!(
             config.agency.retention_heuristics,

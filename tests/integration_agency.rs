@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord, SkillRef};
+use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
 use workgraph::graph::{LogEntry, Status, Task};
 
 /// Helper: create a minimal Task for testing.
@@ -51,8 +51,8 @@ fn test_full_agency_lifecycle() {
     // Step 1: Initialize agency storage
     // ---------------------------------------------------------------
     agency::init(&agency_dir).unwrap();
-    assert!(agency_dir.join("roles").is_dir());
-    assert!(agency_dir.join("motivations").is_dir());
+    assert!(agency_dir.join("cache/roles").is_dir());
+    assert!(agency_dir.join("primitives/tradeoffs").is_dir());
     assert!(agency_dir.join("evaluations").is_dir());
 
     // ---------------------------------------------------------------
@@ -62,15 +62,15 @@ fn test_full_agency_lifecycle() {
         "Rust Developer",
         "Writes, tests, and debugs Rust code.",
         vec![
-            SkillRef::Name("rust".to_string()),
-            SkillRef::Name("testing".to_string()),
-            SkillRef::Inline("Write idiomatic Rust with proper error handling".to_string()),
+            "rust".to_string(),
+            "testing".to_string(),
+            "inline:Write idiomatic Rust with proper error handling".to_string(),
         ],
         "Working, tested Rust code with proper error handling",
     );
     let role_id = role.id.clone();
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Careful Quality",
         "Prioritizes reliability and correctness above speed.",
         vec![
@@ -99,19 +99,19 @@ fn test_full_agency_lifecycle() {
     );
 
     // Save and reload to verify storage round-trip
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
     agency::save_role(&role, &roles_dir).unwrap();
-    agency::save_motivation(&motivation, &motivations_dir).unwrap();
+    agency::save_tradeoff(&motivation, &motivations_dir).unwrap();
 
     let loaded_roles = agency::load_all_roles(&roles_dir).unwrap();
     assert_eq!(loaded_roles.len(), 1);
     assert_eq!(loaded_roles[0].id, role_id);
     assert_eq!(loaded_roles[0].name, "Rust Developer");
-    assert_eq!(loaded_roles[0].skills.len(), 3);
+    assert_eq!(loaded_roles[0].component_ids.len(), 3);
 
-    let loaded_motivations = agency::load_all_motivations(&motivations_dir).unwrap();
+    let loaded_motivations = agency::load_all_tradeoffs(&motivations_dir).unwrap();
     assert_eq!(loaded_motivations.len(), 1);
     assert_eq!(loaded_motivations[0].id, motivation_id);
     assert_eq!(loaded_motivations[0].unacceptable_tradeoffs.len(), 2);
@@ -214,7 +214,7 @@ fn test_full_agency_lifecycle() {
         task_id: "impl-parser".to_string(),
         agent_id: String::new(),
         role_id: role_id.clone(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         score: 0.88,
         dimensions,
         notes: "Good implementation with thorough tests.".to_string(),
@@ -257,7 +257,7 @@ fn test_full_agency_lifecycle() {
 
     // Verify motivation performance was updated
     let updated_motivation =
-        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
+        agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
     assert_eq!(updated_motivation.performance.task_count, 1);
     assert!(
         (updated_motivation.performance.avg_score.unwrap() - 0.88).abs() < 1e-6,
@@ -284,7 +284,7 @@ fn test_full_agency_lifecycle() {
         task_id: "fix-parser-bug".to_string(),
         agent_id: String::new(),
         role_id: role_id.clone(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         score: 0.92,
         dimensions: dimensions2,
         notes: "Excellent bugfix with regression tests.".to_string(),
@@ -327,7 +327,7 @@ fn test_seed_starters_and_round_trip() {
     );
 
     // Verify round-trip: load all and check they're valid
-    let roles = agency::load_all_roles(&agency_dir.join("roles")).unwrap();
+    let roles = agency::load_all_roles(&agency_dir.join("cache/roles")).unwrap();
     assert_eq!(roles.len(), roles_created);
 
     // All starter roles should have content-hash IDs (64 hex chars)
@@ -341,7 +341,7 @@ fn test_seed_starters_and_round_trip() {
         );
     }
 
-    let motivations = agency::load_all_motivations(&agency_dir.join("motivations")).unwrap();
+    let motivations = agency::load_all_tradeoffs(&agency_dir.join("primitives/tradeoffs")).unwrap();
     assert_eq!(motivations.len(), motivations_created);
 
     // All starter motivations should have content-hash IDs (64 hex chars)
@@ -389,9 +389,9 @@ fn test_full_agency_lifecycle_new_design() {
         "Integration Implementer",
         "Implements features with full test coverage.",
         vec![
-            SkillRef::Name("rust".to_string()),
-            SkillRef::Name("testing".to_string()),
-            SkillRef::Inline("Write integration tests covering all edge cases".to_string()),
+            "rust".to_string(),
+            "testing".to_string(),
+            "inline:Write integration tests covering all edge cases".to_string(),
         ],
         "Fully tested feature implementation",
     );
@@ -409,9 +409,9 @@ fn test_full_agency_lifecycle_new_design() {
         "Different Name",
         "Implements features with full test coverage.",
         vec![
-            SkillRef::Name("rust".to_string()),
-            SkillRef::Name("testing".to_string()),
-            SkillRef::Inline("Write integration tests covering all edge cases".to_string()),
+            "rust".to_string(),
+            "testing".to_string(),
+            "inline:Write integration tests covering all edge cases".to_string(),
         ],
         "Fully tested feature implementation",
     );
@@ -420,13 +420,13 @@ fn test_full_agency_lifecycle_new_design() {
         "Same immutable content should produce same hash regardless of name"
     );
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     agency::save_role(&role, &roles_dir).unwrap();
 
     // ---------------------------------------------------------------
     // Step 2: Create motivation with content-hash ID
     // ---------------------------------------------------------------
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Reliable Delivery",
         "Delivers working software with comprehensive testing.",
         vec![
@@ -447,8 +447,8 @@ fn test_full_agency_lifecycle_new_design() {
     );
     assert!(motivation_id.chars().all(|c| c.is_ascii_hexdigit()));
 
-    let motivations_dir = agency_dir.join("motivations");
-    agency::save_motivation(&motivation, &motivations_dir).unwrap();
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    agency::save_tradeoff(&motivation, &motivations_dir).unwrap();
 
     // ---------------------------------------------------------------
     // Step 3: Create agent from role+motivation
@@ -464,7 +464,7 @@ fn test_full_agency_lifecycle_new_design() {
     );
 
     // Different pairing produces different agent ID
-    let alt_motivation = agency::build_motivation(
+    let alt_motivation = agency::build_tradeoff(
         "Speed",
         "Prioritizes fast delivery.",
         vec!["Less testing".to_string()],
@@ -479,13 +479,9 @@ fn test_full_agency_lifecycle_new_design() {
     let agent = Agent {
         id: agent_id.clone(),
         role_id: role_id.clone(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         name: "integration-test-agent".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -493,15 +489,18 @@ fn test_full_agency_lifecycle_new_design() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
-    let agents_dir = agency_dir.join("agents");
+    let agents_dir = agency_dir.join("cache/agents");
     agency::save_agent(&agent, &agents_dir).unwrap();
 
     // Verify agent round-trip
     let loaded_agent = agency::find_agent_by_prefix(&agents_dir, &agent_id).unwrap();
     assert_eq!(loaded_agent.id, agent_id);
     assert_eq!(loaded_agent.role_id, role_id);
-    assert_eq!(loaded_agent.motivation_id, motivation_id);
+    assert_eq!(loaded_agent.tradeoff_id, motivation_id);
     assert_eq!(loaded_agent.name, "integration-test-agent");
 
     // Verify prefix lookup works
@@ -558,11 +557,13 @@ fn test_full_agency_lifecycle_new_design() {
         verify: task.verify.as_deref(),
         agent: Some(&agent),
         role: Some(&role),
-        motivation: Some(&motivation),
+        tradeoff: Some(&motivation),
         artifacts: &task.artifacts,
         log_entries: &task.log,
         started_at: task.started_at.as_deref(),
         completed_at: task.completed_at.as_deref(),
+        artifact_diff: None,
+        evaluator_identity: None,
     });
     assert!(evaluator_prompt.contains("integration-test-agent"));
     assert!(evaluator_prompt.contains("Integration Implementer"));
@@ -590,7 +591,7 @@ fn test_full_agency_lifecycle_new_design() {
         task_id: "integration-feature".to_string(),
         agent_id: agent_id.clone(), // Include agent_id for three-level recording
         role_id: role_id.clone(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         score: 0.89,
         dimensions: dimensions.clone(),
         notes: "Solid implementation with good test coverage.".to_string(),
@@ -613,7 +614,7 @@ fn test_full_agency_lifecycle_new_design() {
     assert_eq!(loaded_eval.task_id, "integration-feature");
     assert_eq!(loaded_eval.agent_id, agent_id);
     assert_eq!(loaded_eval.role_id, role_id);
-    assert_eq!(loaded_eval.motivation_id, motivation_id);
+    assert_eq!(loaded_eval.tradeoff_id, motivation_id);
     assert_eq!(loaded_eval.score, 0.89);
     assert_eq!(loaded_eval.dimensions.len(), 4);
     assert_eq!(loaded_eval.dimensions["correctness"], 0.92);
@@ -658,7 +659,7 @@ fn test_full_agency_lifecycle_new_design() {
 
     // 6d. Verify MOTIVATION performance was updated (three-level: motivation level)
     let updated_motivation =
-        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
+        agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
     assert_eq!(
         updated_motivation.performance.task_count, 1,
         "Motivation should have 1 task recorded"
@@ -685,7 +686,7 @@ fn test_full_agency_lifecycle_new_design() {
         task_id: "second-task".to_string(),
         agent_id: agent_id.clone(),
         role_id: role_id.clone(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         score: 0.93,
         dimensions: dims2,
         notes: "Excellent follow-up work.".to_string(),
@@ -714,7 +715,7 @@ fn test_full_agency_lifecycle_new_design() {
     assert_eq!(role_after_2.performance.evaluations.len(), 2);
 
     let mot_after_2 =
-        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
+        agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", motivation_id))).unwrap();
     assert_eq!(mot_after_2.performance.task_count, 2);
     assert_eq!(mot_after_2.performance.evaluations.len(), 2);
 
@@ -772,10 +773,10 @@ fn test_full_agency_lifecycle_new_design() {
         "Integration Implementer v2",
         "Implements features with full test coverage and benchmarks.",
         vec![
-            SkillRef::Name("rust".to_string()),
-            SkillRef::Name("testing".to_string()),
-            SkillRef::Name("benchmarking".to_string()),
-            SkillRef::Inline("Write integration tests covering all edge cases".to_string()),
+            "rust".to_string(),
+            "testing".to_string(),
+            "benchmarking".to_string(),
+            "inline:Write integration tests covering all edge cases".to_string(),
         ],
         "Fully tested and benchmarked feature implementation",
     );
@@ -784,16 +785,16 @@ fn test_full_agency_lifecycle_new_design() {
     agency::save_role(&evolved_role, &roles_dir).unwrap();
 
     // 8c. Create a crossover motivation from two parents
-    let motivation_b = agency::build_motivation(
+    let motivation_b = agency::build_tradeoff(
         "Fast Delivery",
         "Ship quickly with acceptable quality.",
         vec!["Less documentation".to_string()],
         vec!["Broken builds".to_string()],
     );
     let motivation_b_id = motivation_b.id.clone();
-    agency::save_motivation(&motivation_b, &motivations_dir).unwrap();
+    agency::save_tradeoff(&motivation_b, &motivations_dir).unwrap();
 
-    let mut crossover_motivation = agency::build_motivation(
+    let mut crossover_motivation = agency::build_tradeoff(
         "Balanced Delivery",
         "Balances speed and quality for optimal delivery.",
         vec![
@@ -808,7 +809,7 @@ fn test_full_agency_lifecycle_new_design() {
     crossover_motivation.lineage =
         Lineage::crossover(&[&motivation_id, &motivation_b_id], 0, "evo-run-2");
     let crossover_mot_id = crossover_motivation.id.clone();
-    agency::save_motivation(&crossover_motivation, &motivations_dir).unwrap();
+    agency::save_tradeoff(&crossover_motivation, &motivations_dir).unwrap();
 
     // 8d. Verify role ancestry
     let role_ancestry = agency::role_ancestry(&evolved_role_id, &roles_dir).unwrap();
@@ -824,7 +825,7 @@ fn test_full_agency_lifecycle_new_design() {
     assert_eq!(role_ancestry[1].generation, 0);
 
     // 8e. Verify motivation ancestry with crossover
-    let mot_ancestry = agency::motivation_ancestry(&crossover_mot_id, &motivations_dir).unwrap();
+    let mot_ancestry = agency::tradeoff_ancestry(&crossover_mot_id, &motivations_dir).unwrap();
     assert_eq!(
         mot_ancestry.len(),
         3,
@@ -842,13 +843,9 @@ fn test_full_agency_lifecycle_new_design() {
     let evolved_agent = Agent {
         id: evolved_agent_id.clone(),
         role_id: evolved_role_id.clone(),
-        motivation_id: crossover_mot_id.clone(),
+        tradeoff_id: crossover_mot_id.clone(),
         name: "evolved-agent".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(&agent_id, 0, "agent-evo-1"),
         capabilities: Vec::new(),
         rate: None,
@@ -856,6 +853,9 @@ fn test_full_agency_lifecycle_new_design() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     agency::save_agent(&evolved_agent, &agents_dir).unwrap();
 
@@ -906,7 +906,7 @@ performance:
 "#;
     std::fs::write(motivations_dir.join("old-motivation.yaml"), slug_mot_yaml).unwrap();
 
-    let legacy_mot = agency::find_motivation_by_prefix(&motivations_dir, "old-motivation");
+    let legacy_mot = agency::find_tradeoff_by_prefix(&motivations_dir, "old-motivation");
     assert!(
         legacy_mot.is_ok(),
         "Should still load legacy slug-based motivation"
@@ -920,7 +920,7 @@ performance:
         all_roles.len()
     );
 
-    let all_mots = agency::load_all_motivations(&motivations_dir).unwrap();
+    let all_mots = agency::load_all_tradeoffs(&motivations_dir).unwrap();
     assert!(
         all_mots.len() >= 4,
         "Should have original + alt + crossover + legacy motivations, got {}",
@@ -934,7 +934,7 @@ performance:
         task_id: "legacy-task".to_string(),
         agent_id: String::new(),
         role_id: "my-legacy-role".to_string(),
-        motivation_id: motivation_id.clone(),
+        tradeoff_id: motivation_id.clone(),
         score: 0.70,
         dimensions: HashMap::new(),
         notes: "Legacy evaluation".to_string(),
@@ -1028,18 +1028,18 @@ fn test_agent_independent_performance() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
-    let agents_dir = agency_dir.join("agents");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
 
     // Create two agents sharing the same role but with different motivations
     let role = agency::build_role("Shared Role", "Common role", vec![], "Outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot_a = agency::build_motivation("Mot A", "First", vec![], vec![]);
-    let mot_b = agency::build_motivation("Mot B", "Second", vec![], vec!["No bugs".to_string()]);
-    agency::save_motivation(&mot_a, &motivations_dir).unwrap();
-    agency::save_motivation(&mot_b, &motivations_dir).unwrap();
+    let mot_a = agency::build_tradeoff("Mot A", "First", vec![], vec![]);
+    let mot_b = agency::build_tradeoff("Mot B", "Second", vec![], vec!["No bugs".to_string()]);
+    agency::save_tradeoff(&mot_a, &motivations_dir).unwrap();
+    agency::save_tradeoff(&mot_b, &motivations_dir).unwrap();
 
     let agent_a_id = agency::content_hash_agent(&role.id, &mot_a.id);
     let agent_b_id = agency::content_hash_agent(&role.id, &mot_b.id);
@@ -1048,13 +1048,9 @@ fn test_agent_independent_performance() {
     let agent_a = Agent {
         id: agent_a_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot_a.id.clone(),
+        tradeoff_id: mot_a.id.clone(),
         name: "agent-a".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -1062,17 +1058,16 @@ fn test_agent_independent_performance() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     let agent_b = Agent {
         id: agent_b_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot_b.id.clone(),
+        tradeoff_id: mot_b.id.clone(),
         name: "agent-b".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -1080,6 +1075,9 @@ fn test_agent_independent_performance() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent_a, &agents_dir).unwrap();
     agency::save_agent(&agent_b, &agents_dir).unwrap();
@@ -1090,7 +1088,7 @@ fn test_agent_independent_performance() {
         task_id: "task-a".to_string(),
         agent_id: agent_a_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot_a.id.clone(),
+        tradeoff_id: mot_a.id.clone(),
         score: 0.95,
         dimensions: HashMap::new(),
         notes: "Great".to_string(),

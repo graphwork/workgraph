@@ -261,12 +261,16 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             if !is_time_ready(task) {
                 return false;
             }
-            // All blockers must be terminal (done, failed, or abandoned)
+            // All blockers must be terminal (done, failed, or abandoned).
+            // If a blocker doesn't exist in the graph, treat it as BLOCKED
+            // (not satisfied). This prevents premature dispatch when tasks
+            // reference dependencies that haven't been created yet during
+            // burst graph construction.
             task.after.iter().all(|blocker_id| {
                 graph
                     .get_task(blocker_id)
                     .map(|t| t.status.is_terminal())
-                    .unwrap_or(true) // If blocker doesn't exist, treat as unblocked
+                    .unwrap_or(false)
             })
         })
         .collect()
@@ -289,11 +293,12 @@ pub fn is_blocker_satisfied(
         let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
         remote.status.is_terminal()
     } else {
-        // Local dependency
+        // Local dependency — non-existent blocker blocks (prevents premature
+        // dispatch during burst graph construction).
         graph
             .get_task(blocker_id)
             .map(|t| t.status.is_terminal())
-            .unwrap_or(true) // If blocker doesn't exist, treat as unblocked
+            .unwrap_or(false)
     }
 }
 
@@ -345,12 +350,13 @@ pub fn ready_tasks_cycle_aware<'a>(
                 return false;
             }
             task.after.iter().all(|blocker_id| {
-                // Normal check: predecessor is terminal
-                if graph
+                // Normal check: predecessor is terminal.
+                // Non-existent blocker blocks (prevents premature dispatch).
+                let blocker_done = graph
                     .get_task(blocker_id)
                     .map(|t| t.status.is_terminal())
-                    .unwrap_or(true)
-                {
+                    .unwrap_or(false);
+                if blocker_done {
                     return true;
                 }
                 // Cycle-aware: only exempt WORKERS from back-edge blockers.
@@ -1126,8 +1132,9 @@ mod tests {
 
     #[test]
     fn test_ready_tasks_orphan_blocker_nonexistent() {
-        // Task references a blocker that doesn't exist in the graph
-        // Current behavior: nonexistent blocker treated as done (unwrap_or(true))
+        // Task references a blocker that doesn't exist in the graph.
+        // Dangling deps BLOCK to prevent premature dispatch during burst
+        // graph construction.
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t", "Task with ghost blocker");
@@ -1138,10 +1145,9 @@ mod tests {
         let ready = ready_tasks(&graph);
         assert_eq!(
             ready.len(),
-            1,
-            "Task with nonexistent blocker should be ready"
+            0,
+            "Task with nonexistent blocker should NOT be ready (dangling deps block)"
         );
-        assert_eq!(ready[0].id, "t");
     }
 
     #[test]
@@ -1708,9 +1714,11 @@ mod tests {
     }
 
     #[test]
-    fn is_blocker_satisfied_local_missing_treated_as_unblocked() {
+    fn is_blocker_satisfied_local_missing_treated_as_blocked() {
+        // Missing local blockers block dispatch (prevents premature execution
+        // when dependencies haven't been created yet in burst graphs)
         let graph = WorkGraph::new();
-        assert!(is_blocker_satisfied("nonexistent", &graph, None));
+        assert!(!is_blocker_satisfied("nonexistent", &graph, None));
     }
 
     #[test]

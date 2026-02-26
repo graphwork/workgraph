@@ -33,19 +33,29 @@ You MUST use these commands to track your work:
    wg artifact {{task_id}} path/to/file
    ```
 
-3. **Complete the task** when done:
+3. **Validate your work** before marking done:
+   - **Code tasks:** Run `cargo build` and `cargo test` (or the project's equivalent). Fix any failures.
+   - **Research/docs tasks:** Re-read the task description and verify your output addresses every requirement. Check that referenced files and links exist.
+   - **All tasks:** Log your validation results:
+     ```bash
+     wg log {{task_id}} \"Validated: cargo build + cargo test pass\"
+     wg log {{task_id}} \"Validated: re-read description, all requirements addressed\"
+     ```
+
+4. **Complete the task** when done:
    ```bash
    wg done {{task_id}}
    wg done {{task_id}} --converged  # Use this if task has loop edges and work is complete
    ```
 
-4. **Mark as failed** if you cannot complete:
+5. **Mark as failed** if you cannot complete:
    ```bash
    wg fail {{task_id}} --reason \"Specific reason why\"
    ```
 
 ## Important
 - Run `wg log` commands BEFORE doing work to track progress
+- Validate BEFORE running `wg done`
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation\n";
 
@@ -175,6 +185,14 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         vars.task_id, vars.task_title, vars.task_description
     ));
 
+    // All scopes: verification criteria (R4 from validation synthesis)
+    if let Some(ref verify) = vars.task_verify {
+        parts.push(format!(
+            "## Verification Required\n\nBefore marking done, you MUST verify:\n{}",
+            verify
+        ));
+    }
+
     // Task+ scope: tags and skills (R4)
     if scope >= ContextScope::Task && !ctx.tags_skills_info.is_empty() {
         parts.push(ctx.tags_skills_info.clone());
@@ -246,6 +264,7 @@ pub struct TemplateVars {
     pub skills_preamble: String,
     pub model: String,
     pub task_loop_info: String,
+    pub task_verify: Option<String>,
 }
 
 impl TemplateVars {
@@ -308,6 +327,7 @@ impl TemplateVars {
             skills_preamble,
             model: task.model.clone().unwrap_or_default(),
             task_loop_info,
+            task_verify: task.verify.clone(),
         }
     }
 
@@ -325,9 +345,9 @@ impl TemplateVars {
         };
 
         let agency_dir = wg_dir.join("agency");
-        let agents_dir = agency_dir.join("agents");
-        let roles_dir = agency_dir.join("roles");
-        let motivations_dir = agency_dir.join("motivations");
+        let agents_dir = agency_dir.join("cache/agents");
+        let roles_dir = agency_dir.join("cache/roles");
+        let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
         // Look up the Agent entity by hash
         let agent = match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
@@ -350,12 +370,12 @@ impl TemplateVars {
         };
 
         let motivation =
-            match agency::find_motivation_by_prefix(&motivations_dir, &agent.motivation_id) {
+            match agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id) {
                 Ok(m) => m,
                 Err(e) => {
                     eprintln!(
                         "Warning: could not resolve motivation '{}' for agent '{}': {}",
-                        agent.motivation_id, agent_hash, e
+                        agent.tradeoff_id, agent_hash, e
                     );
                     return String::new();
                 }
@@ -434,6 +454,7 @@ impl TemplateVars {
             .replace("{{skills_preamble}}", &self.skills_preamble)
             .replace("{{model}}", &self.model)
             .replace("{{task_loop_info}}", &self.task_loop_info)
+            .replace("{{task_verify}}", self.task_verify.as_deref().unwrap_or(""))
     }
 }
 
@@ -726,6 +747,7 @@ mod tests {
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         }
     }
 
@@ -863,9 +885,9 @@ template = "Work on {{task_id}}"
     fn test_template_vars_identity_resolved_from_agency() {
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path().join(".workgraph");
-        let roles_dir = wg_dir.join("agency").join("roles");
-        let motivations_dir = wg_dir.join("agency").join("motivations");
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let roles_dir = wg_dir.join("agency").join("cache/roles");
+        let motivations_dir = wg_dir.join("agency").join("primitives/tradeoffs");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         fs::create_dir_all(&roles_dir).unwrap();
         fs::create_dir_all(&motivations_dir).unwrap();
         fs::create_dir_all(&agents_dir).unwrap();
@@ -876,27 +898,23 @@ template = "Work on {{task_id}}"
         agency::save_role(&role, &roles_dir).unwrap();
 
         // Create a motivation using content-hash ID builder
-        let motivation = agency::build_motivation(
+        let motivation = agency::build_tradeoff(
             "Quality First",
             "Prioritize quality",
             vec!["Spend more time".to_string()],
             vec!["Skip tests".to_string()],
         );
         let motivation_id = motivation.id.clone();
-        agency::save_motivation(&motivation, &motivations_dir).unwrap();
+        agency::save_tradeoff(&motivation, &motivations_dir).unwrap();
 
         // Create an Agent entity pairing the role and motivation
         let agent_id = agency::content_hash_agent(&role_id, &motivation_id);
         let agent = agency::Agent {
             id: agent_id.clone(),
             role_id: role_id.clone(),
-            motivation_id: motivation_id.clone(),
+            tradeoff_id: motivation_id.clone(),
             name: "Test Agent".to_string(),
-            performance: agency::PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: agency::PerformanceRecord::default(),
             lineage: agency::Lineage::default(),
             capabilities: Vec::new(),
             rate: None,
@@ -904,6 +922,9 @@ template = "Work on {{task_id}}"
             trust_level: Default::default(),
             contact: None,
             executor: "claude".to_string(),
+            attractor_weight: 1.0,
+            deployment_history: vec![],
+            staleness_flags: vec![],
         };
         agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -923,7 +944,7 @@ template = "Work on {{task_id}}"
     fn test_template_vars_identity_missing_agent_fallback() {
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path().join(".workgraph");
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         fs::create_dir_all(&agents_dir).unwrap();
 
         let mut task = make_test_task("task-1", "Test Task");
@@ -1339,9 +1360,9 @@ args = ["--custom-flag"]
     fn test_identity_agent_exists_but_role_missing() {
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path().join(".workgraph");
-        let roles_dir = wg_dir.join("agency").join("roles");
-        let motivations_dir = wg_dir.join("agency").join("motivations");
-        let agents_dir = wg_dir.join("agency").join("agents");
+        let roles_dir = wg_dir.join("agency").join("cache/roles");
+        let motivations_dir = wg_dir.join("agency").join("primitives/tradeoffs");
+        let agents_dir = wg_dir.join("agency").join("cache/agents");
         fs::create_dir_all(&roles_dir).unwrap();
         fs::create_dir_all(&motivations_dir).unwrap();
         fs::create_dir_all(&agents_dir).unwrap();
@@ -1350,13 +1371,9 @@ args = ["--custom-flag"]
         let agent = agency::Agent {
             id: "test-agent-id".to_string(),
             role_id: "nonexistent-role".to_string(),
-            motivation_id: "nonexistent-motivation".to_string(),
+            tradeoff_id: "nonexistent-motivation".to_string(),
             name: "Broken Agent".to_string(),
-            performance: agency::PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: agency::PerformanceRecord::default(),
             lineage: agency::Lineage::default(),
             capabilities: Vec::new(),
             rate: None,
@@ -1364,6 +1381,9 @@ args = ["--custom-flag"]
             trust_level: Default::default(),
             contact: None,
             executor: "claude".to_string(),
+            attractor_weight: 1.0,
+            deployment_history: vec![],
+            staleness_flags: vec![],
         };
         agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -1720,5 +1740,42 @@ args = ["--custom-flag"]
 
         assert!(CRITICAL_WG_CLI_SECTION.contains("NEVER use built-in TaskCreate"));
         assert!(CRITICAL_WG_CLI_SECTION.contains("wg add \"title\" --after {{task_id}}"));
+    }
+
+    #[test]
+    fn test_build_prompt_includes_verify_when_present() {
+        let mut task = make_test_task("task-1", "Test");
+        task.verify = Some("run cargo test and confirm all pass".to_string());
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext::default();
+
+        // Verify section should appear at all scopes (including clean)
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+        assert!(prompt.contains("## Verification Required"));
+        assert!(prompt.contains("run cargo test and confirm all pass"));
+        assert!(prompt.contains("Before marking done, you MUST verify:"));
+    }
+
+    #[test]
+    fn test_build_prompt_omits_verify_when_absent() {
+        let task = make_test_task("task-1", "Test");
+        assert!(task.verify.is_none());
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext::default();
+
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+        assert!(!prompt.contains("## Verification Required"));
+    }
+
+    #[test]
+    fn test_template_vars_verify_from_task() {
+        let mut task = make_test_task("task-1", "Test");
+        task.verify = Some("check output format".to_string());
+        let vars = TemplateVars::from_task(&task, None, None);
+        assert_eq!(vars.task_verify, Some("check output format".to_string()));
+
+        let task2 = make_test_task("task-2", "Test2");
+        let vars2 = TemplateVars::from_task(&task2, None, None);
+        assert_eq!(vars2.task_verify, None);
     }
 }

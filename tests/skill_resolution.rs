@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use workgraph::agency::{self, SkillRef};
+use workgraph::agency::{self, ContentRef};
 
 // ---------------------------------------------------------------------------
 // resolve_skill – individual variants
@@ -12,7 +12,7 @@ use workgraph::agency::{self, SkillRef};
 
 #[test]
 fn resolve_skill_name_returns_tag() {
-    let skill = SkillRef::Name("rust-expert".to_string());
+    let skill = ContentRef::Name("rust-expert".to_string());
     let resolved = agency::resolve_skill(&skill, Path::new("/tmp")).unwrap();
     assert_eq!(resolved.name, "rust-expert");
     assert_eq!(resolved.content, "rust-expert");
@@ -20,7 +20,7 @@ fn resolve_skill_name_returns_tag() {
 
 #[test]
 fn resolve_skill_inline_returns_content() {
-    let skill = SkillRef::Inline("Always write doc-comments".to_string());
+    let skill = ContentRef::Name("inline:Always write doc-comments".to_string());
     let resolved = agency::resolve_skill(&skill, Path::new("/tmp")).unwrap();
     assert_eq!(resolved.name, "inline");
     assert_eq!(resolved.content, "Always write doc-comments");
@@ -33,7 +33,7 @@ fn resolve_skill_file_relative_path() {
     std::fs::create_dir_all(&skills_dir).unwrap();
     std::fs::write(skills_dir.join("coding.md"), "# Coding\nWrite clean code").unwrap();
 
-    let skill = SkillRef::File(PathBuf::from("skills/coding.md"));
+    let skill = ContentRef::File(PathBuf::from("skills/coding.md"));
     let resolved = agency::resolve_skill(&skill, tmp.path()).unwrap();
     assert_eq!(resolved.name, "coding");
     assert_eq!(resolved.content, "# Coding\nWrite clean code");
@@ -45,7 +45,7 @@ fn resolve_skill_file_absolute_path() {
     let file = tmp.path().join("absolute-skill.txt");
     std::fs::write(&file, "Absolute skill content").unwrap();
 
-    let skill = SkillRef::File(file.clone());
+    let skill = ContentRef::File(file.clone());
     // workgraph_root should be ignored for absolute paths
     let resolved = agency::resolve_skill(&skill, Path::new("/nonexistent")).unwrap();
     assert_eq!(resolved.name, "absolute-skill");
@@ -76,7 +76,7 @@ fn resolve_skill_file_tilde_expansion() {
     }
     let _guard = Cleanup(test_file.clone());
 
-    let skill = SkillRef::File(PathBuf::from("~/.workgraph-test-tilde-skill.md"));
+    let skill = ContentRef::File(PathBuf::from("~/.workgraph-test-tilde-skill.md"));
     let resolved = agency::resolve_skill(&skill, Path::new("/tmp")).unwrap();
     assert_eq!(resolved.name, ".workgraph-test-tilde-skill");
     assert_eq!(resolved.content, "tilde resolved content");
@@ -84,7 +84,7 @@ fn resolve_skill_file_tilde_expansion() {
 
 #[test]
 fn resolve_skill_file_nonexistent_returns_error() {
-    let skill = SkillRef::File(PathBuf::from("/no/such/dir/skill.md"));
+    let skill = ContentRef::File(PathBuf::from("/no/such/dir/skill.md"));
     let err = agency::resolve_skill(&skill, Path::new("/tmp")).unwrap_err();
     assert!(
         err.contains("Failed to read skill file"),
@@ -97,7 +97,7 @@ fn resolve_skill_file_nonexistent_returns_error() {
 fn resolve_skill_url_without_http_feature() {
     // Default build does not enable matrix-lite, so URL resolution
     // should return a feature-gate error.
-    let skill = SkillRef::Url("https://example.com/skill.md".to_string());
+    let skill = ContentRef::Url("https://example.com/skill.md".to_string());
     let result = agency::resolve_skill(&skill, Path::new("/tmp"));
     // With matrix-lite it would succeed (or fail with a network error);
     // without it we get a clear feature-gate message.
@@ -120,29 +120,24 @@ fn resolve_skill_url_without_http_feature() {
 
 #[test]
 fn resolve_all_skills_mixed_types() {
-    let tmp = TempDir::new().unwrap();
-    let file = tmp.path().join("file-skill.md");
-    std::fs::write(&file, "File skill body").unwrap();
-
     let role = agency::build_role(
         "Mixed",
         "A role with mixed skills",
         vec![
-            SkillRef::Name("tag-skill".to_string()),
-            SkillRef::File(file), // absolute, valid
-            SkillRef::File(PathBuf::from("/missing/skill.md")), // will fail
-            SkillRef::Inline("Inline skill body".to_string()),
+            "tag-skill".to_string(),
+            "component-x".to_string(),
+            "inline:Inline skill body".to_string(),
         ],
         "Test outcome",
     );
 
-    let resolved = agency::resolve_all_skills(&role, tmp.path());
-    // The missing file should be skipped, giving us 3 resolved skills
+    let resolved = agency::resolve_all_skills(&role, Path::new("/tmp"));
+    // All component IDs resolve: names resolve as tags, inline: prefix extracts content
     assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].name, "tag-skill");
     assert_eq!(resolved[0].content, "tag-skill");
-    assert_eq!(resolved[1].name, "file-skill");
-    assert_eq!(resolved[1].content, "File skill body");
+    assert_eq!(resolved[1].name, "component-x");
+    assert_eq!(resolved[1].content, "component-x");
     assert_eq!(resolved[2].name, "inline");
     assert_eq!(resolved[2].content, "Inline skill body");
 }
@@ -155,18 +150,21 @@ fn resolve_all_skills_empty() {
 }
 
 #[test]
-fn resolve_all_skills_all_failures() {
+fn resolve_all_skills_name_refs_always_succeed() {
     let role = agency::build_role(
-        "All Fail",
+        "All Names",
         "desc",
         vec![
-            SkillRef::File(PathBuf::from("/no/a.md")),
-            SkillRef::File(PathBuf::from("/no/b.md")),
+            "component-a".to_string(),
+            "component-b".to_string(),
         ],
         "outcome",
     );
     let resolved = agency::resolve_all_skills(&role, Path::new("/tmp"));
-    assert!(resolved.is_empty());
+    // Name-based component IDs always resolve (name == content)
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0].name, "component-a");
+    assert_eq!(resolved[1].name, "component-b");
 }
 
 // ---------------------------------------------------------------------------
@@ -175,31 +173,25 @@ fn resolve_all_skills_all_failures() {
 
 #[test]
 fn render_identity_prompt_includes_resolved_skills() {
-    let tmp = TempDir::new().unwrap();
-
-    // Create a file-based skill
-    let skill_file = tmp.path().join("debugging.md");
-    std::fs::write(&skill_file, "Use systematic debugging with bisection").unwrap();
-
     let role = agency::build_role(
         "Debugger",
         "Finds and fixes bugs quickly.",
         vec![
-            SkillRef::Name("debugging".to_string()),
-            SkillRef::File(skill_file),
-            SkillRef::Inline("Always add regression tests".to_string()),
+            "debugging".to_string(),
+            "bisection-debugging".to_string(),
+            "inline:Always add regression tests".to_string(),
         ],
         "All bugs fixed with regression tests",
     );
 
-    let motivation = agency::build_motivation(
+    let motivation = agency::build_tradeoff(
         "Thorough",
         "Leaves no stone unturned.",
         vec!["Takes longer".to_string()],
         vec!["Ignoring root cause".to_string()],
     );
 
-    let resolved = agency::resolve_all_skills(&role, tmp.path());
+    let resolved = agency::resolve_all_skills(&role, Path::new("/tmp"));
     assert_eq!(resolved.len(), 3);
 
     let prompt = agency::render_identity_prompt(&role, &motivation, &resolved);
@@ -220,10 +212,10 @@ fn render_identity_prompt_includes_resolved_skills() {
         "Missing Name skill bullet"
     );
 
-    // File-based skill name (file stem) and content (renders as bold + content)
+    // Second name-based skill
     assert!(
-        prompt.contains("- **debugging**\nUse systematic debugging with bisection"),
-        "Missing file skill heading/content"
+        prompt.contains("- bisection-debugging\n"),
+        "Missing second Name skill bullet"
     );
 
     // Inline skill (renders as bold + content)
@@ -252,7 +244,7 @@ fn render_identity_prompt_includes_resolved_skills() {
 #[test]
 fn render_identity_prompt_no_skills_omits_section() {
     let role = agency::build_role("Bare", "A barebones role.", vec![], "Some outcome");
-    let motivation = agency::build_motivation("Simple", "Keep it simple.", vec![], vec![]);
+    let motivation = agency::build_tradeoff("Simple", "Keep it simple.", vec![], vec![]);
 
     let prompt = agency::render_identity_prompt(&role, &motivation, &[]);
 

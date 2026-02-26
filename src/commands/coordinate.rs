@@ -476,7 +476,7 @@ mod tests {
 
         let status = get_coordination_status(&graph);
 
-        // Blockers don't exist in graph, so they're treated as unresolved (unwrap_or(true)),
+        // Blockers don't exist in graph, so they're treated as blocked (dangling deps block),
         // consistent with query.rs. Tasks with nonexistent blockers appear as blocked.
         assert!(
             status.total_count > 0,

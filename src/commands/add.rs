@@ -183,6 +183,7 @@ pub fn run(
         paused: false,
         visibility: visibility.to_string(),
         context_scope: context_scope.map(String::from),
+        token_usage: None,
     };
 
     // Add task to graph
@@ -409,6 +410,7 @@ fn add_task_directly(
         visibility: "internal".to_string(),
         context_scope: None,
         cycle_config: None,
+        token_usage: None,
     };
 
     graph.add_node(Node::Task(task));

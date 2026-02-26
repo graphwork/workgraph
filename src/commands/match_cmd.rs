@@ -25,7 +25,7 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
     let required_skills: std::collections::HashSet<_> = task.skills.iter().collect();
 
     // Load agents from .workgraph/agency/agents/
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let agents = agency::load_all_agents(&agents_dir).context("Failed to load agents")?;
 
     let mut matches: Vec<MatchResult> = agents
@@ -159,13 +159,9 @@ mod tests {
         Agent {
             id,
             role_id,
-            motivation_id: mot_id,
+            tradeoff_id: mot_id,
             name: name.to_string(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             capabilities: capabilities.into_iter().map(String::from).collect(),
             rate: None,
@@ -173,13 +169,16 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 
     fn setup_agents(dir: &Path, agents: &[Agent]) {
         let agency_dir = dir.join("agency");
         agency::init(&agency_dir).unwrap();
-        let agents_dir = agency_dir.join("agents");
+        let agents_dir = agency_dir.join("cache/agents");
         for agent in agents {
             agency::save_agent(agent, &agents_dir).unwrap();
         }

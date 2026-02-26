@@ -309,6 +309,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -352,7 +353,7 @@ fn build_auto_evaluate_tasks(
 
     // Load agents to identify human operators — their work quality isn't
     // a reflection of a role+motivation prompt so we skip auto-evaluation.
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let all_agents = agency::load_all_agents_or_warn(&agents_dir);
     let human_agent_ids: std::collections::HashSet<&str> = all_agents
         .iter()
@@ -441,6 +442,7 @@ fn build_auto_evaluate_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+            token_usage: None,
         };
 
         graph.add_node(Node::Task(eval_task));
@@ -487,6 +489,144 @@ fn build_auto_evaluate_tasks(
     modified
 }
 
+/// Auto-org-evaluate: create deferred org-evaluation tasks for terminal tasks.
+///
+/// An org-evaluation task `org-evaluate-{task-id}` is created once ALL of a
+/// completed task's direct downstream dependents (`task.before`) have also
+/// reached a terminal state (Done, Failed, or Abandoned).  If the task has no
+/// downstream dependents the org-eval task is created immediately after the
+/// task itself completes.
+///
+/// The org-eval task runs `wg evaluate org <task-id>`, which computes the
+/// three organisational reward dimensions (downstream usability, coordination
+/// overhead, blocking behaviour) and persists an `OrgEvaluation` record.
+///
+/// Tasks tagged "evaluation", "assignment", "evolution", or "org-evaluation"
+/// are excluded to prevent infinite regress.
+///
+/// Returns `true` if the graph was modified.
+fn build_auto_org_evaluate_tasks(
+    dir: &Path,
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let mut modified = false;
+
+    // Load agents so we can skip human-assigned tasks (no meaningful org reward
+    // for a human operator whose throughput isn't controlled by a role prompt).
+    let agents_dir = dir.join("agency").join("cache/agents");
+    let all_agents = agency::load_all_agents_or_warn(&agents_dir);
+    let human_agent_ids: std::collections::HashSet<&str> = all_agents
+        .iter()
+        .filter(|a| a.is_human())
+        .map(|a| a.id.as_str())
+        .collect();
+
+    // Collect data for tasks that may need an org-eval task.
+    let candidate_data: Vec<_> = graph
+        .tasks()
+        .filter(|t| {
+            // Only completed tasks
+            if !matches!(t.status, Status::Done | Status::Failed) {
+                return false;
+            }
+            // Skip tasks tagged evaluation/assignment/evolution/org-evaluation
+            let excluded_tags = ["evaluation", "assignment", "evolution", "org-evaluation"];
+            if t.tags.iter().any(|tag| excluded_tags.contains(&tag.as_str())) {
+                return false;
+            }
+            // Skip tasks assigned to human agents
+            if let Some(ref agent_id) = t.agent
+                && human_agent_ids.contains(agent_id.as_str())
+            {
+                return false;
+            }
+            // Skip if org-eval task already exists
+            let org_eval_id = format!("org-evaluate-{}", t.id);
+            if graph.get_task(&org_eval_id).is_some() {
+                return false;
+            }
+            true
+        })
+        .map(|t| (t.id.clone(), t.title.clone(), t.before.clone()))
+        .collect();
+
+    for (task_id, task_title, task_before) in &candidate_data {
+        // Check that all downstream dependents are terminal
+        let all_downstream_terminal = task_before.iter().all(|dep_id| {
+            graph
+                .get_task(dep_id)
+                .map(|dep| dep.status.is_terminal())
+                .unwrap_or(true) // missing dep treated as terminal
+        });
+
+        if !all_downstream_terminal {
+            continue;
+        }
+
+        let org_eval_task_id = format!("org-evaluate-{}", task_id);
+
+        // Double-check idempotency
+        if graph.get_task(&org_eval_task_id).is_some() {
+            continue;
+        }
+
+        let desc = format!(
+            "Compute organisational evaluation for completed task '{}'.\n\n\
+             Run `wg evaluate org {}` to measure downstream usability, \
+             coordination overhead, and blocking behaviour.",
+            task_id, task_id,
+        );
+
+        let org_eval_task = Task {
+            id: org_eval_task_id.clone(),
+            title: format!("Org-evaluate: {}", task_title),
+            description: Some(desc),
+            status: Status::Open,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: vec![],
+            requires: vec![],
+            tags: vec!["org-evaluation".to_string(), "agency".to_string()],
+            skills: vec![],
+            inputs: vec![],
+            deliverables: vec![],
+            artifacts: vec![],
+            exec: Some(format!("wg evaluate org {}", task_id)),
+            not_before: None,
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: None,
+            failure_reason: None,
+            model: config.agency.evaluator_model.clone(),
+            verify: None,
+            agent: config.agency.evaluator_agent.clone(),
+
+            loop_iteration: 0,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            cycle_config: None,
+            token_usage: None,
+        };
+
+        graph.add_node(Node::Task(org_eval_task));
+
+        eprintln!(
+            "[coordinator] Created org-eval task '{}' for completed '{}'",
+            org_eval_task_id, task_id,
+        );
+        modified = true;
+    }
+
+    modified
+}
+
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
 /// Instead of coordinator -> run.sh -> bash -> `wg evaluate` -> claude, this
@@ -513,17 +653,20 @@ fn spawn_eval_inline(
         anyhow::bail!("Eval task '{}' is not open (status: {:?})", eval_task_id, task.status);
     }
 
-    // Extract source task ID from the exec command ("wg evaluate run <source-id>")
-    let source_task_id = task
-        .exec
-        .as_deref()
-        .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
-        .unwrap_or_else(|| {
-            eval_task_id
-                .strip_prefix("evaluate-")
-                .unwrap_or(eval_task_id)
-        })
-        .to_string();
+    // Use the task's exec command directly if it starts with "wg evaluate".
+    // This handles both "wg evaluate run <task>" and "wg evaluate org <task>".
+    // Fall back to reconstructing from task ID for backward compatibility.
+    let eval_cmd = if let Some(exec) = task.exec.as_deref()
+        && exec.starts_with("wg evaluate")
+    {
+        exec.to_string()
+    } else {
+        let source_task_id = eval_task_id
+            .strip_prefix("evaluate-")
+            .or_else(|| eval_task_id.strip_prefix("org-evaluate-"))
+            .unwrap_or(eval_task_id);
+        format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"))
+    };
 
     // Set up minimal agent tracking
     let mut agent_registry = AgentRegistry::load(dir)?;
@@ -535,9 +678,6 @@ fn spawn_eval_inline(
         .with_context(|| format!("Failed to create eval output dir: {:?}", output_dir))?;
     let output_file = output_dir.join("output.log");
     let output_file_str = output_file.to_string_lossy().to_string();
-
-    // Build the eval command (wg evaluate run doesn't support --model flag)
-    let eval_cmd = format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"));
 
     let escaped_eval_id = eval_task_id.replace('\'', "'\\''");
     let escaped_output = output_file_str.replace('\'', "'\\''");
@@ -636,7 +776,7 @@ fn spawn_agents_for_ready_tasks(
 ) -> usize {
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let mut spawned = 0;
 
     let to_spawn = final_ready.iter().take(slots_available);
@@ -646,9 +786,12 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Evaluation tasks run inline: fork `wg evaluate` directly instead of
-        // going through the full spawn machinery (run.sh, executor config, etc.)
-        if task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some() {
+        // Evaluation and org-evaluation tasks run inline: fork `wg evaluate`
+        // directly instead of going through the full spawn machinery
+        // (run.sh, executor config, etc.)
+        let is_eval_task = task.tags.iter().any(|t| t == "evaluation" || t == "org-evaluation")
+            && task.exec.is_some();
+        if is_eval_task {
             let eval_model = task.model.as_deref();
             eprintln!(
                 "[coordinator] Spawning eval inline for: {} - {}{}",
@@ -734,6 +877,8 @@ pub fn coordinator_tick(
     // Phase 4: Auto-evaluate tasks
     if config.agency.auto_evaluate {
         graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
+        // Phase 4b: Deferred org-evaluate tasks (fire when all downstream complete)
+        graph_modified |= build_auto_org_evaluate_tasks(dir, &mut graph, &config);
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate.

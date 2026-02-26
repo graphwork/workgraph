@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use workgraph::agency::{
-    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord, SkillRef,
+    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ fn test_create_agent_with_nonexistent_role_and_motivation() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let agents_dir = agency_dir.join("agents");
+    let agents_dir = agency_dir.join("cache/agents");
     let fake_role_id = "aaaa".repeat(16); // 64 hex chars
     let fake_mot_id = "bbbb".repeat(16);
 
@@ -32,13 +32,9 @@ fn test_create_agent_with_nonexistent_role_and_motivation() {
     let agent = Agent {
         id: agent_id.clone(),
         role_id: fake_role_id.clone(),
-        motivation_id: fake_mot_id.clone(),
+        tradeoff_id: fake_mot_id.clone(),
         name: "orphan-agent".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -46,6 +42,9 @@ fn test_create_agent_with_nonexistent_role_and_motivation() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
 
     // Save succeeds even though the role/motivation don't exist
@@ -54,7 +53,7 @@ fn test_create_agent_with_nonexistent_role_and_motivation() {
     // Agent can be loaded back
     let loaded = agency::find_agent_by_prefix(&agents_dir, &agent_id).unwrap();
     assert_eq!(loaded.role_id, fake_role_id);
-    assert_eq!(loaded.motivation_id, fake_mot_id);
+    assert_eq!(loaded.tradeoff_id, fake_mot_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -70,21 +69,21 @@ fn test_record_evaluation_nonexistent_agent() {
     agency::init(&agency_dir).unwrap();
 
     // Create a role and motivation so those parts succeed
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
     let role = agency::build_role("R", "desc", vec![], "outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot = agency::build_motivation("M", "desc", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("M", "desc", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     let eval = Evaluation {
         id: "eval-ghost-1".to_string(),
         task_id: "ghost-task".to_string(),
         agent_id: "nonexistent_agent_id_1234567890abcdef".to_string(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.75,
         dimensions: HashMap::new(),
         notes: "Agent doesn't exist".to_string(),
@@ -103,7 +102,7 @@ fn test_record_evaluation_nonexistent_agent() {
     assert_eq!(updated_role.performance.task_count, 1);
 
     let updated_mot =
-        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", mot.id))).unwrap();
+        agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", mot.id))).unwrap();
     assert_eq!(updated_mot.performance.task_count, 1);
 }
 
@@ -114,21 +113,21 @@ fn test_record_evaluation_empty_agent_id() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
 
     let role = agency::build_role("R", "desc", vec![], "outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot = agency::build_motivation("M", "desc", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("M", "desc", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     let eval = Evaluation {
         id: "eval-no-agent-1".to_string(),
         task_id: "task-1".to_string(),
         agent_id: String::new(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.80,
         dimensions: HashMap::new(),
         notes: "No agent".to_string(),
@@ -142,7 +141,7 @@ fn test_record_evaluation_empty_agent_id() {
     assert!(eval_path.exists());
 
     // No agents should exist
-    let agents = agency::load_all_agents(&agency_dir.join("agents")).unwrap();
+    let agents = agency::load_all_agents(&agency_dir.join("cache/agents")).unwrap();
     assert!(agents.is_empty());
 }
 
@@ -159,7 +158,7 @@ fn test_record_evaluation_nonexistent_role_and_motivation() {
         task_id: "orphan-task".to_string(),
         agent_id: String::new(),
         role_id: "nonexistent_role_id".to_string(),
-        motivation_id: "nonexistent_motivation_id".to_string(),
+        tradeoff_id: "nonexistent_motivation_id".to_string(),
         score: 0.50,
         dimensions: HashMap::new(),
         notes: "Orphan eval".to_string(),
@@ -189,27 +188,23 @@ fn test_delete_role_referenced_by_agent() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
-    let agents_dir = agency_dir.join("agents");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
 
     let role = agency::build_role("Doomed Role", "Will be deleted", vec![], "Outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot = agency::build_motivation("M", "desc", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("M", "desc", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     let agent_id = agency::content_hash_agent(&role.id, &mot.id);
     let agent = Agent {
         id: agent_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         name: "agent-with-doomed-role".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -217,6 +212,9 @@ fn test_delete_role_referenced_by_agent() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -238,7 +236,7 @@ fn test_delete_role_referenced_by_agent() {
         task_id: "task-1".to_string(),
         agent_id: agent_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.85,
         dimensions: HashMap::new(),
         notes: "Role was deleted".to_string(),
@@ -256,7 +254,7 @@ fn test_delete_role_referenced_by_agent() {
 
     // Motivation performance was updated (motivation exists)
     let updated_mot =
-        agency::load_motivation(&motivations_dir.join(format!("{}.yaml", mot.id))).unwrap();
+        agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", mot.id))).unwrap();
     assert_eq!(updated_mot.performance.task_count, 1);
 }
 
@@ -272,27 +270,23 @@ fn test_delete_motivation_referenced_by_agent() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
-    let agents_dir = agency_dir.join("agents");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
 
     let role = agency::build_role("R", "desc", vec![], "Outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot = agency::build_motivation("Doomed Mot", "Will be deleted", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("Doomed Mot", "Will be deleted", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     let agent_id = agency::content_hash_agent(&role.id, &mot.id);
     let agent = Agent {
         id: agent_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         name: "agent-with-doomed-mot".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -300,6 +294,9 @@ fn test_delete_motivation_referenced_by_agent() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -309,10 +306,10 @@ fn test_delete_motivation_referenced_by_agent() {
 
     // Agent is still loadable
     let loaded_agent = agency::find_agent_by_prefix(&agents_dir, &agent_id).unwrap();
-    assert_eq!(loaded_agent.motivation_id, mot.id);
+    assert_eq!(loaded_agent.tradeoff_id, mot.id);
 
     // Motivation lookup fails
-    let result = agency::find_motivation_by_prefix(&motivations_dir, &mot.id);
+    let result = agency::find_tradeoff_by_prefix(&motivations_dir, &mot.id);
     assert!(result.is_err());
 
     // Evaluation recording still succeeds (motivation update skipped)
@@ -321,7 +318,7 @@ fn test_delete_motivation_referenced_by_agent() {
         task_id: "task-1".to_string(),
         agent_id: agent_id.clone(),
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.90,
         dimensions: HashMap::new(),
         notes: "Motivation was deleted".to_string(),
@@ -349,11 +346,7 @@ fn test_delete_motivation_referenced_by_agent() {
 /// Score of exactly 0.0 is valid and correctly computed.
 #[test]
 fn test_performance_score_zero() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     agency::update_performance(
         &mut record,
@@ -372,11 +365,7 @@ fn test_performance_score_zero() {
 /// Score of exactly 1.0 is valid and correctly computed.
 #[test]
 fn test_performance_score_one() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     agency::update_performance(
         &mut record,
@@ -396,11 +385,7 @@ fn test_performance_score_one() {
 /// The system stores them as-is and computes averages correctly.
 #[test]
 fn test_performance_score_negative() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     agency::update_performance(
         &mut record,
@@ -419,11 +404,7 @@ fn test_performance_score_negative() {
 /// Mixed extreme scores average correctly: (0.0 + 1.0) / 2 = 0.5
 #[test]
 fn test_performance_mixed_extreme_scores() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     agency::update_performance(
         &mut record,
@@ -460,7 +441,7 @@ fn test_extreme_scores_yaml_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     let mut role = agency::build_role("R", "desc", vec![], "outcome");
     agency::update_performance(
@@ -494,63 +475,64 @@ fn test_extreme_scores_yaml_roundtrip() {
 // 6. Content hash collision resistance
 // ---------------------------------------------------------------------------
 
-/// Slightly different descriptions produce different role hashes.
+/// Slightly different outcome IDs produce different role hashes.
 #[test]
 fn test_content_hash_role_different_descriptions() {
-    let h1 = agency::content_hash_role(&[], "outcome", "Description A");
-    let h2 = agency::content_hash_role(&[], "outcome", "Description B");
+    let h1 = agency::content_hash_role(&[], "outcome-a");
+    let h2 = agency::content_hash_role(&[], "outcome-b");
     assert_ne!(
         h1, h2,
-        "Different descriptions must produce different hashes"
+        "Different outcome IDs must produce different hashes"
     );
 }
 
 /// Slightly different desired_outcomes produce different role hashes.
 #[test]
 fn test_content_hash_role_different_outcomes() {
-    let h1 = agency::content_hash_role(&[], "outcome A", "desc");
-    let h2 = agency::content_hash_role(&[], "outcome B", "desc");
+    let h1 = agency::content_hash_role(&[], "outcome A");
+    let h2 = agency::content_hash_role(&[], "outcome B");
     assert_ne!(h1, h2, "Different outcomes must produce different hashes");
 }
 
 /// Slightly different skills produce different role hashes.
 #[test]
 fn test_content_hash_role_different_skills() {
-    let h1 = agency::content_hash_role(&[SkillRef::Name("rust".to_string())], "outcome", "desc");
-    let h2 = agency::content_hash_role(&[SkillRef::Name("python".to_string())], "outcome", "desc");
+    let h1 = agency::content_hash_role(&["rust".to_string()], "outcome");
+    let h2 = agency::content_hash_role(&["python".to_string()], "outcome");
     assert_ne!(h1, h2, "Different skills must produce different hashes");
 }
 
-/// Skill order matters for content hashing (different order = different hash).
+/// Component order is irrelevant for content hashing — component_ids are sorted.
 #[test]
-fn test_content_hash_role_skill_order_matters() {
+fn test_content_hash_role_component_order_irrelevant() {
     let h1 = agency::content_hash_role(
         &[
-            SkillRef::Name("a".to_string()),
-            SkillRef::Name("b".to_string()),
+            "a".to_string(),
+            "b".to_string(),
         ],
         "outcome",
-        "desc",
     );
     let h2 = agency::content_hash_role(
         &[
-            SkillRef::Name("b".to_string()),
-            SkillRef::Name("a".to_string()),
+            "b".to_string(),
+            "a".to_string(),
         ],
         "outcome",
-        "desc",
     );
-    assert_ne!(
+    assert_eq!(
         h1, h2,
-        "Different skill order must produce different hashes"
+        "Component order must not affect the hash (sorted internally)"
     );
+    // But different component sets must still produce different hashes
+    let h3 = agency::content_hash_role(&["a".to_string(), "c".to_string()], "outcome");
+    assert_ne!(h1, h3, "Different component sets must produce different hashes");
 }
 
 /// Different motivation descriptions produce different hashes.
 #[test]
 fn test_content_hash_motivation_different_descriptions() {
-    let h1 = agency::content_hash_motivation(&[], &[], "Description A");
-    let h2 = agency::content_hash_motivation(&[], &[], "Description B");
+    let h1 = agency::content_hash_tradeoff(&[], &[], "Description A");
+    let h2 = agency::content_hash_tradeoff(&[], &[], "Description B");
     assert_ne!(
         h1, h2,
         "Different descriptions must produce different hashes"
@@ -560,16 +542,16 @@ fn test_content_hash_motivation_different_descriptions() {
 /// Different tradeoffs produce different hashes.
 #[test]
 fn test_content_hash_motivation_different_tradeoffs() {
-    let h1 = agency::content_hash_motivation(&["speed".to_string()], &[], "desc");
-    let h2 = agency::content_hash_motivation(&["quality".to_string()], &[], "desc");
+    let h1 = agency::content_hash_tradeoff(&["speed".to_string()], &[], "desc");
+    let h2 = agency::content_hash_tradeoff(&["quality".to_string()], &[], "desc");
     assert_ne!(h1, h2);
 }
 
 /// Swapping acceptable and unacceptable tradeoffs produces different hashes.
 #[test]
 fn test_content_hash_motivation_swapped_tradeoff_categories() {
-    let h1 = agency::content_hash_motivation(&["X".to_string()], &["Y".to_string()], "desc");
-    let h2 = agency::content_hash_motivation(&["Y".to_string()], &["X".to_string()], "desc");
+    let h1 = agency::content_hash_tradeoff(&["X".to_string()], &["Y".to_string()], "desc");
+    let h2 = agency::content_hash_tradeoff(&["Y".to_string()], &["X".to_string()], "desc");
     assert_ne!(
         h1, h2,
         "Swapping tradeoff categories must produce different hashes"
@@ -601,8 +583,8 @@ fn test_content_hash_agent_swapped_ids() {
 /// Content hashing is deterministic — same inputs always yield same hash.
 #[test]
 fn test_content_hash_determinism() {
-    let h1 = agency::content_hash_role(&[SkillRef::Name("x".to_string())], "out", "desc");
-    let h2 = agency::content_hash_role(&[SkillRef::Name("x".to_string())], "out", "desc");
+    let h1 = agency::content_hash_role(&["x".to_string()], "out");
+    let h2 = agency::content_hash_role(&["x".to_string()], "out");
     assert_eq!(h1, h2);
     assert_eq!(h1.len(), 64, "SHA-256 hash should be 64 hex chars");
 }
@@ -618,8 +600,8 @@ fn test_content_hash_role_name_independent() {
 /// Motivation name does NOT affect the content hash.
 #[test]
 fn test_content_hash_motivation_name_independent() {
-    let m1 = agency::build_motivation("Name A", "desc", vec![], vec![]);
-    let m2 = agency::build_motivation("Name B", "desc", vec![], vec![]);
+    let m1 = agency::build_tradeoff("Name A", "desc", vec![], vec![]);
+    let m2 = agency::build_tradeoff("Name B", "desc", vec![], vec![]);
     assert_eq!(m1.id, m2.id, "Name should not affect content hash");
 }
 
@@ -634,28 +616,24 @@ fn test_prefix_lookup_zero_matches() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
-    let motivations_dir = agency_dir.join("motivations");
-    let agents_dir = agency_dir.join("agents");
+    let roles_dir = agency_dir.join("cache/roles");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
 
     // Save one entity of each type so the directories aren't empty
     let role = agency::build_role("R", "desc", vec![], "outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
-    let mot = agency::build_motivation("M", "desc", vec![], vec![]);
-    agency::save_motivation(&mot, &motivations_dir).unwrap();
+    let mot = agency::build_tradeoff("M", "desc", vec![], vec![]);
+    agency::save_tradeoff(&mot, &motivations_dir).unwrap();
 
     let agent_id = agency::content_hash_agent(&role.id, &mot.id);
     let agent = Agent {
         id: agent_id,
         role_id: role.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         name: "a".to_string(),
-        performance: PerformanceRecord {
-            task_count: 0,
-            avg_score: None,
-            evaluations: vec![],
-        },
+        performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         capabilities: Vec::new(),
         rate: None,
@@ -663,6 +641,9 @@ fn test_prefix_lookup_zero_matches() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
+        deployment_history: vec![],
+        attractor_weight: 0.5,
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agents_dir).unwrap();
 
@@ -671,12 +652,12 @@ fn test_prefix_lookup_zero_matches() {
     assert!(r.is_err());
     assert!(r.unwrap_err().to_string().contains("No role matching"));
 
-    let m = agency::find_motivation_by_prefix(&motivations_dir, "zzzzzzz");
+    let m = agency::find_tradeoff_by_prefix(&motivations_dir, "zzzzzzz");
     assert!(m.is_err());
     assert!(
         m.unwrap_err()
             .to_string()
-            .contains("No motivation matching")
+            .contains("No tradeoff matching")
     );
 
     let a = agency::find_agent_by_prefix(&agents_dir, "zzzzzzz");
@@ -691,7 +672,7 @@ fn test_prefix_lookup_exact_one_match() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     let role = agency::build_role("Only Role", "desc", vec![], "outcome");
     agency::save_role(&role, &roles_dir).unwrap();
 
@@ -710,7 +691,7 @@ fn test_prefix_lookup_ambiguous() {
     let tmp = TempDir::new().unwrap();
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Create two roles that start with the same prefix by using slug-based IDs
     let yaml_a = "id: abc123\nname: A\ndescription: d\nskills: []\ndesired_outcome: o\nperformance:\n  task_count: 0\n  avg_score: null\n";
@@ -739,7 +720,7 @@ fn test_prefix_lookup_empty_directory() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let result = agency::find_role_by_prefix(&agency_dir.join("roles"), "anything");
+    let result = agency::find_role_by_prefix(&agency_dir.join("cache/roles"), "anything");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No role matching"));
 }
@@ -765,7 +746,7 @@ fn test_load_corrupted_role_yaml() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     std::fs::write(roles_dir.join("corrupt.yaml"), "{{{{not valid yaml!!!!").unwrap();
 
     let result = agency::load_role(&roles_dir.join("corrupt.yaml"));
@@ -779,10 +760,10 @@ fn test_load_corrupted_motivation_yaml() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let motivations_dir = agency_dir.join("motivations");
+    let motivations_dir = agency_dir.join("primitives/tradeoffs");
     std::fs::write(motivations_dir.join("corrupt.yaml"), "not: [valid: {yaml").unwrap();
 
-    let result = agency::load_motivation(&motivations_dir.join("corrupt.yaml"));
+    let result = agency::load_tradeoff(&motivations_dir.join("corrupt.yaml"));
     assert!(result.is_err());
 }
 
@@ -793,7 +774,7 @@ fn test_load_corrupted_agent_yaml() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let agents_dir = agency_dir.join("agents");
+    let agents_dir = agency_dir.join("cache/agents");
     std::fs::write(agents_dir.join("corrupt.yaml"), ":::broken:::").unwrap();
 
     let result = agency::load_agent(&agents_dir.join("corrupt.yaml"));
@@ -821,7 +802,7 @@ fn test_load_all_roles_with_one_corrupted() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     // Save a valid role
     let role = agency::build_role("Good Role", "desc", vec![], "outcome");
@@ -845,7 +826,7 @@ fn test_load_empty_yaml_file() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     std::fs::write(roles_dir.join("empty.yaml"), "").unwrap();
 
     let result = agency::load_role(&roles_dir.join("empty.yaml"));
@@ -859,7 +840,7 @@ fn test_load_wrong_schema_yaml() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     // Valid YAML but missing required Role fields
     std::fs::write(roles_dir.join("wrong-schema.yaml"), "foo: bar\nbaz: 42\n").unwrap();
 
@@ -874,7 +855,7 @@ fn test_load_partial_role_yaml() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
     // Has id and name but missing performance, desired_outcome, etc.
     let partial = "id: partial\nname: Partial Role\n";
     std::fs::write(roles_dir.join("partial.yaml"), partial).unwrap();
@@ -898,11 +879,11 @@ fn test_load_nonexistent_file() {
 /// Content hash with empty fields is stable and produces valid 64-char hex.
 #[test]
 fn test_content_hash_empty_fields() {
-    let h = agency::content_hash_role(&[], "", "");
+    let h = agency::content_hash_role(&[], "");
     assert_eq!(h.len(), 64);
     assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
 
-    let h2 = agency::content_hash_motivation(&[], &[], "");
+    let h2 = agency::content_hash_tradeoff(&[], &[], "");
     assert_eq!(h2.len(), 64);
     assert!(h2.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -929,20 +910,20 @@ fn test_short_hash_short_input() {
     assert_eq!(agency::short_hash("abc"), "abc");
 }
 
-/// Unicode in descriptions does not break content hashing.
+/// Unicode in outcome IDs does not break content hashing.
 #[test]
 fn test_content_hash_unicode() {
-    let h1 = agency::content_hash_role(&[], "outcome", "Descripción con acentos");
-    let h2 = agency::content_hash_role(&[], "outcome", "Description con acentos");
+    let h1 = agency::content_hash_role(&[], "Descripción con acentos");
+    let h2 = agency::content_hash_role(&[], "Description con acentos");
     assert_ne!(h1, h2);
     assert_eq!(h1.len(), 64);
 }
 
-/// Special YAML characters in descriptions are handled correctly.
+/// Special YAML characters in outcome IDs are handled correctly.
 #[test]
 fn test_content_hash_yaml_special_chars() {
-    let h1 = agency::content_hash_role(&[], "outcome", "description: with colon");
-    let h2 = agency::content_hash_role(&[], "outcome", "description with colon");
+    let h1 = agency::content_hash_role(&[], "outcome: with colon");
+    let h2 = agency::content_hash_role(&[], "outcome with colon");
     assert_ne!(h1, h2);
     assert_eq!(h1.len(), 64);
     assert_eq!(h2.len(), 64);
@@ -955,10 +936,10 @@ fn test_init_idempotent() {
     let agency_dir = tmp.path().join("agency");
     agency::init(&agency_dir).unwrap();
     agency::init(&agency_dir).unwrap(); // second call should not fail
-    assert!(agency_dir.join("roles").is_dir());
-    assert!(agency_dir.join("motivations").is_dir());
+    assert!(agency_dir.join("cache/roles").is_dir());
+    assert!(agency_dir.join("primitives/tradeoffs").is_dir());
     assert!(agency_dir.join("evaluations").is_dir());
-    assert!(agency_dir.join("agents").is_dir());
+    assert!(agency_dir.join("cache/agents").is_dir());
 }
 
 /// load_all_* on nonexistent directories returns empty vec (not error).
@@ -968,7 +949,7 @@ fn test_load_all_nonexistent_dirs() {
     let nowhere = tmp.path().join("nowhere");
 
     assert!(agency::load_all_roles(&nowhere).unwrap().is_empty());
-    assert!(agency::load_all_motivations(&nowhere).unwrap().is_empty());
+    assert!(agency::load_all_tradeoffs(&nowhere).unwrap().is_empty());
     assert!(agency::load_all_evaluations(&nowhere).unwrap().is_empty());
     assert!(agency::load_all_agents(&nowhere).unwrap().is_empty());
 }

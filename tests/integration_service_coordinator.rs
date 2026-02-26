@@ -1500,10 +1500,10 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
         let agency_dir = wg_dir.join("agency");
         assert!(agency_dir.exists(), "Agency directory should exist");
 
-        let roles_dir = agency_dir.join("roles");
+        let roles_dir = agency_dir.join("cache/roles");
         assert!(roles_dir.exists(), "Roles directory should exist");
 
-        let motivations_dir = agency_dir.join("motivations");
+        let motivations_dir = agency_dir.join("primitives/tradeoffs");
         assert!(
             motivations_dir.exists(),
             "Motivations directory should exist"
@@ -1588,4 +1588,163 @@ IMPORTANT: You MUST run ALL four steps. Do NOT skip any."#;
             model
         );
     }
+}
+
+// ===========================================================================
+// Burst dispatch prevention: dangling deps block
+// ===========================================================================
+
+/// Simulate rapid task additions with dependencies added in arbitrary order.
+/// Verify that tasks with dangling (not-yet-created) dependencies are NOT
+/// considered ready for dispatch.
+#[test]
+fn test_burst_addition_dangling_deps_block() {
+    let tmp = TempDir::new().unwrap();
+    let (_wg_dir, graph_path) = setup_workgraph(&tmp);
+
+    let mut graph = WorkGraph::new();
+
+    // Simulate a burst where phase-1d references phase-1c, but phase-1c
+    // hasn't been created yet (e.g., its `wg add` will come in the next
+    // millisecond, or it failed to create due to a bad --after reference).
+    let mut phase_1d = make_task("phase-1d", "Phase 1d", Status::Open);
+    phase_1d.after = vec!["phase-1c".to_string()]; // dangling — phase-1c doesn't exist
+
+    graph.add_node(Node::Task(phase_1d));
+    save_graph(&graph, &graph_path).unwrap();
+
+    // phase-1d should NOT be ready (dangling dep blocks)
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    assert!(
+        ready.is_empty(),
+        "Task with dangling dep should NOT be ready, but got: {:?}",
+        ready.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+
+    // Now simulate the rest of the burst: add phase-1c
+    let mut graph = load_graph(&graph_path).unwrap();
+    let phase_1c = make_task("phase-1c", "Phase 1c", Status::Open);
+    graph.add_node(Node::Task(phase_1c));
+    save_graph(&graph, &graph_path).unwrap();
+
+    // phase-1d is still blocked (phase-1c is Open, not Done)
+    // phase-1c is ready (no deps)
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+    assert!(
+        ready_ids.contains(&"phase-1c"),
+        "phase-1c should be ready (no deps)"
+    );
+    assert!(
+        !ready_ids.contains(&"phase-1d"),
+        "phase-1d should NOT be ready (blocked by open phase-1c)"
+    );
+
+    // Complete phase-1c → phase-1d becomes ready
+    let mut graph = load_graph(&graph_path).unwrap();
+    graph.get_task_mut("phase-1c").unwrap().status = Status::Done;
+    save_graph(&graph, &graph_path).unwrap();
+
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+    assert!(
+        ready_ids.contains(&"phase-1d"),
+        "phase-1d should be ready after phase-1c is done"
+    );
+}
+
+/// Test the full burst scenario: multiple tasks added in rapid succession with
+/// a complex dependency chain, verifying the coordinator never dispatches a
+/// task whose full dependency chain isn't resolvable.
+#[test]
+fn test_burst_addition_complex_dependency_chain() {
+    let tmp = TempDir::new().unwrap();
+    let (_wg_dir, graph_path) = setup_workgraph(&tmp);
+
+    let mut graph = WorkGraph::new();
+
+    // Simulate adding tasks in "wrong" order (dependent first, then dependency):
+    // phase-2a depends on phase-1a, phase-1b
+    // phase-2b depends on phase-1c (which doesn't exist yet)
+    // phase-3 depends on phase-2a, phase-2b
+    let mut phase_2a = make_task("phase-2a", "Phase 2a", Status::Open);
+    phase_2a.after = vec!["phase-1a".to_string(), "phase-1b".to_string()];
+    graph.add_node(Node::Task(phase_2a));
+
+    let mut phase_2b = make_task("phase-2b", "Phase 2b", Status::Open);
+    phase_2b.after = vec!["phase-1c".to_string()]; // dangling
+    graph.add_node(Node::Task(phase_2b));
+
+    let mut phase_3 = make_task("phase-3", "Phase 3", Status::Open);
+    phase_3.after = vec!["phase-2a".to_string(), "phase-2b".to_string()];
+    graph.add_node(Node::Task(phase_3));
+
+    save_graph(&graph, &graph_path).unwrap();
+
+    // No tasks should be ready: all have dangling or unsatisfied deps
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    assert!(
+        ready.is_empty(),
+        "No tasks should be ready when deps are dangling or open: {:?}",
+        ready.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+
+    // Burst completes: add phase-1a, phase-1b, phase-1c
+    let mut graph = load_graph(&graph_path).unwrap();
+    graph.add_node(Node::Task(make_task("phase-1a", "Phase 1a", Status::Open)));
+    graph.add_node(Node::Task(make_task("phase-1b", "Phase 1b", Status::Open)));
+    graph.add_node(Node::Task(make_task("phase-1c", "Phase 1c", Status::Open)));
+    save_graph(&graph, &graph_path).unwrap();
+
+    // Only phase-1a, phase-1b, phase-1c should be ready (leaf tasks with no deps)
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ready_ids.len(), 3, "Only leaf tasks should be ready");
+    assert!(ready_ids.contains(&"phase-1a"));
+    assert!(ready_ids.contains(&"phase-1b"));
+    assert!(ready_ids.contains(&"phase-1c"));
+
+    // Complete phase-1a and phase-1b → phase-2a becomes ready
+    let mut graph = load_graph(&graph_path).unwrap();
+    graph.get_task_mut("phase-1a").unwrap().status = Status::Done;
+    graph.get_task_mut("phase-1b").unwrap().status = Status::Done;
+    save_graph(&graph, &graph_path).unwrap();
+
+    let loaded = load_graph(&graph_path).unwrap();
+    let ready = ready_tasks(&loaded);
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+    assert!(ready_ids.contains(&"phase-2a"), "phase-2a should be ready");
+    assert!(ready_ids.contains(&"phase-1c"), "phase-1c still ready");
+    assert!(!ready_ids.contains(&"phase-2b"), "phase-2b blocked by open phase-1c");
+    assert!(!ready_ids.contains(&"phase-3"), "phase-3 blocked by open phase-2a, phase-2b");
+}
+
+/// Verify that the cycle-aware ready_tasks variant also blocks on dangling deps.
+#[test]
+fn test_cycle_aware_ready_tasks_blocks_dangling() {
+    use workgraph::query::ready_tasks_with_peers_cycle_aware;
+
+    let tmp = TempDir::new().unwrap();
+    let (wg_dir, graph_path) = setup_workgraph(&tmp);
+
+    let mut graph = WorkGraph::new();
+
+    let mut task = make_task("task-a", "Task A", Status::Open);
+    task.after = vec!["nonexistent".to_string()];
+    graph.add_node(Node::Task(task));
+
+    save_graph(&graph, &graph_path).unwrap();
+
+    let loaded = load_graph(&graph_path).unwrap();
+    let cycle_analysis = loaded.compute_cycle_analysis();
+    let ready = ready_tasks_with_peers_cycle_aware(&loaded, &wg_dir, &cycle_analysis);
+    assert!(
+        ready.is_empty(),
+        "Cycle-aware ready_tasks should block on dangling deps"
+    );
 }

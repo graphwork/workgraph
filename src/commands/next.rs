@@ -33,7 +33,7 @@ pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
     // Load agent from .workgraph/agency/agents/
-    let agents_dir = dir.join("agency").join("agents");
+    let agents_dir = dir.join("agency").join("cache/agents");
     let agent = agency::find_agent_by_prefix(&agents_dir, agent_id)
         .map_err(|e| anyhow::anyhow!("Agent '{}' not found: {}", agent_id, e))?;
 
@@ -202,13 +202,9 @@ mod tests {
         Agent {
             id,
             role_id,
-            motivation_id: mot_id,
+            tradeoff_id: mot_id,
             name: name.to_string(),
-            performance: PerformanceRecord {
-                task_count: 0,
-                avg_score: None,
-                evaluations: vec![],
-            },
+            performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             capabilities: capabilities.into_iter().map(String::from).collect(),
             rate: None,
@@ -216,13 +212,16 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 
     fn setup_agents(dir: &Path, agents: &[Agent]) {
         let agency_dir = dir.join("agency");
         agency::init(&agency_dir).unwrap();
-        let agents_dir = agency_dir.join("agents");
+        let agents_dir = agency_dir.join("cache/agents");
         for agent in agents {
             agency::save_agent(agent, &agents_dir).unwrap();
         }

@@ -346,6 +346,14 @@ enum Commands {
         /// Show internal tasks (assign-*, evaluate-*) normally hidden
         #[arg(long)]
         show_internal: bool,
+
+        /// Launch interactive TUI mode instead of static output
+        #[arg(long, conflicts_with_all = ["dot", "mermaid", "graph", "output", "no_tui"])]
+        tui: bool,
+
+        /// Force static output even when stdout is an interactive terminal
+        #[arg(long, alias = "static", conflicts_with = "tui")]
+        no_tui: bool,
     },
 
     /// Output the full graph data (DOT format with archive support)
@@ -846,6 +854,14 @@ enum Commands {
         #[arg(long)]
         evolver_agent: Option<String>,
 
+        /// Set creator agent (content-hash)
+        #[arg(long)]
+        creator_agent: Option<String>,
+
+        /// Set model for creator agents
+        #[arg(long)]
+        creator_model: Option<String>,
+
         /// Set retention heuristics (prose policy for evolver)
         #[arg(long)]
         retention_heuristics: Option<String>,
@@ -933,12 +949,8 @@ enum Commands {
         command: ServiceCommands,
     },
 
-    /// Launch interactive TUI dashboard
-    Tui {
-        /// Data refresh rate in milliseconds (default: 2000)
-        #[arg(long, default_value = "2000")]
-        refresh_rate: u64,
-    },
+    /// Launch interactive TUI dashboard (same as `wg viz --all --tui`)
+    Tui {},
 
     /// Interactive configuration wizard for first-time setup
     Setup,
@@ -1018,9 +1030,12 @@ enum EvaluateCommands {
         dimensions: Vec<String>,
     },
 
-    /// Show evaluation history
+    /// Show evaluation history (or both task-level and org-level scores for a specific task)
     Show {
-        /// Filter by task ID (prefix match)
+        /// Show both task-level and org-level scores side by side for this task
+        #[arg(value_name = "TASK")]
+        task_detail: Option<String>,
+        /// Filter by task ID (prefix match, when no TASK positional arg)
         #[arg(long)]
         task: Option<String>,
         /// Filter by agent ID (prefix match)
@@ -1032,6 +1047,15 @@ enum EvaluateCommands {
         /// Show only the N most recent evaluations
         #[arg(long)]
         limit: Option<usize>,
+    },
+
+    /// Compute and record an organisational evaluation for a completed task
+    Org {
+        /// Task ID to compute org evaluation for
+        task: String,
+        /// Show what would be computed without saving
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1364,6 +1388,13 @@ enum AgencyCommands {
     /// Seed agency with starter roles and motivations
     Init,
 
+    /// Migrate old-format agency store (roles/, motivations/, agents/) to primitive+cache format
+    Migrate {
+        /// Show what would be migrated without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Show agency performance analytics
     Stats {
         /// Minimum evaluations to consider a pair "explored" (default: 3)
@@ -1437,6 +1468,29 @@ enum AgencyCommands {
     Remote {
         #[command(subcommand)]
         command: RemoteCommands,
+    },
+
+    /// List pending deferred evolver operations awaiting human review
+    Deferred,
+
+    /// Approve a deferred evolver operation
+    Approve {
+        /// Deferred operation ID
+        id: String,
+
+        /// Optional note explaining approval
+        #[arg(long, short = 'n')]
+        note: Option<String>,
+    },
+
+    /// Reject a deferred evolver operation
+    Reject {
+        /// Deferred operation ID
+        id: String,
+
+        /// Optional note explaining rejection
+        #[arg(long, short = 'n')]
+        note: Option<String>,
     },
 
     /// Push local entities to another agency store
@@ -2421,26 +2475,50 @@ fn main() -> Result<()> {
             graph,
             output,
             show_internal,
+            tui: tui_mode,
+            no_tui: _no_tui,
         } => {
-            let fmt = if dot {
-                commands::viz::OutputFormat::Dot
-            } else if mermaid {
-                commands::viz::OutputFormat::Mermaid
-            } else if graph {
-                commands::viz::OutputFormat::Graph
+            let _explicit_static_format = dot || mermaid || graph || output.is_some();
+            let use_tui = if tui_mode {
+                true
             } else {
-                commands::viz::OutputFormat::Ascii
+                false
             };
-            let options = commands::viz::VizOptions {
-                all,
-                status,
-                critical_path,
-                format: fmt,
-                output,
-                show_internal,
-                focus,
-            };
-            commands::viz::run(&workgraph_dir, &options)
+
+            if use_tui {
+                let options = commands::viz::VizOptions {
+                    all,
+                    status,
+                    critical_path,
+                    format: commands::viz::OutputFormat::Ascii,
+                    output: None,
+                    show_internal,
+                    focus,
+                    tui_mode: true,
+                };
+                tui::viz_viewer::run(workgraph_dir, options)
+            } else {
+                let fmt = if dot {
+                    commands::viz::OutputFormat::Dot
+                } else if mermaid {
+                    commands::viz::OutputFormat::Mermaid
+                } else if graph {
+                    commands::viz::OutputFormat::Graph
+                } else {
+                    commands::viz::OutputFormat::Ascii
+                };
+                let options = commands::viz::VizOptions {
+                    all,
+                    status,
+                    critical_path,
+                    format: fmt,
+                    output,
+                    show_internal,
+                    focus,
+                    tui_mode: false,
+                };
+                commands::viz::run(&workgraph_dir, &options)
+            }
         }
         Commands::GraphExport {
             archive,
@@ -2717,6 +2795,9 @@ fn main() -> Result<()> {
         },
         Commands::Agency { command } => match command {
             AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
+            AgencyCommands::Migrate { dry_run } => {
+                commands::agency_migrate::run(&workgraph_dir, dry_run)
+            }
             AgencyCommands::Stats {
                 min_evals,
                 by_model,
@@ -2780,6 +2861,23 @@ fn main() -> Result<()> {
                     commands::agency_remote::run_show(&workgraph_dir, &name, cli.json)
                 }
             },
+            AgencyCommands::Deferred => {
+                commands::evolve::run_deferred_list(&workgraph_dir, cli.json)
+            }
+            AgencyCommands::Approve { id, note } => {
+                commands::evolve::run_deferred_approve(
+                    &workgraph_dir,
+                    &id,
+                    note.as_deref(),
+                )
+            }
+            AgencyCommands::Reject { id, note } => {
+                commands::evolve::run_deferred_reject(
+                    &workgraph_dir,
+                    &id,
+                    note.as_deref(),
+                )
+            }
             AgencyCommands::Push {
                 target,
                 entity_ids,
@@ -3018,6 +3116,7 @@ fn main() -> Result<()> {
                 cli.json,
             ),
             EvaluateCommands::Show {
+                task_detail,
                 task,
                 agent,
                 source,
@@ -3028,6 +3127,13 @@ fn main() -> Result<()> {
                 agent.as_deref(),
                 source.as_deref(),
                 limit,
+                cli.json,
+                task_detail.as_deref(),
+            ),
+            EvaluateCommands::Org { task, dry_run } => commands::evaluate::run_org(
+                &workgraph_dir,
+                &task,
+                dry_run,
                 cli.json,
             ),
         },
@@ -3081,6 +3187,8 @@ fn main() -> Result<()> {
             assigner_agent,
             evaluator_agent,
             evolver_agent,
+            creator_agent,
+            creator_model,
             retention_heuristics,
             auto_triage,
             triage_model,
@@ -3141,6 +3249,8 @@ fn main() -> Result<()> {
                     && assigner_agent.is_none()
                     && evaluator_agent.is_none()
                     && evolver_agent.is_none()
+                    && creator_agent.is_none()
+                    && creator_model.is_none()
                     && retention_heuristics.is_none()
                     && auto_triage.is_none()
                     && triage_model.is_none()
@@ -3170,6 +3280,8 @@ fn main() -> Result<()> {
                     assigner_agent.as_deref(),
                     evaluator_agent.as_deref(),
                     evolver_agent.as_deref(),
+                    creator_agent.as_deref(),
+                    creator_model.as_deref(),
                     retention_heuristics.as_deref(),
                     auto_triage,
                     triage_model.as_deref(),
@@ -3292,7 +3404,19 @@ fn main() -> Result<()> {
                 model.as_deref(),
             ),
         },
-        Commands::Tui { refresh_rate } => tui::run(workgraph_dir, refresh_rate),
+        Commands::Tui { .. } => {
+                let options = commands::viz::VizOptions {
+                    all: true,
+                    status: None,
+                    critical_path: false,
+                    format: commands::viz::OutputFormat::Ascii,
+                    output: None,
+                    show_internal: false,
+                    focus: vec![],
+                    tui_mode: true,
+                };
+                tui::viz_viewer::run(workgraph_dir, options)
+            }
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),

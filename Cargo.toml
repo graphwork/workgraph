@@ -37,6 +37,9 @@ ascii-dag = "0.8"
 zstd = "0.13"
 dialoguer = "0.11"
 walkdir = "2"
+ansi-to-tui = "7"
+strip-ansi-escapes = "0.2"
+fuzzy-matcher = "0.3"
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }

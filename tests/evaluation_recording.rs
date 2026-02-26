@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use workgraph::agency::{
-    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord, SkillRef,
+    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ use workgraph::agency::{
 struct TestFixture {
     agency_dir: std::path::PathBuf,
     role_id: String,
-    motivation_id: String,
+    tradeoff_id: String,
     agent_id: String,
     _tmp: TempDir,
 }
@@ -42,22 +42,22 @@ impl TestFixture {
             "Test Role",
             "A role for testing evaluations.",
             vec![
-                SkillRef::Name("rust".to_string()),
-                SkillRef::Inline("Write tests".to_string()),
+                "rust".to_string(),
+                "inline:Write tests".to_string(),
             ],
             "Tested code",
         );
         let role_id = role.id.clone();
-        agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+        agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-        let motivation = agency::build_motivation(
+        let motivation = agency::build_tradeoff(
             "Test Motivation",
             "A motivation for testing evaluations.",
             vec!["Slower pace".to_string()],
             vec!["Untested code".to_string()],
         );
         let motivation_id = motivation.id.clone();
-        agency::save_motivation(&motivation, &agency_dir.join("motivations")).unwrap();
+        agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
         let agent_id = agency::content_hash_agent(&role_id, &motivation_id);
 
@@ -65,13 +65,9 @@ impl TestFixture {
             let agent = Agent {
                 id: agent_id.clone(),
                 role_id: role_id.clone(),
-                motivation_id: motivation_id.clone(),
+                tradeoff_id: motivation_id.clone(),
                 name: "test-agent".to_string(),
-                performance: PerformanceRecord {
-                    task_count: 0,
-                    avg_score: None,
-                    evaluations: vec![],
-                },
+                performance: PerformanceRecord::default(),
                 lineage: Lineage::default(),
                 capabilities: Vec::new(),
                 rate: None,
@@ -79,14 +75,17 @@ impl TestFixture {
                 trust_level: Default::default(),
                 contact: None,
                 executor: "claude".to_string(),
+            attractor_weight: 0.5,
+            deployment_history: vec![],
+            staleness_flags: vec![],
             };
-            agency::save_agent(&agent, &agency_dir.join("agents")).unwrap();
+            agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
         }
 
         TestFixture {
             agency_dir,
             role_id,
-            motivation_id,
+            tradeoff_id: motivation_id,
             agent_id,
             _tmp: tmp,
         }
@@ -113,7 +112,7 @@ impl TestFixture {
                 String::new()
             },
             role_id: self.role_id.clone(),
-            motivation_id: self.motivation_id.clone(),
+            tradeoff_id: self.tradeoff_id.clone(),
             score,
             dimensions,
             notes: format!("Test eval {}", id),
@@ -145,7 +144,7 @@ fn test_record_evaluation_json_format() {
         task_id: "json-task".to_string(),
         agent_id: fix.agent_id.clone(),
         role_id: fix.role_id.clone(),
-        motivation_id: fix.motivation_id.clone(),
+        tradeoff_id: fix.tradeoff_id.clone(),
         score: 0.87,
         dimensions: dimensions.clone(),
         notes: "Testing JSON format preservation.".to_string(),
@@ -167,7 +166,7 @@ fn test_record_evaluation_json_format() {
     assert_eq!(parsed["task_id"], "json-task");
     assert_eq!(parsed["agent_id"], fix.agent_id.as_str());
     assert_eq!(parsed["role_id"], fix.role_id.as_str());
-    assert_eq!(parsed["motivation_id"], fix.motivation_id.as_str());
+    assert_eq!(parsed["tradeoff_id"], fix.tradeoff_id.as_str());
     assert_eq!(parsed["score"], 0.87);
     assert_eq!(parsed["notes"], "Testing JSON format preservation.");
     assert_eq!(parsed["evaluator"], "human-reviewer");
@@ -212,7 +211,7 @@ fn test_record_evaluation_round_trip() {
     assert_eq!(loaded.task_id, eval.task_id);
     assert_eq!(loaded.agent_id, eval.agent_id);
     assert_eq!(loaded.role_id, eval.role_id);
-    assert_eq!(loaded.motivation_id, eval.motivation_id);
+    assert_eq!(loaded.tradeoff_id, eval.tradeoff_id);
     assert_eq!(loaded.score, eval.score);
     assert_eq!(loaded.dimensions, eval.dimensions);
     assert_eq!(loaded.notes, eval.notes);
@@ -246,7 +245,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         task_id: "task-1".to_string(),
         agent_id: fix.agent_id.clone(),
         role_id: fix.role_id.clone(),
-        motivation_id: fix.motivation_id.clone(),
+        tradeoff_id: fix.tradeoff_id.clone(),
         score: 0.80,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -260,7 +259,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         task_id: "task-2".to_string(),
         agent_id: fix.agent_id.clone(),
         role_id: fix.role_id.clone(),
-        motivation_id: fix.motivation_id.clone(),
+        tradeoff_id: fix.tradeoff_id.clone(),
         score: 0.90,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -274,7 +273,7 @@ fn test_multiple_evaluations_same_agent_avg() {
     agency::record_evaluation(&eval2, &fix.agency_dir).unwrap();
 
     let agent =
-        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
+        agency::find_agent_by_prefix(&fix.agency_dir.join("cache/agents"), &fix.agent_id).unwrap();
 
     assert_eq!(agent.performance.task_count, 2);
     let expected = (0.80 + 0.90) / 2.0;
@@ -301,7 +300,7 @@ fn test_three_evaluations_incremental_avg() {
             task_id: format!("task-{}", i),
             agent_id: fix.agent_id.clone(),
             role_id: fix.role_id.clone(),
-            motivation_id: fix.motivation_id.clone(),
+            tradeoff_id: fix.tradeoff_id.clone(),
             score,
             dimensions: HashMap::new(),
             notes: String::new(),
@@ -314,7 +313,7 @@ fn test_three_evaluations_incremental_avg() {
     }
 
     let agent =
-        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
+        agency::find_agent_by_prefix(&fix.agency_dir.join("cache/agents"), &fix.agent_id).unwrap();
 
     assert_eq!(agent.performance.task_count, 3);
     let expected = (0.60 + 0.80 + 1.0) / 3.0;
@@ -341,7 +340,7 @@ fn test_context_ids_tracked_independently() {
         task_id: "context-task".to_string(),
         agent_id: fix.agent_id.clone(),
         role_id: fix.role_id.clone(),
-        motivation_id: fix.motivation_id.clone(),
+        tradeoff_id: fix.tradeoff_id.clone(),
         score: 0.88,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -354,7 +353,7 @@ fn test_context_ids_tracked_independently() {
 
     // Agent's context_id = role_id (identifies which role was used)
     let agent =
-        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
+        agency::find_agent_by_prefix(&fix.agency_dir.join("cache/agents"), &fix.agent_id).unwrap();
     assert_eq!(
         agent.performance.evaluations[0].context_id, fix.role_id,
         "Agent context_id should be the role_id"
@@ -363,20 +362,20 @@ fn test_context_ids_tracked_independently() {
     // Role's context_id = motivation_id
     let role = agency::load_role(
         &fix.agency_dir
-            .join("roles")
+            .join("cache/roles")
             .join(format!("{}.yaml", fix.role_id)),
     )
     .unwrap();
     assert_eq!(
-        role.performance.evaluations[0].context_id, fix.motivation_id,
+        role.performance.evaluations[0].context_id, fix.tradeoff_id,
         "Role context_id should be the motivation_id"
     );
 
     // Motivation's context_id = role_id
-    let motivation = agency::load_motivation(
+    let motivation = agency::load_tradeoff(
         &fix.agency_dir
-            .join("motivations")
-            .join(format!("{}.yaml", fix.motivation_id)),
+            .join("primitives/tradeoffs")
+            .join(format!("{}.yaml", fix.tradeoff_id)),
     )
     .unwrap();
     assert_eq!(
@@ -394,12 +393,12 @@ fn test_role_tracks_different_motivation_context_ids() {
     agency::init(&agency_dir).unwrap();
 
     let role = agency::build_role("Multi-mot Role", "desc", vec![], "outcome");
-    agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-    let mot_a = agency::build_motivation("Mot A", "first", vec![], vec![]);
-    let mot_b = agency::build_motivation("Mot B", "second", vec!["compromise".to_string()], vec![]);
-    agency::save_motivation(&mot_a, &agency_dir.join("motivations")).unwrap();
-    agency::save_motivation(&mot_b, &agency_dir.join("motivations")).unwrap();
+    let mot_a = agency::build_tradeoff("Mot A", "first", vec![], vec![]);
+    let mot_b = agency::build_tradeoff("Mot B", "second", vec!["compromise".to_string()], vec![]);
+    agency::save_tradeoff(&mot_a, &agency_dir.join("primitives/tradeoffs")).unwrap();
+    agency::save_tradeoff(&mot_b, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
     // Eval with mot_a
     let eval_a = Evaluation {
@@ -407,7 +406,7 @@ fn test_role_tracks_different_motivation_context_ids() {
         task_id: "task-a".to_string(),
         agent_id: String::new(),
         role_id: role.id.clone(),
-        motivation_id: mot_a.id.clone(),
+        tradeoff_id: mot_a.id.clone(),
         score: 0.70,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -424,7 +423,7 @@ fn test_role_tracks_different_motivation_context_ids() {
         task_id: "task-b".to_string(),
         agent_id: String::new(),
         role_id: role.id.clone(),
-        motivation_id: mot_b.id.clone(),
+        tradeoff_id: mot_b.id.clone(),
         score: 0.90,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -436,7 +435,7 @@ fn test_role_tracks_different_motivation_context_ids() {
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
     let updated_role =
-        agency::load_role(&agency_dir.join("roles").join(format!("{}.yaml", role.id))).unwrap();
+        agency::load_role(&agency_dir.join("cache/roles").join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(updated_role.performance.evaluations.len(), 2);
     assert_eq!(
         updated_role.performance.evaluations[0].context_id, mot_a.id,
@@ -458,18 +457,18 @@ fn test_motivation_tracks_different_role_context_ids() {
 
     let role_a = agency::build_role("Role A", "first", vec![], "outcome a");
     let role_b = agency::build_role("Role B", "second", vec![], "outcome b");
-    agency::save_role(&role_a, &agency_dir.join("roles")).unwrap();
-    agency::save_role(&role_b, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role_a, &agency_dir.join("cache/roles")).unwrap();
+    agency::save_role(&role_b, &agency_dir.join("cache/roles")).unwrap();
 
-    let mot = agency::build_motivation("Multi-role Mot", "desc", vec![], vec![]);
-    agency::save_motivation(&mot, &agency_dir.join("motivations")).unwrap();
+    let mot = agency::build_tradeoff("Multi-role Mot", "desc", vec![], vec![]);
+    agency::save_tradeoff(&mot, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
     let eval_a = Evaluation {
         id: "e-ra".to_string(),
         task_id: "task-ra".to_string(),
         agent_id: String::new(),
         role_id: role_a.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.65,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -483,7 +482,7 @@ fn test_motivation_tracks_different_role_context_ids() {
         task_id: "task-rb".to_string(),
         agent_id: String::new(),
         role_id: role_b.id.clone(),
-        motivation_id: mot.id.clone(),
+        tradeoff_id: mot.id.clone(),
         score: 0.95,
         dimensions: HashMap::new(),
         notes: String::new(),
@@ -496,9 +495,9 @@ fn test_motivation_tracks_different_role_context_ids() {
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
-    let updated_mot = agency::load_motivation(
+    let updated_mot = agency::load_tradeoff(
         &agency_dir
-            .join("motivations")
+            .join("primitives/tradeoffs")
             .join(format!("{}.yaml", mot.id)),
     )
     .unwrap();
@@ -520,11 +519,7 @@ fn test_motivation_tracks_different_role_context_ids() {
 /// A fresh performance record (0 evaluations) has None avg_score and empty evaluations.
 #[test]
 fn test_performance_zero_evaluations() {
-    let record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let record = PerformanceRecord::default();
     assert_eq!(record.task_count, 0);
     assert!(record.avg_score.is_none());
     assert!(record.evaluations.is_empty());
@@ -538,10 +533,10 @@ fn test_performance_zero_evaluations_yaml_roundtrip() {
     agency::init(&agency_dir).unwrap();
 
     let role = agency::build_role("Fresh", "no evals yet", vec![], "outcome");
-    agency::save_role(&role, &agency_dir.join("roles")).unwrap();
+    agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
     let loaded =
-        agency::load_role(&agency_dir.join("roles").join(format!("{}.yaml", role.id))).unwrap();
+        agency::load_role(&agency_dir.join("cache/roles").join(format!("{}.yaml", role.id))).unwrap();
     assert_eq!(loaded.performance.task_count, 0);
     assert!(loaded.performance.avg_score.is_none());
     assert!(loaded.performance.evaluations.is_empty());
@@ -550,11 +545,7 @@ fn test_performance_zero_evaluations_yaml_roundtrip() {
 /// Performance record with exactly 1 evaluation.
 #[test]
 fn test_performance_one_evaluation() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     agency::update_performance(
         &mut record,
@@ -575,11 +566,7 @@ fn test_performance_one_evaluation() {
 /// Performance record with 10+ evaluations accumulates correctly.
 #[test]
 fn test_performance_ten_plus_evaluations() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     let scores: Vec<f64> = (0..15).map(|i| 0.5 + (i as f64) * 0.03).collect();
 
@@ -628,7 +615,7 @@ fn test_twelve_evaluations_end_to_end() {
             task_id: format!("task-12-{}", i),
             agent_id: fix.agent_id.clone(),
             role_id: fix.role_id.clone(),
-            motivation_id: fix.motivation_id.clone(),
+            tradeoff_id: fix.tradeoff_id.clone(),
             score,
             dimensions: HashMap::new(),
             notes: String::new(),
@@ -644,7 +631,7 @@ fn test_twelve_evaluations_end_to_end() {
 
     // Agent
     let agent =
-        agency::find_agent_by_prefix(&fix.agency_dir.join("agents"), &fix.agent_id).unwrap();
+        agency::find_agent_by_prefix(&fix.agency_dir.join("cache/agents"), &fix.agent_id).unwrap();
     assert_eq!(agent.performance.task_count, 12);
     assert_eq!(agent.performance.evaluations.len(), 12);
     assert!(
@@ -657,7 +644,7 @@ fn test_twelve_evaluations_end_to_end() {
     // Role
     let role = agency::load_role(
         &fix.agency_dir
-            .join("roles")
+            .join("cache/roles")
             .join(format!("{}.yaml", fix.role_id)),
     )
     .unwrap();
@@ -666,10 +653,10 @@ fn test_twelve_evaluations_end_to_end() {
     assert!((role.performance.avg_score.unwrap() - expected_avg).abs() < 1e-10);
 
     // Motivation
-    let mot = agency::load_motivation(
+    let mot = agency::load_tradeoff(
         &fix.agency_dir
-            .join("motivations")
-            .join(format!("{}.yaml", fix.motivation_id)),
+            .join("primitives/tradeoffs")
+            .join(format!("{}.yaml", fix.tradeoff_id)),
     )
     .unwrap();
     assert_eq!(mot.performance.task_count, 12);
@@ -951,11 +938,7 @@ fn test_recalculate_avg_score_precision() {
 /// update_performance correctly increments task_count and recalculates after each call.
 #[test]
 fn test_update_performance_sequential_correctness() {
-    let mut record = PerformanceRecord {
-        task_count: 0,
-        avg_score: None,
-        evaluations: vec![],
-    };
+    let mut record = PerformanceRecord::default();
 
     // After 1st update
     agency::update_performance(

@@ -9,7 +9,7 @@ use std::process;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{evaluate_cycle_iteration, LogEntry, Status, Task};
+use workgraph::graph::{evaluate_cycle_iteration, parse_token_usage, LogEntry, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
@@ -138,6 +138,24 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     });
                 }
                 tasks_modified = true;
+            }
+        }
+    }
+
+    // Extract token usage from output.log for dead agents' tasks
+    for (_agent_id, task_id, _pid, output_file, _reason) in &dead {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            if task.token_usage.is_none() {
+                let output_path = std::path::Path::new(output_file);
+                let abs_path = if output_path.is_absolute() {
+                    output_path.to_path_buf()
+                } else {
+                    dir.parent().unwrap_or(dir).join(output_path)
+                };
+                if let Some(usage) = parse_token_usage(&abs_path) {
+                    task.token_usage = Some(usage);
+                    tasks_modified = true;
+                }
             }
         }
     }

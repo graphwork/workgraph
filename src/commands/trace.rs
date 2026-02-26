@@ -1160,7 +1160,7 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
     let task_ids: HashSet<&str> = descendants.iter().map(|t| t.id.as_str()).collect();
     let annotations = HashMap::new();
 
-    let output = super::viz::generate_graph(&graph, &descendants, &task_ids, &annotations);
+    let output = super::viz::generate_graph(&graph, &descendants, &task_ids, &annotations, &HashMap::new(), &HashMap::new());
     println!("{}", output);
     Ok(())
 }
@@ -1169,6 +1169,7 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
 
 /// A snapshot of the graph state at a point in time.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GraphSnapshot {
     pub timestamp: DateTime<Utc>,
     /// task_id → status at this point in time

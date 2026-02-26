@@ -20,17 +20,28 @@ fn resolve_source(source: &str, workgraph_dir: &Path) -> Result<LocalStore> {
 
 /// Accumulate one transfer summary into a running total.
 fn accumulate(total: &mut TransferSummary, part: &TransferSummary) {
+    total.components_added += part.components_added;
+    total.components_updated += part.components_updated;
+    total.components_skipped += part.components_skipped;
+    total.components_access_denied += part.components_access_denied;
+    total.outcomes_added += part.outcomes_added;
+    total.outcomes_updated += part.outcomes_updated;
+    total.outcomes_skipped += part.outcomes_skipped;
+    total.outcomes_access_denied += part.outcomes_access_denied;
     total.roles_added += part.roles_added;
     total.roles_updated += part.roles_updated;
     total.roles_skipped += part.roles_skipped;
-    total.motivations_added += part.motivations_added;
-    total.motivations_updated += part.motivations_updated;
-    total.motivations_skipped += part.motivations_skipped;
+    total.tradeoffs_added += part.tradeoffs_added;
+    total.tradeoffs_updated += part.tradeoffs_updated;
+    total.tradeoffs_skipped += part.tradeoffs_skipped;
+    total.tradeoffs_access_denied += part.tradeoffs_access_denied;
     total.agents_added += part.agents_added;
     total.agents_updated += part.agents_updated;
     total.agents_skipped += part.agents_skipped;
     total.evaluations_added += part.evaluations_added;
     total.evaluations_skipped += part.evaluations_skipped;
+    total.org_evaluations_added += part.org_evaluations_added;
+    total.org_evaluations_skipped += part.org_evaluations_skipped;
 }
 
 pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
@@ -80,9 +91,9 @@ pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
                 "skipped": total.roles_skipped,
             },
             "motivations": {
-                "added": total.motivations_added,
-                "updated": total.motivations_updated,
-                "skipped": total.motivations_skipped,
+                "added": total.tradeoffs_added,
+                "updated": total.tradeoffs_updated,
+                "skipped": total.tradeoffs_skipped,
             },
             "agents": {
                 "added": total.agents_added,
@@ -105,7 +116,7 @@ pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
 
         let total_roles = total.roles_added + total.roles_updated + total.roles_skipped;
         let total_motivations =
-            total.motivations_added + total.motivations_updated + total.motivations_skipped;
+            total.tradeoffs_added + total.tradeoffs_updated + total.tradeoffs_skipped;
         let total_agents = total.agents_added + total.agents_updated + total.agents_skipped;
 
         println!(
@@ -117,8 +128,8 @@ pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
         println!(
             "  Motivation transfers: {} ({} new, {} existing)",
             total_motivations,
-            total.motivations_added,
-            total.motivations_updated + total.motivations_skipped
+            total.tradeoffs_added,
+            total.tradeoffs_updated + total.tradeoffs_skipped
         );
         println!(
             "  Agent transfers: {} ({} new, {} existing)",
@@ -143,7 +154,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::agency::{
-        Agent, AgencyStore, EvaluationRef, Lineage, Motivation, PerformanceRecord, Role,
+        Agent, AgencyStore, EvaluationRef, Lineage, TradeoffConfig, PerformanceRecord, Role,
     };
     use workgraph::graph::TrustLevel;
 
@@ -158,16 +169,16 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: "test role".to_string(),
-            skills: Vec::new(),
-            desired_outcome: "test outcome".to_string(),
+            component_ids: Vec::new(),
+            outcome_id: "test outcome".to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
         }
     }
 
-    fn make_motivation(id: &str, name: &str) -> Motivation {
-        Motivation {
+    fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
+        TradeoffConfig {
             id: id.to_string(),
             name: name.to_string(),
             description: "test motivation".to_string(),
@@ -175,14 +186,17 @@ mod tests {
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
+            access_control: workgraph::agency::AccessControl::default(),
+            former_agents: vec![],
+            former_deployments: vec![],
         }
     }
 
-    fn make_agent(id: &str, name: &str, role_id: &str, motivation_id: &str) -> Agent {
+    fn make_agent(id: &str, name: &str, role_id: &str, tradeoff_id: &str) -> Agent {
         Agent {
             id: id.to_string(),
             role_id: role_id.to_string(),
-            motivation_id: motivation_id.to_string(),
+            tradeoff_id: tradeoff_id.to_string(),
             name: name.to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
@@ -192,6 +206,9 @@ mod tests {
             trust_level: TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
         }
     }
 
@@ -205,17 +222,17 @@ mod tests {
         store_a.save_role(&make_role("r1", "shared-role")).unwrap();
         store_a.save_role(&make_role("r2", "a-only-role")).unwrap();
         store_a
-            .save_motivation(&make_motivation("m1", "shared-mot"))
+            .save_tradeoff(&make_motivation("m1", "shared-mot"))
             .unwrap();
 
         // Store B: r1 (overlap), r3, m1 (overlap), m2
         store_b.save_role(&make_role("r1", "shared-role")).unwrap();
         store_b.save_role(&make_role("r3", "b-only-role")).unwrap();
         store_b
-            .save_motivation(&make_motivation("m1", "shared-mot"))
+            .save_tradeoff(&make_motivation("m1", "shared-mot"))
             .unwrap();
         store_b
-            .save_motivation(&make_motivation("m2", "b-only-mot"))
+            .save_tradeoff(&make_motivation("m2", "b-only-mot"))
             .unwrap();
 
         // Set up a workgraph dir for the target
@@ -242,8 +259,8 @@ mod tests {
         assert!(result.exists_role("r2"));
         assert!(result.exists_role("r3"));
         // Should have all unique motivations: m1, m2
-        assert!(result.exists_motivation("m1"));
-        assert!(result.exists_motivation("m2"));
+        assert!(result.exists_tradeoff("m1"));
+        assert!(result.exists_tradeoff("m2"));
     }
 
     #[test]
@@ -289,7 +306,7 @@ mod tests {
 
         store_a.save_role(&make_role("r1", "role1")).unwrap();
         store_a
-            .save_motivation(&make_motivation("m1", "mot1"))
+            .save_tradeoff(&make_motivation("m1", "mot1"))
             .unwrap();
         store_b.save_role(&make_role("r2", "role2")).unwrap();
 
@@ -313,13 +330,13 @@ mod tests {
 
         let result = LocalStore::new(&agency_dir);
         let roles_after_first = result.load_roles().unwrap();
-        let mots_after_first = result.load_motivations().unwrap();
+        let mots_after_first = result.load_tradeoffs().unwrap();
 
         // Second merge (idempotent)
         run(&wg_dir, &opts).unwrap();
 
         let roles_after_second = result.load_roles().unwrap();
-        let mots_after_second = result.load_motivations().unwrap();
+        let mots_after_second = result.load_tradeoffs().unwrap();
 
         assert_eq!(roles_after_first.len(), roles_after_second.len());
         assert_eq!(mots_after_first.len(), mots_after_second.len());
@@ -352,6 +369,7 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "ctx-1".to_string(),
             }],
+            org_performance: None,
         };
         store_a.save_role(&role_a).unwrap();
 
@@ -365,6 +383,7 @@ mod tests {
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "ctx-2".to_string(),
             }],
+            org_performance: None,
         };
         store_b.save_role(&role_b).unwrap();
 
@@ -457,7 +476,7 @@ mod tests {
         // Store A has role + motivation + agent
         store_a.save_role(&make_role("r1", "builder")).unwrap();
         store_a
-            .save_motivation(&make_motivation("m1", "speed"))
+            .save_tradeoff(&make_motivation("m1", "speed"))
             .unwrap();
         store_a
             .save_agent(&make_agent("a1", "fast-builder", "r1", "m1"))
@@ -466,7 +485,7 @@ mod tests {
         // Store B has a different role + motivation + agent
         store_b.save_role(&make_role("r2", "tester")).unwrap();
         store_b
-            .save_motivation(&make_motivation("m2", "quality"))
+            .save_tradeoff(&make_motivation("m2", "quality"))
             .unwrap();
         store_b
             .save_agent(&make_agent("a2", "quality-tester", "r2", "m2"))
@@ -494,7 +513,7 @@ mod tests {
         assert!(result.exists_agent("a2"));
         assert!(result.exists_role("r1"));
         assert!(result.exists_role("r2"));
-        assert!(result.exists_motivation("m1"));
-        assert!(result.exists_motivation("m2"));
+        assert!(result.exists_tradeoff("m1"));
+        assert!(result.exists_tradeoff("m2"));
     }
 }

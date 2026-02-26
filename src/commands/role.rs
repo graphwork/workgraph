@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::agency::{self, SkillRef};
+use workgraph::agency;
 
 /// JSON output for role listing
 #[derive(Debug, Serialize)]
@@ -10,44 +10,6 @@ struct RoleSummary {
     name: String,
     skill_count: usize,
     avg_score: Option<f64>,
-}
-
-/// Parse a skill specification string into a SkillRef.
-///
-/// Formats:
-///   "name:file:///path"      -> SkillRef::File
-///   "name:https://url"       -> SkillRef::Url
-///   "name:http://url"        -> SkillRef::Url
-///   "name:inline:content"    -> SkillRef::Inline
-///   "name"                   -> SkillRef::Name (tag-only)
-fn parse_skill_ref(spec: &str) -> SkillRef {
-    // Try "name:file:///path"
-    if let Some(rest) = spec.strip_prefix("file:///") {
-        return SkillRef::File(std::path::PathBuf::from(format!("/{}", rest)));
-    }
-    if let Some(idx) = spec.find(":file:///") {
-        let path = &spec[idx + ":file://".len()..];
-        return SkillRef::File(std::path::PathBuf::from(path));
-    }
-
-    // Try "name:https://url" or "name:http://url"
-    if let Some(idx) = spec.find(":https://") {
-        let url = &spec[idx + 1..];
-        return SkillRef::Url(url.to_string());
-    }
-    if let Some(idx) = spec.find(":http://") {
-        let url = &spec[idx + 1..];
-        return SkillRef::Url(url.to_string());
-    }
-
-    // Try "name:inline:content"
-    if let Some(idx) = spec.find(":inline:") {
-        let content = &spec[idx + ":inline:".len()..];
-        return SkillRef::Inline(content.to_string());
-    }
-
-    // Tag-only
-    SkillRef::Name(spec.to_string())
 }
 
 /// wg role add <name> --outcome <desired_outcome> [--skill <spec>...] [--description <desc>]
@@ -61,12 +23,13 @@ pub fn run_add(
     let agency_dir = dir.join("agency");
     agency::init(&agency_dir).context("Failed to initialize agency directory")?;
 
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
-    let skill_refs: Vec<SkillRef> = skills.iter().map(|s| parse_skill_ref(s)).collect();
     let desc = description.unwrap_or("");
+    // In the new schema, --skill args are treated as component IDs.
+    let component_ids: Vec<String> = skills.to_vec();
 
-    let role = agency::build_role(name, desc, skill_refs, outcome);
+    let role = agency::build_role(name, desc, component_ids, outcome);
 
     // Check if role with identical content already exists
     let role_path = roles_dir.join(format!("{}.yaml", role.id));
@@ -90,7 +53,7 @@ pub fn run_add(
 
 /// wg role list [--json]
 pub fn run_list(dir: &Path, json: bool) -> Result<()> {
-    let roles_dir = dir.join("agency").join("roles");
+    let roles_dir = dir.join("agency").join("cache/roles");
     let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
 
     if json {
@@ -99,7 +62,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
             .map(|r| RoleSummary {
                 id: r.id.clone(),
                 name: r.name.clone(),
-                skill_count: r.skills.len(),
+                skill_count: r.component_ids.len(),
                 avg_score: r.performance.avg_score,
             })
             .collect();
@@ -118,7 +81,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
                 "  {}  {:20} skills: {}  avg_score: {}",
                 agency::short_hash(&role.id),
                 role.name,
-                role.skills.len(),
+                role.component_ids.len(),
                 score_str,
             );
         }
@@ -127,26 +90,9 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Format a SkillRef for display
-fn format_skill_ref(skill: &SkillRef) -> String {
-    match skill {
-        SkillRef::Name(name) => format!("{} (tag)", name),
-        SkillRef::File(path) => format!("file: {}", path.display()),
-        SkillRef::Url(url) => format!("url: {}", url),
-        SkillRef::Inline(content) => {
-            let preview: String = content.chars().take(60).collect();
-            if content.len() > 60 {
-                format!("inline: {}...", preview)
-            } else {
-                format!("inline: {}", preview)
-            }
-        }
-    }
-}
-
 /// wg role show <id> [--json]
 pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
-    let roles_dir = dir.join("agency").join("roles");
+    let roles_dir = dir.join("agency").join("cache/roles");
     let role = agency::find_role_by_prefix(&roles_dir, id)
         .with_context(|| format!("Failed to find role '{}'", id))?;
 
@@ -163,15 +109,15 @@ pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
                 &role.description
             }
         );
-        println!("Desired outcome: {}", role.desired_outcome);
+        println!("Outcome ID: {}", role.outcome_id);
         println!();
 
-        if role.skills.is_empty() {
-            println!("Skills: (none)");
+        if role.component_ids.is_empty() {
+            println!("Components: (none)");
         } else {
-            println!("Skills:");
-            for skill in &role.skills {
-                println!("  - {}", format_skill_ref(skill));
+            println!("Components:");
+            for id in &role.component_ids {
+                println!("  - {}", id);
             }
         }
 
@@ -195,7 +141,7 @@ pub fn run_show(dir: &Path, id: &str, json: bool) -> Result<()> {
 /// wg role lineage <id> [--json]
 pub fn run_lineage(dir: &Path, id: &str, json: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
-    let roles_dir = agency_dir.join("roles");
+    let roles_dir = agency_dir.join("cache/roles");
 
     if !roles_dir.exists() {
         anyhow::bail!("No agency/roles directory found. Run 'wg agency init' first.");
@@ -280,7 +226,7 @@ pub fn run_lineage(dir: &Path, id: &str, json: bool) -> Result<()> {
 /// After editing, the role is re-hashed. If the content changed, the file is
 /// renamed to the new hash and the old file is removed.
 pub fn run_edit(dir: &Path, id: &str) -> Result<()> {
-    let roles_dir = dir.join("agency").join("roles");
+    let roles_dir = dir.join("agency").join("cache/roles");
     let role = agency::find_role_by_prefix(&roles_dir, id)
         .with_context(|| format!("Failed to find role '{}'", id))?;
 
@@ -308,7 +254,7 @@ pub fn run_edit(dir: &Path, id: &str) -> Result<()> {
     })?;
 
     let new_id =
-        agency::content_hash_role(&edited.skills, &edited.desired_outcome, &edited.description);
+        agency::content_hash_role(&edited.component_ids, &edited.outcome_id);
     if new_id != edited.id {
         // Content changed — rename to new hash
         let old_path = role_path;
@@ -330,7 +276,7 @@ pub fn run_edit(dir: &Path, id: &str) -> Result<()> {
 
 /// wg role rm <id>
 pub fn run_rm(dir: &Path, id: &str) -> Result<()> {
-    let roles_dir = dir.join("agency").join("roles");
+    let roles_dir = dir.join("agency").join("cache/roles");
     let role = agency::find_role_by_prefix(&roles_dir, id)
         .with_context(|| format!("Failed to find role '{}'", id))?;
 
@@ -351,37 +297,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_skill_ref_name_only() {
-        let skill = parse_skill_ref("rust");
-        assert!(matches!(skill, SkillRef::Name(ref n) if n == "rust"));
-    }
-
-    #[test]
-    fn test_parse_skill_ref_file() {
-        let skill = parse_skill_ref("coding:file:///home/user/skill.md");
-        assert!(matches!(skill, SkillRef::File(ref p) if p.to_str().unwrap().contains("skill.md")));
-    }
-
-    #[test]
-    fn test_parse_skill_ref_url() {
-        let skill = parse_skill_ref("review:https://example.com/skill.md");
-        assert!(matches!(skill, SkillRef::Url(ref u) if u == "https://example.com/skill.md"));
-    }
-
-    #[test]
-    fn test_parse_skill_ref_inline() {
-        let skill = parse_skill_ref("code:inline:Write good Rust code");
-        assert!(matches!(skill, SkillRef::Inline(ref c) if c == "Write good Rust code"));
-    }
-
-    #[test]
     fn test_content_hash_deterministic() {
-        let skills = vec![SkillRef::Name("rust".into())];
-        let h1 = agency::content_hash_role(&skills, "Working code", "A programmer");
-        let h2 = agency::content_hash_role(&skills, "Working code", "A programmer");
+        let component_ids = vec!["rust".to_string()];
+        let h1 = agency::content_hash_role(&component_ids, "Working code");
+        let h2 = agency::content_hash_role(&component_ids, "Working code");
         assert_eq!(h1, h2);
         // Different content produces different hash
-        let h3 = agency::content_hash_role(&skills, "Different outcome", "A programmer");
+        let h3 = agency::content_hash_role(&component_ids, "Different outcome");
         assert_ne!(h1, h3);
     }
 
