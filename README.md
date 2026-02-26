@@ -83,6 +83,10 @@ wg add "Security audit" --verify "All findings documented with severity ratings"
 
 # Task with visibility for cross-org sharing
 wg add "Public API design" --visibility public
+
+# Control how much context the agent receives at dispatch
+wg add "Quick lint fix" --context-scope clean   # minimal: just the task
+wg add "Complex refactor" --context-scope full  # everything: full graph + logs
 ```
 
 ### 4. Edit tasks after creation
@@ -148,14 +152,18 @@ Workgraph includes a skill definition that teaches AI assistants to use the serv
 
 ### Claude Code
 
-From the workgraph directory, install the skill:
+Install the skill from the workgraph directory:
 
 ```bash
-# Personal (all your projects)
-cp -r .claude/skills/wg ~/.claude/skills/
+wg skill install           # installs to ~/.claude/skills/ (all your projects)
+```
 
-# Or project-specific
-cp -r .claude/skills/wg /path/to/your-project/.claude/skills/
+You can also discover and inspect available skills:
+
+```bash
+wg skill list              # list available skills
+wg skill find <query>      # search skills by keyword
+wg skill task <task-id>    # show skills relevant to a task
 ```
 
 The skill has YAML frontmatter so Claude auto-detects when to use it. You can also invoke explicitly with `/wg`.
@@ -323,9 +331,18 @@ wg config --assigner-model haiku
 wg config --evaluator-model opus
 wg config --evolver-model opus
 
+# Creator tracking (recorded on tasks created by the coordinator)
+wg config --creator-agent <agent-hash>
+wg config --creator-model opus
+
 # Triage settings
 wg config --auto-triage true
 wg config --triage-model haiku
+
+# Inspect merged config (shows source: global, local, or default)
+wg config --list
+wg config --global          # show/set global config only (~/.workgraph/config.toml)
+wg config --local           # show/set project config only (.workgraph/config.toml)
 ```
 
 CLI flags on `wg service start` override config.toml:
@@ -384,6 +401,9 @@ Killing an agent automatically unclaims its task so another agent can pick it up
 wg dead-agents             # check for dead agents (read-only, default)
 wg dead-agents --cleanup   # mark dead and unclaim their tasks
 wg dead-agents --remove    # remove dead agents from registry
+wg dead-agents --purge     # remove all dead agents and clean up
+wg dead-agents --delete-dirs  # also delete agent working directories
+wg dead-agents --threshold 10m  # custom staleness threshold
 ```
 
 **Smart triage:** When a dead agent is detected, the coordinator can automatically triage the situation using an LLM. Triage reads the agent's output log and decides whether the task was actually completed (mark done), still running (leave alone), or needs to be restarted (re-spawn). Enable it with:
@@ -467,6 +487,9 @@ The TUI has three views:
 | `d` | Toggle between tree and graph view |
 | `Enter` | View task details or jump to agent log |
 | `a` | Cycle to next task with active agents |
+| `/` | Open search |
+| `n` / `N` | Next / previous match |
+| `Tab` / `Shift+Tab` | Next / previous match (in search mode) |
 | `r` | Refresh graph |
 
 **Log Viewer:**
@@ -714,7 +737,7 @@ wg trace import peer-export.json      # import a peer's trace as read-only conte
 Extract proven workflows into reusable templates. Three layers of increasing sophistication:
 
 - **Static** (version 1): Fixed task topology with `{{input.X}}` substitution
-- **Generative** (version 2): A planning node decides the task graph at instantiation time, within structural constraints
+- **Generative** (version 2): A planning node decides the task graph at apply time, within structural constraints
 - **Adaptive** (version 3): Generative + trace memory from past runs, so the planner learns over time
 
 ```bash
@@ -749,7 +772,7 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 ## Key concepts
 
-**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, and a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports.
+**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
 
 **Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 
@@ -770,6 +793,9 @@ wg show <id>          # full task details
 wg status             # quick one-screen overview
 wg viz                # ASCII dependency graph (--all to include done)
 wg viz --graph        # 2D spatial layout with box-drawing characters
+wg viz task-a task-b  # focus on subgraphs containing specific tasks
+wg viz --show-internal # include assign-*/evaluate-* meta-tasks
+wg viz --no-tui       # force static output (skip interactive TUI)
 
 wg why-blocked <id>   # trace the blocker chain
 wg impact <id>        # what depends on this?
@@ -812,6 +838,9 @@ wg runs list              # list run snapshots
 wg runs diff <snapshot>   # diff current graph against a snapshot
 wg runs restore <snapshot> # restore graph from a snapshot
 wg replay --failed-only   # re-execute failed tasks (optionally with --model)
+wg replay --below-score 0.5  # re-execute poorly-scored tasks
+wg replay --subgraph task-id # replay a specific subgraph
+wg replay --keep-done        # don't reset done tasks when replaying
 ```
 
 ## Storage
@@ -867,6 +896,8 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
 - [docs/AGENT-SERVICE.md](docs/AGENT-SERVICE.md) - Service architecture and coordinator lifecycle
 - [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, motivations, evaluation, evolution
 - [docs/LOGGING.md](docs/LOGGING.md) - Provenance logging and the operations log
+- [docs/DEV.md](docs/DEV.md) - Developer notes
+- [docs/KEY_DOCS.md](docs/KEY_DOCS.md) - Documentation inventory and status
 
 ## License
 

@@ -33,10 +33,13 @@ It carries three identity-defining fields:
   the agent's work will be evaluated---not a vague aspiration, but a crisp definition
   of success.
 
-A role also carries a _name_ (a human-readable label like "Programmer" or
-"Architect"), a _performance_ record (aggregated evaluation scores), and _lineage_
-metadata (evolutionary history). These are mutable---they can change without altering
-the role's identity. The name is for humans. The identity is for the system.
+A role also carries mutable operational fields that do not affect its identity:
+a _name_ (a human-readable label like "Programmer" or "Architect"), a _performance_
+record (aggregated evaluation scores), _lineage_ metadata (evolutionary history),
+and an optional _context scope_ default (`clean`, `task`, `graph`, or `full`). When
+an agent with this role is dispatched, the role's context scope is used as a fallback
+if the task does not specify one (see the resolution priority chain in @sec-coordination).
+The name is for humans. The identity is for the system.
 
 Consider two roles: one describes a code reviewer who checks for correctness, testing
 gaps, and style violations; the other describes an architect who evaluates structural
@@ -379,6 +382,15 @@ evaluations can push it to a shared remote. Other teams pull it, pair it with th
 motivations, and immediately benefit from that evolutionary history. The performance
 data travels with the entity, so the receiving team can see _why_ the role is considered
 effective before deciding to adopt it.
+
+== Configuration: Creator Identity <creator-config>
+
+The agency configuration supports two settings that control the identity recorded on
+newly created entities: `creator_agent` and `creator_model`. These are set via
+`wg config --creator-agent <agent-hash>` and `wg config --creator-model <model>`.
+When configured, new roles, motivations, and agents created by the system record
+these values in their metadata, providing provenance for entities created
+programmatically (e.g., by the evolver or by automated workflows).
 
 == Cross-References
 

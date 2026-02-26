@@ -338,6 +338,28 @@ wg status                      # one-screen summary
 wg analyze                     # comprehensive health report
 ```
 
+#### TUI views and keybindings
+
+`wg tui` launches a full-screen terminal dashboard with task list, detail pane, and log viewer. Key bindings:
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or `↑`/`↓` | Navigate tasks |
+| `Enter` | View task detail |
+| `/` | Search tasks |
+| `n`/`N` | Next/previous search match |
+| `Tab`/`Shift-Tab` | Next/previous match (in search mode) |
+| `q` | Quit |
+
+`wg viz` renders the graph as an ASCII DAG. It accepts optional task IDs to focus on specific subgraphs:
+
+```bash
+wg viz                          # full graph
+wg viz my-task                  # only the subgraph containing my-task
+wg viz --show-internal          # include assign-*/evaluate-* meta-tasks
+wg viz --no-tui                 # static output (no interactive TUI)
+```
+
 ### Executor types
 
 The coordinator spawns agents via an executor. Two built-in executors:
@@ -396,6 +418,25 @@ wg add "Simple fix" --model haiku      # cheap model for simple work
 wg add "Complex design" --model opus   # strong model for hard work
 ```
 
+### Context scopes
+
+Control how much context is assembled into an agent's prompt with `--context-scope`:
+
+| Scope | What's included | When to use |
+|-------|----------------|-------------|
+| `clean` | Task description only — no dependency context, no graph state | Independent tasks, fresh starts |
+| `task` | Task description + direct predecessor artifacts/logs | Most work — default |
+| `graph` | Task + transitive dependency chain | Deep multi-step pipelines |
+| `full` | Everything: full graph state, all logs, all artifacts | Debugging, recovery, complex integration |
+
+```bash
+wg add "Leaf task" --context-scope clean    # minimal prompt
+wg add "Integration" --context-scope graph  # needs full chain
+wg edit my-task --context-scope full        # override for debugging
+```
+
+Scope is resolved at dispatch time by the coordinator. If not set on the task, the role's default scope is used (if the task has an assigned agent with a role that specifies a default scope), otherwise `task` is the implicit default.
+
 ---
 
 ## 8. Manual Operation
@@ -424,7 +465,7 @@ Functions let you extract proven workflows into reusable templates and apply the
 | Layer | Version | What it does | When to use |
 |-------|---------|-------------|-------------|
 | **Static** | 1 | Fixed task topology, `{{input.X}}` substitution | Routine workflows where structure never varies |
-| **Generative** | 2 | Planning node decides topology at instantiation time | Workflows where structure depends on inputs |
+| **Generative** | 2 | Planning node decides topology at apply time | Workflows where structure depends on inputs |
 | **Adaptive** | 3 | Generative + trace memory from past runs | Workflows that benefit from learning over time |
 
 ### 9.2 Extracting Functions
@@ -479,7 +520,7 @@ Upgrade a generative function to learn from past runs:
 
 ```bash
 wg func make-adaptive impl-feature
-# Scans provenance for past instantiations, builds run summaries,
+# Scans provenance for past applications, builds run summaries,
 # injects {{memory.run_summaries}} into planner template, bumps to v3
 ```
 
@@ -528,6 +569,82 @@ Functions carry a visibility field (`internal`, `peer`, `public`) that controls 
 | **Skipping constraints** | Planner generates invalid task graphs | Set `constraints` with min/max tasks, required skills, etc. |
 | **No static fallback** | Planner failure = total failure | Set `static_fallback: true` in planning config |
 | **Unbounded memory** | Too many past runs slow the planner | Set `--max-runs` to a reasonable limit (10-20) |
+
+---
+
+## 10. Experimentation & Introspection
+
+### 10.1 Replay — re-execute with a different model
+
+`wg replay` snapshots the current graph, selectively resets tasks, and re-runs them (optionally with a different model):
+
+```bash
+wg replay --failed-only                    # retry all failed tasks
+wg replay --failed-only --model haiku      # retry with a cheaper model
+wg replay --below-score 0.7               # reset tasks scoring below 0.7
+wg replay --subgraph my-task              # only replay this subgraph
+wg replay --keep-done 0.9                 # preserve high-scoring done tasks
+wg replay --plan-only                     # dry run: show what would reset
+```
+
+### 10.2 Run snapshots
+
+`wg runs` manages graph snapshots for comparing experiments:
+
+```bash
+wg runs list                    # list all snapshots
+wg runs show <run-id>           # inspect a specific snapshot
+wg runs diff <run-id>           # compare current graph to a snapshot
+wg runs restore <run-id>        # restore graph from a snapshot
+```
+
+### 10.3 Trace — execution history
+
+`wg trace` provides provenance for understanding how work was done:
+
+```bash
+wg trace show <task-id>         # execution history of a task
+wg trace export --visibility peer  # export trace data for sharing
+wg trace import <file>          # import a peer's trace as read-only context
+```
+
+---
+
+## 11. Cross-Repo Collaboration
+
+### 11.1 Peer workgraphs
+
+Connect workgraphs across repositories for cross-project coordination:
+
+```bash
+wg peer add alice /path/to/alice/repo    # register a peer
+wg peer list                              # show all peers + status
+wg peer status                            # quick health check
+```
+
+Create tasks in a peer's graph directly:
+
+```bash
+wg add "Fix shared API" --repo alice -d "Needs update for new auth flow"
+```
+
+### 11.2 Agency federation
+
+Share roles, agents, and functions across organizational boundaries:
+
+```bash
+wg agency remote add upstream /path/to/upstream
+wg agency pull upstream                    # pull roles/agents from upstream
+wg agency push upstream                    # push local roles/agents
+wg agency merge upstream                   # merge federated agency data
+```
+
+Functions also federate:
+
+```bash
+wg func list --include-peers               # discover peer functions
+wg func apply impl-feature --from alice:impl-feature --input feature_name=auth
+```
 
 ---
 

@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-02-23 (verified by doc-sync run 2)
+Last updated: 2026-02-26 (verified by doc-sync run 3)
 
 ---
 
@@ -17,6 +17,7 @@ Last updated: 2026-02-23 (verified by doc-sync run 2)
 | `docs/AGENT-SERVICE.md` | Service daemon architecture: coordinator tick, dispatch cycle, agent lifecycle | Operators, contributors |
 | `docs/AGENCY.md` | Agency system: roles, motivations, evaluation, evolution, skill system | Users setting up agency |
 | `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
+| `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
 
 ## Embedded Documentation
 
@@ -65,6 +66,10 @@ Last updated: 2026-02-23 (verified by doc-sync run 2)
 |------|---------|--------|
 | `docs/research/arena-evaluation/spec.md` | FLIP-style backward-inference evaluation research | Research (not shipped) |
 | `docs/research/arena-evaluation/arena-evaluation-report.typ` | Arena evaluation research report | Research |
+| `docs/research/arena-evaluation/context-selection.md` | Arena eval: context selection design | Research |
+| `docs/research/arena-evaluation/model-selection.md` | Arena eval: model selection design | Research |
+| `docs/research/arena-evaluation/evolution-input.md` | Arena eval: evolution input design | Research |
+| `docs/research/arena-evaluation/eval-integration.md` | Arena eval: evaluation integration design | Research |
 | `docs/research/amplifier-integration-proposal.md` | Amplifier executor integration | Research |
 | `docs/research/amplifier-architecture.md` | Amplifier architecture deep dive | Research |
 | `docs/research/amplifier-executor-gap.md` | Amplifier executor gap analysis | Research |
@@ -77,7 +82,7 @@ Last updated: 2026-02-23 (verified by doc-sync run 2)
 | `docs/research/veracity-exchange-integration.md` | Veracity exchange integration research | Research |
 | `docs/research/veracity-exchange-deep-dive.md` | Veracity exchange deep dive | Research |
 | `docs/research/agent-context-awareness.md` | Agent context awareness research | Research |
-| `docs/research/agent-context-scopes.md` | Configurable agent context scopes design | Research (not shipped) |
+| `docs/research/agent-context-scopes.md` | Configurable agent context scopes design | Implemented (shipped in `wg add --context-scope`) |
 | `docs/research/organizational-patterns.typ` | Organizational patterns research (Typst) | Research |
 
 ## Other Documentation

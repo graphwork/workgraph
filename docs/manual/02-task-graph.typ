@@ -29,6 +29,7 @@ A task is the atom of work. It has an identity, a lifecycle, and a body of metad
     [`verify`], [Verification criteria—if set, the task requires review before it can be marked done.],
     [`agent`], [Content-hash ID binding an agency agent identity to this task.],
     [`visibility`], [Controls what information crosses organizational boundaries during trace exports. One of `internal` (default—organization only), `public` (sanitized sharing without agent output or logs), or `peer` (richer detail for trusted peers, including evaluations and patterns).],
+    [`context_scope`], [Controls how much context the agent receives in its prompt. One of `clean` (bare executor), `task` (default—workflow commands and graph patterns), `graph` (adds project description and 1-hop neighborhood), or `full` (adds complete graph summary and CLAUDE.md). Each tier is a strict superset of the one below. Overrides role and coordinator defaults when set.],
     [`log`], [Append-only progress entries with timestamps and optional actor attribution.],
   ),
   caption: [Task fields. Every field except `id`, `title`, and `status` is optional.],

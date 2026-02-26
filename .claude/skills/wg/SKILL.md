@@ -197,12 +197,15 @@ wg service resume           # Resume dispatching
 | Command | Purpose |
 |---------|---------|
 | `wg viz` | ASCII dependency graph of open tasks |
+| `wg viz [TASK_ID]...` | Show only subgraphs containing specified tasks |
 | `wg viz --all` | Include done tasks |
 | `wg viz --status done` | Filter by status |
 | `wg viz --dot` | Graphviz DOT output |
 | `wg viz --mermaid` | Mermaid diagram |
 | `wg viz --critical-path` | Highlight critical path |
 | `wg viz --dot -o graph.png` | Render to file |
+| `wg viz --show-internal` | Show internal tasks (assign-*, evaluate-*) normally hidden |
+| `wg viz --no-tui` | Force static output even when stdout is interactive |
 | `wg tui` | Interactive TUI dashboard |
 
 ### Monitoring & event streaming
@@ -255,6 +258,9 @@ wg service resume           # Resume dispatching
 | `wg kill <id> --force` | Force kill (SIGKILL) |
 | `wg dead-agents --cleanup` | Unclaim dead agents' tasks |
 | `wg dead-agents --remove` | Remove from registry |
+| `wg dead-agents --purge` | Purge dead/done/failed agents from registry |
+| `wg dead-agents --purge --delete-dirs` | Also delete agent work directories when purging |
+| `wg dead-agents --threshold 30` | Override heartbeat timeout threshold (minutes) |
 
 ### Agency (roles, motivations, agents)
 
@@ -363,7 +369,10 @@ wg service resume           # Resume dispatching
 | `wg plan --budget 500 --hours 20` | Plan within constraints |
 | `wg replay` | Snapshot graph, selectively reset tasks, re-execute with different model |
 | `wg replay --failed-only` | Only reset failed/abandoned tasks |
+| `wg replay --below-score 0.7` | Only reset tasks with evaluation score below threshold |
 | `wg replay --tasks a,b,c` | Reset specific tasks plus transitive dependents |
+| `wg replay --subgraph <id>` | Only replay tasks in subgraph rooted at given task |
+| `wg replay --keep-done 0.9` | Preserve done tasks scoring above threshold (default: 0.9) |
 | `wg replay --plan-only` | Dry run: show what would be reset |
 
 ### Setup & configuration
@@ -372,12 +381,26 @@ wg service resume           # Resume dispatching
 |---------|---------|
 | `wg setup` | Interactive configuration wizard for first-time setup |
 | `wg config --show` | Show current config |
+| `wg config --list` | Show merged config with source annotations (global/local/default) |
 | `wg config --init` | Create default config |
+| `wg config --global --executor claude` | Write to global config (~/.workgraph/config.toml) |
+| `wg config --local --model opus` | Write to local config (default for writes) |
 | `wg config --executor claude` | Set executor |
 | `wg config --model opus` | Set default model |
 | `wg config --max-agents 5` | Set agent limit |
 | `wg config --auto-evaluate true` | Enable auto-evaluation |
 | `wg config --auto-assign true` | Enable auto-assignment |
+| `wg config --creator-agent <hash>` | Set creator agent (content-hash) |
+| `wg config --creator-model <model>` | Set model for creator agents |
+
+### Skills
+
+| Command | Purpose |
+|---------|---------|
+| `wg skill list` | List all skills used across tasks |
+| `wg skill task <id>` | Show skills for a specific task |
+| `wg skill find <name>` | Find tasks requiring a specific skill |
+| `wg skill install` | Install the wg Claude Code skill to ~/.claude/skills/wg/ |
 
 ### Output options
 

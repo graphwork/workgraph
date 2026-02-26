@@ -90,8 +90,15 @@ DISCOVERING & ADDING WORK
   wg list --status open       # Filter by status (open, in-progress, done, etc.)
   wg show <task-id>           # View task details and context
   wg add "Title" -d "Desc"    # Add new task
-  wg add "X" --after Y   # Add task blocked by another
-  wg add "X" --context-scope clean  # Set prompt context level (clean/task/graph/full)
+  wg add "X" --after Y        # Add task blocked by another
+
+  Context scopes control how much context the coordinator injects into the
+  agent's prompt when dispatching a task:
+
+  wg add "X" --context-scope clean  # Minimal: just the task description
+  wg add "X" --context-scope task   # Standard default: task + predecessor context
+  wg add "X" --context-scope graph  # Task + transitive dependency chain
+  wg add "X" --context-scope full   # Everything: full graph state
 
 TASK STATE COMMANDS
 ─────────────────────────────────────────
@@ -195,6 +202,69 @@ REUSABLE FUNCTIONS
   wg func apply <id> --input k=v      # Instantiate a function into tasks
   wg func extract a b c               # Extract a pattern from completed tasks
 
+VISUALIZATION
+─────────────────────────────────────────
+  wg viz                              # ASCII tree of active subgraphs
+  wg viz --all                        # Include fully-done trees
+  wg viz <task-id>...                 # Focus on specific task subgraphs
+  wg viz --critical-path              # Highlight longest dependency chain
+  wg viz --dot                        # Output Graphviz DOT format
+  wg viz --mermaid                    # Output Mermaid diagram format
+  wg viz --show-internal              # Show assign-*/evaluate-* tasks
+  wg viz --no-tui                     # Force static output (skip interactive TUI)
+  wg tui                              # Interactive TUI dashboard
+
+CONFIGURATION
+─────────────────────────────────────────
+  wg config --show                    # Show current configuration
+  wg config --list                    # Show merged config with source annotations
+  wg config --global --model opus     # Write to global ~/.workgraph/config.toml
+  wg config --local --model sonnet    # Write to local .workgraph/config.toml
+  wg config --creator-agent <hash>    # Set agent used for task creation
+  wg config --creator-model <model>   # Set model used for task creation
+
+TRACE, RUNS & REPLAY
+─────────────────────────────────────────
+  wg trace show <task-id>             # Show execution history of a task
+  wg trace export --visibility public # Export trace data filtered by zone
+  wg trace import <file>              # Import a trace export as read-only context
+
+  wg runs list                        # List all run snapshots
+  wg runs show <run>                  # Show details of a specific run
+  wg runs diff <run>                  # Diff current graph against a snapshot
+  wg runs restore <run>               # Restore graph from a snapshot
+
+  wg replay --failed-only             # Re-execute only failed tasks
+  wg replay --model <model>           # Replay with a different model
+  wg replay --below-score 0.7         # Replay tasks scoring below threshold
+  wg replay --subgraph <task-id>      # Replay only within a subgraph
+  wg replay --keep-done 0.9           # Preserve high-scoring done tasks
+
+ANALYSIS
+─────────────────────────────────────────
+  wg analyze                          # Comprehensive health report
+  wg structure                        # Entry points, dead ends, fan-out
+  wg bottlenecks                      # Tasks blocking the most downstream work
+  wg critical-path                    # Longest dependency chain
+  wg forecast                         # Completion date estimate from velocity
+
+DEAD AGENT DETECTION
+─────────────────────────────────────────
+  wg dead-agents                      # List dead/unresponsive agents
+  wg dead-agents --cleanup            # Mark dead agents and unclaim their tasks
+  wg dead-agents --purge              # Purge dead/done/failed agents from registry
+  wg dead-agents --purge --delete-dirs  # Also delete agent work directories
+  wg dead-agents --threshold 30       # Override heartbeat timeout (minutes)
+
+PEER WORKGRAPHS
+─────────────────────────────────────────
+  Cross-repo communication between workgraph instances:
+
+  wg peer add <name> <path>           # Register a peer workgraph
+  wg peer list                        # List all peers with service status
+  wg peer status                      # Quick health check of all peers
+  wg add "Task" --repo <peer>         # Create a task in a peer workgraph
+
 EVALUATION & MONITORING
 ─────────────────────────────────────────
   wg evaluate run <task-id>           # Trigger LLM evaluation of a completed task
@@ -258,7 +328,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a new task",
+                "add": "Add a new task (supports --context-scope clean/task/graph/full)",
                 "ready": "See tasks available to work on (manual mode)"
             },
             "work": {
@@ -320,6 +390,75 @@ fn json_output() -> serde_json::Value {
                 "apply": "wg func apply <id> --input k=v",
                 "extract": "wg func extract a b c"
             }
+        },
+        "visualization": {
+            "viz": "wg viz",
+            "viz_all": "wg viz --all",
+            "viz_focus": "wg viz <task-id>...",
+            "viz_critical_path": "wg viz --critical-path",
+            "viz_dot": "wg viz --dot",
+            "viz_mermaid": "wg viz --mermaid",
+            "viz_show_internal": "wg viz --show-internal",
+            "viz_no_tui": "wg viz --no-tui",
+            "tui": "wg tui"
+        },
+        "configuration": {
+            "show": "wg config --show",
+            "list": "wg config --list (merged config with source annotations)",
+            "global": "wg config --global (target ~/.workgraph/config.toml)",
+            "local": "wg config --local (target .workgraph/config.toml)",
+            "creator_agent": "wg config --creator-agent <hash>",
+            "creator_model": "wg config --creator-model <model>"
+        },
+        "context_scopes": {
+            "description": "Control how much context the coordinator injects into agent prompts.",
+            "levels": {
+                "clean": "Minimal: just the task description",
+                "task": "Standard default: task + predecessor context",
+                "graph": "Task + transitive dependency chain",
+                "full": "Everything: full graph state"
+            },
+            "usage": "wg add \"task\" --context-scope <level>"
+        },
+        "trace_runs_replay": {
+            "trace": {
+                "show": "wg trace show <task-id>",
+                "export": "wg trace export --visibility public",
+                "import": "wg trace import <file>"
+            },
+            "runs": {
+                "list": "wg runs list",
+                "show": "wg runs show <run>",
+                "diff": "wg runs diff <run>",
+                "restore": "wg runs restore <run>"
+            },
+            "replay": {
+                "failed_only": "wg replay --failed-only",
+                "with_model": "wg replay --model <model>",
+                "below_score": "wg replay --below-score 0.7",
+                "subgraph": "wg replay --subgraph <task-id>",
+                "keep_done": "wg replay --keep-done 0.9"
+            }
+        },
+        "analysis": {
+            "analyze": "wg analyze (comprehensive health report)",
+            "structure": "wg structure (entry points, dead ends, fan-out)",
+            "bottlenecks": "wg bottlenecks (tasks blocking the most downstream work)",
+            "critical_path": "wg critical-path (longest dependency chain)",
+            "forecast": "wg forecast (completion date from velocity)"
+        },
+        "dead_agents": {
+            "detect": "wg dead-agents",
+            "cleanup": "wg dead-agents --cleanup",
+            "purge": "wg dead-agents --purge",
+            "purge_with_dirs": "wg dead-agents --purge --delete-dirs",
+            "threshold": "wg dead-agents --threshold <minutes>"
+        },
+        "peer_workgraphs": {
+            "add": "wg peer add <name> <path>",
+            "list": "wg peer list",
+            "status": "wg peer status",
+            "cross_repo_task": "wg add \"task\" --repo <peer>"
         },
         "evaluation_and_monitoring": {
             "evaluate_run": "wg evaluate run <task-id>",
@@ -541,6 +680,77 @@ mod tests {
     }
 
     #[test]
+    fn test_quickstart_text_contains_visualization() {
+        assert!(QUICKSTART_TEXT.contains("VISUALIZATION"));
+        assert!(QUICKSTART_TEXT.contains("wg viz"));
+        assert!(QUICKSTART_TEXT.contains("--show-internal"));
+        assert!(QUICKSTART_TEXT.contains("--no-tui"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_configuration() {
+        assert!(QUICKSTART_TEXT.contains("CONFIGURATION"));
+        assert!(QUICKSTART_TEXT.contains("--list"));
+        assert!(QUICKSTART_TEXT.contains("--global"));
+        assert!(QUICKSTART_TEXT.contains("--creator-agent"));
+        assert!(QUICKSTART_TEXT.contains("--creator-model"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_trace_runs_replay() {
+        assert!(QUICKSTART_TEXT.contains("TRACE, RUNS & REPLAY"));
+        assert!(QUICKSTART_TEXT.contains("wg trace show"));
+        assert!(QUICKSTART_TEXT.contains("wg runs list"));
+        assert!(QUICKSTART_TEXT.contains("wg replay"));
+        assert!(QUICKSTART_TEXT.contains("--below-score"));
+        assert!(QUICKSTART_TEXT.contains("--subgraph"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_analysis() {
+        assert!(QUICKSTART_TEXT.contains("ANALYSIS"));
+        assert!(QUICKSTART_TEXT.contains("wg analyze"));
+        assert!(QUICKSTART_TEXT.contains("wg bottlenecks"));
+        assert!(QUICKSTART_TEXT.contains("wg critical-path"));
+        assert!(QUICKSTART_TEXT.contains("wg forecast"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_dead_agents() {
+        assert!(QUICKSTART_TEXT.contains("DEAD AGENT DETECTION"));
+        assert!(QUICKSTART_TEXT.contains("wg dead-agents"));
+        assert!(QUICKSTART_TEXT.contains("--purge"));
+        assert!(QUICKSTART_TEXT.contains("--delete-dirs"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_peer_workgraphs() {
+        assert!(QUICKSTART_TEXT.contains("PEER WORKGRAPHS"));
+        assert!(QUICKSTART_TEXT.contains("wg peer add"));
+        assert!(QUICKSTART_TEXT.contains("--repo"));
+    }
+
+    #[test]
+    fn test_quickstart_text_context_scopes_explained() {
+        assert!(QUICKSTART_TEXT.contains("--context-scope clean"));
+        assert!(QUICKSTART_TEXT.contains("--context-scope task"));
+        assert!(QUICKSTART_TEXT.contains("--context-scope graph"));
+        assert!(QUICKSTART_TEXT.contains("--context-scope full"));
+    }
+
+    #[test]
+    fn test_json_output_has_new_sections() {
+        let output = json_output();
+        assert!(output.get("visualization").is_some());
+        assert!(output.get("configuration").is_some());
+        assert!(output.get("context_scopes").is_some());
+        assert!(output.get("trace_runs_replay").is_some());
+        assert!(output.get("analysis").is_some());
+        assert!(output.get("dead_agents").is_some());
+        assert!(output.get("peer_workgraphs").is_some());
+    }
+
+    #[test]
     fn test_quickstart_json_convergence_emphasis() {
         let output = json_output();
         let convergence = output["cycles"]["convergence"].as_str().unwrap();
@@ -575,6 +785,12 @@ mod tests {
             "TIPS",
             "EXECUTORS & MODELS",
             "REUSABLE FUNCTIONS",
+            "VISUALIZATION",
+            "CONFIGURATION",
+            "TRACE, RUNS & REPLAY",
+            "ANALYSIS",
+            "DEAD AGENT DETECTION",
+            "PEER WORKGRAPHS",
             "EVALUATION & MONITORING",
         ];
         for section in &required_sections {

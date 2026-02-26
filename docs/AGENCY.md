@@ -18,6 +18,7 @@ A role defines **what** an agent does.
 | `desired_outcome` | What good output looks like | Yes |
 | `performance` | Aggregated evaluation scores | No (mutable) |
 | `lineage` | Evolutionary history | No (mutable) |
+| `default_context_scope` | Default context scope for tasks dispatched with this role (`clean`, `task`, `graph`, `full`) | No (mutable) |
 
 ### Motivation
 
@@ -628,24 +629,36 @@ For the full federation design (conflict resolution, global store, trust propaga
 [agency]
 auto_evaluate = false              # auto-create evaluation tasks on completion
 auto_assign = false                # auto-create assignment tasks for ready work
+auto_triage = false                # auto-triage dead agents before respawning
 assigner_model = "haiku"           # model for assigner agents
 evaluator_model = "haiku"          # model for evaluator agents
 evolver_model = "opus"             # model for evolver agents
+creator_model = ""                 # model for agent-creator meta-tasks
+triage_model = "haiku"             # model for triage (default: haiku)
 assigner_agent = ""                # content-hash of assigner agent
 evaluator_agent = ""               # content-hash of evaluator agent
 evolver_agent = ""                 # content-hash of evolver agent
+creator_agent = ""                 # content-hash of agent-creator agent
 retention_heuristics = ""          # prose policy for retirement decisions
+triage_timeout = 30                # timeout in seconds for triage calls
+triage_max_log_bytes = 50000       # max bytes of agent log to read for triage
 ```
 
 ```bash
 # CLI equivalents
 wg config --auto-evaluate true
 wg config --auto-assign true
+wg config --auto-triage true
 wg config --assigner-model haiku
 wg config --evaluator-model opus
 wg config --evolver-model opus
+wg config --creator-model haiku
+wg config --triage-model haiku
 wg config --assigner-agent abc123
 wg config --evaluator-agent def456
 wg config --evolver-agent ghi789
+wg config --creator-agent abc123
 wg config --retention-heuristics "Retire roles scoring below 0.3 after 10 evaluations"
+wg config --triage-timeout 30
+wg config --triage-max-log-bytes 50000
 ```

@@ -780,7 +780,7 @@ wg coordinate --max-parallel 3
 
 ## Function Commands
 
-Function commands manage workflow templates — extracting reusable patterns from completed work, listing and inspecting them, and instantiating them as new task graphs. All function commands are subcommands of `wg func`.
+Function commands manage workflow templates — extracting reusable patterns from completed work, listing and inspecting them, and applying them as new task graphs. All function commands are subcommands of `wg func`.
 
 > **Note:** These commands were previously under `wg trace`. The old names (`wg trace extract`, `wg trace instantiate`, `wg trace list-functions`, `wg trace show-function`, `wg trace bootstrap`, `wg trace make-adaptive`) still work as hidden aliases but print a deprecation warning. Use the `wg func` forms going forward.
 
@@ -876,7 +876,7 @@ Create tasks from a function with provided inputs.
 wg func apply <FUNCTION-ID> [OPTIONS]
 ```
 
-The function ID supports prefix matching. For version 2+ (generative) functions, instantiation first runs the planner task; when the planner completes and produces YAML output, re-running apply parses it and creates the planned tasks. For version 3 (adaptive) functions, past run summaries are injected into the planner prompt via `{{memory.run_summaries}}`.
+The function ID supports prefix matching. For version 2+ (generative) functions, application first runs the planner task; when the planner completes and produces YAML output, re-running apply parses it and creates the planned tasks. For version 3 (adaptive) functions, past run summaries are injected into the planner prompt via `{{memory.run_summaries}}`.
 
 **Options:**
 | Option | Description |
@@ -949,7 +949,7 @@ Upgrade a generative (version 2) function to adaptive (version 3) by adding trac
 wg func make-adaptive <FUNCTION-ID> [OPTIONS]
 ```
 
-Scans provenance for past instantiations of the function, builds run summaries from graph state, stores them, injects `{{memory.run_summaries}}` into the planner template, and bumps the version to 3. Version 1 (static) functions are rejected — extract with `--generative` first.
+Scans provenance for past applications of the function, builds run summaries from graph state, stores them, injects `{{memory.run_summaries}}` into the planner template, and bumps the version to 3. Version 1 (static) functions are rejected — extract with `--generative` first.
 
 **Options:**
 | Option | Description |
@@ -1678,25 +1678,27 @@ wg kill --all
 Detect and clean up dead agents.
 
 ```bash
-wg dead-agents --check [--threshold <MINUTES>]  # check without modifying
+wg dead-agents [--threshold <MINUTES>]           # check for dead agents (default)
 wg dead-agents --cleanup [--threshold <MINUTES>] # mark dead and unclaim tasks
 wg dead-agents --remove                          # remove dead agents from registry
 wg dead-agents --processes                       # check if agent processes are still running
+wg dead-agents --purge [--delete-dirs]           # purge dead/done/failed agents from registry
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--check` | Check for dead agents without modifying state |
 | `--cleanup` | Mark dead agents and unclaim their tasks |
 | `--remove` | Remove dead agents from the registry entirely |
 | `--processes` | Check if agent processes are still running at the OS level |
+| `--purge` | Purge dead/done/failed agents from registry (and optionally delete dirs) |
+| `--delete-dirs` | Also delete agent work directories (`.workgraph/agents/<id>/`) when purging |
 | `--threshold <MINUTES>` | Override heartbeat timeout threshold in minutes |
 
 **Examples:**
 ```bash
-wg dead-agents --check
-# List agents that appear to be dead
+wg dead-agents
+# Check for dead agents (default behavior)
 
 wg dead-agents --cleanup --threshold 10
 # Mark agents dead if no heartbeat for 10 minutes, unclaim their tasks
@@ -1706,6 +1708,12 @@ wg dead-agents --processes
 
 wg dead-agents --remove
 # Remove all dead agents from the registry
+
+wg dead-agents --purge
+# Purge dead/done/failed agents from registry
+
+wg dead-agents --purge --delete-dirs
+# Purge agents and also delete their work directories
 ```
 
 ---
@@ -2021,8 +2029,11 @@ wg check
 Visualize the dependency graph (ASCII tree by default).
 
 ```bash
-wg viz [OPTIONS]
+wg viz [OPTIONS] [TASK_ID]...
 ```
+
+**Arguments:**
+- `[TASK_ID]...` - Task IDs to focus on — shows only their containing subgraphs
 
 **Options:**
 | Option | Description |
@@ -2035,14 +2046,19 @@ wg viz [OPTIONS]
 | `--graph` | Output 2D spatial graph with box-drawing characters |
 | `-o, --output <FILE>` | Render directly to file (requires graphviz) |
 | `--show-internal` | Show internal tasks (`assign-*`, `evaluate-*`) normally hidden |
+| `--tui` | Launch interactive TUI mode instead of static output |
+| `--no-tui` | Force static output even when stdout is an interactive terminal |
 
-**Example:**
+**Examples:**
 ```bash
 wg viz
 # ASCII dependency tree of active tasks
 
 wg viz --all
 # Include completed tasks
+
+wg viz my-task other-task
+# Show only subgraphs containing these tasks
 
 wg viz --dot
 # Graphviz DOT output
@@ -2055,6 +2071,9 @@ wg viz --dot -o graph.png
 
 wg viz --critical-path
 # Highlight the longest dependency chain
+
+wg viz --no-tui
+# Force static output (useful in scripts or when piping)
 ```
 
 ---
@@ -2140,7 +2159,10 @@ With no options (or `--show`), displays current configuration.
 |--------|-------------|
 | `--show` | Display current configuration |
 | `--init` | Create default config file |
-| `--executor <NAME>` | Set agent executor (claude, opencode, codex, shell) |
+| `--global` | Target global config (`~/.workgraph/config.toml`) instead of local |
+| `--local` | Explicitly target local config (default for writes) |
+| `--list` | Show merged config with source annotations (global/local/default) |
+| `--executor <NAME>` | Set executor (claude, amplifier, shell, or custom config name) |
 | `--model <MODEL>` | Set agent model |
 | `--set-interval <SECS>` | Set agent sleep interval |
 | `--max-agents <N>` | Set coordinator max agents |
@@ -2155,6 +2177,8 @@ With no options (or `--show`), displays current configuration.
 | `--assigner-agent <HASH>` | Set assigner agent (content-hash) |
 | `--evaluator-agent <HASH>` | Set evaluator agent (content-hash) |
 | `--evolver-agent <HASH>` | Set evolver agent (content-hash) |
+| `--creator-agent <HASH>` | Set creator agent (content-hash) |
+| `--creator-model <MODEL>` | Set model for creator agents |
 | `--retention-heuristics <TEXT>` | Set retention heuristics (prose policy for evolver) |
 | `--auto-triage <BOOL>` | Enable/disable automatic triage of dead agents |
 | `--triage-model <MODEL>` | Set model for triage (default: haiku) |
@@ -2167,8 +2191,14 @@ With no options (or `--show`), displays current configuration.
 # View config
 wg config
 
+# Show merged config with source annotations
+wg config --list
+
 # Set executor and model
 wg config --executor claude --model opus
+
+# Set a global default (applies to all projects)
+wg config --global --model sonnet
 
 # Enable the full agency automation loop
 wg config --auto-evaluate true --auto-assign true

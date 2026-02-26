@@ -190,17 +190,23 @@ When the coordinator spawns an agent for a task:
 1. **Claim**: The task is claimed (status → `in-progress`)
 2. **Model resolution**: task.model > executor.model > coordinator.model/CLI --model
 3. **Identity injection**: If the task has an `agent` field, the agent's role and motivation are loaded from `.workgraph/agency/` and rendered into an identity prompt section
-4. **Cycle context injection**: If the task is part of a structural cycle, the prompt includes:
+4. **Context scope resolution**: The task's `context_scope` determines how much context is assembled into the prompt:
+   - `clean` — task description only (no dependency context)
+   - `task` — task description + direct predecessor artifacts/logs (default)
+   - `graph` — task + transitive dependency chain
+   - `full` — everything: full graph state, all logs, all artifacts
+   If no scope is set on the task, the assigned role's default scope is used; otherwise `task` is the implicit default.
+5. **Cycle context injection**: If the task is part of a structural cycle, the prompt includes:
    - The current `loop_iteration` (which pass this is)
    - A note about `--converged`: the agent can signal `wg done <task-id> --converged` to stop the cycle when work has stabilized
    - The `"converged"` tag is placed on the cycle header regardless of which member the agent completes
-5. **Wrapper script**: A bash script is generated at `.workgraph/agents/agent-N/run.sh`:
+6. **Wrapper script**: A bash script is generated at `.workgraph/agents/agent-N/run.sh`:
    - Runs the executor command (e.g., `claude --model opus --print "..."`)
    - Captures stdout/stderr to `output.log`
    - Sends heartbeats periodically
    - On exit: checks task status, marks done/failed based on exit code
-5. **Detach**: Process is launched with `setsid()` so it survives daemon restarts
-6. **Register**: Agent is added to the registry with PID, task_id, executor, model, and start time
+7. **Detach**: Process is launched with `setsid()` so it survives daemon restarts
+8. **Register**: Agent is added to the registry with PID, task_id, executor, model, and start time
 
 ### Manual spawning
 
@@ -257,15 +263,32 @@ When `auto_triage` is disabled (the default), dead agents simply have their task
 ### Manual dead agent commands
 
 ```bash
-wg dead-agents --check       # read-only check
+wg dead-agents               # read-only check (default)
 wg dead-agents --cleanup     # mark dead and unclaim tasks
 wg dead-agents --remove      # remove dead entries from registry
 wg dead-agents --processes   # check if agent PIDs are still running
+wg dead-agents --purge       # purge dead/done/failed agents from registry
+wg dead-agents --purge --delete-dirs   # also delete agent work directories
+wg dead-agents --threshold 10         # override heartbeat timeout (minutes)
 ```
 
-These commands are useful for manual intervention when the service is not running.
+These commands are useful for manual intervention when the service is not running. `--purge` cleans up finished entries from the registry; combine with `--delete-dirs` to reclaim disk space by removing `.workgraph/agents/<id>/` directories.
 
 ## Configuration
+
+View merged configuration with source annotations:
+
+```bash
+wg config --list                # show merged config (global/local/default)
+wg config --global --show       # show only global config
+wg config --local --show        # show only local config
+```
+
+Writes target local config by default. Use `--global` to write to `~/.workgraph/config.toml`:
+
+```bash
+wg config --global --model opus   # set default model globally
+```
 
 ```toml
 # .workgraph/config.toml
@@ -295,6 +318,15 @@ evolver_model = "opus"   # model for evolver agents
 assigner_agent = ""      # content-hash of assigner agent identity
 evaluator_agent = ""     # content-hash of evaluator agent identity
 evolver_agent = ""       # content-hash of evolver agent identity
+creator_agent = ""       # content-hash of creator agent identity
+creator_model = ""       # model for creator agents
+```
+
+Set creator-agent/model via CLI:
+
+```bash
+wg config --creator-agent <content-hash>
+wg config --creator-model haiku
 ```
 
 ### Model hierarchy
