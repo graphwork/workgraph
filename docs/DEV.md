@@ -27,29 +27,33 @@ typst compile docs/research/organizational-patterns.typ  # rebuild org patterns 
 
 ## Documentation: Typst → Markdown
 
-**Typst is the ground truth** for all documentation. Markdown versions are rendered from typst and must be kept in sync.
+**Typst (.typ) files are the ground truth.** Markdown versions exist for developers who prefer .md and for the website. Keep them in sync.
 
-To regenerate markdown from typst after editing docs:
+Markdown locations:
+- `docs/manual/workgraph-manual.md` — full manual (glossary + chapters 01-05)
+- `docs/research/organizational-patterns.md` — theory document
+- `graphwork.github.io/` — website copies (same files)
+
+To regenerate markdown after editing typst:
 
 ```bash
-# Preprocess (handle table.header, #quote, raw blocks) then convert
-# For individual chapters that convert cleanly:
+# pandoc can't handle all typst constructs (table.header, #quote, raw blocks,
+# #text wrappers, #align). A preprocessing step extracts these into markdown
+# tables/quotes/code blocks, then pandoc converts the remaining text.
+#
+# Simple chapters that pandoc handles directly:
 pandoc -f typst -t gfm --wrap=none docs/manual/01-overview.typ -o out.md
 
-# For the full manual (pandoc can't follow #include directives):
-# Concatenate the glossary section + all chapters, then convert.
-# See the preprocessing script pattern in the convert-typst-docs task logs.
-
-# For organizational-patterns:
-pandoc -f typst -t gfm --wrap=none docs/research/organizational-patterns.typ -o docs/research/organizational-patterns.md
+# For files with tables/figures (chapters 02, 04, org patterns), or for the
+# full manual (pandoc can't follow #include): use the converter script at
+# scripts/typst-to-md.py (if available) or see the convert-typst-docs task
+# logs for the preprocessing approach.
+#
+# The full manual is assembled from: glossary (from workgraph-manual.typ)
+# + chapters 01-05, each converted separately, then concatenated.
 ```
 
-**Note:** Some typst features require preprocessing before pandoc can handle them:
-- `table.header(...)` — strip the wrapper, keep the cell contents
-- `#quote(block: true)[...]` — replace with `#block[...]`
-- `raw(block: true, ...)` with multi-line strings — convert to fenced code blocks
-
-After regenerating, copy the markdown to the website repo (`graphwork.github.io/`).
+After regenerating, copy the markdown to `graphwork.github.io/` as well.
 
 ## Service Operations
 
