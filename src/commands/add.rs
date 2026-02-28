@@ -297,6 +297,9 @@ pub fn run(
     );
 
     println!("Added task: {} ({})", title, task_id);
+    if id.is_none() {
+        println!("  Use --after {} to depend on this task", task_id);
+    }
     super::print_service_hint(dir);
     Ok(())
 }
@@ -518,17 +521,35 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
 }
 
 fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
-    // Generate a slug from the title
-    let slug: String = title
+    // Generate a slug from the title: take up to 3 non-numeric words,
+    // plus any trailing numeric tokens (so "task 1" -> "task-1", not "task").
+    let normalized: String = title
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
+        .collect();
+    let all_tokens: Vec<String> = normalized
         .split('-')
         .filter(|s| !s.is_empty())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join("-");
+        .map(|s| s.to_string())
+        .collect();
+
+    // Take up to 3 non-numeric words, plus any numeric tokens that appear
+    // before or immediately after the last included word.
+    let mut result: Vec<&str> = Vec::new();
+    let mut word_count = 0;
+    for token in &all_tokens {
+        let is_numeric = token.chars().all(|c| c.is_ascii_digit());
+        if !is_numeric && word_count < 3 {
+            result.push(token);
+            word_count += 1;
+        } else if is_numeric && word_count <= 3 {
+            result.push(token);
+        } else {
+            break;
+        }
+    }
+    let slug = result.join("-");
 
     let base_id = if slug.is_empty() {
         "task".to_string()
@@ -783,6 +804,28 @@ mod tests {
         let graph = WorkGraph::new();
         let id = generate_id("a---b   c", &graph);
         assert_eq!(id, "a-b-c");
+    }
+
+    #[test]
+    fn id_slug_includes_trailing_number() {
+        let graph = WorkGraph::new();
+        let id = generate_id("Smoke test task 1", &graph);
+        assert_eq!(id, "smoke-test-task-1");
+    }
+
+    #[test]
+    fn id_slug_number_after_skipped_word_excluded() {
+        // Numbers after a skipped (4th+) word are not included
+        let graph = WorkGraph::new();
+        let id = generate_id("Build the amazing widget 42", &graph);
+        assert_eq!(id, "build-the-amazing");
+    }
+
+    #[test]
+    fn id_slug_leading_number_not_counted_as_word() {
+        let graph = WorkGraph::new();
+        let id = generate_id("123 fix the bug", &graph);
+        assert_eq!(id, "123-fix-the-bug");
     }
 
     #[test]

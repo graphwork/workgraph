@@ -46,7 +46,7 @@ pub mod log;
 pub mod match_cmd;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
-pub mod motivation;
+pub mod tradeoff;
 pub mod next;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;

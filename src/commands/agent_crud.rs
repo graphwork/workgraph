@@ -1,3 +1,10 @@
+//! Manage agent definitions (identity: role + tradeoff pairings)
+//!
+//! Agent definitions are identity entities stored in .workgraph/agency/.
+//! Each agent pairs a role with a tradeoff profile to define its behavior.
+//!
+//! See also: `wg agents` for listing running agent processes (service workers).
+
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};

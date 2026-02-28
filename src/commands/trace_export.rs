@@ -265,3 +265,152 @@ fn collect_descendants(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use workgraph::graph::{LogEntry, Node, Task, WorkGraph};
+
+    fn make_task(id: &str, title: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            title: title.to_string(),
+            ..Task::default()
+        }
+    }
+
+    // ── collect_descendants ──
+
+    #[test]
+    fn test_collect_descendants_single_root() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("root", "Root")));
+
+        let mut ids = HashSet::new();
+        ids.insert("root".to_string());
+        collect_descendants(&graph, "root", &mut ids);
+
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains("root"));
+    }
+
+    #[test]
+    fn test_collect_descendants_chain() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("root", "Root")));
+        let mut child = make_task("child", "Child");
+        child.after = vec!["root".to_string()];
+        graph.add_node(Node::Task(child));
+        let mut grandchild = make_task("grandchild", "Grandchild");
+        grandchild.after = vec!["child".to_string()];
+        graph.add_node(Node::Task(grandchild));
+
+        let mut ids = HashSet::new();
+        ids.insert("root".to_string());
+        collect_descendants(&graph, "root", &mut ids);
+
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("child"));
+        assert!(ids.contains("grandchild"));
+    }
+
+    #[test]
+    fn test_collect_descendants_does_not_include_unrelated() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("root", "Root")));
+        graph.add_node(Node::Task(make_task("unrelated", "Unrelated")));
+
+        let mut ids = HashSet::new();
+        ids.insert("root".to_string());
+        collect_descendants(&graph, "root", &mut ids);
+
+        assert_eq!(ids.len(), 1);
+        assert!(!ids.contains("unrelated"));
+    }
+
+    // ── TraceExport / ExportedTask serialization ──
+
+    #[test]
+    fn test_exported_task_serialization_roundtrip() {
+        let task = ExportedTask {
+            id: "t1".to_string(),
+            title: "Test task".to_string(),
+            description: Some("A description".to_string()),
+            status: Status::Done,
+            visibility: "public".to_string(),
+            skills: vec!["rust".to_string()],
+            after: vec!["t0".to_string()],
+            before: vec![],
+            tags: vec!["tag1".to_string()],
+            artifacts: vec!["output.txt".to_string()],
+            created_at: Some("2026-02-28T12:00:00Z".to_string()),
+            completed_at: Some("2026-02-28T13:00:00Z".to_string()),
+            agent: Some("agent-1".to_string()),
+            log: vec![LogEntry {
+                timestamp: "2026-02-28T12:30:00Z".to_string(),
+                actor: None,
+                message: "Progress update".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let parsed: ExportedTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "t1");
+        assert_eq!(parsed.title, "Test task");
+        assert_eq!(parsed.status, Status::Done);
+        assert_eq!(parsed.agent, Some("agent-1".to_string()));
+        assert_eq!(parsed.log.len(), 1);
+    }
+
+    #[test]
+    fn test_exported_task_skips_empty_vecs() {
+        let task = ExportedTask {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            description: None,
+            status: Status::Open,
+            visibility: "public".to_string(),
+            skills: vec![],
+            after: vec![],
+            before: vec![],
+            tags: vec![],
+            artifacts: vec![],
+            created_at: None,
+            completed_at: None,
+            agent: None,
+            log: vec![],
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // Empty vecs should be skipped in serialization
+        assert!(!val.as_object().unwrap().contains_key("skills"));
+        assert!(!val.as_object().unwrap().contains_key("after"));
+        assert!(!val.as_object().unwrap().contains_key("tags"));
+        assert!(!val.as_object().unwrap().contains_key("log"));
+    }
+
+    #[test]
+    fn test_trace_export_serialization() {
+        let export = TraceExport {
+            metadata: ExportMetadata {
+                version: "0.1.0".to_string(),
+                exported_at: "2026-02-28T12:00:00Z".to_string(),
+                visibility: "public".to_string(),
+                root_task: Some("root".to_string()),
+                source: None,
+            },
+            tasks: vec![],
+            evaluations: vec![],
+            operations: vec![],
+            functions: vec![],
+        };
+
+        let json = serde_json::to_string_pretty(&export).unwrap();
+        let parsed: TraceExport = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.metadata.version, "0.1.0");
+        assert_eq!(parsed.metadata.visibility, "public");
+        assert_eq!(parsed.metadata.root_task, Some("root".to_string()));
+        assert!(parsed.tasks.is_empty());
+    }
+}

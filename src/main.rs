@@ -604,7 +604,7 @@ enum Commands {
         command: SkillCommands,
     },
 
-    /// Manage the agency (roles + motivations)
+    /// Manage the agency (roles + tradeoffs)
     Agency {
         #[command(subcommand)]
         command: AgencyCommands,
@@ -622,10 +622,11 @@ enum Commands {
         command: RoleCommands,
     },
 
-    /// Manage agency motivations (why an agent acts)
-    Motivation {
+    /// Manage agency tradeoffs (acceptable/unacceptable constraints)
+    #[command(alias = "motivation")]
+    Tradeoff {
         #[command(subcommand)]
-        command: MotivationCommands,
+        command: TradeoffCommands,
     },
 
     /// Assign an agent to a task
@@ -724,7 +725,10 @@ enum Commands {
         clear: bool,
     },
 
-    /// Manage agents (role+motivation pairings) and run agent loops
+    /// Manage agent definitions (identity: role + tradeoff pairings)
+    #[command(
+        after_help = "This command manages agent identity entities stored in .workgraph/agency/.\nEach agent definition pairs a role with a tradeoff profile.\n\nSee also: 'wg agents' to list running agent processes (service workers)."
+    )]
     Agent {
         #[command(subcommand)]
         command: AgentCommands,
@@ -930,7 +934,10 @@ enum Commands {
         threshold: Option<u64>,
     },
 
-    /// List running agents
+    /// List running agent processes (service workers)
+    #[command(
+        after_help = "This command shows agent processes spawned by the service coordinator.\nThese are runtime workers, not agent identity definitions.\n\nSee also: 'wg agent' to manage agent definitions (role + tradeoff pairings)."
+    )]
     Agents {
         /// Only show alive agents (starting, working, idle)
         #[arg(long)]
@@ -1451,7 +1458,7 @@ enum SkillCommands {
 
 #[derive(Subcommand)]
 enum AgencyCommands {
-    /// Seed agency with starter roles and motivations
+    /// Seed agency with starter roles and tradeoffs
     Init,
 
     /// Migrate old-format agency store (roles/, motivations/, agents/) to primitive+cache format
@@ -1491,7 +1498,7 @@ enum AgencyCommands {
         #[arg(long = "entity", value_delimiter = ',')]
         entity_ids: Vec<String>,
 
-        /// Only pull entities of this type (role, motivation, agent)
+        /// Only pull entities of this type (role, tradeoff, agent)
         #[arg(long = "type")]
         entity_type: Option<String>,
 
@@ -1579,7 +1586,7 @@ enum AgencyCommands {
         #[arg(long = "entity", value_delimiter = ',')]
         entity_ids: Vec<String>,
 
-        /// Only push entities of this type (role, motivation, agent)
+        /// Only push entities of this type (role, tradeoff, agent)
         #[arg(long = "type")]
         entity_type: Option<String>,
 
@@ -1768,7 +1775,7 @@ enum TradeoffCommands {
 
 #[derive(Subcommand)]
 enum AgentCommands {
-    /// Create a new agent (role + motivation pairing)
+    /// Create a new agent definition (role + tradeoff pairing)
     Create {
         /// Agent name
         name: String,
@@ -1777,9 +1784,9 @@ enum AgentCommands {
         #[arg(long)]
         role: Option<String>,
 
-        /// Motivation ID (or prefix) — optional for human agents
-        #[arg(long)]
-        motivation: Option<String>,
+        /// Tradeoff ID (or prefix) — optional for human agents
+        #[arg(long, alias = "motivation")]
+        tradeoff: Option<String>,
 
         /// Skills/capabilities (comma-separated or repeated)
         #[arg(long, value_delimiter = ',')]
@@ -1806,22 +1813,22 @@ enum AgentCommands {
         executor: String,
     },
 
-    /// List all agents
+    /// List all agent definitions
     List,
 
-    /// Show full agent details including resolved role/motivation
+    /// Show agent definition details including resolved role/tradeoff
     Show {
         /// Agent ID (or prefix)
         id: String,
     },
 
-    /// Remove an agent
+    /// Remove an agent definition
     Rm {
         /// Agent ID (or prefix)
         id: String,
     },
 
-    /// Show ancestry (lineage of constituent role and motivation)
+    /// Show ancestry (lineage of constituent role and tradeoff)
     Lineage {
         /// Agent ID (or prefix)
         id: String,
@@ -2269,7 +2276,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Agency { .. } => "agency",
         Commands::Peer { .. } => "peer",
         Commands::Role { .. } => "role",
-        Commands::Motivation { .. } => "motivation",
+        Commands::Tradeoff { .. } => "tradeoff",
         Commands::Assign { .. } => "assign",
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
@@ -2332,7 +2339,7 @@ fn supports_json(cmd: &Commands) -> bool {
             | Commands::Agency { .. }
             | Commands::Peer { .. }
             | Commands::Role { .. }
-            | Commands::Motivation { .. }
+            | Commands::Tradeoff { .. }
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Artifact { .. }
@@ -3060,27 +3067,27 @@ fn main() -> Result<()> {
                 commands::role::run_lineage(&workgraph_dir, &id, cli.json)
             }
         },
-        Commands::Motivation { command } => match command {
-            MotivationCommands::Add {
+        Commands::Tradeoff { command } => match command {
+            TradeoffCommands::Add {
                 name,
                 accept,
                 reject,
                 description,
-            } => commands::motivation::run_add(
+            } => commands::tradeoff::run_add(
                 &workgraph_dir,
                 &name,
                 &accept,
                 &reject,
                 description.as_deref(),
             ),
-            MotivationCommands::List => commands::motivation::run_list(&workgraph_dir, cli.json),
-            MotivationCommands::Show { id } => {
-                commands::motivation::run_show(&workgraph_dir, &id, cli.json)
+            TradeoffCommands::List => commands::tradeoff::run_list(&workgraph_dir, cli.json),
+            TradeoffCommands::Show { id } => {
+                commands::tradeoff::run_show(&workgraph_dir, &id, cli.json)
             }
-            MotivationCommands::Edit { id } => commands::motivation::run_edit(&workgraph_dir, &id),
-            MotivationCommands::Rm { id } => commands::motivation::run_rm(&workgraph_dir, &id),
-            MotivationCommands::Lineage { id } => {
-                commands::motivation::run_lineage(&workgraph_dir, &id, cli.json)
+            TradeoffCommands::Edit { id } => commands::tradeoff::run_edit(&workgraph_dir, &id),
+            TradeoffCommands::Rm { id } => commands::tradeoff::run_rm(&workgraph_dir, &id),
+            TradeoffCommands::Lineage { id } => {
+                commands::tradeoff::run_lineage(&workgraph_dir, &id, cli.json)
             }
         },
         Commands::Assign {
@@ -3146,7 +3153,7 @@ fn main() -> Result<()> {
             AgentCommands::Create {
                 name,
                 role,
-                motivation,
+                tradeoff,
                 capabilities,
                 rate,
                 capacity,
@@ -3157,7 +3164,7 @@ fn main() -> Result<()> {
                 &workgraph_dir,
                 &name,
                 role.as_deref(),
-                motivation.as_deref(),
+                tradeoff.as_deref(),
                 &capabilities,
                 rate,
                 capacity,

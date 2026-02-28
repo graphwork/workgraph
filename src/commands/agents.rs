@@ -1,7 +1,10 @@
-//! List running agents
+//! List running agent processes (service workers)
 //!
-//! Displays information about all agents registered in the service registry.
+//! Displays information about all agent processes registered in the service registry.
+//! These are runtime workers spawned by the coordinator, not agent identity definitions.
 //! Checks PID liveness so dead processes are shown accurately.
+//!
+//! See also: `wg agent` for managing agent definitions (role + tradeoff pairings).
 //!
 //! Usage:
 //!   wg agents              # List all agents in table format

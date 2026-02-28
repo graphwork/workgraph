@@ -300,7 +300,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              ```\n\
              wg agent list --json\n\
              wg role list --json\n\
-             wg motivation list --json\n\
+             wg tradeoff list --json\n\
              ```\n\n\
              For agents with evaluation history, drill into performance details:\n\
              ```\n\
@@ -311,13 +311,13 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              - **Performance (cache-first)**: Pick the highest-scoring cached agent \
              whose skills match the task. Do NOT vary composition dimensions — \
              deterministic selection only. If no cached agents meet the threshold, \
-             fall back to best-guess role+motivation matching.\n\n\
+             fall back to best-guess role+tradeoff matching.\n\n\
              - **Learning (structured experiment)**: The experiment specification above \
              tells you which composition dimension to vary. Compose a new agent by \
              applying the experiment (e.g., swap a role component) using UCB1-selected \
              primitives. Use `wg agent create` if a matching agent doesn't exist yet.\n\n\
              - **Forced Exploration**: Try novel or unconventional agent compositions. \
-             Combine roles and motivations that haven't been paired before. Maximise \
+             Combine roles and tradeoffs that haven't been paired before. Maximise \
              diversity of signal.\n\n\
              ### Step 3: Match Agent to Task\n\n\
              Compare each agent's capabilities to the task requirements:\n\n\
@@ -326,7 +326,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              implementation tasks; a Reviewer (code-review, security-audit) fits review \
              tasks; an Architect (system-design, dependency-analysis) fits design tasks; \
              a Documenter (technical-writing) fits documentation tasks.\n\n\
-             2. **Motivation fit**: The agent's operational parameters should match the \
+             2. **Tradeoff fit**: The agent's operational parameters should match the \
              task's nature. A Careful agent suits tasks where correctness is critical. \
              A Fast agent suits urgent, low-risk tasks. A Thorough agent suits complex \
              tasks requiring deep analysis.\n\n\
@@ -349,14 +349,14 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              ### Step 5: Handle Cold Start\n\n\
              When agents have 0 evaluations (new agency, or new agents), you cannot \
              rely on performance data. In this case:\n\n\
-             - **Match on role and motivation** — this is the primary signal. Pick the \
+             - **Match on role and tradeoff** — this is the primary signal. Pick the \
              agent whose role skills best cover the task requirements.\n\
              - **Spread work across untested agents** to build evaluation data. If \
              multiple agents have 0 evaluations and similar role fit, prefer whichever \
              has completed fewer tasks (lower `task_count`) so the agency gathers \
              diverse signal.\n\
-             - **Default to Careful motivation** for high-stakes tasks and Fast \
-             motivation for routine work when there's no data to differentiate.\n\n\
+             - **Default to Careful tradeoff** for high-stakes tasks and Fast \
+             tradeoff for routine work when there's no data to differentiate.\n\n\
              ### Step 6: Assign\n\n\
              Once you've chosen an agent, run:\n\
              ```\n\
@@ -512,7 +512,7 @@ fn build_auto_evaluate_tasks(
     let mut modified = false;
 
     // Load agents to identify human operators — their work quality isn't
-    // a reflection of a role+motivation prompt so we skip auto-evaluation.
+    // a reflection of a role+tradeoff prompt so we skip auto-evaluation.
     let agents_dir = dir.join("agency").join("cache/agents");
     let all_agents = agency::load_all_agents_or_warn(&agents_dir);
     let human_agent_ids: std::collections::HashSet<&str> = all_agents

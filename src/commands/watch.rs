@@ -195,3 +195,153 @@ pub fn run(
         last_pos = new_pos;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── op_to_event_type ──
+
+    #[test]
+    fn test_op_to_event_type_known_ops() {
+        assert_eq!(op_to_event_type("add_task"), Some("task.created"));
+        assert_eq!(op_to_event_type("claim"), Some("task.started"));
+        assert_eq!(op_to_event_type("done"), Some("task.completed"));
+        assert_eq!(op_to_event_type("fail"), Some("task.failed"));
+        assert_eq!(op_to_event_type("retry"), Some("task.retried"));
+        assert_eq!(op_to_event_type("evaluate_record"), Some("evaluation.recorded"));
+        assert_eq!(op_to_event_type("evaluate_auto"), Some("evaluation.recorded"));
+        assert_eq!(op_to_event_type("evaluate"), Some("evaluation.recorded"));
+        assert_eq!(op_to_event_type("spawn_agent"), Some("agent.spawned"));
+        assert_eq!(op_to_event_type("agent_complete"), Some("agent.completed"));
+    }
+
+    #[test]
+    fn test_op_to_event_type_unknown_op() {
+        assert_eq!(op_to_event_type("unknown_op"), None);
+        assert_eq!(op_to_event_type(""), None);
+    }
+
+    // ── event_category ──
+
+    #[test]
+    fn test_event_category_task() {
+        assert_eq!(event_category("task.created"), "task_state");
+        assert_eq!(event_category("task.completed"), "task_state");
+        assert_eq!(event_category("task.failed"), "task_state");
+    }
+
+    #[test]
+    fn test_event_category_evaluation() {
+        assert_eq!(event_category("evaluation.recorded"), "evaluation");
+    }
+
+    #[test]
+    fn test_event_category_agent() {
+        assert_eq!(event_category("agent.spawned"), "agent");
+        assert_eq!(event_category("agent.completed"), "agent");
+    }
+
+    #[test]
+    fn test_event_category_other() {
+        assert_eq!(event_category("something.else"), "other");
+        assert_eq!(event_category(""), "other");
+    }
+
+    // ── should_include_event ──
+
+    #[test]
+    fn test_should_include_event_all_filter() {
+        let filters: HashSet<String> = ["all"].iter().map(|s| s.to_string()).collect();
+        assert!(should_include_event("task.created", &filters, None, Some("t1")));
+        assert!(should_include_event("agent.spawned", &filters, None, None));
+    }
+
+    #[test]
+    fn test_should_include_event_category_filter() {
+        let filters: HashSet<String> = ["task_state"].iter().map(|s| s.to_string()).collect();
+        assert!(should_include_event("task.created", &filters, None, Some("t1")));
+        assert!(!should_include_event("agent.spawned", &filters, None, None));
+    }
+
+    #[test]
+    fn test_should_include_event_exact_type_filter() {
+        let filters: HashSet<String> = ["task.created"].iter().map(|s| s.to_string()).collect();
+        assert!(should_include_event("task.created", &filters, None, Some("t1")));
+        assert!(!should_include_event("task.completed", &filters, None, Some("t1")));
+    }
+
+    #[test]
+    fn test_should_include_event_task_prefix_filter() {
+        let filters: HashSet<String> = ["all"].iter().map(|s| s.to_string()).collect();
+        // Prefix match: "feat-" matches "feat-login"
+        assert!(should_include_event("task.created", &filters, Some("feat-"), Some("feat-login")));
+        // Prefix mismatch
+        assert!(!should_include_event("task.created", &filters, Some("feat-"), Some("bug-fix")));
+        // Task filter set but event has no task_id
+        assert!(!should_include_event("task.created", &filters, Some("feat-"), None));
+    }
+
+    // ── op_to_watch_event ──
+
+    #[test]
+    fn test_op_to_watch_event_conversion() {
+        let op = provenance::OperationEntry {
+            timestamp: "2026-02-28T12:00:00Z".to_string(),
+            op: "done".to_string(),
+            task_id: Some("my-task".to_string()),
+            actor: Some("agent-1".to_string()),
+            detail: serde_json::json!({"reason": "completed"}),
+        };
+        let event = op_to_watch_event(&op).unwrap();
+        assert_eq!(event.event_type, "task.completed");
+        assert_eq!(event.timestamp, "2026-02-28T12:00:00Z");
+        assert_eq!(event.task_id, Some("my-task".to_string()));
+        assert_eq!(event.data, serde_json::json!({"reason": "completed"}));
+    }
+
+    #[test]
+    fn test_op_to_watch_event_unknown_returns_none() {
+        let op = provenance::OperationEntry {
+            timestamp: "2026-02-28T12:00:00Z".to_string(),
+            op: "unknown".to_string(),
+            task_id: None,
+            actor: None,
+            detail: serde_json::Value::Null,
+        };
+        assert!(op_to_watch_event(&op).is_none());
+    }
+
+    // ── WatchEvent serialization ──
+
+    #[test]
+    fn test_watch_event_serialization_format() {
+        let event = WatchEvent {
+            event_type: "task.completed".to_string(),
+            timestamp: "2026-02-28T12:00:00Z".to_string(),
+            task_id: Some("my-task".to_string()),
+            data: serde_json::json!({"key": "value"}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // "type" field should be used instead of "event_type" (serde rename)
+        assert_eq!(parsed["type"], "task.completed");
+        assert_eq!(parsed["timestamp"], "2026-02-28T12:00:00Z");
+        assert_eq!(parsed["task_id"], "my-task");
+        assert_eq!(parsed["data"]["key"], "value");
+    }
+
+    #[test]
+    fn test_watch_event_serialization_skips_none_task_id() {
+        let event = WatchEvent {
+            event_type: "agent.spawned".to_string(),
+            timestamp: "2026-02-28T12:00:00Z".to_string(),
+            task_id: None,
+            data: serde_json::json!({}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // skip_serializing_if means the key is absent entirely
+        assert!(!parsed.as_object().unwrap().contains_key("task_id"));
+    }
+}

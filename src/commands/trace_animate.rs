@@ -333,3 +333,120 @@ fn render_frame(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Progress bar math ──
+
+    #[test]
+    fn test_progress_bar_calculation() {
+        // Simulating the progress bar logic from render_frame
+        let total_secs: i64 = 100;
+        let elapsed: i64 = 50;
+        let bar_width: usize = 40;
+
+        let progress = (elapsed as f64 / total_secs as f64).min(1.0);
+        assert!((progress - 0.5).abs() < f64::EPSILON);
+
+        let filled = (progress * bar_width as f64) as usize;
+        assert_eq!(filled, 20);
+
+        let bar = format!(
+            "[{}{}]",
+            "=".repeat(filled.min(bar_width)),
+            " ".repeat(bar_width.saturating_sub(filled)),
+        );
+        assert_eq!(bar.len(), bar_width + 2); // +2 for brackets
+        assert!(bar.starts_with('['));
+        assert!(bar.ends_with(']'));
+    }
+
+    #[test]
+    fn test_progress_bar_at_boundaries() {
+        // At start (elapsed = 0)
+        let progress_start = (0_f64 / 100_f64).min(1.0);
+        assert_eq!(progress_start, 0.0);
+
+        // At end (elapsed = total)
+        let progress_end = (100_f64 / 100_f64).min(1.0);
+        assert_eq!(progress_end, 1.0);
+
+        // Past end (clamped)
+        let progress_past = (150_f64 / 100_f64).min(1.0);
+        assert_eq!(progress_past, 1.0);
+    }
+
+    // ── Speed control ──
+
+    #[test]
+    fn test_speed_doubling() {
+        let mut speed: f64 = 10.0;
+        speed *= 2.0;
+        assert_eq!(speed, 20.0);
+        speed *= 2.0;
+        assert_eq!(speed, 40.0);
+    }
+
+    #[test]
+    fn test_speed_halving_clamped() {
+        let mut speed: f64 = 4.0;
+        speed = (speed / 2.0).max(1.0);
+        assert_eq!(speed, 2.0);
+        speed = (speed / 2.0).max(1.0);
+        assert_eq!(speed, 1.0);
+        // Cannot go below 1.0
+        speed = (speed / 2.0).max(1.0);
+        assert_eq!(speed, 1.0);
+    }
+
+    // ── Sleep duration scaling ──
+
+    #[test]
+    fn test_sleep_duration_scaling() {
+        // Simulating the sleep calculation from run_animation_loop
+        let gap_ms: f64 = 2000.0; // 2 seconds between snapshots
+        let speed: f64 = 10.0;
+
+        let scaled = (gap_ms / speed).clamp(50.0, 5000.0);
+        assert_eq!(scaled, 200.0);
+    }
+
+    #[test]
+    fn test_sleep_duration_clamp_min() {
+        let gap_ms: f64 = 10.0; // Very small gap
+        let speed: f64 = 100.0;
+        let scaled = (gap_ms / speed).clamp(50.0, 5000.0);
+        assert_eq!(scaled, 50.0); // Clamped to minimum
+    }
+
+    #[test]
+    fn test_sleep_duration_clamp_max() {
+        let gap_ms: f64 = 100_000.0; // Very large gap
+        let speed: f64 = 1.0;
+        let scaled = (gap_ms / speed).clamp(50.0, 5000.0);
+        assert_eq!(scaled, 5000.0); // Clamped to maximum
+    }
+
+    // ── Status counting from snapshots ──
+
+    #[test]
+    fn test_snapshot_status_counting() {
+        let mut statuses: HashMap<String, Status> = HashMap::new();
+        statuses.insert("t1".to_string(), Status::Done);
+        statuses.insert("t2".to_string(), Status::Done);
+        statuses.insert("t3".to_string(), Status::InProgress);
+        statuses.insert("t4".to_string(), Status::Failed);
+        statuses.insert("t5".to_string(), Status::Open);
+
+        let done_count = statuses.values().filter(|s| **s == Status::Done).count();
+        let in_progress_count = statuses.values().filter(|s| **s == Status::InProgress).count();
+        let failed_count = statuses.values().filter(|s| **s == Status::Failed).count();
+
+        assert_eq!(done_count, 2);
+        assert_eq!(in_progress_count, 1);
+        assert_eq!(failed_count, 1);
+        assert_eq!(statuses.len(), 5);
+    }
+}

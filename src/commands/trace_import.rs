@@ -191,3 +191,157 @@ struct ImportedTask {
     agent: Option<String>,
     source: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::trace_export::{ExportMetadata, ExportedTask, TraceExport};
+    use tempfile::TempDir;
+    use workgraph::graph::Status;
+
+    fn make_minimal_export(tasks: Vec<ExportedTask>) -> TraceExport {
+        TraceExport {
+            metadata: ExportMetadata {
+                version: "0.1.0".to_string(),
+                exported_at: "2026-02-28T12:00:00Z".to_string(),
+                visibility: "internal".to_string(),
+                root_task: None,
+                source: None,
+            },
+            tasks,
+            evaluations: vec![],
+            operations: vec![],
+            functions: vec![],
+        }
+    }
+
+    fn make_exported_task(id: &str, title: &str) -> ExportedTask {
+        ExportedTask {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: None,
+            status: Status::Done,
+            visibility: "public".to_string(),
+            skills: vec![],
+            after: vec![],
+            before: vec![],
+            tags: vec!["original-tag".to_string()],
+            artifacts: vec![],
+            created_at: None,
+            completed_at: None,
+            agent: None,
+            log: vec![],
+        }
+    }
+
+    // ── Source tag determination ──
+
+    #[test]
+    fn test_source_tag_from_explicit_arg() {
+        // When source is provided as arg, it takes priority
+        let source = Some("my-source")
+            .map(String::from)
+            .or(None)
+            .unwrap_or_else(|| "fallback".to_string());
+        assert_eq!(source, "my-source");
+    }
+
+    #[test]
+    fn test_source_tag_from_metadata() {
+        // When no explicit source, falls back to metadata.source
+        let metadata_source = Some("meta-source".to_string());
+        let source: Option<String> = None;
+        let resolved = source
+            .or(metadata_source)
+            .unwrap_or_else(|| "fallback".to_string());
+        assert_eq!(resolved, "meta-source");
+    }
+
+    #[test]
+    fn test_source_tag_from_filename() {
+        // When no source arg or metadata, derive from filename
+        let file = "/path/to/my-export.json";
+        let source_tag = Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        assert_eq!(source_tag, "my-export");
+    }
+
+    // ── Task namespacing and tag augmentation ──
+
+    #[test]
+    fn test_imported_task_namespacing() {
+        let source_tag = "team-alpha";
+        let original_id = "build-feature";
+        let namespaced = format!("imported/{}/{}", source_tag, original_id);
+        assert_eq!(namespaced, "imported/team-alpha/build-feature");
+    }
+
+    #[test]
+    fn test_imported_task_tag_augmentation() {
+        let source_tag = "team-alpha";
+        let mut tags = vec!["original-tag".to_string()];
+        tags.push("imported".to_string());
+        tags.push(format!("source:{}", source_tag));
+        assert_eq!(tags, vec!["original-tag", "imported", "source:team-alpha"]);
+    }
+
+    // ── ImportedTask serialization ──
+
+    #[test]
+    fn test_imported_task_serialization_roundtrip() {
+        let task = ImportedTask {
+            id: "imported/src/t1".to_string(),
+            original_id: "t1".to_string(),
+            title: "Test task".to_string(),
+            description: Some("A description".to_string()),
+            status: "Done".to_string(),
+            visibility: "internal".to_string(),
+            skills: vec!["rust".to_string()],
+            tags: vec!["imported".to_string(), "source:src".to_string()],
+            artifacts: vec![],
+            created_at: None,
+            completed_at: None,
+            agent: Some("agent-1".to_string()),
+            source: "src".to_string(),
+        };
+
+        let yaml = serde_yaml::to_string(&task).unwrap();
+        let parsed: ImportedTask = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.id, "imported/src/t1");
+        assert_eq!(parsed.original_id, "t1");
+        assert_eq!(parsed.source, "src");
+        assert_eq!(parsed.tags, vec!["imported", "source:src"]);
+    }
+
+    // ── Dry run test ──
+
+    #[test]
+    fn test_dry_run_does_not_write_files() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        // Write a valid export file
+        let export = make_minimal_export(vec![make_exported_task("t1", "Task 1")]);
+        let export_json = serde_json::to_string_pretty(&export).unwrap();
+        let export_path = tmp.path().join("export.json");
+        std::fs::write(&export_path, &export_json).unwrap();
+
+        // Run in dry_run mode
+        let result = run(
+            &wg_dir,
+            export_path.to_str().unwrap(),
+            Some("test-source"),
+            true,  // dry_run
+            false, // json
+        );
+        assert!(result.is_ok());
+
+        // No import directory should have been created
+        let import_dir = wg_dir.join("imports").join("test-source");
+        assert!(!import_dir.exists());
+    }
+}
