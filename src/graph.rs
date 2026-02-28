@@ -421,42 +421,47 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 /// Input = total input (uncached + cache_read + cache_creation).
 /// Validation shown only when > 0.
 /// `usage` is the work task's token usage, `validation` is the optional assign+eval token usage.
-pub fn format_token_display(usage: Option<&TokenUsage>, validation: Option<&TokenUsage>) -> Option<String> {
-    match (usage, validation) {
-        (Some(u), Some(v)) => {
-            let vtok = v.total_input() + v.output_tokens;
-            if vtok > 0 {
-                Some(format!(
-                    "{}/{}/{}",
-                    format_tokens(u.total_input()),
-                    format_tokens(u.output_tokens),
-                    format_tokens(vtok),
-                ))
-            } else {
-                Some(format!(
-                    "{}/{}",
-                    format_tokens(u.total_input()),
-                    format_tokens(u.output_tokens),
-                ))
-            }
-        }
-        (Some(u), None) => {
-            Some(format!(
-                "{}/{}",
-                format_tokens(u.total_input()),
-                format_tokens(u.output_tokens),
-            ))
-        }
-        (None, Some(v)) => {
-            let vtok = v.total_input() + v.output_tokens;
-            if vtok > 0 {
-                Some(format!("val:{}", format_tokens(vtok)))
-            } else {
-                None
-            }
-        }
-        (None, None) => None,
+pub fn format_token_display(
+    usage: Option<&TokenUsage>,
+    assign_usage: Option<&TokenUsage>,
+    eval_usage: Option<&TokenUsage>,
+) -> Option<String> {
+    let has_work = usage.is_some();
+    let has_assign = assign_usage.map_or(false, |a| a.total_input() + a.output_tokens > 0);
+    let has_eval = eval_usage.map_or(false, |e| e.total_input() + e.output_tokens > 0);
+
+    if !has_work && !has_assign && !has_eval {
+        return None;
     }
+
+    let mut s = String::new();
+
+    if let Some(u) = usage {
+        let cache_total = u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        s.push_str(&format!("→{} ←{}", format_tokens(u.total_input()), format_tokens(u.output_tokens)));
+        if cache_total > 0 {
+            // ◎ disk/circle symbol for cached tokens
+            s.push_str(&format!(" ◎{}", format_tokens(cache_total)));
+        }
+    }
+
+    if let Some(a) = assign_usage {
+        let atok = a.total_input() + a.output_tokens;
+        if atok > 0 {
+            // ⊳ triangle for assignment
+            s.push_str(&format!(" ⊳{}", format_tokens(atok)));
+        }
+    }
+
+    if let Some(e) = eval_usage {
+        let etok = e.total_input() + e.output_tokens;
+        if etok > 0 {
+            // ∴ QED for evaluation
+            s.push_str(&format!(" ∴{}", format_tokens(etok)));
+        }
+    }
+
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Format a token count in a human-readable abbreviated form (e.g., "11k", "1.2M").
@@ -1681,29 +1686,42 @@ mod tests {
             cache_read_input_tokens: 100_000,
             cache_creation_input_tokens: 5_000,
         };
-        let validation = TokenUsage {
+        let assign = TokenUsage {
+            cost_usd: 0.0,
+            input_tokens: 500,
+            output_tokens: 200,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        let eval = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 800,
             output_tokens: 400,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
         };
-        // in/out/val format, total input includes cache
+        // →in ←out ◎cached ⊳assign ∴eval format
         assert_eq!(
-            format_token_display(Some(&usage), Some(&validation)),
-            Some("110k/3.9k/1.2k".to_string())
+            format_token_display(Some(&usage), Some(&assign), Some(&eval)),
+            Some("→110k ←3.9k ◎105k ⊳700 ∴1.2k".to_string())
         );
         assert_eq!(
-            format_token_display(Some(&usage), None),
-            Some("110k/3.9k".to_string())
+            format_token_display(Some(&usage), None, None),
+            Some("→110k ←3.9k ◎105k".to_string())
         );
+        // Only eval, no assign
         assert_eq!(
-            format_token_display(None, Some(&validation)),
-            Some("val:1.2k".to_string())
+            format_token_display(None, None, Some(&eval)),
+            Some(" ∴1.2k".to_string())
         );
-        assert_eq!(format_token_display(None, None), None);
+        // Only assign, no eval
+        assert_eq!(
+            format_token_display(None, Some(&assign), None),
+            Some(" ⊳700".to_string())
+        );
+        assert_eq!(format_token_display(None, None, None), None);
 
-        // Zero validation tokens should not show val
+        // Zero validation tokens should not show assign/eval
         let zero_val = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,
@@ -1712,10 +1730,10 @@ mod tests {
             cache_creation_input_tokens: 0,
         };
         assert_eq!(
-            format_token_display(Some(&usage), Some(&zero_val)),
-            Some("110k/3.9k".to_string())
+            format_token_display(Some(&usage), Some(&zero_val), Some(&zero_val)),
+            Some("→110k ←3.9k ◎105k".to_string())
         );
-        assert_eq!(format_token_display(None, Some(&zero_val)), None);
+        assert_eq!(format_token_display(None, Some(&zero_val), None), None);
     }
 
     #[test]

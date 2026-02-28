@@ -252,6 +252,7 @@ fn render_frame(
         &status_overrides,
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
     );
 
     // Compute elapsed time

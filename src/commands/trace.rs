@@ -1160,7 +1160,7 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
     let task_ids: HashSet<&str> = descendants.iter().map(|t| t.id.as_str()).collect();
     let annotations = HashMap::new();
 
-    let output = super::viz::generate_graph(&graph, &descendants, &task_ids, &annotations, &HashMap::new(), &HashMap::new());
+    let output = super::viz::generate_graph(&graph, &descendants, &task_ids, &annotations, &HashMap::new(), &HashMap::new(), &HashMap::new());
     println!("{}", output);
     Ok(())
 }

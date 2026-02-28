@@ -4,7 +4,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use workgraph::format_hours;
-use workgraph::graph::{format_token_display, format_tokens, parse_token_usage_live, Status, Task, TokenUsage, WorkGraph};
+use workgraph::graph::{format_token_display, parse_token_usage_live, Status, Task, TokenUsage, WorkGraph};
 
 /// Output format for visualization
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,42 +362,40 @@ pub fn generate_viz_output_from_graph(
         })
         .collect();
 
-    // Build validation token usage (assign + evaluate agents) for each visible task
-    let validation_token_usage: HashMap<String, TokenUsage> = {
-        let mut vtok_map: HashMap<String, TokenUsage> = HashMap::new();
-        for task in graph.tasks() {
-            if !is_internal_task(task) {
-                continue;
-            }
-            let parent_id = if task.tags.iter().any(|t| t == "assignment") {
-                task.id.strip_prefix("assign-").map(|s| s.to_string())
-            } else {
-                task.id.strip_prefix("evaluate-").map(|s| s.to_string())
-            };
-            let Some(pid) = parent_id else { continue };
-            // Get token usage: from stored field, live map, or parse from output log
-            let usage = task.token_usage.as_ref().cloned().or_else(|| {
-                let agent_id = task.assigned.as_deref()?;
-                let log_path = agents_dir.join(agent_id).join("output.log");
-                parse_token_usage_live(&log_path)
-            });
-            if let Some(u) = usage {
-                let entry = vtok_map.entry(pid).or_insert_with(|| TokenUsage {
-                    cost_usd: 0.0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                });
-                entry.cost_usd += u.cost_usd;
-                entry.output_tokens += u.output_tokens;
-                entry.input_tokens += u.input_tokens;
-                entry.cache_read_input_tokens += u.cache_read_input_tokens;
-                entry.cache_creation_input_tokens += u.cache_creation_input_tokens;
-            }
+    // Build separate assign and eval token usage maps for each visible task
+    let mut assign_token_usage: HashMap<String, TokenUsage> = HashMap::new();
+    let mut eval_token_usage: HashMap<String, TokenUsage> = HashMap::new();
+    for task in graph.tasks() {
+        if !is_internal_task(task) {
+            continue;
         }
-        vtok_map
-    };
+        let (is_assign, parent_id) = if task.tags.iter().any(|t| t == "assignment") {
+            (true, task.id.strip_prefix("assign-").map(|s| s.to_string()))
+        } else {
+            (false, task.id.strip_prefix("evaluate-").map(|s| s.to_string()))
+        };
+        let Some(pid) = parent_id else { continue };
+        let usage = task.token_usage.as_ref().cloned().or_else(|| {
+            let agent_id = task.assigned.as_deref()?;
+            let log_path = agents_dir.join(agent_id).join("output.log");
+            parse_token_usage_live(&log_path)
+        });
+        if let Some(u) = usage {
+            let map = if is_assign { &mut assign_token_usage } else { &mut eval_token_usage };
+            let entry = map.entry(pid).or_insert_with(|| TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            });
+            entry.cost_usd += u.cost_usd;
+            entry.output_tokens += u.output_tokens;
+            entry.input_tokens += u.input_tokens;
+            entry.cache_read_input_tokens += u.cache_read_input_tokens;
+            entry.cache_creation_input_tokens += u.cache_creation_input_tokens;
+        }
+    }
 
     // Generate output
     let output = match options.format {
@@ -415,8 +413,8 @@ pub fn generate_viz_output_from_graph(
             &critical_path_set,
             &annotations,
         ),
-        OutputFormat::Ascii => generate_ascii(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &validation_token_usage, options.layout),
-        OutputFormat::Graph => generate_graph(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &validation_token_usage),
+        OutputFormat::Ascii => generate_ascii(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, options.layout),
+        OutputFormat::Graph => generate_graph(&graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage),
     };
 
     Ok(output)
@@ -817,7 +815,8 @@ fn generate_ascii(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    validation_token_usage: &HashMap<String, TokenUsage>,
+    assign_token_usage: &HashMap<String, TokenUsage>,
+    eval_token_usage: &HashMap<String, TokenUsage>,
     layout: LayoutMode,
 ) -> String {
     if tasks.is_empty() {
@@ -1036,8 +1035,9 @@ fn generate_ascii(
             .unwrap_or_default();
         let usage = task
             .and_then(|t| t.token_usage.as_ref().or_else(|| live_token_usage.get(&t.id)));
-        let vtok_usage = validation_token_usage.get(id);
-        let status_with_tokens = if let Some(tok_str) = format_token_display(usage, vtok_usage) {
+        let atok_usage = assign_token_usage.get(id);
+        let etok_usage = eval_token_usage.get(id);
+        let status_with_tokens = if let Some(tok_str) = format_token_display(usage, atok_usage, etok_usage) {
             format!("{} · {}", status, tok_str)
         } else {
             status.to_string()
@@ -1090,12 +1090,7 @@ fn generate_ascii(
     let mut lines: Vec<String> = Vec::new();
     let mut rendered: HashSet<&str> = HashSet::new();
 
-    // Track line ranges and task IDs per WCC for per-component summaries
-    struct WccRange<'a> {
-        end_line: usize, // line index after last line of this WCC
-        task_ids: Vec<&'a str>,
-    }
-    let mut wcc_ranges: Vec<WccRange> = Vec::new();
+    // (WCC summary lines removed — tracking structs no longer needed)
 
     // Sort components by LRU ordering: most-recently-operated-on WCC first.
     // Two-level sort: active WCCs (with in-progress tasks) first, then by
@@ -1326,10 +1321,7 @@ fn generate_ascii(
                 last_line.push_str("  (independent)");
             }
         }
-        wcc_ranges.push(WccRange {
-            end_line: lines.len(),
-            task_ids: component.to_vec(),
-        });
+        // (WCC range tracking removed)
     }
 
     // Add arcs for fan-in edges that were moved during diamond restructuring
@@ -1347,109 +1339,10 @@ fn generate_ascii(
     // Phase 2: Draw right-side arcs for all non-tree edges
     draw_back_edge_arcs(&mut lines, &back_edge_arcs, use_color);
 
-    // Phase 3: Insert per-WCC summary lines (reverse order to preserve indices)
-    let dim = if use_color { "\x1b[2m" } else { "" };
-    for wcc in wcc_ranges.iter().rev() {
-        let summary = format_wcc_summary(&wcc.task_ids, &task_map, live_token_usage, validation_token_usage, dim, reset);
-        lines.insert(wcc.end_line, summary);
-    }
+    // Phase 2: Draw right-side arcs
+    // (WCC summary lines removed — too noisy)
 
     lines.join("\n")
-}
-
-/// Format a per-WCC summary line showing task counts and cycle iterations.
-fn format_wcc_summary(
-    task_ids: &[&str],
-    task_map: &HashMap<&str, &Task>,
-    live_token_usage: &HashMap<String, TokenUsage>,
-    validation_token_usage: &HashMap<String, TokenUsage>,
-    dim: &str,
-    reset: &str,
-) -> String {
-    let mut done = 0u32;
-    let mut open = 0u32;
-    let mut in_progress = 0u32;
-    let mut blocked = 0u32;
-    let mut failed = 0u32;
-    let mut max_iteration = 0u32;
-
-    for &id in task_ids {
-        if let Some(task) = task_map.get(id) {
-            match task.status {
-                Status::Done => done += 1,
-                Status::Open => open += 1,
-                Status::InProgress => in_progress += 1,
-                Status::Blocked => blocked += 1,
-                Status::Failed => failed += 1,
-                Status::Abandoned => {} // not counted
-            }
-            if task.loop_iteration > max_iteration {
-                max_iteration = task.loop_iteration;
-            }
-        }
-    }
-
-    let total = done + open + in_progress + blocked + failed;
-
-    let mut parts: Vec<String> = Vec::new();
-    if done > 0 {
-        parts.push(format!("{} done", done));
-    }
-    if in_progress > 0 {
-        parts.push(format!("{} in-progress", in_progress));
-    }
-    if open > 0 {
-        parts.push(format!("{} open", open));
-    }
-    if blocked > 0 {
-        parts.push(format!("{} blocked", blocked));
-    }
-    if failed > 0 {
-        parts.push(format!("{} failed", failed));
-    }
-
-    let mut summary = format!("{} tasks ╌╌ {}", total, parts.join(", "));
-    if max_iteration > 0 {
-        summary.push_str(&format!(" ╌╌ iter {}", max_iteration));
-    }
-
-    // Aggregate token usage and cost (including live data from in-progress agents)
-    // Include validation (assign + evaluate) costs in the total
-    let mut total_cost = 0.0f64;
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-    let mut total_validation = 0u64;
-    let mut has_usage = false;
-    for &id in task_ids {
-        if let Some(task) = task_map.get(id) {
-            let usage = task.token_usage.as_ref().or_else(|| live_token_usage.get(id));
-            if let Some(usage) = usage {
-                total_cost += usage.cost_usd;
-                total_input += usage.total_input();
-                total_output += usage.output_tokens;
-                has_usage = true;
-            }
-        }
-        // Add validation costs (assign + evaluate agents)
-        if let Some(vtok) = validation_token_usage.get(id) {
-            total_cost += vtok.cost_usd;
-            total_validation += vtok.total_input() + vtok.output_tokens;
-            has_usage = true;
-        }
-    }
-    if has_usage {
-        let mut tok_parts = format!("{}/{}", format_tokens(total_input), format_tokens(total_output));
-        if total_validation > 0 {
-            tok_parts.push_str(&format!("/{}", format_tokens(total_validation)));
-        }
-        summary.push_str(&format!(
-            " ╌╌ {}, ${:.2}",
-            tok_parts,
-            total_cost,
-        ));
-    }
-
-    format!("{}  ╌╌ {} ╌╌{}", dim, summary, reset)
 }
 
 /// Pad a line with spaces so its visible length reaches at least `target_len`.
@@ -1732,9 +1625,10 @@ pub fn generate_graph(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    validation_token_usage: &HashMap<String, TokenUsage>,
+    assign_token_usage: &HashMap<String, TokenUsage>,
+    eval_token_usage: &HashMap<String, TokenUsage>,
 ) -> String {
-    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new(), live_token_usage, validation_token_usage)
+    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new(), live_token_usage, assign_token_usage, eval_token_usage)
 }
 
 /// Like generate_graph but allows overriding the displayed status for each task.
@@ -1746,7 +1640,8 @@ pub fn generate_graph_with_overrides(
     annotations: &HashMap<String, String>,
     status_overrides: &HashMap<&str, Status>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    validation_token_usage: &HashMap<String, TokenUsage>,
+    assign_token_usage: &HashMap<String, TokenUsage>,
+    eval_token_usage: &HashMap<String, TokenUsage>,
 ) -> String {
     if tasks.is_empty() {
         return String::from("(no tasks to display)");
@@ -1907,8 +1802,9 @@ pub fn generate_graph_with_overrides(
         };
 
         let usage = task.token_usage.as_ref().or_else(|| live_token_usage.get(id));
-        let vtok_usage = validation_token_usage.get(id);
-        let token_info = format_token_display(usage, vtok_usage)
+        let atok_usage = assign_token_usage.get(id);
+        let etok_usage = eval_token_usage.get(id);
+        let token_info = format_token_display(usage, atok_usage, etok_usage)
             .map(|s| format!(" · {}", s))
             .unwrap_or_default();
 
@@ -2461,7 +2357,7 @@ mod tests {
         let tasks: Vec<&workgraph::graph::Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
         assert_eq!(result, "(no tasks to display)");
     }
 
@@ -2477,7 +2373,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Tree output: src is root, tgt is child
         assert!(result.contains("src"));
@@ -2501,7 +2397,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // a is root with two children
         assert!(result.contains("├→"));
@@ -2525,7 +2421,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
         assert!(result.contains('c'));
@@ -2546,7 +2442,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         assert!(result.contains("solo"));
         assert!(result.contains("(independent)"));
@@ -2566,7 +2462,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         assert!(result.contains("(in-progress)"));
         assert!(result.contains("(blocked)"));
@@ -2587,7 +2483,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Should show indented chain: a -> b -> c
         assert!(result.contains("a"));
@@ -2682,7 +2578,7 @@ mod tests {
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Internal task should NOT appear
         assert!(!result.contains("assign-my-task"));
@@ -2711,7 +2607,7 @@ mod tests {
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         assert!(!result.contains("evaluate-my-task"));
         assert!(result.contains("my-task"));
@@ -2796,7 +2692,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let annots = HashMap::new();
 
-        let result = generate_ascii(&graph, &tasks, &task_ids, &annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Both tasks should be visible
         assert!(result.contains("assign-my-task"));
@@ -2826,7 +2722,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // The source task (which has cycle_config) should show the ↺ symbol
         assert!(
@@ -2859,7 +2755,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Should show ↺ symbol in the node label
         assert!(
@@ -2893,7 +2789,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Task with cycle_config should show the ↺ symbol
         assert!(
@@ -2912,7 +2808,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // No loop symbol on tasks without loops
         assert!(
@@ -2963,7 +2859,7 @@ mod tests {
         let tasks: Vec<&Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(result, "(no tasks to display)");
     }
 
@@ -2976,7 +2872,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("alpha"), "Should contain task id:\n{}", result);
         assert!(result.contains("open"), "Should contain status:\n{}", result);
@@ -2996,7 +2892,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         // Both boxes should appear
         assert!(result.contains('a'), "Should contain 'a':\n{}", result);
@@ -3023,7 +2919,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         // All children should appear
         assert!(result.contains("c1"), "Should contain c1:\n{}", result);
@@ -3047,7 +2943,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         // All nodes should be present
         assert!(result.contains('a'), "Should contain a:\n{}", result);
@@ -3073,7 +2969,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         // All 4 nodes
         assert!(result.contains("start"), "Should contain start:\n{}", result);
@@ -3099,7 +2995,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("in-progress"), "Should show in-progress status:\n{}", result);
         assert!(result.contains("blocked"), "Should show blocked status:\n{}", result);
@@ -3125,7 +3021,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         assert!(result.contains("↺"), "Should show loop annotation:\n{}", result);
         assert!(result.contains("2/5"), "Should show iteration count:\n{}", result);
@@ -3140,7 +3036,7 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new());
+        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
         // ID should be truncated with ellipsis
         assert!(result.contains('…'), "Should truncate long id:\n{}", result);
@@ -3272,7 +3168,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Should have ← at target and ┘ at source
         assert!(result.contains("←"), "Back-edge target should have ←\nOutput:\n{}", result);
@@ -3305,7 +3201,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Fan-in should produce a right-side arc (not a text annotation)
         assert!(result.contains("←") || result.contains("┘"),
@@ -3340,7 +3236,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
 
         // Diamond layout (default)
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond);
         eprintln!("DIAMOND:\n{}", result);
 
         let lines: Vec<&str> = result.lines().collect();
@@ -3365,7 +3261,7 @@ mod tests {
             "join should receive arcs\nOutput:\n{}", result);
 
         // Compare with tree layout (old behavior): join should be under left
-        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree);
+        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree);
         eprintln!("TREE:\n{}", result_tree);
         let tree_lines: Vec<&str> = result_tree.lines().collect();
         let join_tree = tree_lines.iter().find(|l| l.contains("join")).expect("join in tree");
@@ -3398,7 +3294,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond);
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond);
         eprintln!("WIDE DIAMOND:\n{}", result);
 
         let lines: Vec<&str> = result.lines().collect();
@@ -3436,7 +3332,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         let tree_lines: Vec<&str> = result.lines().collect();
         // The child should use └→ (last visible child), not ├→
@@ -3481,7 +3377,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Should have exactly one ← (same-target collapse)
         let target_count = result.matches("←").count();
@@ -3512,7 +3408,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Lines with arcs should have space before the dash fill
         for line in result.lines() {
@@ -3546,7 +3442,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Find the lines
         let lines: Vec<&str> = result.lines().collect();
@@ -3561,7 +3457,7 @@ mod tests {
             "Forward skip: blocker B should have ┐\nOutput:\n{}", result);
 
         // Verify tree layout with LayoutMode::Tree (old behavior)
-        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree);
+        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree);
         let tree_lines: Vec<&str> = result_tree.lines().collect();
         let a_line_tree = tree_lines.iter().find(|l| l.contains("aaa")).expect("A should appear in tree mode");
         // In tree mode, A→C forward skip produces an arc with ┐ at A
@@ -3596,7 +3492,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // D should have exactly one ← (same-dependent collapse)
         let arrow_count = result.matches("←").count();
@@ -3634,7 +3530,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
+        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default());
 
         // Each dependent (leaf-a, leaf-b) should have ←
         let lines: Vec<&str> = result.lines().collect();
@@ -3703,7 +3599,7 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
             &graph, &tasks, &task_ids,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(),
             LayoutMode::default(),
         );
         eprintln!("CROSSING OUTPUT:\n{}", result);

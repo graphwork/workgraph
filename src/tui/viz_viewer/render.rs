@@ -415,18 +415,17 @@ fn draw_help_overlay(frame: &mut Frame) {
     frame.render_widget(paragraph, inner);
 }
 
-/// Render token breakdown spans: "in/out[/cache] (label) [$cost]"
+/// Render token breakdown spans: "→in ←out [◎cache] (label) [$cost]"
 fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, label: &str) {
     let input = format_tokens(usage.total_input());
     let output = format_tokens(usage.output_tokens);
 
-    // Show cache only when significant
     let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
     let token_str = if cache_total > 0 {
         let cache = format_tokens(cache_total);
-        format!("{}/{}/{}", input, output, cache)
+        format!("→{} ←{} ◎{}", input, output, cache)
     } else {
-        format!("{}/{}", input, output)
+        format!("→{} ←{}", input, output)
     };
 
     spans.push(Span::styled(
