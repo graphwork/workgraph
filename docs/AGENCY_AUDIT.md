@@ -181,7 +181,7 @@ Triggered via `wg evaluate --org <task-id>`. **Not auto-triggered by the coordin
 - Org-level evaluation is not auto-triggered — the spec implies it should be part of the standard flow
 - The evaluator runs as a hardcoded prompt template, not as an agent composed from its role components
 - The rubric specification spectrum (explicit → named → domain → natural language → none) from the spec is not formalized — the evaluator handles whatever rubric text is present but doesn't categorize the level of specification
-- ~~Proper scoring rules for evaluator incentives~~ — **Implemented**: Brier accuracy, calibration, and resolution scoring with ground-truth comparison (manual, human-review, outcome-correlation, peer-eval sources)
+- Proper scoring rules for evaluator incentives — agent implementation was lost in concurrent overwrites, needs re-implementation
 
 ---
 
@@ -218,7 +218,9 @@ Operations that touch DesiredOutcomes with `requires_human_oversight=true` or us
 
 **Well aligned.** The spec's three mutation classes (mutation, randomisation, bizarre ideation) are implemented, plus additional strategies (crossover, gap analysis, retirement) that extend beyond the spec. The Level × Amount targeting matches the spec's evolver desired outcomes along two independent dimensions. The deferred queue implements the spec's objective/trade-off configuration distinction — automatic evolution is constrained to trade-off configurations, while objective changes require human oversight.
 
-**Gap**: The evolver runs as a hardcoded prompt template, not as an agent composed from its role components. Also, `wg evolve review` (for approving deferred operations) is not yet a CLI command.
+**Gap**: The evolver runs as a hardcoded prompt template, not as an agent composed from its role components. ~~`wg evolve review` (for approving deferred operations) is not yet a CLI command.~~ **Now implemented** as `wg evolve review {list|approve|reject}`.
+
+**New since audit**: Meta-agent evolution implemented — `meta_swap_role`, `meta_swap_tradeoff`, `meta_compose_agent` ops allow evolving assigner/evaluator/evolver configurations. Evolver self-mutation automatically deferred for human review. Org-level evaluation scores consumed with blended selection pressure (`org_weight` config).
 
 ---
 
@@ -261,33 +263,33 @@ A `creator_pipeline_function()` exists as a design template (creator → evolver
 
 Config keys exist: `creator_agent`, `creator_model`.
 
-### What's missing
+### What's partially done
 
-- No auto-creator trigger in the coordinator
-- No `auto_create` config flag
+- `src/commands/agency_create.rs` exists (567 lines) with creator logic, but is NOT wired into `mod.rs` or `main.rs`
+- No `auto_create` config flag in coordinator
 - The creator agent is not automatically composed during bootstrap
-- Cannot actually expand the primitive store via automated search
+- Cannot yet expand the primitive store via automated search
 
 ### Comparison to spec
 
-**Not implemented.** The spec describes the agent creator as forming a pipeline with the evolver and assigner: "create new primitives → evolve and test configurations → assign to tasks." The definitions and types exist, but the functional pipeline does not. The creator is the largest gap between spec and implementation.
+**Partially implemented.** The spec describes the agent creator as forming a pipeline with the evolver and assigner: "create new primitives → evolve and test configurations → assign to tasks." The module code exists but is not wired in. See `re-implement-missing` follow-up task.
 
 ---
 
 ## 8. Special Agent Summary
 
-| Agent Type | Components Defined | Agent Composed | Prompt Source | Auto-Triggered | Evolves Itself |
+| Agent Type | Components Defined | Agent Composed | Prompt Source | Auto-Triggered | Can Be Evolved |
 |------------|-------------------|----------------|---------------|----------------|----------------|
-| Assigner | 7 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✗ |
-| Evaluator | 6 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✗ |
-| Evolver | 8 ✓ | ✗ | Hardcoded template | ✗ (manual `wg evolve`) | ✗ |
-| Creator | 6 ✓ | ✗ | N/A (not runnable) | ✗ | ✗ |
+| Assigner | 7 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✓ (meta_swap_role/tradeoff) |
+| Evaluator | 6 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✓ (meta_swap_role/tradeoff) |
+| Evolver | 8 ✓ | ✗ | Hardcoded template | ✗ (manual `wg evolve`) | ✓ (deferred for review) |
+| Creator | 6 ✓ | ✗ | Module exists, not wired | ✗ | ✓ (meta_swap_role/tradeoff) |
 
 The spec says: "None are privileged system components. All accumulate performance history, can be evolved, and are subject to the same selection pressure as any other agent."
 
-**Current reality**: All four are privileged. They run via hardcoded prompt templates and do not accumulate individual performance history or participate in evolution.
+**Current reality**: All four are still partially privileged. They run via hardcoded prompt templates and do not accumulate individual performance history. However, **evolution of meta-agents is now implemented** — `meta_swap_role`, `meta_swap_tradeoff`, and `meta_compose_agent` operations can target assigner/evaluator/evolver slots. Evolver self-mutation is automatically deferred for human review via `wg evolve review`.
 
-This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose special agents from their role components, render prompts from those components, record evaluations against them, and evolve them like any other agent.
+This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose special agents from their role components, render prompts from those components, record evaluations against them, and evolve them like any other agent. Evolution targeting is done; composition and evaluation recording are not.
 
 ---
 
@@ -324,28 +326,44 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 | Evaluation cascade to primitives | **DONE** | 6-step cascade, scores propagate to all entities |
 | Two-level reward signal | **DONE** (types exist) | OrgEvaluation struct + record function exist, not auto-triggered |
 | Performance/learning continuum | **EXCEEDS** | UCB1, attractor weights, experiments, retrospective inference |
-| Evolver mutation operations | **DONE** | 9 strategies, Level×Amount, deferred queue |
+| Evolver mutation operations | **DONE** | 9+ strategies, Level×Amount, deferred queue |
 | Human oversight on objectives | **DONE** | Deferred queue for DesiredOutcome changes |
+| Meta-agent evolution | **DONE** | meta_swap_role, meta_swap_tradeoff, meta_compose_agent ops in evolve.rs; evolver self-mutation auto-deferred |
+| `wg evolve review` CLI | **DONE** | list/approve/reject subcommands for deferred operations |
+| Evolver consumes org scores | **DONE** | OrgEvaluation loaded, blended scoring with org_weight, per-entity org averages |
 | Special agents as regular agents | **20%** | Components defined, not composed/rendered/evaluated as agents |
 | Assigner from primitives | **PARTIAL** | Functional but hardcoded prompt, not composed from components |
 | Evaluator from primitives | **PARTIAL** | Functional but hardcoded prompt |
 | Evolver from primitives | **PARTIAL** | Functional but hardcoded prompt |
-| Agent creator pipeline | **NOT DONE** | Types exist, pipeline not wired |
+| Agent creator pipeline | **PARTIAL** | agency_create.rs module exists (567 lines) but not wired into mod.rs/main.rs |
 | Federation at primitive level | **PARTIAL** | Infrastructure exists, primitive-level transfer needs testing |
-| Task clarification by assigner | **NOT DONE** | Component defined, not wired |
-| Rubric specification spectrum | **NOT DONE** | Evaluator handles rubrics ad-hoc, no formalized levels |
-| Proper scoring rules for evaluator | **DONE** | Brier accuracy, calibration, resolution; ground-truth comparison |
+| Task clarification by assigner | **NOT DONE** | Component defined, not wired (agent changes lost) |
+| Rubric specification spectrum | **NOT DONE** | Agent changes lost — needs re-implementation |
+| Proper scoring rules for evaluator | **NOT DONE** | Agent changes lost — needs re-implementation |
+| Record evaluations on special agents | **NOT DONE** | Agent changes lost — needs re-implementation |
+| Auto-trigger org evaluation | **NOT DONE** | Agent changes lost — needs re-implementation |
 
-### The critical path
+### Validation note (2026-02-27)
 
-The biggest gap is **special agent formalization** (Phase 5). Everything else either works or exceeds the spec. The path to closing this:
+Twelve dependency tasks were dispatched concurrently to implement audit gaps. Due to all agents working in the same directory without isolation, changes in 9 of 12 tasks were overwritten by concurrent file modifications. Only evolve.rs and main.rs changes survived (3 tasks: enable-evolution-of, evolver-consumes-org, implement-wg-evolve).
 
-1. Compose special agents from their seeded role components during `wg agency init`
-2. Wire prompt construction to render from role components instead of templates
-3. Record evaluations against special agent executions
-4. Enable evolution of special agents
+**Follow-up task `re-implement-missing` created** to re-do the 9 lost items. Must use sequential pipeline pattern or worktree isolation to prevent recurrence.
 
-Once special agents are regular agents, the system becomes self-improving: the evolver can evolve the assigner's components, the evaluator evaluates the evolver, and the creator can be wired in to expand the primitive store.
+### What works end-to-end
+
+Build: clean. Tests: 2825 passed, 0 failed. The following flows work:
+1. Bootstrap (`wg agency init`) → seeds primitives + special agent components
+2. Assignment (coordinator auto-assign with UCB1/learning modes)
+3. Evaluation (6-step cascade, task-level + org-level types)
+4. Evolution (9+ strategies, meta-agent targeting, deferred queue, review CLI)
+5. Federation infrastructure (push/pull/merge with access control)
+
+### Remaining critical path
+
+1. Re-implement 9 lost audit items (see `re-implement-missing` task)
+2. Compose special agents from their seeded role components during `wg agency init`
+3. Wire prompt construction to render from role components instead of templates
+4. Complete agent creator wiring (mod.rs + main.rs + config flags)
 
 ---
 
