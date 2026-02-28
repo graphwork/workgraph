@@ -1168,6 +1168,59 @@ mod tests {
         assert!(criteria_pos < required_pos);
     }
 
+    #[test]
+    fn test_render_evaluator_prompt_with_downstream_tasks() {
+        let downstream = vec![
+            (
+                "Deploy to staging".to_string(),
+                "Open".to_string(),
+                Some("Deploy the built artifacts to the staging environment.".to_string()),
+            ),
+            (
+                "Run integration tests".to_string(),
+                "InProgress".to_string(),
+                None,
+            ),
+        ];
+
+        let input = EvaluatorInput {
+            task_title: "Build release package",
+            task_description: Some("Create the release package."),
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &downstream,
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        // Downstream tasks section should appear
+        assert!(output.contains("## Downstream Tasks"));
+        assert!(output.contains(
+            "These tasks depend on this task's output. Consider whether the output"
+        ));
+        assert!(output.contains("**Deploy to staging** (Open)"));
+        assert!(output.contains("Deploy the built artifacts to the staging environment."));
+        assert!(output.contains("**Run integration tests** (InProgress)"));
+
+        // Should NOT show the "no downstream tasks" note
+        assert!(!output.contains("No downstream tasks are listed"));
+
+        // Organizational impact dimensions should still be present
+        assert!(output.contains("### Organizational Impact"));
+        assert!(output.contains("**downstream_usability**"));
+        assert!(output.contains("**coordination_overhead**"));
+        assert!(output.contains("**blocking_impact**"));
+    }
+
     // -- Rich component resolution tests ------------------------------------
 
     use super::super::starters::{build_component, build_outcome};

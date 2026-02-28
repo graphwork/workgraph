@@ -539,6 +539,12 @@ fn build_auto_evaluate_tasks(
             {
                 return false;
             }
+            // Skip tasks already tagged as having had evaluation scheduled.
+            // This survives gc (which removes the evaluate-* task) and prevents
+            // re-creating hundreds of eval tasks on service restart.
+            if t.tags.iter().any(|tag| tag == "eval-scheduled") {
+                return false;
+            }
             // Skip tasks assigned to human agents
             if let Some(ref agent_id) = t.agent
                 && human_agent_ids.contains(agent_id.as_str())
@@ -632,6 +638,13 @@ fn build_auto_evaluate_tasks(
 
         graph.add_node(Node::Task(eval_task));
 
+        // Tag the source task so we never recreate the eval task after gc.
+        if let Some(source) = graph.get_task_mut(task_id) {
+            if !source.tags.iter().any(|t| t == "eval-scheduled") {
+                source.tags.push("eval-scheduled".to_string());
+            }
+        }
+
         eprintln!(
             "[coordinator] Created evaluation task '{}' blocked by '{}'",
             eval_task_id, task_id,
@@ -674,142 +687,6 @@ fn build_auto_evaluate_tasks(
     modified
 }
 
-/// Auto-org-evaluate: create org-evaluation tasks for tasks whose downstream
-/// consumers have all completed.
-///
-/// An org-evaluation measures how well an agent's output served the broader
-/// graph — downstream usability, coordination overhead, blocking behaviour.
-/// This can only be computed once downstream tasks have completed, providing
-/// a concrete signal about the quality of the upstream work.
-///
-/// Returns `true` if the graph was modified.
-fn build_auto_org_evaluate_tasks(
-    dir: &Path,
-    graph: &mut workgraph::graph::WorkGraph,
-    config: &Config,
-) -> bool {
-    let mut modified = false;
-
-    // Collect tasks that are done and have downstream (before) edges
-    let candidates: Vec<(String, String, Vec<String>)> = graph
-        .tasks()
-        .filter(|t| {
-            // Only done tasks
-            t.status == Status::Done
-            // Must have downstream consumers
-            && !t.before.is_empty()
-            // Skip dominated tags to prevent regress
-            && !t.tags.iter().any(|tag| {
-                ["evaluation", "assignment", "evolution", "org-evaluation"]
-                    .contains(&tag.as_str())
-            })
-        })
-        .map(|t| (t.id.clone(), t.title.clone(), t.before.clone()))
-        .collect();
-
-    // Resolve evaluator agent identity once (shared across all org-eval tasks)
-    let evaluator_identity = config.agency.evaluator_agent.as_ref().and_then(|agent_hash| {
-        let agency_dir = dir.join("agency");
-        let agents_dir = agency_dir.join("cache/agents");
-        let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
-        let agent = load_agent(&agent_path).ok()?;
-        let roles_dir = agency_dir.join("cache/roles");
-        let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-        let role = load_role(&role_path).ok()?;
-        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-        let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
-        let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
-        let workgraph_root = dir;
-        let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
-        let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
-        Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
-    });
-
-    for (task_id, task_title, downstream_ids) in &candidates {
-        let org_eval_id = format!("evaluate-org-{}", task_id);
-
-        // Skip if org-evaluation already exists
-        if graph.get_task(&org_eval_id).is_some() {
-            continue;
-        }
-
-        // Check if all downstream tasks have completed (done or failed)
-        let all_downstream_complete = downstream_ids.iter().all(|dep_id| {
-            graph
-                .get_task(dep_id)
-                .map(|t| t.status.is_terminal())
-                .unwrap_or(true) // Missing tasks don't block
-        });
-
-        if !all_downstream_complete {
-            continue;
-        }
-
-        let mut desc = String::new();
-        // Prepend evaluator identity when composed evaluator agent is available
-        if let Some(ref identity) = evaluator_identity {
-            desc.push_str(identity);
-            desc.push_str("\n\n");
-        }
-        desc.push_str(&format!(
-            "Org-evaluate task '{}' now that its downstream consumers have completed.\n\n\
-             Run `wg evaluate org {}` to compute the organizational reward signal.\n\
-             This assesses downstream_usability, coordination_overhead, and blocking_behaviour.",
-            task_id, task_id,
-        ));
-
-        let org_eval_task = Task {
-            id: org_eval_id.clone(),
-            title: format!("Org-evaluate: {}", task_title),
-            description: Some(desc),
-            status: Status::Open,
-            assigned: None,
-            estimate: None,
-            before: vec![],
-            // No after edges — the downstream tasks are already complete.
-            // We checked above. Making them after-edges would be confusing
-            // since they're already Done/Failed.
-            after: vec![],
-            requires: vec![],
-            tags: vec!["org-evaluation".to_string(), "agency".to_string()],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: Some(format!("wg evaluate org {}", task_id)),
-            not_before: None,
-            created_at: Some(Utc::now().to_rfc3339()),
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: config.agency.evaluator_model.clone(),
-            verify: None,
-            agent: config.agency.evaluator_agent.clone(),
-
-            loop_iteration: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-            cycle_config: None,
-            exec_mode: None,
-            token_usage: None,
-        };
-
-        graph.add_node(Node::Task(org_eval_task));
-
-        eprintln!(
-            "[coordinator] Created org-evaluation task '{}' for '{}'",
-            org_eval_id, task_id,
-        );
-        modified = true;
-    }
-
-    modified
-}
 
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
@@ -1094,7 +971,6 @@ pub fn coordinator_tick(
     // Phase 4: Auto-evaluate tasks
     if config.agency.auto_evaluate {
         graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
-        graph_modified |= build_auto_org_evaluate_tasks(dir, &mut graph, &config);
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate.

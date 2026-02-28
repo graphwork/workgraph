@@ -767,7 +767,6 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
             task_count: 5,
             avg_score: Some(0.85),
             evaluations: vec![],
-            org_performance: None,
         },
         lineage: Lineage::default(),
         capabilities: Vec::new(),

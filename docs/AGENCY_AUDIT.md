@@ -31,7 +31,7 @@ The Agent struct also carries: `attractor_weight` (0.0–1.0, how "conventional"
 
 ### Shared Metadata on All Entities
 
-- **PerformanceRecord**: task_count, avg_score, evaluations (Vec\<EvaluationRef\>), org_performance (Option\<OrgPerformanceRecord\>)
+- **PerformanceRecord**: task_count, avg_score, evaluations (Vec\<EvaluationRef\>)
 - **Lineage**: parent_ids, generation, created_by, created_at
 - **AccessControl**: owner (default "local"), policy (Private/Shared/Open)
 
@@ -160,25 +160,22 @@ After evaluation for a learning/exploration assignment, `process_retrospective_i
    - Score < base avg → weight -= 0.1 (becoming less conventional)
 3. Populates composition cache if score ≥ `cache_population_threshold` (0.8)
 
-### Organizational-level evaluation
+### Organizational-level concerns (folded into task evaluation)
 
-A separate `OrgEvaluation` struct exists with three weighted dimensions:
+The separate `OrgEvaluation` type has been removed. Organizational concerns are now handled as dimensions within the standard evaluator prompt:
 
 | Dimension | Weight | Measures |
 |-----------|--------|----------|
-| downstream_usability | 0.50 | How useful output is to downstream tasks |
-| coordination_overhead | 0.30 | Multi-agent overhead imposed |
-| blocking_behaviour | 0.20 | Time spent blocking others |
+| downstream_usability | 15% | How useful output is to downstream tasks |
+| coordination_overhead | 10% | Multi-agent overhead imposed |
+| blocking_impact | 5% | Impact on blocking other agents |
 
-Stored separately in `org-evaluations/{id}.json`. Has its own `record_org_evaluation()` function that updates `OrgPerformanceRecord` on agent, role, and tradeoff.
-
-Triggered via `wg evaluate --org <task-id>`. **Not auto-triggered by the coordinator** — requires manual invocation or explicit scheduling.
+These are grouped as "Organizational Impact" (30% total weight) alongside "Individual Quality" (70%) in the evaluator rubric. When a task has downstream consumers, their context is rendered in the evaluator prompt automatically. No separate evaluation pass or storage is needed — org-level scoring flows through the standard 6-step evaluation cascade.
 
 ### Comparison to spec
 
-**Mostly aligned.** The 6-step cascade matches the spec's requirement that "primitives can inherit evaluations from the agents they were elements of." The two-level reward signal (task-level + org-level) exists as separate types. Key gaps:
+**Mostly aligned.** The 6-step cascade matches the spec's requirement that "primitives can inherit evaluations from the agents they were elements of." The two-level reward signal (task-level + org-level) is now unified: org-level concerns (downstream_usability, coordination_overhead, blocking_impact) are integrated as weighted dimensions in the evaluator prompt rather than requiring a separate evaluation type. This is simpler than the spec's implied separate pass and achieves the same goal — org-level signal propagates through the standard cascade. Key gaps:
 
-- Org-level evaluation is not auto-triggered — the spec implies it should be part of the standard flow
 - The evaluator runs as a hardcoded prompt template, not as an agent composed from its role components
 - The rubric specification spectrum (explicit → named → domain → natural language → none) from the spec is not formalized — the evaluator handles whatever rubric text is present but doesn't categorize the level of specification
 - Proper scoring rules for evaluator incentives — agent implementation was lost in concurrent overwrites, needs re-implementation
@@ -220,7 +217,7 @@ Operations that touch DesiredOutcomes with `requires_human_oversight=true` or us
 
 **Gap**: The evolver runs as a hardcoded prompt template, not as an agent composed from its role components. ~~`wg evolve review` (for approving deferred operations) is not yet a CLI command.~~ **Now implemented** as `wg evolve review {list|approve|reject}`.
 
-**New since audit**: Meta-agent evolution implemented — `meta_swap_role`, `meta_swap_tradeoff`, `meta_compose_agent` ops allow evolving assigner/evaluator/evolver configurations. Evolver self-mutation automatically deferred for human review. Org-level evaluation scores consumed with blended selection pressure (`org_weight` config).
+**New since audit**: Meta-agent evolution implemented — `meta_swap_role`, `meta_swap_tradeoff`, `meta_compose_agent` ops allow evolving assigner/evaluator/evolver configurations. Evolver self-mutation automatically deferred for human review.
 
 ---
 
@@ -324,13 +321,13 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 | Primitive store as ground truth | **DONE** | 3 types, content-addressed, independent storage |
 | Composition cache above primitives | **DONE** | Role = components + outcome, Agent = role + tradeoff |
 | Evaluation cascade to primitives | **DONE** | 6-step cascade, scores propagate to all entities |
-| Two-level reward signal | **DONE** (types exist) | OrgEvaluation struct + record function exist, not auto-triggered |
+| Two-level reward signal | **DONE** | Org-level concerns folded into evaluator rubric as weighted dimensions (30% org / 70% individual) — no separate OrgEvaluation type |
 | Performance/learning continuum | **EXCEEDS** | UCB1, attractor weights, experiments, retrospective inference |
 | Evolver mutation operations | **DONE** | 9+ strategies, Level×Amount, deferred queue |
 | Human oversight on objectives | **DONE** | Deferred queue for DesiredOutcome changes |
 | Meta-agent evolution | **DONE** | meta_swap_role, meta_swap_tradeoff, meta_compose_agent ops in evolve.rs; evolver self-mutation auto-deferred |
 | `wg evolve review` CLI | **DONE** | list/approve/reject subcommands for deferred operations |
-| Evolver consumes org scores | **DONE** | OrgEvaluation loaded, blended scoring with org_weight, per-entity org averages |
+
 | Special agents as regular agents | **20%** | Components defined, not composed/rendered/evaluated as agents |
 | Assigner from primitives | **PARTIAL** | Functional but hardcoded prompt, not composed from components |
 | Evaluator from primitives | **PARTIAL** | Functional but hardcoded prompt |
@@ -341,7 +338,7 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 | Rubric specification spectrum | **NOT DONE** | Agent changes lost — needs re-implementation |
 | Proper scoring rules for evaluator | **NOT DONE** | Agent changes lost — needs re-implementation |
 | Record evaluations on special agents | **NOT DONE** | Agent changes lost — needs re-implementation |
-| Auto-trigger org evaluation | **NOT DONE** | Agent changes lost — needs re-implementation |
+| ~~Auto-trigger org evaluation~~ | **REMOVED** | No longer needed — org concerns integrated into standard evaluator dimensions |
 
 ### Validation note (2026-02-27)
 
@@ -354,7 +351,7 @@ Twelve dependency tasks were dispatched concurrently to implement audit gaps. Du
 Build: clean. Tests: 2825 passed, 0 failed. The following flows work:
 1. Bootstrap (`wg agency init`) → seeds primitives + special agent components
 2. Assignment (coordinator auto-assign with UCB1/learning modes)
-3. Evaluation (6-step cascade, task-level + org-level types)
+3. Evaluation (6-step cascade with integrated org-level dimensions)
 4. Evolution (9+ strategies, meta-agent targeting, deferred queue, review CLI)
 5. Federation infrastructure (push/pull/merge with access control)
 
@@ -374,7 +371,7 @@ Build: clean. Tests: 2825 passed, 0 failed. The following flows work:
 | `src/agency/types.rs` | 582 | All type definitions |
 | `src/agency/store.rs` | 258 | Persistence layer |
 | `src/agency/hash.rs` | 113 | Content-addressable hashing |
-| `src/agency/eval.rs` | 859 | 6-step evaluation cascade + org evaluation |
+| `src/agency/eval.rs` | ~700 | 6-step evaluation cascade |
 | `src/agency/prompt.rs` | 1,358 | Prompt rendering from primitives |
 | `src/agency/lineage.rs` | 366 | BFS ancestry walkers |
 | `src/agency/run_mode.rs` | 883 | Assignment routing, UCB1, experiments |

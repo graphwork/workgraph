@@ -154,8 +154,6 @@ pub struct TransferSummary {
     pub agents_skipped: usize,
     pub evaluations_added: usize,
     pub evaluations_skipped: usize,
-    pub org_evaluations_added: usize,
-    pub org_evaluations_skipped: usize,
 }
 
 impl std::fmt::Display for TransferSummary {
@@ -200,15 +198,10 @@ impl std::fmt::Display for TransferSummary {
             "  Agents:       +{} new, {} updated, {} skipped",
             self.agents_added, self.agents_updated, self.agents_skipped
         )?;
-        writeln!(
+        write!(
             f,
             "  Evaluations:  +{} new, {} skipped",
             self.evaluations_added, self.evaluations_skipped
-        )?;
-        write!(
-            f,
-            "  Org evals:    +{} new, {} skipped",
-            self.org_evaluations_added, self.org_evaluations_skipped
         )
     }
 }
@@ -1046,42 +1039,6 @@ pub fn transfer(
         }
     }
 
-    // Transfer org-evaluations (included in federation scope)
-    if !opts.no_evaluations && matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Agents) {
-        let source_org_evals = crate::agency::load_all_org_evaluations_or_warn(
-            &source.store_path().join("org-evaluations"),
-        );
-        let target_org_eval_ids: HashSet<String> = crate::agency::load_all_org_evaluations_or_warn(
-            &target.store_path().join("org-evaluations"),
-        )
-        .iter()
-        .map(|e| e.id.clone())
-        .collect();
-
-        for org_eval in &source_org_evals {
-            if has_filter {
-                let eval_agent_ids: HashSet<&String> =
-                    agents_to_transfer.iter().map(|a| &a.id).collect();
-                let relevant = eval_agent_ids.contains(&org_eval.agent_id);
-                if !relevant {
-                    continue;
-                }
-            }
-
-            if target_org_eval_ids.contains(&org_eval.id) {
-                summary.org_evaluations_skipped += 1;
-            } else {
-                if !opts.dry_run {
-                    crate::agency::save_org_evaluation(
-                        org_eval,
-                        &target.store_path().join("org-evaluations"),
-                    )?;
-                }
-                summary.org_evaluations_added += 1;
-            }
-        }
-    }
-
     Ok(summary)
 }
 
@@ -1113,7 +1070,6 @@ fn merge_performance(target: &PerformanceRecord, source: &PerformanceRecord) -> 
         task_count,
         avg_score,
         evaluations: merged_evals,
-        org_performance: None,
     }
 }
 
@@ -1513,8 +1469,7 @@ mod tests {
                 timestamp: "2026-01-01".to_string(),
                 context_id: String::new(),
             }],
-            org_performance: None,
-        };
+            };
         let b = PerformanceRecord {
             task_count: 2,
             avg_score: Some(0.85),
@@ -1532,8 +1487,7 @@ mod tests {
                     context_id: String::new(),
                 },
             ],
-            org_performance: None,
-        };
+            };
         let merged = merge_performance(&a, &b);
         assert_eq!(merged.task_count, 2); // deduped
         assert_eq!(merged.evaluations.len(), 2);

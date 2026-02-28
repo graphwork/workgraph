@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{self, AccessControl, ComponentCategory, Evaluation, Lineage, OrgEvaluation, TradeoffConfig, PerformanceRecord, Role, ContentRef, render_identity_prompt_rich, resolve_all_components, resolve_outcome};
+use workgraph::agency::{self, AccessControl, ComponentCategory, Evaluation, Lineage, TradeoffConfig, PerformanceRecord, Role, ContentRef, render_identity_prompt_rich, resolve_all_components, resolve_outcome};
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task};
 use workgraph::{load_graph, save_graph};
@@ -361,10 +361,6 @@ pub fn run(
     let all_evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
-    // Load org-level evaluations for blended selection pressure
-    let org_evals_dir = agency_dir.join("org-evaluations");
-    let all_org_evaluations = agency::load_all_org_evaluations_or_warn(&org_evals_dir);
-
     // Filter out evaluations from human agents — their work quality isn't a
     // reflection of a role+tradeoff prompt, so including them would pollute
     // the evolution signal.
@@ -376,10 +372,6 @@ pub fn run(
         .map(|a| a.id.as_str())
         .collect();
     let evaluations: Vec<Evaluation> = all_evaluations
-        .into_iter()
-        .filter(|e| e.agent_id.is_empty() || !human_agent_ids.contains(e.agent_id.as_str()))
-        .collect();
-    let org_evaluations: Vec<OrgEvaluation> = all_org_evaluations
         .into_iter()
         .filter(|e| e.agent_id.is_empty() || !human_agent_ids.contains(e.agent_id.as_str()))
         .collect();
@@ -400,9 +392,9 @@ pub fn run(
         .or(config.agency.evolver_model.clone())
         .unwrap_or_else(|| config.agent.model.clone());
 
-    // Build performance summary (includes org-level scores blended via org_weight)
+    // Build performance summary
     let perf_summary = build_performance_summary(
-        &roles, &tradeoffs, &evaluations, &org_evaluations, &config,
+        &roles, &tradeoffs, &evaluations, &config,
     );
 
     // Build the evolver prompt
@@ -782,50 +774,26 @@ fn build_performance_summary(
     roles: &[Role],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
-    org_evaluations: &[OrgEvaluation],
     config: &Config,
 ) -> String {
+    let _ = config;
     let mut out = String::new();
-    let org_weight = config.agency.org_reward.org_weight;
     out.push_str("## Performance Summary\n\n");
     let total_evals = evaluations.len();
-    let total_org_evals = org_evaluations.len();
     let overall_avg: Option<f64> = if total_evals > 0 {
         let valid: Vec<f64> = evaluations.iter().map(|e| e.score).filter(|s: &f64| s.is_finite()).collect();
         if valid.is_empty() { None } else { Some(valid.iter().sum::<f64>() / valid.len() as f64) }
     } else { None };
-    let overall_org_avg: Option<f64> = if total_org_evals > 0 {
-        let valid: Vec<f64> = org_evaluations.iter().map(|e| e.score).filter(|s: &f64| s.is_finite()).collect();
-        if valid.is_empty() { None } else { Some(valid.iter().sum::<f64>() / valid.len() as f64) }
-    } else { None };
     out.push_str(&format!("Total roles: {}\n", roles.len()));
     out.push_str(&format!("Total tradeoffs: {}\n", tradeoffs.len()));
-    out.push_str(&format!("Total evaluations: {} task-level, {} org-level\n", total_evals, total_org_evals));
-    if let Some(avg) = overall_avg { out.push_str(&format!("Overall avg task score: {:.3}\n", avg)); }
-    if let Some(avg) = overall_org_avg { out.push_str(&format!("Overall avg org score: {:.3}\n", avg)); }
-    if let (Some(task_avg), Some(org_avg)) = (overall_avg, overall_org_avg) {
-        let blended = (1.0 - org_weight) * task_avg + org_weight * org_avg;
-        out.push_str(&format!("Overall blended score: {:.3} (org_weight={:.2})\n", blended, org_weight));
-    }
+    out.push_str(&format!("Total evaluations: {}\n", total_evals));
+    if let Some(avg) = overall_avg { out.push_str(&format!("Overall avg score: {:.3}\n", avg)); }
     out.push('\n');
-    out.push_str(&format!("**Org weight:** {:.2} — blended_score = (1-{0:.2})*task_score + {0:.2}*org_score\n", org_weight));
-    let w = &config.agency.org_reward.weights;
-    out.push_str(&format!("**Org dimensions:** downstream_usability={:.2}, coordination_overhead={:.2}, blocking_behaviour={:.2}\n\n",
-        w.downstream_usability, w.coordination_overhead, w.blocking_behaviour));
-    let role_org_avgs = compute_entity_org_averages(org_evaluations, |e| &e.role_id);
-    let mot_org_avgs = compute_entity_org_averages(org_evaluations, |e| &e.tradeoff_id);
-    let role_org_dims = aggregate_org_dimensions_by(org_evaluations, |e| &e.role_id);
-    let mot_org_dims = aggregate_org_dimensions_by(org_evaluations, |e| &e.tradeoff_id);
     out.push_str("### Role Performance\n\n");
     for role in roles {
-        let task_score_str = role.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
-        let (org_score_str, blended_str) = if let Some(&(org_avg, org_count)) = role_org_avgs.get(&role.id) {
-            let org_s = format!("{:.3} ({} org evals)", org_avg, org_count);
-            let blended = if let Some(task_s) = role.performance.avg_score { format!("{:.3}", (1.0 - org_weight) * task_s + org_weight * org_avg) } else { "-".to_string() };
-            (org_s, blended)
-        } else { ("-".to_string(), task_score_str.clone()) };
-        out.push_str(&format!("- **{}** (id: `{}`): {} evals, task_score: {}, org_score: {}, blended: {}, gen: {}\n",
-            role.name, role.id, role.performance.task_count, task_score_str, org_score_str, blended_str, role.lineage.generation));
+        let score_str = role.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
+        out.push_str(&format!("- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
+            role.name, role.id, role.performance.task_count, score_str, role.lineage.generation));
         out.push_str(&format!("  description: {}\n", role.description));
         out.push_str(&format!("  outcome_id: {}\n", role.outcome_id));
         if !role.component_ids.is_empty() { out.push_str(&format!("  component_ids: {}\n", role.component_ids.join(", "))); }
@@ -835,49 +803,26 @@ fn build_performance_summary(
             let dims = aggregate_dimensions(&role_evals);
             if !dims.is_empty() {
                 let dim_strs: Vec<String> = dims.iter().map(|(k, v)| format!("{}={:.2}", k, v)).collect();
-                out.push_str(&format!("  task_dimensions: {}\n", dim_strs.join(", ")));
-            }
-        }
-        if let Some(dims) = role_org_dims.get(&role.id) {
-            if !dims.is_empty() {
-                let dim_strs: Vec<String> = dims.iter().map(|(k, v)| format!("{}={:.2}", k, v)).collect();
-                out.push_str(&format!("  org_dimensions: {}\n", dim_strs.join(", ")));
+                out.push_str(&format!("  dimensions: {}\n", dim_strs.join(", ")));
             }
         }
         out.push('\n');
     }
     out.push_str("### Tradeoff Performance\n\n");
     for tradeoff in tradeoffs {
-        let task_score_str = tradeoff.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
-        let (org_score_str, blended_str) = if let Some(&(org_avg, org_count)) = mot_org_avgs.get(&tradeoff.id) {
-            let org_s = format!("{:.3} ({} org evals)", org_avg, org_count);
-            let blended = if let Some(task_s) = tradeoff.performance.avg_score { format!("{:.3}", (1.0 - org_weight) * task_s + org_weight * org_avg) } else { "-".to_string() };
-            (org_s, blended)
-        } else { ("-".to_string(), task_score_str.clone()) };
-        out.push_str(&format!("- **{}** (id: `{}`): {} evals, task_score: {}, org_score: {}, blended: {}, gen: {}\n",
-            tradeoff.name, tradeoff.id, tradeoff.performance.task_count, task_score_str, org_score_str, blended_str, tradeoff.lineage.generation));
+        let score_str = tradeoff.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
+        out.push_str(&format!("- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
+            tradeoff.name, tradeoff.id, tradeoff.performance.task_count, score_str, tradeoff.lineage.generation));
         out.push_str(&format!("  description: {}\n", tradeoff.description));
         if !tradeoff.acceptable_tradeoffs.is_empty() { out.push_str(&format!("  acceptable_tradeoffs: {}\n", tradeoff.acceptable_tradeoffs.join("; "))); }
         if !tradeoff.unacceptable_tradeoffs.is_empty() { out.push_str(&format!("  unacceptable_tradeoffs: {}\n", tradeoff.unacceptable_tradeoffs.join("; "))); }
         if !tradeoff.lineage.parent_ids.is_empty() { out.push_str(&format!("  parents: {}\n", tradeoff.lineage.parent_ids.join(", "))); }
-        if let Some(dims) = mot_org_dims.get(&tradeoff.id) {
-            if !dims.is_empty() {
-                let dim_strs: Vec<String> = dims.iter().map(|(k, v)| format!("{}={:.2}", k, v)).collect();
-                out.push_str(&format!("  org_dimensions: {}\n", dim_strs.join(", ")));
-            }
-        }
         out.push('\n');
     }
     let mut synergy: HashMap<(String, String), Vec<f64>> = HashMap::new();
     for eval in evaluations { synergy.entry((eval.role_id.clone(), eval.tradeoff_id.clone())).or_default().push(eval.score); }
-    let mut org_synergy: HashMap<(String, String), Vec<f64>> = HashMap::new();
-    for eval in org_evaluations {
-        if !eval.role_id.is_empty() && !eval.tradeoff_id.is_empty() {
-            org_synergy.entry((eval.role_id.clone(), eval.tradeoff_id.clone())).or_default().push(eval.score);
-        }
-    }
     if !synergy.is_empty() {
-        out.push_str("### Synergy Matrix (Role x Motivation)\n\n");
+        out.push_str("### Synergy Matrix (Role x Tradeoff)\n\n");
         let mut pairs: Vec<_> = synergy.iter().collect();
         pairs.sort_by(|a, b| {
             let avg_a = a.1.iter().sum::<f64>() / a.1.len() as f64;
@@ -885,47 +830,12 @@ fn build_performance_summary(
             avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
         });
         for ((role_id, mot_id), scores) in &pairs {
-            let task_avg = scores.iter().sum::<f64>() / scores.len() as f64;
-            let key = (role_id.clone(), mot_id.clone());
-            let blended = if let Some(org_scores) = org_synergy.get(&key) {
-                let org_avg = org_scores.iter().sum::<f64>() / org_scores.len() as f64;
-                format!(", org_avg={:.3} ({}), blended={:.3}", org_avg, org_scores.len(), (1.0 - org_weight) * task_avg + org_weight * org_avg)
-            } else { String::new() };
-            out.push_str(&format!("- ({}, {}): task_avg={:.3}, count={}{}\n", role_id, mot_id, task_avg, scores.len(), blended));
+            let avg = scores.iter().sum::<f64>() / scores.len() as f64;
+            out.push_str(&format!("- ({}, {}): avg={:.3}, count={}\n", role_id, mot_id, avg, scores.len()));
         }
         out.push('\n');
     }
     out
-}
-
-/// Compute average org score per entity, keyed by entity ID extractor.
-fn compute_entity_org_averages<F>(org_evaluations: &[OrgEvaluation], key_fn: F) -> HashMap<String, (f64, usize)>
-where F: Fn(&OrgEvaluation) -> &str {
-    let mut accum: HashMap<String, (f64, usize)> = HashMap::new();
-    for eval in org_evaluations {
-        let id = key_fn(eval);
-        if !id.is_empty() { let entry = accum.entry(id.to_string()).or_insert((0.0, 0)); entry.0 += eval.score; entry.1 += 1; }
-    }
-    for (sum, count) in accum.values_mut() { if *count > 0 { *sum /= *count as f64; } }
-    accum
-}
-
-/// Aggregate org-level dimension averages by entity.
-fn aggregate_org_dimensions_by<F>(org_evaluations: &[OrgEvaluation], key_fn: F) -> HashMap<String, Vec<(String, f64)>>
-where F: Fn(&OrgEvaluation) -> &str {
-    let mut accum: HashMap<String, HashMap<String, (f64, usize)>> = HashMap::new();
-    for eval in org_evaluations {
-        let id = key_fn(eval);
-        if !id.is_empty() {
-            let entity_dims = accum.entry(id.to_string()).or_default();
-            for (dim, score) in &eval.dimensions { let entry = entity_dims.entry(dim.clone()).or_insert((0.0, 0)); entry.0 += score; entry.1 += 1; }
-        }
-    }
-    accum.into_iter().map(|(id, dims)| {
-        let mut sorted: Vec<(String, f64)> = dims.into_iter().map(|(k, (sum, count))| (k, sum / count as f64)).collect();
-        sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        (id, sorted)
-    }).collect()
 }
 
 fn aggregate_dimensions(evals: &[&Evaluation]) -> Vec<(String, f64)> {
@@ -3242,9 +3152,9 @@ mod tests {
 
     #[test]
     fn test_build_performance_summary_empty() {
-        let summary = build_performance_summary(&[], &[], &[], &[], &Config::default());
+        let summary = build_performance_summary(&[], &[], &[], &Config::default());
         assert!(summary.contains("Total roles: 0"));
-        assert!(summary.contains("Total evaluations: 0 task-level, 0 org-level"));
+        assert!(summary.contains("Total evaluations: 0"));
     }
 
     #[test]
@@ -3259,7 +3169,7 @@ mod tests {
                 task_count: 2,
                 avg_score: Some(0.75),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -3274,7 +3184,7 @@ mod tests {
                 task_count: 1,
                 avg_score: Some(0.60),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -3282,7 +3192,7 @@ mod tests {
             former_deployments: vec![],
         }];
 
-        let summary = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let summary = build_performance_summary(&roles, &motivations, &[], &Config::default());
         assert!(summary.contains("Role 1"));
         assert!(summary.contains("Mot 1"));
         assert!(summary.contains("0.750"));
@@ -3344,7 +3254,7 @@ mod tests {
                 task_count: 5,
                 avg_score: Some(0.55),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -3737,7 +3647,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.65),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -3863,7 +3773,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 5,
                 avg_score: Some(0.7),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -3886,7 +3796,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.8),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -4144,7 +4054,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 10,
                 avg_score: Some(0.7),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -4165,7 +4075,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 8,
                 avg_score: Some(0.8),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -4409,7 +4319,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 5,
                 avg_score: Some(0.75),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -4427,7 +4337,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.60),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -4440,7 +4350,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_mutation_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4469,7 +4379,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_crossover_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4491,7 +4401,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_gap_analysis_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4512,7 +4422,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_retirement_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4533,7 +4443,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_motivation_tuning_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4554,7 +4464,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_all_strategy() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let prompt = build_evolver_prompt(
@@ -4577,7 +4487,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_includes_skill_docs() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let config = Config::default();
 
         let skill_docs = vec![
@@ -4613,7 +4523,7 @@ Let me know if you'd like me to adjust anything."#;
     fn test_build_prompt_includes_retention_heuristics() {
         let roles = make_test_roles();
         let motivations = make_test_motivations();
-        let perf = build_performance_summary(&roles, &motivations, &[], &[], &Config::default());
+        let perf = build_performance_summary(&roles, &motivations, &[], &Config::default());
         let mut config = Config::default();
         config.agency.retention_heuristics =
             Some("Retire roles scoring below 0.3 after 10 evaluations".to_string());
@@ -4650,7 +4560,7 @@ Let me know if you'd like me to adjust anything."#;
                     task_count: 2,
                     avg_score: Some(0.75),
                     evaluations: vec![],
-                    org_performance: None,
+                   
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
@@ -4665,7 +4575,7 @@ Let me know if you'd like me to adjust anything."#;
                     task_count: 1,
                     avg_score: Some(0.90),
                     evaluations: vec![],
-                    org_performance: None,
+                   
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
@@ -4681,7 +4591,7 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.80),
                 evaluations: vec![],
-                org_performance: None,
+               
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -4737,13 +4647,13 @@ Let me know if you'd like me to adjust anything."#;
             },
         ];
 
-        let summary = build_performance_summary(&roles, &motivations, &evaluations, &[], &Config::default());
+        let summary = build_performance_summary(&roles, &motivations, &evaluations, &Config::default());
 
         // Overall stats
         assert!(summary.contains("Total roles: 2"));
         assert!(summary.contains("Total tradeoffs: 1"));
-        assert!(summary.contains("Total evaluations: 3 task-level, 0 org-level"));
-        assert!(summary.contains("Overall avg task score: 0.800"));
+        assert!(summary.contains("Total evaluations: 3"));
+        assert!(summary.contains("Overall avg score: 0.800"));
 
         // Per-role
         assert!(summary.contains("Dev"));
@@ -4902,89 +4812,6 @@ Let me know if you'd like me to adjust anything."#;
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_build_performance_summary_with_org_evaluations() {
-        use workgraph::agency::{OrgEvaluation, ObservationWindow};
-        let roles = vec![Role {
-            id: "r1".into(), name: "Dev".into(), description: "Developer".into(),
-            component_ids: vec![], outcome_id: "Code".into(),
-            performance: PerformanceRecord { task_count: 2, avg_score: Some(0.80), evaluations: vec![], org_performance: None },
-            lineage: Lineage::default(), default_context_scope: None,
-        }];
-        let motivations = vec![TradeoffConfig {
-            id: "m1".into(), name: "Careful".into(), description: "Be careful".into(),
-            acceptable_tradeoffs: vec![], unacceptable_tradeoffs: vec![],
-            performance: PerformanceRecord { task_count: 2, avg_score: Some(0.70), evaluations: vec![], org_performance: None },
-            lineage: Lineage::default(), access_control: AccessControl::default(), former_agents: vec![], former_deployments: vec![],
-        }];
-        let evaluations = vec![Evaluation {
-            id: "e1".into(), task_id: "t1".into(), agent_id: "".into(),
-            role_id: "r1".into(), tradeoff_id: "m1".into(), score: 0.80,
-            dimensions: HashMap::new(), notes: "".into(), evaluator: "system".into(),
-            timestamp: "2025-01-01T00:00:00Z".into(), model: None, source: "llm".to_string(),
-        }];
-        let mut org_dims = HashMap::new();
-        org_dims.insert("downstream_usability".to_string(), 0.90);
-        org_dims.insert("coordination_overhead".to_string(), 0.60);
-        org_dims.insert("blocking_behaviour".to_string(), 0.70);
-        let org_evaluations = vec![OrgEvaluation {
-            id: "oe1".into(), task_id: "t1".into(), agent_id: "".into(),
-            role_id: "r1".into(), tradeoff_id: "m1".into(), score: 0.75,
-            dimensions: org_dims,
-            observation_window: ObservationWindow { epoch_id: None, from: "2025-01-01T00:00:00Z".to_string(), to: "2025-01-01T01:00:00Z".to_string() },
-            downstream_task_count: 2, notes: "Good org performance".to_string(),
-            timestamp: "2025-01-01T01:00:00Z".to_string(), source: "org:composite".to_string(),
-        }];
-        let config = Config::default();
-        let summary = build_performance_summary(&roles, &motivations, &evaluations, &org_evaluations, &config);
-        assert!(summary.contains("1 org-level"), "summary should show org eval count");
-        assert!(summary.contains("Overall avg org score: 0.750"), "summary should show org avg");
-        assert!(summary.contains("org_weight="), "summary should show org weight");
-        assert!(summary.contains("org_score: 0.750"), "role should show org score");
-        assert!(summary.contains("blended:"), "role should show blended score");
-        assert!(summary.contains("org_dimensions:"), "should show org dimensions");
-        assert!(summary.contains("downstream_usability=0.90"), "should show downstream_usability");
-        assert!(summary.contains("coordination_overhead=0.60"), "should show coordination_overhead");
-        assert!(summary.contains("blocking_behaviour=0.70"), "should show blocking_behaviour");
-        assert!(summary.contains("task_avg="), "synergy should show task_avg");
-        assert!(summary.contains("org_avg="), "synergy should show org_avg");
-    }
 
-    #[test]
-    fn test_build_performance_summary_no_org_evaluations() {
-        let roles = make_test_roles();
-        let motivations = make_test_motivations();
-        let config = Config::default();
-        let summary = build_performance_summary(&roles, &motivations, &[], &[], &config);
-        assert!(summary.contains("0 org-level"), "should show 0 org evals");
-        assert!(!summary.contains("Overall avg org score"), "no org avg when no org evals");
-        assert!(!summary.contains("Overall blended score"), "no blended when no org evals");
-        assert!(summary.contains("task_score: 0.750"), "should show task score");
-        assert!(summary.contains("org_score: -"), "should show - for org score");
-    }
 
-    #[test]
-    fn test_compute_entity_org_averages() {
-        use workgraph::agency::{OrgEvaluation, ObservationWindow};
-        let org_evals = vec![
-            OrgEvaluation {
-                id: "oe1".into(), task_id: "t1".into(), agent_id: "".into(),
-                role_id: "r1".into(), tradeoff_id: "m1".into(), score: 0.80,
-                dimensions: HashMap::new(),
-                observation_window: ObservationWindow { epoch_id: None, from: "".into(), to: "".into() },
-                downstream_task_count: 1, notes: "".into(), timestamp: "".into(), source: "org:composite".into(),
-            },
-            OrgEvaluation {
-                id: "oe2".into(), task_id: "t2".into(), agent_id: "".into(),
-                role_id: "r1".into(), tradeoff_id: "m1".into(), score: 0.60,
-                dimensions: HashMap::new(),
-                observation_window: ObservationWindow { epoch_id: None, from: "".into(), to: "".into() },
-                downstream_task_count: 1, notes: "".into(), timestamp: "".into(), source: "org:composite".into(),
-            },
-        ];
-        let avgs = compute_entity_org_averages(&org_evals, |e| &e.role_id);
-        let &(avg, count) = avgs.get("r1").unwrap();
-        assert!((avg - 0.70).abs() < 0.001, "avg should be 0.70, got {}", avg);
-        assert_eq!(count, 2);
-    }
 }

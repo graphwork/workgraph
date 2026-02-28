@@ -144,54 +144,6 @@ impl Default for GuardrailsConfig {
     }
 }
 
-/// Dimension weights for the organisational reward signal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrgRewardWeights {
-    /// Weight on downstream usability dimension (default: 0.50)
-    #[serde(default = "default_w_downstream_usability")]
-    pub downstream_usability: f64,
-    /// Weight on coordination overhead dimension (default: 0.30)
-    #[serde(default = "default_w_coordination_overhead")]
-    pub coordination_overhead: f64,
-    /// Weight on blocking behaviour dimension (default: 0.20)
-    #[serde(default = "default_w_blocking_behaviour")]
-    pub blocking_behaviour: f64,
-}
-
-fn default_w_downstream_usability() -> f64 { 0.50 }
-fn default_w_coordination_overhead() -> f64 { 0.30 }
-fn default_w_blocking_behaviour() -> f64 { 0.20 }
-
-impl Default for OrgRewardWeights {
-    fn default() -> Self {
-        Self {
-            downstream_usability: default_w_downstream_usability(),
-            coordination_overhead: default_w_coordination_overhead(),
-            blocking_behaviour: default_w_blocking_behaviour(),
-        }
-    }
-}
-
-/// Configuration for the two-level organisational reward signal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrgRewardConfig {
-    /// How much weight to give org-level score vs task-level score in evolution (0.0–1.0).
-    /// 0.0 = ignore org level entirely, 1.0 = weight equally with task level.
-    #[serde(default = "default_org_weight")]
-    pub org_weight: f64,
-
-    /// Default observation window in seconds (0 = wait for all direct dependents to complete).
-    #[serde(default)]
-    pub observation_window_secs: u64,
-
-    /// Downstream hop horizon for downstream_usability calculation (default: 3).
-    #[serde(default = "default_hop_horizon")]
-    pub downstream_hop_horizon: u32,
-
-    /// Dimension weights for the composite org score.
-    #[serde(default)]
-    pub weights: OrgRewardWeights,
-}
 
 fn default_auto_create_threshold() -> u32 { 20 }
 fn default_run_mode() -> f64 { 0.2 }
@@ -203,19 +155,6 @@ fn default_novelty_bonus_multiplier() -> f64 { 1.5 }
 fn default_bizarre_ideation_interval() -> u32 { 10 }
 fn default_performance_threshold() -> f64 { 0.7 }
 
-fn default_org_weight() -> f64 { 0.4 }
-fn default_hop_horizon() -> u32 { 3 }
-
-impl Default for OrgRewardConfig {
-    fn default() -> Self {
-        Self {
-            org_weight: default_org_weight(),
-            observation_window_secs: 0,
-            downstream_hop_horizon: default_hop_horizon(),
-            weights: OrgRewardWeights::default(),
-        }
-    }
-}
 
 /// Agency (evolutionary identity system) configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,10 +234,6 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
 
-    /// Two-level organisational reward signal configuration.
-    #[serde(default)]
-    pub org_reward: OrgRewardConfig,
-
     /// Run mode on the performance/learning continuum.
     /// 0.0 = pure performance, 1.0 = pure learning.
     /// Default: 0.2
@@ -363,7 +298,6 @@ impl Default for AgencyConfig {
             triage_model: None,
             triage_timeout: None,
             triage_max_log_bytes: None,
-            org_reward: OrgRewardConfig::default(),
             run_mode: default_run_mode(),
             min_exploration_rate: default_min_exploration_rate(),
             exploration_interval: default_exploration_interval(),

@@ -26,7 +26,6 @@ pub fn init(base: &Path) -> Result<(), AgencyError> {
     fs::create_dir_all(base.join("cache/roles"))?;
     fs::create_dir_all(base.join("cache/agents"))?;
     fs::create_dir_all(base.join("evaluations"))?;
-    fs::create_dir_all(base.join("org-evaluations"))?;
     fs::create_dir_all(base.join("deferred"))?;
     fs::create_dir_all(base.join("assignments"))?;
     Ok(())
@@ -83,7 +82,6 @@ impl HasId for TradeoffConfig { fn entity_id(&self) -> &str { &self.id } }
 impl HasId for Role { fn entity_id(&self) -> &str { &self.id } }
 impl HasId for Agent { fn entity_id(&self) -> &str { &self.id } }
 impl HasId for Evaluation { fn entity_id(&self) -> &str { &self.id } }
-impl HasId for OrgEvaluation { fn entity_id(&self) -> &str { &self.id } }
 impl HasId for TaskAssignmentRecord { fn entity_id(&self) -> &str { &self.task_id } }
 
 // -- Primitives: RoleComponent
@@ -153,36 +151,6 @@ pub fn load_all_evaluations_or_warn(dir: &Path) -> Vec<Evaluation> {
     }
 }
 
-// -- OrgEvaluations (JSON)
-pub fn load_org_evaluation(path: &Path) -> Result<OrgEvaluation, AgencyError> {
-    let contents = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&contents)?)
-}
-pub fn save_org_evaluation(eval: &OrgEvaluation, dir: &Path) -> Result<PathBuf, AgencyError> {
-    fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{}.json", eval.id));
-    fs::write(&path, serde_json::to_string_pretty(eval)?)?;
-    Ok(path)
-}
-pub fn load_all_org_evaluations(dir: &Path) -> Result<Vec<OrgEvaluation>, AgencyError> {
-    let mut evals = Vec::new();
-    if !dir.exists() { return Ok(evals); }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            evals.push(load_org_evaluation(&path)?);
-        }
-    }
-    evals.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(evals)
-}
-pub fn load_all_org_evaluations_or_warn(dir: &Path) -> Vec<OrgEvaluation> {
-    match load_all_org_evaluations(dir) {
-        Ok(evals) => evals,
-        Err(e) => { eprintln!("Warning: failed to load org-evaluations from {}: {}", dir.display(), e); Vec::new() }
-    }
-}
 
 // -- TaskAssignmentRecord (YAML)
 pub fn save_assignment_record(record: &TaskAssignmentRecord, dir: &Path) -> Result<PathBuf, AgencyError> {
@@ -243,7 +211,6 @@ impl LocalStore {
     pub fn roles_dir(&self) -> PathBuf { self.path.join("cache/roles") }
     pub fn agents_dir(&self) -> PathBuf { self.path.join("cache/agents") }
     pub fn evaluations_dir(&self) -> PathBuf { self.path.join("evaluations") }
-    pub fn org_evaluations_dir(&self) -> PathBuf { self.path.join("org-evaluations") }
     pub fn assignments_dir(&self) -> PathBuf { self.path.join("assignments") }
     pub fn is_valid(&self) -> bool { self.components_dir().is_dir() || self.roles_dir().is_dir() }
 

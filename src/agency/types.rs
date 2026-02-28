@@ -118,83 +118,8 @@ pub struct PerformanceRecord {
     pub avg_score: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evaluations: Vec<EvaluationRef>,
-    /// Organisational-level performance (populated after downstream tasks complete).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub org_performance: Option<OrgPerformanceRecord>,
 }
 
-/// Organisational-level performance record, parallel to task-level PerformanceRecord.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OrgPerformanceRecord {
-    pub task_count: u32,
-    pub avg_score: Option<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub evaluations: Vec<OrgEvalRef>,
-}
-
-/// Reference to an organisational evaluation, stored inline in an OrgPerformanceRecord.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrgEvalRef {
-    pub score: f64,
-    pub task_id: String,
-    pub timestamp: String,
-    pub downstream_task_count: u32,
-}
-
-/// The time range over which an organisational evaluation was collected.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObservationWindow {
-    /// ID of the graph epoch or run this covers (if available)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epoch_id: Option<String>,
-    /// Earliest task timestamp included
-    pub from: String,
-    /// Latest task timestamp included
-    pub to: String,
-}
-
-/// An organisational-level evaluation of how an agent's output served the downstream graph.
-///
-/// Captures three dimensions:
-/// - `downstream_usability` (0.50 weight): downstream task scores, discounted by graph distance
-/// - `coordination_overhead` (0.30 weight): penalty for clarification requests and re-spawns
-/// - `blocking_behaviour` (0.20 weight): duration relative to p50 for similar tasks
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrgEvaluation {
-    #[serde(default)]
-    pub id: String,
-    pub task_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub agent_id: String,
-    #[serde(default)]
-    pub role_id: String,
-    #[serde(default, alias = "motivation_id")]
-    pub tradeoff_id: String,
-
-    /// Composite organisational score [0, 1]
-    pub score: f64,
-
-    /// Dimension scores. Keys: "downstream_usability", "coordination_overhead", "blocking_behaviour"
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub dimensions: HashMap<String, f64>,
-
-    /// Observation window: the time range this covers
-    pub observation_window: ObservationWindow,
-
-    /// How many downstream tasks contributed to the downstream_usability score
-    pub downstream_task_count: u32,
-
-    pub notes: String,
-    pub timestamp: String,
-
-    /// Source convention: "org:composite", "org:downstream-usability", etc.
-    #[serde(default = "default_org_eval_source")]
-    pub source: String,
-}
-
-fn default_org_eval_source() -> String {
-    "org:composite".to_string()
-}
 
 /// Lineage metadata for tracking evolutionary history.
 #[derive(Debug, Clone, Serialize, Deserialize)]

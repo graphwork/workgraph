@@ -230,6 +230,47 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
     insta::assert_snapshot!("evaluator_prompt_with_identity", output);
 }
 
+#[test]
+fn snapshot_evaluator_prompt_with_downstream_tasks() {
+    let role = test_role();
+    let tradeoff = test_tradeoff();
+    let artifacts = vec!["src/api.rs".to_string()];
+    let log = test_log_entries();
+    let skills = vec!["rust".to_string()];
+    let downstream = vec![
+        (
+            "Integrate API client".to_string(),
+            "Open".to_string(),
+            Some("Wire the API client into the service layer.".to_string()),
+        ),
+        (
+            "Write API docs".to_string(),
+            "Open".to_string(),
+            None,
+        ),
+    ];
+
+    let input = EvaluatorInput {
+        task_title: "Build API client",
+        task_description: Some("Implement the HTTP API client for the external service."),
+        task_skills: &skills,
+        verify: Some("API client compiles and unit tests pass."),
+        agent: None,
+        role: Some(&role),
+        tradeoff: Some(&tradeoff),
+        artifacts: &artifacts,
+        log_entries: &log,
+        started_at: Some("2025-01-15T10:00:00Z"),
+        completed_at: Some("2025-01-15T11:30:00Z"),
+        artifact_diff: None,
+        evaluator_identity: None,
+        downstream_tasks: &downstream,
+    };
+
+    let output = render_evaluator_prompt(&input);
+    insta::assert_snapshot!("evaluator_prompt_with_downstream", output);
+}
+
 // ============================================================================
 // render_assigner_mode_context snapshots
 // ============================================================================

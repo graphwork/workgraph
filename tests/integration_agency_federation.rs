@@ -112,7 +112,6 @@ fn make_perf(evals: Vec<(f64, &str, &str)>) -> PerformanceRecord {
         task_count,
         avg_score,
         evaluations,
-        org_performance: None,
     }
 }
 
@@ -1699,8 +1698,6 @@ fn transfer_summary_display() {
         agents_skipped: 1,
         evaluations_added: 3,
         evaluations_skipped: 0,
-        org_evaluations_added: 0,
-        org_evaluations_skipped: 0,
     };
     let display = format!("{}", summary);
     assert!(display.contains("+2 new"));
@@ -1874,7 +1871,6 @@ fn performance_merge_preserves_context_id() {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             context_id: "motivation-xyz".to_string(),
         }],
-        org_performance: None,
     };
     source.save_role(&source_role).unwrap();
 
@@ -1888,7 +1884,6 @@ fn performance_merge_preserves_context_id() {
             timestamp: "2026-01-02T00:00:00Z".to_string(),
             context_id: "motivation-abc".to_string(),
         }],
-        org_performance: None,
     };
     target.save_role(&target_role).unwrap();
 
@@ -2389,6 +2384,4 @@ fn accumulate(total: &mut TransferSummary, part: &TransferSummary) {
     total.agents_skipped += part.agents_skipped;
     total.evaluations_added += part.evaluations_added;
     total.evaluations_skipped += part.evaluations_skipped;
-    total.org_evaluations_added += part.org_evaluations_added;
-    total.org_evaluations_skipped += part.org_evaluations_skipped;
 }

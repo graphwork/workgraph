@@ -40,8 +40,6 @@ fn accumulate(total: &mut TransferSummary, part: &TransferSummary) {
     total.agents_skipped += part.agents_skipped;
     total.evaluations_added += part.evaluations_added;
     total.evaluations_skipped += part.evaluations_skipped;
-    total.org_evaluations_added += part.org_evaluations_added;
-    total.org_evaluations_skipped += part.org_evaluations_skipped;
 }
 
 pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
@@ -369,7 +367,6 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "ctx-1".to_string(),
             }],
-            org_performance: None,
         };
         store_a.save_role(&role_a).unwrap();
 
@@ -383,7 +380,6 @@ mod tests {
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "ctx-2".to_string(),
             }],
-            org_performance: None,
         };
         store_b.save_role(&role_b).unwrap();
 

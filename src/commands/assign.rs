@@ -44,7 +44,7 @@ fn record_assigner_evaluation(
         role_id: assigner_agent.role_id.clone(),
         tradeoff_id: assigner_agent.tradeoff_id.clone(),
         // Placeholder score — actual quality will be determined by downstream
-        // evaluation and org-eval. The assigner's "score" is updated
+        // evaluation. The assigner's "score" is updated
         // retrospectively when the assigned agent's task completes.
         score: 0.5,
         dimensions: std::collections::HashMap::new(),

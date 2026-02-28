@@ -1445,7 +1445,7 @@ fn draw_back_edge_arcs(lines: &mut Vec<String>, arcs: &[BackEdgeArc], use_color:
     // Sort by span (shortest first → innermost)
     columns.sort_by_key(|c| c.bottom - c.top);
 
-    let dim = if use_color { "\x1b[90m" } else { "" };
+    let dim = if use_color { "\x1b[37m" } else { "" }; // white, matching tree connectors
     let reset = if use_color { "\x1b[0m" } else { "" };
 
     // Each arc column is 2 chars wide (e.g. ←┐). Use 3-char stride so adjacent

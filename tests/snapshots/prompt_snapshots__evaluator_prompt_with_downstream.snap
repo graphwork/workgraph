@@ -1,0 +1,133 @@
+---
+source: tests/prompt_snapshots.rs
+expression: output
+---
+# Evaluator Instructions
+
+You are an evaluator assessing the quality of work performed by an AI agent.
+Review the task definition, the agent identity that was used, the produced artifacts,
+and the task log. Then produce a JSON evaluation.
+
+## Task Definition
+
+**Title:** Build API client
+
+**Description:**
+Implement the HTTP API client for the external service.
+
+**Required Skills:**
+- rust
+
+**Verification Criteria:**
+API client compiles and unit tests pass.
+
+## Agent Identity
+
+**Role:** Builder (61de9fc513bfd19d5364f92f71b325cdcb868821f7693953db5cee37ec4a8880)
+Builds features from specifications with clean, tested code.
+
+**Desired Outcome:** Working, tested code merged to main.
+
+**Motivation:** Quality First (6cf38ebb124246101daa33f66143e2e25616daaca56886e2ddb06995113a86b2)
+Prioritise correctness and maintainability over speed.
+
+**Acceptable Trade-offs:**
+- Slower delivery for higher quality
+- More verbose code for clarity
+
+**Non-negotiable Constraints:**
+- Skipping tests
+- Ignoring error handling
+
+## Task Artifacts
+
+- `src/api.rs`
+
+## Task Log
+
+- [2025-01-15T10:00:00Z] (agent-abc): Starting implementation of feature X
+- [2025-01-15T10:30:00Z] (system): Completed core logic, writing tests
+
+## Timing
+
+- Started: 2025-01-15T10:00:00Z
+- Completed: 2025-01-15T11:30:00Z
+
+## Downstream Tasks
+
+These tasks depend on this task's output. Consider whether the output
+is structured, documented, and usable enough for downstream consumers.
+
+- **Integrate API client** (Open) — Wire the API client into the service layer.
+- **Write API docs** (Open)
+
+## Evaluation Criteria
+
+Assess the agent's work on these dimensions (each scored 0.0 to 1.0):
+
+### Individual Quality (70% of overall score)
+
+1. **correctness** — Does the output match the desired outcome? Are verification
+criteria satisfied? Is the implementation functionally correct?
+2. **completeness** — Were all aspects of the task addressed? Are there missing
+pieces, unhandled edge cases, or incomplete deliverables?
+3. **efficiency** — Was the work done efficiently within the allowed parameters?
+Minimal unnecessary steps, no wasted effort, appropriate scope.
+4. **style_adherence** — Does the output follow project conventions, coding
+standards, and the constraints set by the motivation (trade-offs respected,
+non-negotiable constraints honoured)?
+
+### Organizational Impact (30% of overall score)
+
+5. **downstream_usability** — Is the output structured, documented, and formatted
+so that downstream tasks can consume it without rework? Are interfaces clean,
+artifacts well-named, and context properly handed off?
+6. **coordination_overhead** — Did the agent work autonomously without creating
+unnecessary work for others? Low overhead = high score. Deduct for: leaving
+ambiguous state, requiring manual cleanup, creating confusion in the task log.
+7. **blocking_impact** — Was the work completed in a timely manner relative to
+the task scope? Did it avoid unnecessarily blocking downstream work? Consider
+the task complexity and whether the time taken was proportionate.
+
+Compute an overall **score** as a weighted average:
+- correctness: 30%
+- completeness: 20%
+- efficiency: 10%
+- style_adherence: 10%
+- downstream_usability: 15%
+- coordination_overhead: 10%
+- blocking_impact: 5%
+
+### Rubric Spectrum
+
+Map your overall score to one of these levels:
+
+| Score Range | Level | Meaning |
+|------------|-------|--------|
+| 0.0–0.2 | Failing | Fundamental failures; output unusable |
+| 0.2–0.4 | Below Expectations | Significant deficiencies; major rework needed |
+| 0.4–0.6 | Meets Expectations | Acceptable but unremarkable |
+| 0.6–0.8 | Exceeds Expectations | Solid, reliable work |
+| 0.8–1.0 | Exceptional | Best-in-class output |
+
+Calibrate your scores against this spectrum. Most competent work falls in 0.6–0.8.
+
+## Required Output
+
+Respond with **only** a JSON object (no markdown fences, no commentary):
+
+```
+{
+  "score": <0.0-1.0>,
+  "dimensions": {
+    "correctness": <0.0-1.0>,
+    "completeness": <0.0-1.0>,
+    "efficiency": <0.0-1.0>,
+    "style_adherence": <0.0-1.0>,
+    "downstream_usability": <0.0-1.0>,
+    "coordination_overhead": <0.0-1.0>,
+    "blocking_impact": <0.0-1.0>
+  },
+  "notes": "<brief explanation of strengths, weaknesses, and suggestions>"
+}
+```

@@ -311,81 +311,6 @@ pub fn compute_scoring_metrics(pairs: &[(f64, f64)], n_bins: usize) -> Option<Sc
     })
 }
 
-/// Recalculate the average score from a list of OrgEvalRefs.
-pub fn recalculate_org_avg_score(evaluations: &[OrgEvalRef]) -> Option<f64> {
-    let valid: Vec<f64> = evaluations.iter().map(|e| e.score).filter(|s| s.is_finite()).collect();
-    if valid.is_empty() { return None; }
-    let avg = valid.iter().sum::<f64>() / valid.len() as f64;
-    if avg.is_finite() { Some(avg) } else { None }
-}
-
-/// Update an OrgPerformanceRecord with a new org evaluation reference.
-pub fn update_org_performance(record: &mut OrgPerformanceRecord, eval_ref: OrgEvalRef) {
-    record.task_count = record.task_count.saturating_add(1);
-    record.evaluations.push(eval_ref);
-    record.avg_score = recalculate_org_avg_score(&record.evaluations);
-}
-
-/// Record an org evaluation: persist the JSON, and update agent, role, and tradeoff
-/// org_performance records.
-///
-/// Steps:
-/// 1. Save `OrgEvaluation` as JSON in `agency_dir/org-evaluations/org-eval-{task_id}-{timestamp}.json`.
-/// 2. Load the agent (if agent_id is set), update org_performance, save.
-/// 3. Load the role, update org_performance, save.
-/// 4. Load the tradeoff, update org_performance, save.
-///
-/// Returns the path to the saved org evaluation JSON.
-pub fn record_org_evaluation(
-    org_eval: &OrgEvaluation,
-    agency_dir: &Path,
-) -> Result<PathBuf, AgencyError> {
-    init(agency_dir)?;
-
-    let org_evals_dir = agency_dir.join("org-evaluations");
-    let roles_dir = agency_dir.join("cache/roles");
-    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-    let agents_dir = agency_dir.join("cache/agents");
-
-    // 1. Save the OrgEvaluation JSON
-    let safe_ts = org_eval.timestamp.replace(':', "-");
-    let filename = format!("org-eval-{}-{}.json", org_eval.task_id, safe_ts);
-    let eval_path = org_evals_dir.join(&filename);
-    fs::create_dir_all(&org_evals_dir)?;
-    fs::write(&eval_path, serde_json::to_string_pretty(org_eval)?)?;
-
-    let org_ref = OrgEvalRef {
-        score: org_eval.score,
-        task_id: org_eval.task_id.clone(),
-        timestamp: org_eval.timestamp.clone(),
-        downstream_task_count: org_eval.downstream_task_count,
-    };
-
-    // 2. Update agent org_performance (if agent_id is present)
-    if !org_eval.agent_id.is_empty()
-        && let Ok(mut agent) = find_agent_by_prefix(&agents_dir, &org_eval.agent_id)
-    {
-        let record = agent.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
-        update_org_performance(record, org_ref.clone());
-        save_agent(&agent, &agents_dir)?;
-    }
-
-    // 3. Update role org_performance
-    if let Ok(mut role) = find_role_by_prefix(&roles_dir, &org_eval.role_id) {
-        let record = role.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
-        update_org_performance(record, org_ref.clone());
-        save_role(&role, &roles_dir)?;
-    }
-
-    // 4. Update tradeoff org_performance
-    if let Ok(mut tradeoff) = find_tradeoff_by_prefix(&tradeoffs_dir, &org_eval.tradeoff_id) {
-        let record = tradeoff.performance.org_performance.get_or_insert_with(OrgPerformanceRecord::default);
-        update_org_performance(record, org_ref);
-        save_tradeoff(&tradeoff, &tradeoffs_dir)?;
-    }
-
-    Ok(eval_path)
-}
 
 #[cfg(test)]
 mod tests {
@@ -574,7 +499,6 @@ mod tests {
                 make_eval_ref(0.6, "t1", "m1"),
                 make_eval_ref(0.8, "t2", "m1"),
             ],
-            org_performance: None,
         };
 
         update_performance(&mut record, make_eval_ref(0.9, "t3", "m1"));

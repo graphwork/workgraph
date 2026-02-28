@@ -1061,14 +1061,6 @@ enum EvaluateCommands {
         limit: Option<usize>,
     },
 
-    /// Compute and record an organisational evaluation for a completed task
-    Org {
-        /// Task ID to compute org evaluation for
-        task: String,
-        /// Show what would be computed without saving
-        #[arg(long)]
-        dry_run: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -3223,12 +3215,6 @@ fn main() -> Result<()> {
                 limit,
                 cli.json,
                 task_detail.as_deref(),
-            ),
-            EvaluateCommands::Org { task, dry_run } => commands::evaluate::run_org(
-                &workgraph_dir,
-                &task,
-                dry_run,
-                cli.json,
             ),
         },
         Commands::Watch {

@@ -1,18 +1,18 @@
 use anyhow::{Context, Result, bail};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
 use workgraph::agency::{
-    self, Evaluation, EvaluatorInput, OrgEvaluation, ObservationWindow,
-    load_all_evaluations_or_warn, load_all_org_evaluations_or_warn,
+    self, Evaluation, EvaluatorInput,
+    load_all_evaluations_or_warn,
     load_tradeoff, load_role,
     record_evaluation, record_evaluation_with_inference,
-    record_org_evaluation, render_evaluator_prompt,
+    render_evaluator_prompt,
     render_identity_prompt_rich, resolve_all_components, resolve_outcome, eval_source,
 };
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status, WorkGraph};
+use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::load_graph;
 use workgraph::provenance;
 
@@ -615,342 +615,10 @@ pub fn run_record(
     Ok(())
 }
 
-/// Compute the downstream-usability score for `task_id` using BFS up to `hop_horizon` hops.
-///
-/// Returns `(weighted_avg_score, downstream_task_count)`.
-/// Tasks with evaluations contribute their score; terminal failed tasks contribute 0.0.
-/// Tasks with no evaluation are skipped.
-fn compute_downstream_usability(
-    task_id: &str,
-    graph: &WorkGraph,
-    evals: &[Evaluation],
-    hop_horizon: u32,
-) -> (Option<f64>, u32) {
-    // BFS from task_id's direct dependents (task.before)
-    let Some(root_task) = graph.get_task(task_id) else {
-        return (None, 0);
-    };
-
-    // Map task_id -> best evaluation score (highest score wins for usability)
-    let mut eval_by_task: HashMap<&str, f64> = HashMap::new();
-    for e in evals {
-        eval_by_task
-            .entry(e.task_id.as_str())
-            .and_modify(|existing| {
-                if e.score > *existing {
-                    *existing = e.score;
-                }
-            })
-            .or_insert(e.score);
-    }
-
-    let mut visited: HashSet<String> = HashSet::new();
-    visited.insert(task_id.to_string());
-
-    // Queue: (task_id, hop_distance)
-    let mut queue: VecDeque<(String, u32)> = VecDeque::new();
-    for dep_id in &root_task.before {
-        if !visited.contains(dep_id) {
-            queue.push_back((dep_id.clone(), 1));
-        }
-    }
-
-    let mut weighted_sum = 0.0f64;
-    let mut weight_total = 0.0f64;
-    let mut count = 0u32;
-
-    while let Some((current_id, hop)) = queue.pop_front() {
-        if visited.contains(&current_id) || hop > hop_horizon {
-            continue;
-        }
-        visited.insert(current_id.clone());
-
-        let weight = 1.0 / (hop as f64 + 1.0);
-
-        // Find score for this downstream task
-        let score = if let Some(&s) = eval_by_task.get(current_id.as_str()) {
-            Some(s)
-        } else if let Some(t) = graph.get_task(&current_id) {
-            // Failed task with no evaluation counts as 0.0
-            if t.status == Status::Failed { Some(0.0) } else { None }
-        } else {
-            None
-        };
-
-        if let Some(s) = score {
-            weighted_sum += s * weight;
-            weight_total += weight;
-            count += 1;
-        }
-
-        // Enqueue children
-        if let Some(t) = graph.get_task(&current_id) {
-            for child_id in &t.before {
-                if !visited.contains(child_id) {
-                    queue.push_back((child_id.clone(), hop + 1));
-                }
-            }
-        }
-    }
-
-    if weight_total == 0.0 {
-        (None, 0)
-    } else {
-        (Some(weighted_sum / weight_total), count)
-    }
-}
-
-/// Compute the coordination-overhead score for a task from its log entries.
-///
-/// Starts at 1.0 and applies penalties:
-/// - Each re-spawn (triage): -0.15
-/// - Each retry: -0.10
-/// - Floored at 0.0
-fn compute_coordination_overhead(task_log: &[LogEntry]) -> f64 {
-    let mut score = 1.0f64;
-    for entry in task_log {
-        let msg = entry.message.to_ascii_lowercase();
-        if msg.contains("respawn") || msg.contains("re-spawn") || msg.contains("triage") {
-            score -= 0.15;
-        } else if msg.contains("retry") || msg.contains("re-evaluate") || msg.contains("re-assign") {
-            score -= 0.10;
-        }
-    }
-    score.max(0.0)
-}
-
-/// Compute the blocking-behaviour score from task duration vs historical p50 for the same role.
-///
-/// Returns a score in [0, 1]:
-/// - If at or below p50: 1.0
-/// - If 2× p50 or more: 0.0
-/// - Linearly interpolated in between
-fn compute_blocking_behaviour(
-    task: &workgraph::graph::Task,
-    all_tasks: &[&workgraph::graph::Task],
-    same_role: &str,
-    agents_by_task: &HashMap<String, String>, // task_id -> role_id
-) -> f64 {
-    let (Some(started), Some(completed)) = (&task.started_at, &task.completed_at) else {
-        return 0.5; // No timestamps: neutral
-    };
-
-    let parse_ts = |s: &str| -> Option<i64> {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|dt| dt.timestamp())
-    };
-
-    let actual_secs = match (parse_ts(started), parse_ts(completed)) {
-        (Some(s), Some(e)) if e > s => (e - s) as f64,
-        _ => return 0.5,
-    };
-
-    // Collect durations for tasks with same role that have completed
-    let mut durations: Vec<f64> = all_tasks
-        .iter()
-        .filter(|t| {
-            t.id != task.id
-                && agents_by_task.get(&t.id).map(|r| r.as_str()) == Some(same_role)
-        })
-        .filter_map(|t| {
-            let s = parse_ts(t.started_at.as_deref()?)?;
-            let e = parse_ts(t.completed_at.as_deref()?)?;
-            if e > s { Some((e - s) as f64) } else { None }
-        })
-        .collect();
-
-    if durations.is_empty() {
-        return 0.5; // No historical data: neutral
-    }
-
-    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p50 = durations[durations.len() / 2];
-
-    if p50 <= 0.0 {
-        return 0.5;
-    }
-
-    let ratio = (actual_secs - p50) / p50;
-    1.0 - ratio.max(0.0).min(1.0)
-}
-
-/// Compute and record an org evaluation for a completed task.
-pub fn run_org(
-    dir: &Path,
-    task_id: &str,
-    dry_run: bool,
-    json: bool,
-) -> Result<()> {
-    let path = super::graph_path(dir);
-    if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
-    }
-
-    let graph = load_graph(&path)?;
-    let task = graph.get_task_or_err(task_id)?;
-
-    match task.status {
-        Status::Done | Status::Failed => {}
-        ref other => {
-            bail!(
-                "Task '{}' has status {:?} — must be done or failed for org evaluation",
-                task_id,
-                other
-            );
-        }
-    }
-
-    let agency_dir = dir.join("agency");
-    let agents_dir = agency_dir.join("cache/agents");
-    let evals_dir = agency_dir.join("evaluations");
-
-    let (agent_id, role_id, tradeoff_id) = if let Some(ref agent_hash) = task.agent {
-        match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
-            Ok(agent) => (agent.id.clone(), agent.role_id.clone(), agent.tradeoff_id.clone()),
-            Err(_) => (String::new(), String::new(), String::new()),
-        }
-    } else {
-        (String::new(), String::new(), String::new())
-    };
-
-    let config = Config::load_or_default(dir);
-    let hop_horizon = config.agency.org_reward.downstream_hop_horizon;
-    let weights = &config.agency.org_reward.weights;
-
-    // Load all task-level evaluations for downstream score calculation
-    let all_evals = load_all_evaluations_or_warn(&evals_dir);
-
-    // Compute downstream usability
-    let (downstream_score, downstream_count) =
-        compute_downstream_usability(task_id, &graph, &all_evals, hop_horizon);
-
-    // Compute coordination overhead
-    let coordination_score = compute_coordination_overhead(&task.log);
-
-    // Compute blocking behaviour
-    // Build a map of task_id -> role_id for all tasks
-    let all_tasks: Vec<&workgraph::graph::Task> = graph.tasks().collect();
-    let mut agents_by_task: HashMap<String, String> = HashMap::new();
-    for t in &all_tasks {
-        if let Some(ref agent_hash) = t.agent {
-            if let Ok(a) = agency::find_agent_by_prefix(&agents_dir, agent_hash) {
-                agents_by_task.insert(t.id.clone(), a.role_id.clone());
-            }
-        }
-    }
-    let blocking_score = if role_id.is_empty() {
-        0.5
-    } else {
-        compute_blocking_behaviour(task, &all_tasks, &role_id, &agents_by_task)
-    };
-
-    // Compute composite org score with available dimensions
-    let mut dimension_scores: HashMap<String, f64> = HashMap::new();
-    let mut weighted_sum = 0.0f64;
-    let mut weight_total = 0.0f64;
-
-    if let Some(ds) = downstream_score {
-        dimension_scores.insert("downstream_usability".to_string(), ds);
-        weighted_sum += ds * weights.downstream_usability;
-        weight_total += weights.downstream_usability;
-    }
-
-    dimension_scores.insert("coordination_overhead".to_string(), coordination_score);
-    weighted_sum += coordination_score * weights.coordination_overhead;
-    weight_total += weights.coordination_overhead;
-
-    dimension_scores.insert("blocking_behaviour".to_string(), blocking_score);
-    weighted_sum += blocking_score * weights.blocking_behaviour;
-    weight_total += weights.blocking_behaviour;
-
-    let composite_score = if weight_total > 0.0 { weighted_sum / weight_total } else { 0.5 };
-
-    let timestamp = chrono::Utc::now().to_rfc3339();
-    let now_str = timestamp.clone();
-
-    let observation_window = ObservationWindow {
-        epoch_id: None,
-        from: task.created_at.clone().unwrap_or_else(|| now_str.clone()),
-        to: now_str,
-    };
-
-    let org_eval_id = format!("org-eval-{}-{}", task_id, timestamp.replace(':', "-"));
-
-    let org_eval = OrgEvaluation {
-        id: org_eval_id,
-        task_id: task_id.to_string(),
-        agent_id: agent_id.clone(),
-        role_id: role_id.clone(),
-        tradeoff_id: tradeoff_id.clone(),
-        score: composite_score,
-        dimensions: dimension_scores.clone(),
-        observation_window,
-        downstream_task_count: downstream_count,
-        notes: String::new(),
-        timestamp: timestamp.clone(),
-        source: "org:composite".to_string(),
-    };
-
-    if dry_run {
-        println!("=== Dry Run: wg evaluate org {} ===\n", task_id);
-        println!("Task:       {} ({})", task.title, task_id);
-        println!("Agent:      {}", if agent_id.is_empty() { "(none)" } else { &agent_id });
-        println!("Role:       {}", if role_id.is_empty() { "(none)" } else { &role_id });
-        println!("Downstream tasks: {}", downstream_count);
-        if let Some(ds) = downstream_score {
-            println!("  downstream_usability:  {:.3}", ds);
-        } else {
-            println!("  downstream_usability:  (no data)");
-        }
-        println!("  coordination_overhead: {:.3}", coordination_score);
-        println!("  blocking_behaviour:    {:.3}", blocking_score);
-        println!("Composite org score: {:.3}", composite_score);
-        return Ok(());
-    }
-
-    if role_id.is_empty() {
-        bail!("Task '{}' has no assigned agent — cannot record org evaluation without identity", task_id);
-    }
-
-    let eval_path = record_org_evaluation(&org_eval, &agency_dir)
-        .context("Failed to record org evaluation")?;
-
-    if json {
-        let out = serde_json::json!({
-            "task_id": task_id,
-            "org_eval_id": org_eval.id,
-            "score": org_eval.score,
-            "dimensions": org_eval.dimensions,
-            "downstream_task_count": org_eval.downstream_task_count,
-            "path": eval_path.display().to_string(),
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-    } else {
-        println!("\n=== Org Evaluation Complete ===");
-        println!("Task:       {} ({})", task.title, task_id);
-        println!("Org Score:  {:.3}", org_eval.score);
-        if let Some(ds) = dimension_scores.get("downstream_usability") {
-            println!("  downstream_usability:  {:.3}  ({} tasks)", ds, downstream_count);
-        } else {
-            println!("  downstream_usability:  (no downstream tasks with evaluations)");
-        }
-        if let Some(co) = dimension_scores.get("coordination_overhead") {
-            println!("  coordination_overhead: {:.3}", co);
-        }
-        if let Some(bb) = dimension_scores.get("blocking_behaviour") {
-            println!("  blocking_behaviour:    {:.3}", bb);
-        }
-        println!("Saved to:   {}", eval_path.display());
-    }
-
-    Ok(())
-}
-
 /// Show evaluation history with optional filters.
 ///
-/// When `task_detail` is provided, shows both task-level and org-level scores
-/// side by side for that specific task. Otherwise, shows a filtered history list.
+/// When `task_detail` is provided, shows evaluations for that specific task.
+/// Otherwise, shows a filtered history list.
 pub fn run_show(
     dir: &Path,
     task_filter: Option<&str>,
@@ -961,7 +629,6 @@ pub fn run_show(
     task_detail: Option<&str>,
 ) -> Result<()> {
     let evals_dir = dir.join("agency").join("evaluations");
-    let org_evals_dir = dir.join("agency").join("org-evaluations");
 
     // If a specific task was requested, show both levels side by side
     if let Some(tid) = task_detail {
@@ -969,21 +636,17 @@ pub fn run_show(
         task_evals.retain(|e| e.task_id == tid || e.task_id.starts_with(tid));
         task_evals.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-        let mut org_evals = load_all_org_evaluations_or_warn(&org_evals_dir);
-        org_evals.retain(|e| e.task_id == tid || e.task_id.starts_with(tid));
-        org_evals.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
         if json {
             let out = serde_json::json!({
                 "task_id": tid,
-                "task_level": task_evals,
-                "org_level": org_evals,
+                "evaluations": task_evals,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
             println!("=== Evaluations for task '{}' ===\n", tid);
 
-            println!("Task-level evaluations ({}):", task_evals.len());
+            println!("Evaluations ({}):", task_evals.len());
             if task_evals.is_empty() {
                 println!("  (none)");
             } else {
@@ -998,18 +661,6 @@ pub fn run_show(
                 }
             }
 
-            println!("\nOrg-level evaluations ({}):", org_evals.len());
-            if org_evals.is_empty() {
-                println!("  (none — run `wg evaluate org {}` to compute)", tid);
-            } else {
-                for e in &org_evals {
-                    println!("  Score: {:.3}  Downstream tasks: {}  {}",
-                        e.score, e.downstream_task_count, e.timestamp);
-                    for (dim, val) in &e.dimensions {
-                        println!("    {}: {:.3}", dim, val);
-                    }
-                }
-            }
         }
         return Ok(());
     }

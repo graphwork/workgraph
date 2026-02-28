@@ -226,7 +226,6 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-1".to_string(),
             }],
-            org_performance: None,
         };
         target.save_role(&target_role).unwrap();
 
@@ -241,7 +240,6 @@ mod tests {
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "mot-2".to_string(),
             }],
-            org_performance: None,
         };
         source.save_role(&source_role).unwrap();
 
@@ -315,7 +313,6 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-x".to_string(),
             }],
-            org_performance: None,
         };
         source.save_role(&role).unwrap();
 
