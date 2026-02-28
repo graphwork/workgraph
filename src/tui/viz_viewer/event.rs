@@ -157,9 +157,13 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('n') | KeyCode::Tab => app.next_match(),
         KeyCode::Char('N') | KeyCode::BackTab => app.prev_match(),
 
-        // Vertical scroll
-        KeyCode::Up | KeyCode::Char('k') => app.scroll.scroll_up(1),
-        KeyCode::Down | KeyCode::Char('j') => app.scroll.scroll_down(1),
+        // Task selection (arrow keys navigate between tasks)
+        KeyCode::Up => app.select_prev_task(),
+        KeyCode::Down => app.select_next_task(),
+
+        // Vertical scroll (vim-style)
+        KeyCode::Char('k') => app.scroll.scroll_up(1),
+        KeyCode::Char('j') => app.scroll.scroll_down(1),
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => app.scroll.page_up(),
         KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => app.scroll.page_down(),
         KeyCode::PageUp => app.scroll.page_up(),

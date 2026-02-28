@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use workgraph::graph::{format_token_display, Status, Task, TokenUsage, WorkGraph};
 
-use super::LayoutMode;
+use super::{LayoutMode, VizOutput};
 
 /// Back-edge arc info for Phase 2 rendering of right-side arcs.
 struct BackEdgeArc {
@@ -31,9 +31,15 @@ pub(crate) fn generate_ascii(
     layout: LayoutMode,
     context_ids: &HashSet<String>,
     edge_color: &str,
-) -> String {
+) -> VizOutput {
     if tasks.is_empty() {
-        return String::from("(no tasks to display)");
+        return VizOutput {
+            text: String::from("(no tasks to display)"),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+        };
     }
 
     // Compute cycle analysis to distinguish back-edges from fan-in
@@ -604,11 +610,47 @@ pub(crate) fn generate_ascii(
     if has_crossings {
         lines.push(String::new());
         lines.push(format!(
-            "{}Legend: ╫ = crossing (vertical arc passes through horizontal){}", dim, reset
+            "{}Legend: ┼ = crossing (vertical arc passes through horizontal){}", dim, reset
         ));
     }
 
-    lines.join("\n")
+    // Build owned node_line_map and task_order (sorted by line number)
+    let owned_node_line_map: HashMap<String, usize> = node_line_map
+        .iter()
+        .map(|(&id, &line)| (id.to_string(), line))
+        .collect();
+    let mut task_order: Vec<(String, usize)> = owned_node_line_map
+        .iter()
+        .map(|(id, &line)| (id.clone(), line))
+        .collect();
+    task_order.sort_by_key(|(_, line)| *line);
+    let task_order: Vec<String> = task_order.into_iter().map(|(id, _)| id).collect();
+
+    // Build owned forward/reverse edge maps from the visible task set
+    let mut forward_edges: HashMap<String, Vec<String>> = HashMap::new();
+    let mut reverse_edges: HashMap<String, Vec<String>> = HashMap::new();
+    for task in tasks {
+        for blocker in &task.after {
+            if task_ids.contains(blocker.as_str()) {
+                forward_edges
+                    .entry(blocker.clone())
+                    .or_default()
+                    .push(task.id.clone());
+                reverse_edges
+                    .entry(task.id.clone())
+                    .or_default()
+                    .push(blocker.clone());
+            }
+        }
+    }
+
+    VizOutput {
+        text: lines.join("\n"),
+        node_line_map: owned_node_line_map,
+        task_order,
+        forward_edges,
+        reverse_edges,
+    }
 }
 
 /// Pad a line with spaces so its visible length reaches at least `target_len`.
@@ -645,7 +687,7 @@ fn fill_line_to(line: &mut String, target_len: usize, dim: &str, reset: &str) {
 ///
 /// Corner characters: `┐` at top, `┘` at bottom, `┤` at intermediate.
 /// Dash fill (`─`) connects node text to the arc column.
-/// Returns true if any arc crossings (╫) were drawn.
+/// Returns true if any arc crossings (┼) were drawn.
 fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bool, arc_color_code: &str) -> bool {
     if arcs.is_empty() {
         return false;
@@ -862,7 +904,7 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                             fill_line_to(line, col_x + 1, dim, reset);
                             let current_vis = visible_len(line);
                             if current_vis == col_x + 1 {
-                                line.push_str(&format!("{}╫{}", dim, reset));
+                                line.push_str(&format!("{}┼{}", dim, reset));
                             }
                         } else {
                             pad_line_to(line, col_x + 1);
@@ -927,7 +969,7 @@ mod tests {
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
-        assert_eq!(result, "(no tasks to display)");
+        assert_eq!(result.text, "(no tasks to display)");
     }
 
     #[test]
@@ -945,10 +987,10 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Tree output: src is root, tgt is child
-        assert!(result.contains("src"));
-        assert!(result.contains("tgt"));
-        assert!(result.contains("└→"));
-        assert!(result.contains("(open)"));
+        assert!(result.text.contains("src"));
+        assert!(result.text.contains("tgt"));
+        assert!(result.text.contains("└→"));
+        assert!(result.text.contains("(open)"));
     }
 
     #[test]
@@ -969,11 +1011,11 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // a is root with two children
-        assert!(result.contains("├→"));
-        assert!(result.contains("└→"));
-        assert!(result.contains('a'));
-        assert!(result.contains('b'));
-        assert!(result.contains('c'));
+        assert!(result.text.contains("├→"));
+        assert!(result.text.contains("└→"));
+        assert!(result.text.contains('a'));
+        assert!(result.text.contains('b'));
+        assert!(result.text.contains('c'));
     }
 
     #[test]
@@ -993,12 +1035,12 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
-        assert!(result.contains('c'));
+        assert!(result.text.contains('c'));
         // Fan-in is now shown via right-side arcs (←/┘) instead of text annotations
         assert!(
-            result.contains("←") || result.contains("┘"),
+            result.text.contains("←") || result.text.contains("┘"),
             "Fan-in should produce a right-side arc.\nOutput:\n{}",
-            result
+            result.text
         );
     }
 
@@ -1013,8 +1055,8 @@ mod tests {
         let no_annots = HashMap::new();
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
-        assert!(result.contains("solo"));
-        assert!(result.contains("(independent)"));
+        assert!(result.text.contains("solo"));
+        assert!(result.text.contains("(independent)"));
     }
 
     #[test]
@@ -1033,8 +1075,8 @@ mod tests {
         let no_annots = HashMap::new();
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
-        assert!(result.contains("(in-progress)"));
-        assert!(result.contains("(blocked)"));
+        assert!(result.text.contains("(in-progress)"));
+        assert!(result.text.contains("(blocked)"));
     }
 
     #[test]
@@ -1055,15 +1097,15 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Should show indented chain: a -> b -> c
-        assert!(result.contains("a"));
-        assert!(result.contains("b"));
-        assert!(result.contains("c"));
+        assert!(result.text.contains("a"));
+        assert!(result.text.contains("b"));
+        assert!(result.text.contains("c"));
         // b and c should be indented (have └─→ prefix)
-        let result_lines: Vec<&str> = result.lines().collect();
+        let result_lines: Vec<&str> = result.text.lines().collect();
         // First line is the root (a), no prefix
         assert!(result_lines[0].contains("a"));
         // Nested nodes should have tree characters
-        assert!(result.contains("└→"));
+        assert!(result.text.contains("└→"));
     }
 
     #[test]
@@ -1091,10 +1133,10 @@ mod tests {
         let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Internal task should NOT appear
-        assert!(!result.contains("assign-my-task"));
+        assert!(!result.text.contains("assign-my-task"));
         // Parent task should appear with phase annotation
-        assert!(result.contains("my-task"));
-        assert!(result.contains("[assigning]"));
+        assert!(result.text.contains("my-task"));
+        assert!(result.text.contains("[assigning]"));
     }
 
     #[test]
@@ -1119,9 +1161,9 @@ mod tests {
 
         let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
-        assert!(!result.contains("evaluate-my-task"));
-        assert!(result.contains("my-task"));
-        assert!(result.contains("[evaluating]"));
+        assert!(!result.text.contains("evaluate-my-task"));
+        assert!(result.text.contains("my-task"));
+        assert!(result.text.contains("[evaluating]"));
     }
 
     #[test]
@@ -1147,10 +1189,10 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Both tasks should be visible
-        assert!(result.contains("assign-my-task"));
-        assert!(result.contains("my-task"));
+        assert!(result.text.contains("assign-my-task"));
+        assert!(result.text.contains("my-task"));
         // No phase annotation when shown as literal nodes
-        assert!(!result.contains("[assigning]"));
+        assert!(!result.text.contains("[assigning]"));
     }
 
     #[test]
@@ -1178,15 +1220,15 @@ mod tests {
 
         // The source task (which has cycle_config) should show the ↺ symbol
         assert!(
-            result.contains("↺"),
+            result.text.contains("↺"),
             "Expected ↺ symbol in output:\n{}",
-            result
+            result.text
         );
         // Should show iteration info like (iter 3/10)
         assert!(
-            result.contains("3/10"),
+            result.text.contains("3/10"),
             "Expected iteration count in output:\n{}",
-            result
+            result.text
         );
     }
 
@@ -1211,14 +1253,14 @@ mod tests {
 
         // Should show ↺ symbol in the node label
         assert!(
-            result.contains("↺"),
+            result.text.contains("↺"),
             "Expected ↺ symbol in output:\n{}",
-            result
+            result.text
         );
         assert!(
-            result.contains("2/5"),
+            result.text.contains("2/5"),
             "Expected iteration count in output:\n{}",
-            result
+            result.text
         );
     }
 
@@ -1245,9 +1287,9 @@ mod tests {
 
         // Task with cycle_config should show the ↺ symbol
         assert!(
-            result.contains("↺"),
+            result.text.contains("↺"),
             "Expected ↺ symbol for cycle_config task:\n{}",
-            result
+            result.text
         );
     }
 
@@ -1264,14 +1306,14 @@ mod tests {
 
         // No loop symbol on tasks without loops
         assert!(
-            !result.contains("↺"),
+            !result.text.contains("↺"),
             "Should NOT contain ↺ on normal task:\n{}",
-            result
+            result.text
         );
         assert!(
-            !result.contains("↻"),
+            !result.text.contains("↻"),
             "Should NOT contain ↻ on normal task:\n{}",
-            result
+            result.text
         );
     }
 
@@ -1300,12 +1342,12 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Should have ← at target and ┘ at source
-        assert!(result.contains("←"), "Back-edge target should have ←\nOutput:\n{}", result);
-        assert!(result.contains("┘"), "Back-edge source should have ┘\nOutput:\n{}", result);
+        assert!(result.text.contains("←"), "Back-edge target should have ←\nOutput:\n{}", result.text);
+        assert!(result.text.contains("┘"), "Back-edge source should have ┘\nOutput:\n{}", result.text);
         // Should NOT have old-style cycle-back text
-        assert!(!result.contains("cycles back"), "No old-style text\nOutput:\n{}", result);
+        assert!(!result.text.contains("cycles back"), "No old-style text\nOutput:\n{}", result.text);
         // Should NOT have fan-in annotations
-        assert!(!result.contains("(←"), "No fan-in text annotations\nOutput:\n{}", result);
+        assert!(!result.text.contains("(←"), "No fan-in text annotations\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1333,10 +1375,10 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Fan-in should produce a right-side arc (not a text annotation)
-        assert!(result.contains("←") || result.contains("┘"),
-            "Diamond fan-in should have right-side arcs\nOutput:\n{}", result);
-        assert!(!result.contains("(←"), "No fan-in text annotation\nOutput:\n{}", result);
-        assert!(!result.contains("..."), "No duplicate 'already shown' entries\nOutput:\n{}", result);
+        assert!(result.text.contains("←") || result.text.contains("┘"),
+            "Diamond fan-in should have right-side arcs\nOutput:\n{}", result.text);
+        assert!(!result.text.contains("(←"), "No fan-in text annotation\nOutput:\n{}", result.text);
+        assert!(!result.text.contains("..."), "No duplicate 'already shown' entries\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1366,9 +1408,9 @@ mod tests {
 
         // Diamond layout (default)
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond, &HashSet::new(), "gray");
-        eprintln!("DIAMOND:\n{}", result);
+        eprintln!("DIAMOND:\n{}", result.text);
 
-        let lines: Vec<&str> = result.lines().collect();
+        let lines: Vec<&str> = result.text.lines().collect();
         // join should be at the same indentation as left and right (direct child of root)
         let join_line = lines.iter().find(|l| l.contains("join")).expect("join should appear");
         let left_line = lines.iter().find(|l| l.contains("left")).expect("left should appear");
@@ -1376,7 +1418,7 @@ mod tests {
         let join_indent = join_line.find("join").unwrap();
         let left_indent = left_line.find("left").unwrap();
         assert_eq!(join_indent, left_indent,
-            "Diamond layout: join should be at same indent as left\nOutput:\n{}", result);
+            "Diamond layout: join should be at same indent as left\nOutput:\n{}", result.text);
 
         // join should appear AFTER both left and right in line order
         let left_idx = lines.iter().position(|l| l.contains("left")).unwrap();
@@ -1387,19 +1429,19 @@ mod tests {
 
         // Arcs should flow DOWN (left and right have ┐ or ─, join has ← or ┘)
         assert!(join_line.contains("←") || join_line.contains("┘"),
-            "join should receive arcs\nOutput:\n{}", result);
+            "join should receive arcs\nOutput:\n{}", result.text);
 
         // Compare with tree layout (old behavior): join should be under left
         let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree, &HashSet::new(), "gray");
-        eprintln!("TREE:\n{}", result_tree);
-        let tree_lines: Vec<&str> = result_tree.lines().collect();
+        eprintln!("TREE:\n{}", result_tree.text);
+        let tree_lines: Vec<&str> = result_tree.text.lines().collect();
         let join_tree = tree_lines.iter().find(|l| l.contains("join")).expect("join in tree");
         let left_tree = tree_lines.iter().find(|l| l.contains("left")).expect("left in tree");
         let join_tree_indent = join_tree.find("join").unwrap();
         let left_tree_indent = left_tree.find("left").unwrap();
         // In tree mode, join should be DEEPER than left (a child of left)
         assert!(join_tree_indent > left_tree_indent,
-            "Tree layout: join should be deeper than left\nOutput:\n{}", result_tree);
+            "Tree layout: join should be deeper than left\nOutput:\n{}", result_tree.text);
     }
 
     #[test]
@@ -1424,9 +1466,9 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond, &HashSet::new(), "gray");
-        eprintln!("WIDE DIAMOND:\n{}", result);
+        eprintln!("WIDE DIAMOND:\n{}", result.text);
 
-        let lines: Vec<&str> = result.lines().collect();
+        let lines: Vec<&str> = result.text.lines().collect();
         // join should be after all fan-out children
         let join_idx = lines.iter().position(|l| l.contains("join")).unwrap();
         for name in &names {
@@ -1436,7 +1478,7 @@ mod tests {
         // join should receive arcs
         let join_line = lines.iter().find(|l| l.contains("join")).unwrap();
         assert!(join_line.contains("←") || join_line.contains("┘"),
-            "join should receive arcs in wide diamond\nOutput:\n{}", result);
+            "join should receive arcs in wide diamond\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1463,14 +1505,14 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
-        let tree_lines: Vec<&str> = result.lines().collect();
+        let tree_lines: Vec<&str> = result.text.lines().collect();
         // The child should use └→ (last visible child), not ├→
         let child_line = tree_lines.iter().find(|l| l.contains("child"));
-        assert!(child_line.is_some(), "Child should appear\nOutput:\n{}", result);
+        assert!(child_line.is_some(), "Child should appear\nOutput:\n{}", result.text);
         assert!(
             child_line.unwrap().contains("└→"),
             "Child should use └→ (no orphaned ├→)\nLine: '{}'\nOutput:\n{}",
-            child_line.unwrap(), result
+            child_line.unwrap(), result.text
         );
     }
 
@@ -1509,12 +1551,12 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Should have exactly one ← (same-target collapse)
-        let target_count = result.matches("←").count();
+        let target_count = result.text.matches("←").count();
         assert_eq!(target_count, 1,
-            "Multiple sources to same target should collapse to 1 column\nOutput:\n{}", result);
+            "Multiple sources to same target should collapse to 1 column\nOutput:\n{}", result.text);
         // Should have ┤ for intermediate sources and ┘ for the last
-        assert!(result.contains("┤"), "Intermediate sources should have ┤\nOutput:\n{}", result);
-        assert!(result.contains("┘"), "Last source should have ┘\nOutput:\n{}", result);
+        assert!(result.text.contains("┤"), "Intermediate sources should have ┤\nOutput:\n{}", result.text);
+        assert!(result.text.contains("┘"), "Last source should have ┘\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1540,7 +1582,7 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Lines with arcs should have space before the dash fill
-        for line in result.lines() {
+        for line in result.text.lines() {
             if line.contains("←") || line.contains("┘") {
                 // The text content shouldn't run directly into ─
                 assert!(
@@ -1574,24 +1616,24 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Find the lines
-        let lines: Vec<&str> = result.lines().collect();
+        let lines: Vec<&str> = result.text.lines().collect();
         let b_line = lines.iter().find(|l| l.contains("bbb")).expect("B should appear");
         let c_line = lines.iter().find(|l| l.contains("ccc")).expect("C should appear");
 
         // C (dependent) should have ← arrowhead (arc from B flows down to C)
         assert!(c_line.contains("←"),
-            "Forward skip: dependent C should have ←\nOutput:\n{}", result);
+            "Forward skip: dependent C should have ←\nOutput:\n{}", result.text);
         // B (blocker) should have ┐ (top corner of downward arc to C)
         assert!(b_line.contains("┐"),
-            "Forward skip: blocker B should have ┐\nOutput:\n{}", result);
+            "Forward skip: blocker B should have ┐\nOutput:\n{}", result.text);
 
         // Verify tree layout with LayoutMode::Tree (old behavior)
         let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree, &HashSet::new(), "gray");
-        let tree_lines: Vec<&str> = result_tree.lines().collect();
+        let tree_lines: Vec<&str> = result_tree.text.lines().collect();
         let a_line_tree = tree_lines.iter().find(|l| l.contains("aaa")).expect("A should appear in tree mode");
         // In tree mode, A→C forward skip produces an arc with ┐ at A
         assert!(a_line_tree.contains("┐") || a_line_tree.contains("─"),
-            "Tree mode: A should participate in arc\nOutput:\n{}", result_tree);
+            "Tree mode: A should participate in arc\nOutput:\n{}", result_tree.text);
     }
 
     #[test]
@@ -1624,15 +1666,15 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // D should have exactly one ← (same-dependent collapse)
-        let arrow_count = result.matches("←").count();
+        let arrow_count = result.text.matches("←").count();
         assert_eq!(arrow_count, 1,
-            "Mixed direction arcs to same dependent should collapse to 1 column\nOutput:\n{}", result);
+            "Mixed direction arcs to same dependent should collapse to 1 column\nOutput:\n{}", result.text);
 
         // D's line should have ←
-        let lines: Vec<&str> = result.lines().collect();
+        let lines: Vec<&str> = result.text.lines().collect();
         let d_line = lines.iter().find(|l| l.contains("ddd")).expect("D should appear");
         assert!(d_line.contains("←"),
-            "Mixed direction: D should have ←\nOutput:\n{}", result);
+            "Mixed direction: D should have ←\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1662,18 +1704,18 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         // Each dependent (leaf-a, leaf-b) should have ←
-        let lines: Vec<&str> = result.lines().collect();
+        let lines: Vec<&str> = result.text.lines().collect();
         let c_line = lines.iter().find(|l| l.contains("leaf-a")).expect("leaf-a should appear");
         let d_line = lines.iter().find(|l| l.contains("leaf-b")).expect("leaf-b should appear");
         assert!(c_line.contains("←"),
-            "leaf-a should have ← arrowhead\nOutput:\n{}", result);
+            "leaf-a should have ← arrowhead\nOutput:\n{}", result.text);
         assert!(d_line.contains("←"),
-            "leaf-b should have ← arrowhead\nOutput:\n{}", result);
+            "leaf-b should have ← arrowhead\nOutput:\n{}", result.text);
 
         // Root (blocker) should NOT have ←
         let root_line = lines.iter().find(|l| l.contains("root")).expect("root should appear");
         assert!(!root_line.contains("←"),
-            "root (blocker) should NOT have ←\nOutput:\n{}", result);
+            "root (blocker) should NOT have ←\nOutput:\n{}", result.text);
     }
 
     #[test]
@@ -1722,12 +1764,12 @@ mod tests {
             &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(),
             LayoutMode::default(), &HashSet::new(), "gray",
         );
-        eprintln!("CROSSING OUTPUT:\n{}", result);
-        // Should contain crossing character ╫ where verticals cross horizontals
-        assert!(result.contains("╫"),
-            "Should have crossing character ╫ where arcs cross\nOutput:\n{}", result);
+        eprintln!("CROSSING OUTPUT:\n{}", result.text);
+        // Should contain crossing character ┼ where verticals cross horizontals
+        assert!(result.text.contains("┼"),
+            "Should have crossing character ┼ where arcs cross\nOutput:\n{}", result.text);
         // Should contain legend explaining the crossing symbol
-        assert!(result.contains("Legend:"),
-            "Should have legend when crossings exist\nOutput:\n{}", result);
+        assert!(result.text.contains("Legend:"),
+            "Should have legend when crossings exist\nOutput:\n{}", result.text);
     }
 }

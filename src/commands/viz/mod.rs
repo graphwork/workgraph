@@ -10,6 +10,22 @@ use workgraph::graph::{parse_token_usage_live, Status, Task, TokenUsage, WorkGra
 // Re-export public API
 pub use graph::{generate_graph, generate_graph_with_overrides};
 
+/// Structured output from viz generation, containing both the rendered string
+/// and metadata needed for interactive features (e.g., TUI task selection).
+pub struct VizOutput {
+    /// The rendered visualization string.
+    pub text: String,
+    /// Map from task ID to the line index where it appears in the output.
+    pub node_line_map: HashMap<String, usize>,
+    /// Ordered list of task IDs in the order they appear (by line number).
+    /// Used for arrow-key navigation in the TUI.
+    pub task_order: Vec<String>,
+    /// Forward edges: task_id → list of dependent task IDs (tasks that depend on it).
+    pub forward_edges: HashMap<String, Vec<String>>,
+    /// Reverse edges: task_id → list of dependency task IDs (tasks it depends on).
+    pub reverse_edges: HashMap<String, Vec<String>>,
+}
+
 /// Output format for visualization
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -185,7 +201,7 @@ pub(crate) fn filter_internal_tasks<'a>(
 
 /// Generate the ASCII viz output string for the given directory and options.
 /// Used by both the CLI `wg viz` command and the TUI viewer.
-pub fn generate_viz_output(dir: &Path, options: &VizOptions) -> Result<String> {
+pub fn generate_viz_output(dir: &Path, options: &VizOptions) -> Result<VizOutput> {
     let (graph, _path) = super::load_workgraph(dir)?;
     generate_viz_output_from_graph(&graph, dir, options)
 }
@@ -196,7 +212,7 @@ pub fn generate_viz_output_from_graph(
     graph: &WorkGraph,
     dir: &Path,
     options: &VizOptions,
-) -> Result<String> {
+) -> Result<VizOutput> {
     // Compute cycle analysis so we can preserve cycle members in filtered views
     let cycle_analysis = graph.compute_cycle_analysis();
 
@@ -454,22 +470,34 @@ pub fn generate_viz_output_from_graph(
 
     // Generate output
     let output = match options.format {
-        OutputFormat::Dot => dot::generate_dot(
-            graph,
-            &tasks_to_show,
-            &task_ids,
-            &critical_path_set,
-            &annotations,
-        ),
-        OutputFormat::Mermaid => dot::generate_mermaid(
-            graph,
-            &tasks_to_show,
-            &task_ids,
-            &critical_path_set,
-            &annotations,
-        ),
         OutputFormat::Ascii => ascii::generate_ascii(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, options.layout, &context_ids, &options.edge_color),
-        OutputFormat::Graph => graph::generate_graph(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, &context_ids),
+        _ => {
+            let text = match options.format {
+                OutputFormat::Dot => dot::generate_dot(
+                    graph,
+                    &tasks_to_show,
+                    &task_ids,
+                    &critical_path_set,
+                    &annotations,
+                ),
+                OutputFormat::Mermaid => dot::generate_mermaid(
+                    graph,
+                    &tasks_to_show,
+                    &task_ids,
+                    &critical_path_set,
+                    &annotations,
+                ),
+                OutputFormat::Graph => graph::generate_graph(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, &context_ids),
+                OutputFormat::Ascii => unreachable!(),
+            };
+            VizOutput {
+                text,
+                node_line_map: HashMap::new(),
+                task_order: Vec::new(),
+                forward_edges: HashMap::new(),
+                reverse_edges: HashMap::new(),
+            }
+        }
     };
 
     Ok(output)
@@ -483,10 +511,10 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
         if options.format != OutputFormat::Dot {
             anyhow::bail!("--output requires --format dot");
         }
-        dot::render_dot(&output, output_path)?;
+        dot::render_dot(&output.text, output_path)?;
         println!("Rendered graph to {}", output_path);
     } else {
-        println!("{}", output);
+        println!("{}", output.text);
     }
 
     Ok(())

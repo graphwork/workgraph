@@ -6,7 +6,7 @@ use anyhow::Result;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::commands::viz::VizOptions;
+use crate::commands::viz::{VizOptions, VizOutput};
 use workgraph::graph::{parse_token_usage_live, Status, TokenUsage};
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
@@ -94,6 +94,26 @@ pub struct VizApp {
     /// Render code applies a transient yellow highlight that fades after ~2 seconds.
     pub jump_target: Option<(usize, Instant)>,
 
+    // ── Task selection / edge tracing ──
+    /// Ordered list of task IDs as they appear in the viz output (top to bottom).
+    pub task_order: Vec<String>,
+    /// Map from task ID to its line index in the viz output.
+    pub node_line_map: HashMap<String, usize>,
+    /// Forward edges: task_id → dependent task IDs.
+    pub forward_edges: HashMap<String, Vec<String>>,
+    /// Reverse edges: task_id → dependency task IDs.
+    pub reverse_edges: HashMap<String, Vec<String>>,
+    /// Currently selected task index into `task_order`.
+    pub selected_task_idx: Option<usize>,
+    /// Transitive upstream (dependency) task IDs of the selected task.
+    pub upstream_set: HashSet<String>,
+    /// Transitive downstream (dependent) task IDs of the selected task.
+    pub downstream_set: HashSet<String>,
+    /// Set of line indices that belong to upstream edges (for coloring tree/arc connectors).
+    pub upstream_lines: HashSet<usize>,
+    /// Set of line indices that belong to downstream edges.
+    pub downstream_lines: HashSet<usize>,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -162,6 +182,15 @@ impl VizApp {
             show_help: false,
             mouse_enabled,
             jump_target: None,
+            task_order: Vec::new(),
+            node_line_map: HashMap::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            selected_task_idx: None,
+            upstream_set: HashSet::new(),
+            downstream_set: HashSet::new(),
+            upstream_lines: HashSet::new(),
+            downstream_lines: HashSet::new(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -175,8 +204,8 @@ impl VizApp {
     /// Load viz output by calling the viz module directly.
     pub fn load_viz(&mut self) {
         match self.generate_viz() {
-            Ok(output) => {
-                self.lines = output.lines().map(String::from).collect();
+            Ok(viz_output) => {
+                self.lines = viz_output.text.lines().map(String::from).collect();
                 self.plain_lines = self
                     .lines
                     .iter()
@@ -191,6 +220,28 @@ impl VizApp {
                     .collect();
                 self.max_line_width =
                     self.plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+
+                // Store graph metadata for interactive edge tracing.
+                self.node_line_map = viz_output.node_line_map;
+                self.task_order = viz_output.task_order;
+                self.forward_edges = viz_output.forward_edges;
+                self.reverse_edges = viz_output.reverse_edges;
+
+                // Preserve selection if possible (e.g., after refresh).
+                if let Some(idx) = self.selected_task_idx {
+                    if idx >= self.task_order.len() {
+                        self.selected_task_idx = if self.task_order.is_empty() {
+                            None
+                        } else {
+                            Some(self.task_order.len() - 1)
+                        };
+                    }
+                } else if !self.task_order.is_empty() {
+                    // Default to first task on initial load.
+                    self.selected_task_idx = Some(0);
+                }
+                self.recompute_trace();
+
                 self.update_scroll_bounds();
             }
             Err(_) => {
@@ -198,12 +249,21 @@ impl VizApp {
                 self.plain_lines = self.lines.clone();
                 self.search_lines = self.plain_lines.clone();
                 self.max_line_width = self.lines[0].len();
+                self.task_order.clear();
+                self.node_line_map.clear();
+                self.forward_edges.clear();
+                self.reverse_edges.clear();
+                self.selected_task_idx = None;
+                self.upstream_set.clear();
+                self.downstream_set.clear();
+                self.upstream_lines.clear();
+                self.downstream_lines.clear();
                 self.update_scroll_bounds();
             }
         }
     }
 
-    fn generate_viz(&self) -> Result<String> {
+    fn generate_viz(&self) -> Result<VizOutput> {
         crate::commands::viz::generate_viz_output(&self.workgraph_dir, &self.viz_options)
     }
 
@@ -246,6 +306,139 @@ impl VizApp {
                 }
             }
         }
+    }
+
+    // ── Task selection / edge tracing ──
+
+    /// Move task selection to the previous task in the viz order.
+    pub fn select_prev_task(&mut self) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        let idx = match self.selected_task_idx {
+            Some(0) => self.task_order.len() - 1, // wrap around
+            Some(i) => i - 1,
+            None => 0,
+        };
+        self.selected_task_idx = Some(idx);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
+    /// Move task selection to the next task in the viz order.
+    pub fn select_next_task(&mut self) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        let idx = match self.selected_task_idx {
+            Some(i) if i + 1 >= self.task_order.len() => 0, // wrap around
+            Some(i) => i + 1,
+            None => 0,
+        };
+        self.selected_task_idx = Some(idx);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
+    /// Recompute the transitive upstream/downstream sets and line mappings
+    /// based on the currently selected task.
+    pub fn recompute_trace(&mut self) {
+        self.upstream_set.clear();
+        self.downstream_set.clear();
+        self.upstream_lines.clear();
+        self.downstream_lines.clear();
+
+        let selected_id = match self.selected_task_idx {
+            Some(idx) => match self.task_order.get(idx) {
+                Some(id) => id.clone(),
+                None => return,
+            },
+            None => return,
+        };
+
+        // Compute transitive upstream (dependencies) via BFS on reverse_edges.
+        {
+            let mut queue = std::collections::VecDeque::new();
+            for dep in self.reverse_edges.get(&selected_id).into_iter().flatten() {
+                if self.upstream_set.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+            while let Some(id) = queue.pop_front() {
+                for dep in self.reverse_edges.get(&id).into_iter().flatten() {
+                    if self.upstream_set.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                    }
+                }
+            }
+        }
+
+        // Compute transitive downstream (dependents) via BFS on forward_edges.
+        {
+            let mut queue = std::collections::VecDeque::new();
+            for dep in self.forward_edges.get(&selected_id).into_iter().flatten() {
+                if self.downstream_set.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+            while let Some(id) = queue.pop_front() {
+                for dep in self.forward_edges.get(&id).into_iter().flatten() {
+                    if self.downstream_set.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                    }
+                }
+            }
+        }
+
+        // Build line sets for coloring connectors between nodes.
+        // For upstream: all lines between the selected node and each upstream node.
+        let selected_line = self.node_line_map.get(&selected_id).copied();
+        if let Some(sel_line) = selected_line {
+            for id in &self.upstream_set {
+                if let Some(&line) = self.node_line_map.get(id) {
+                    let (lo, hi) = if line < sel_line { (line, sel_line) } else { (sel_line, line) };
+                    for l in lo..=hi {
+                        self.upstream_lines.insert(l);
+                    }
+                }
+            }
+            for id in &self.downstream_set {
+                if let Some(&line) = self.node_line_map.get(id) {
+                    let (lo, hi) = if line < sel_line { (line, sel_line) } else { (sel_line, line) };
+                    for l in lo..=hi {
+                        self.downstream_lines.insert(l);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scroll the viewport so the selected task is visible.
+    fn scroll_to_selected_task(&mut self) {
+        let task_id = match self.selected_task_idx.and_then(|i| self.task_order.get(i)) {
+            Some(id) => id,
+            None => return,
+        };
+        let orig_line = match self.node_line_map.get(task_id) {
+            Some(&line) => line,
+            None => return,
+        };
+        if let Some(visible_pos) = self.original_to_visible(orig_line) {
+            if visible_pos < self.scroll.offset_y
+                || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height
+            {
+                let half = self.scroll.viewport_height / 2;
+                self.scroll.offset_y = visible_pos.saturating_sub(half);
+                self.scroll.clamp();
+            }
+        }
+    }
+
+    /// Get the currently selected task ID, if any.
+    pub fn selected_task_id(&self) -> Option<&str> {
+        self.selected_task_idx
+            .and_then(|i| self.task_order.get(i))
+            .map(|s| s.as_str())
     }
 
     // ── Search ──
@@ -807,7 +1000,7 @@ fn sanitize_for_search(line: &str) -> String {
         .collect()
 }
 
-fn is_box_drawing(c: char) -> bool {
+pub(super) fn is_box_drawing(c: char) -> bool {
     matches!(
         c,
         '│' | '├'

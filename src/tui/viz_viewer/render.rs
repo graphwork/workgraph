@@ -50,6 +50,45 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     }
 }
 
+/// Determine the trace highlight category for a given original line index.
+enum TraceCategory {
+    Selected,
+    Upstream,
+    Downstream,
+    None,
+}
+
+fn classify_line(app: &VizApp, orig_idx: usize) -> TraceCategory {
+    // Check if this line is the selected task's line.
+    if let Some(selected_id) = app.selected_task_id() {
+        if let Some(&sel_line) = app.node_line_map.get(selected_id) {
+            if orig_idx == sel_line {
+                return TraceCategory::Selected;
+            }
+        }
+    }
+    // Check if this line belongs to an upstream or downstream task.
+    // First check task node lines (exact match).
+    for (id, &line) in &app.node_line_map {
+        if line == orig_idx {
+            if app.upstream_set.contains(id) {
+                return TraceCategory::Upstream;
+            }
+            if app.downstream_set.contains(id) {
+                return TraceCategory::Downstream;
+            }
+        }
+    }
+    // Then check connector lines (lines between nodes in the trace).
+    if app.upstream_lines.contains(&orig_idx) {
+        return TraceCategory::Upstream;
+    }
+    if app.downstream_lines.contains(&orig_idx) {
+        return TraceCategory::Downstream;
+    }
+    TraceCategory::None
+}
+
 fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
     let visible_count = app.visible_line_count();
     let start = app.scroll.offset_y;
@@ -62,6 +101,7 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
     let has_search = app.has_active_search() && !app.fuzzy_matches.is_empty();
     let current_match_orig_line = app.current_match_line();
     let jump_target_line = app.jump_target.map(|(line, _)| line);
+    let has_selection = app.selected_task_idx.is_some();
 
     // Build lines for the visible range.
     // Each visible row maps to an original line index via visible_to_original.
@@ -97,6 +137,25 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
         } else if jump_target_line == Some(orig_idx) {
             // Transient highlight on the line we jumped to after Enter.
             text_lines.push(base_line.style(Style::default().bg(Color::Yellow)));
+        } else if has_selection {
+            // Apply edge-tracing color overlays.
+            // Only color connector/edge characters — task text stays default.
+            let plain_line = app.plain_lines.get(orig_idx).map(|s| s.as_str()).unwrap_or("");
+            match classify_line(app, orig_idx) {
+                TraceCategory::Selected => {
+                    text_lines.push(apply_selected_highlight(base_line, plain_line));
+                }
+                TraceCategory::Upstream => {
+                    text_lines.push(apply_edge_only_trace_color(base_line, Color::Magenta, plain_line));
+                }
+                TraceCategory::Downstream => {
+                    text_lines.push(apply_edge_only_trace_color(base_line, Color::Cyan, plain_line));
+                }
+                TraceCategory::None => {
+                    // Dim unrelated lines slightly to make the traced path stand out.
+                    text_lines.push(base_line.style(Style::default().fg(Color::DarkGray)));
+                }
+            }
         } else {
             text_lines.push(base_line);
         }
@@ -108,6 +167,161 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
     let paragraph = Paragraph::new(text).scroll((0, app.scroll.offset_x as u16));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Find the character range of the "task text" in a plain viz line.
+/// Returns (text_start, text_end) as char indices.
+/// - text_start: index of first alphanumeric character (task ID start)
+/// - text_end: index after last ')' (closing status/token info)
+/// Returns None for non-task lines (pure connectors, blanks, summaries).
+fn find_text_range(plain_line: &str) -> Option<(usize, usize)> {
+    let chars: Vec<char> = plain_line.chars().collect();
+
+    // Find first alphanumeric character (start of task text).
+    let text_start = chars.iter().position(|c| c.is_alphanumeric())?;
+
+    // Find the last ')' which closes the status/token info.
+    let text_end = chars
+        .iter()
+        .rposition(|&c| c == ')')
+        .map(|i| i + 1) // exclusive end, include the ')'
+        .unwrap_or_else(|| {
+            // No ')' found — find the last non-connector char.
+            let mut end = text_start;
+            for i in text_start..chars.len() {
+                if !chars[i].is_whitespace() && !super::state::is_box_drawing(chars[i]) {
+                    end = i + 1;
+                }
+            }
+            end
+        });
+
+    Some((text_start, text_end))
+}
+
+/// Apply trace color ONLY to edge/connector characters, leaving task text unchanged.
+/// Used for upstream (magenta) and downstream (cyan) lines.
+fn apply_edge_only_trace_color<'a>(line: Line<'a>, color: Color, plain_line: &str) -> Line<'a> {
+    let text_range = find_text_range(plain_line);
+
+    // If no text range found, this is a pure connector line — color everything.
+    let (text_start, text_end) = match text_range {
+        Some(range) => range,
+        None => {
+            let new_spans: Vec<Span<'a>> = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    let mut style = span.style;
+                    style.fg = Some(color);
+                    Span::styled(span.content, style)
+                })
+                .collect();
+            return Line::from(new_spans);
+        }
+    };
+
+    // Flatten spans into characters with styles.
+    let mut chars_with_styles: Vec<(char, Style)> = Vec::new();
+    for span in &line.spans {
+        for c in span.content.chars() {
+            chars_with_styles.push((c, span.style));
+        }
+    }
+
+    // Rebuild spans: trace color on connectors, original style on text.
+    let mut new_spans: Vec<Span<'a>> = Vec::new();
+    let mut current_buf = String::new();
+    let mut current_style = Style::default();
+    let mut first = true;
+
+    for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
+        let is_text = char_idx >= text_start && char_idx < text_end;
+        let style = if is_text {
+            *base_style
+        } else {
+            let mut s = *base_style;
+            s.fg = Some(color);
+            s
+        };
+
+        if first {
+            current_style = style;
+            first = false;
+        } else if style != current_style {
+            new_spans.push(Span::styled(std::mem::take(&mut current_buf), current_style));
+            current_style = style;
+        }
+
+        current_buf.push(*c);
+    }
+
+    if !current_buf.is_empty() {
+        new_spans.push(Span::styled(current_buf, current_style));
+    }
+
+    Line::from(new_spans)
+}
+
+/// Apply selected-task highlight: yellow background on task text,
+/// magenta on left-side connectors (upstream/inbound edges),
+/// cyan on right-side connectors (downstream/outbound edges).
+/// The selected line is the junction point where both directions meet.
+fn apply_selected_highlight<'a>(line: Line<'a>, plain_line: &str) -> Line<'a> {
+    let text_range = find_text_range(plain_line);
+
+    // If no text range, fall back to full-line highlight.
+    let (text_start, text_end) = match text_range {
+        Some(range) => range,
+        None => return line.style(Style::default().bg(Color::Yellow).fg(Color::Black)),
+    };
+
+    // Flatten spans into characters with styles.
+    let mut chars_with_styles: Vec<(char, Style)> = Vec::new();
+    for span in &line.spans {
+        for c in span.content.chars() {
+            chars_with_styles.push((c, span.style));
+        }
+    }
+
+    // Rebuild spans: magenta on left connectors, yellow bg on text, cyan on right connectors.
+    let mut new_spans: Vec<Span<'a>> = Vec::new();
+    let mut current_buf = String::new();
+    let mut current_style = Style::default();
+    let mut first = true;
+
+    for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
+        let style = if char_idx >= text_start && char_idx < text_end {
+            // Task text: yellow background
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        } else if char_idx < text_start {
+            // Left side: inbound edges (upstream) — magenta
+            let mut s = *base_style;
+            s.fg = Some(Color::Magenta);
+            s
+        } else {
+            // Right side: outbound edges (downstream) — cyan
+            let mut s = *base_style;
+            s.fg = Some(Color::Cyan);
+            s
+        };
+
+        if first {
+            current_style = style;
+            first = false;
+        } else if style != current_style {
+            new_spans.push(Span::styled(std::mem::take(&mut current_buf), current_style));
+            current_style = style;
+        }
+
+        current_buf.push(*c);
+    }
+
+    if !current_buf.is_empty() {
+        new_spans.push(Span::styled(current_buf, current_style));
+    }
+
+    Line::from(new_spans)
 }
 
 /// Highlight the fuzzy-matched characters within a line.
@@ -299,6 +513,21 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         Style::default().fg(Color::White),
     ));
 
+    // Selected task indicator
+    if let Some(task_id) = app.selected_task_id() {
+        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+        // Truncate long task IDs for status bar display
+        let display_id = if task_id.len() > 24 {
+            format!("{}…", &task_id[..23])
+        } else {
+            task_id.to_string()
+        };
+        spans.push(Span::styled(
+            format!("▸{} ", display_id),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
     // Search/filter state
     let search_status = app.search_status();
     if !search_status.is_empty() {
@@ -347,7 +576,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 fn draw_help_overlay(frame: &mut Frame) {
     let size = frame.area();
     let width = 56.min(size.width.saturating_sub(4));
-    let height = 28.min(size.height.saturating_sub(4));
+    let height = 32.min(size.height.saturating_sub(4));
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
@@ -388,10 +617,16 @@ fn draw_help_overlay(frame: &mut Frame) {
 
     let lines = vec![
         heading("Navigation"),
+        binding("↑ / ↓", "Select prev / next task"),
         binding("j / k", "Scroll down / up"),
         binding("h / l", "Scroll left / right"),
         binding("Ctrl-d / u", "Page down / up"),
         binding("g / G", "Jump to top / bottom"),
+        blank(),
+        heading("Edge Tracing"),
+        binding("↑ / ↓", "Highlights dependencies/dependents"),
+        binding("", "Yellow=selected  Magenta=upstream"),
+        binding("", "Cyan=downstream"),
         blank(),
         heading("Search (vim-style)"),
         binding("/", "Start search"),
