@@ -6,6 +6,47 @@ use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
 
+/// Record an evaluation against the assigner's own performance.
+///
+/// When auto_evaluate is enabled, this creates an evaluation entry for the
+/// assignment itself (source = "assigner"), so the agency can track how well
+/// the assigner selects agents.  The actual quality signal comes later from
+/// the agent's task evaluation, but recording the event here lets the system
+/// attribute downstream scores back to the assignment decision.
+fn record_assigner_evaluation(
+    agency_dir: &Path,
+    task_id: &str,
+    agent: &agency::Agent,
+    config: &Config,
+) {
+    if !config.agency.auto_evaluate {
+        return;
+    }
+
+    let assign_task_id = format!("assign-{}", task_id);
+    let eval = agency::Evaluation {
+        id: format!("eval-assign-{}", task_id),
+        task_id: assign_task_id,
+        agent_id: agent.id.clone(),
+        role_id: agent.role_id.clone(),
+        tradeoff_id: agent.tradeoff_id.clone(),
+        // Placeholder score — actual quality will be determined by downstream
+        // evaluation and org-eval. The assigner's "score" is updated
+        // retrospectively when the assigned agent's task completes.
+        score: 0.5,
+        dimensions: std::collections::HashMap::new(),
+        notes: format!("Assignment recorded for task '{}'. Awaiting downstream evaluation.", task_id),
+        evaluator: "assigner".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        model: None,
+        source: "assigner".to_string(),
+    };
+
+    if let Err(e) = agency::record_evaluation(&eval, agency_dir) {
+        eprintln!("Warning: failed to record assigner evaluation for '{}': {}", task_id, e);
+    }
+}
+
 /// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
 /// `wg assign <task-id> --clear`       — remove agent assignment
 pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> Result<()> {
@@ -90,15 +131,18 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         eprintln!("Warning: failed to save assignment record for '{}': {}", task_id, e);
     }
 
-    // Resolve role/motivation names for display
+    // Record assigner evaluation for downstream attribution
+    record_assigner_evaluation(&agency_dir, task_id, &agent, &config);
+
+    // Resolve role/tradeoff names for display
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
     let role_name = agency::find_role_by_prefix(&roles_dir, &agent.role_id)
         .map(|r| r.name)
         .unwrap_or_else(|_| "(not found)".to_string());
-    let motivation_name = agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id)
-        .map(|m| m.name)
+    let tradeoff_name = agency::find_tradeoff_by_prefix(&tradeoffs_dir, &agent.tradeoff_id)
+        .map(|t| t.name)
         .unwrap_or_else(|_| "(not found)".to_string());
 
     println!("Assigned agent to task '{}':", task_id);
@@ -113,8 +157,8 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         agency::short_hash(&agent.role_id)
     );
     println!(
-        "  Motivation: {} ({})",
-        motivation_name,
+        "  Tradeoff:   {} ({})",
+        tradeoff_name,
         agency::short_hash(&agent.tradeoff_id)
     );
 
@@ -194,7 +238,7 @@ mod tests {
         save_graph(&graph, &path).unwrap();
     }
 
-    /// Set up agency with test entities, returning (agent_id, role_id, motivation_id).
+    /// Set up agency with test entities, returning (agent_id, role_id, tradeoff_id).
     fn setup_agency(dir: &Path) -> (String, String, String) {
         let agency_dir = dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -208,23 +252,23 @@ mod tests {
         let role_id = role.id.clone();
         agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-        let mut motivation = agency::build_tradeoff(
+        let mut tradeoff = agency::build_tradeoff(
             "Quality First",
             "Prioritise correctness",
             vec!["Slower delivery".to_string()],
             vec!["Skipping tests".to_string()],
         );
-        motivation.performance.task_count = 2;
-        motivation.performance.avg_score = Some(0.9);
-        let mot_id = motivation.id.clone();
-        agency::save_tradeoff(&motivation, &agency_dir.join("primitives/tradeoffs")).unwrap();
+        tradeoff.performance.task_count = 2;
+        tradeoff.performance.avg_score = Some(0.9);
+        let tradeoff_id = tradeoff.id.clone();
+        agency::save_tradeoff(&tradeoff, &agency_dir.join("primitives/tradeoffs")).unwrap();
 
-        // Create an agent for this role+motivation pair
-        let agent_id = agency::content_hash_agent(&role_id, &mot_id);
+        // Create an agent for this role+tradeoff pair
+        let agent_id = agency::content_hash_agent(&role_id, &tradeoff_id);
         let agent = agency::Agent {
             id: agent_id.clone(),
             role_id: role_id.clone(),
-            tradeoff_id: mot_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
             name: "test-agent".to_string(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
@@ -240,7 +284,7 @@ mod tests {
         };
         agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
-        (agent_id, role_id, mot_id)
+        (agent_id, role_id, tradeoff_id)
     }
 
     #[test]
@@ -248,7 +292,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (agent_id, _role_id, _mot_id) = setup_agency(dir_path);
+        let (agent_id, _role_id, _tradeoff_id) = setup_agency(dir_path);
 
         let result = run(dir_path, "t1", Some(&agent_id), false);
         assert!(result.is_ok(), "assign failed: {:?}", result.err());
@@ -264,7 +308,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (agent_id, _role_id, _mot_id) = setup_agency(dir_path);
+        let (agent_id, _role_id, _tradeoff_id) = setup_agency(dir_path);
 
         // Use 8-char prefix instead of full hash
         let prefix = &agent_id[..8];

@@ -82,6 +82,16 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             println!("  triage_max_log_bytes = {}", max_bytes);
         }
         println!();
+        println!("[guardrails]");
+        println!(
+            "  max_child_tasks_per_agent = {}",
+            config.guardrails.max_child_tasks_per_agent
+        );
+        println!(
+            "  max_task_depth = {}",
+            config.guardrails.max_task_depth
+        );
+        println!();
         if config.project.name.is_some() || config.project.description.is_some() {
             println!("[project]");
             if let Some(ref name) = config.project.name {
@@ -141,6 +151,8 @@ pub fn update(
     triage_model: Option<&str>,
     triage_timeout: Option<u64>,
     triage_max_log_bytes: Option<usize>,
+    max_child_tasks: Option<u32>,
+    max_task_depth: Option<u32>,
 ) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
@@ -280,6 +292,19 @@ pub fn update(
     if let Some(b) = triage_max_log_bytes {
         config.agency.triage_max_log_bytes = Some(b);
         println!("Set agency.triage_max_log_bytes = {}", b);
+        changed = true;
+    }
+
+    // Guardrails settings
+    if let Some(v) = max_child_tasks {
+        config.guardrails.max_child_tasks_per_agent = v;
+        println!("Set guardrails.max_child_tasks_per_agent = {}", v);
+        changed = true;
+    }
+
+    if let Some(v) = max_task_depth {
+        config.guardrails.max_task_depth = v;
+        println!("Set guardrails.max_task_depth = {}", v);
         changed = true;
     }
 
@@ -595,6 +620,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -619,6 +646,8 @@ mod tests {
             Some(60),
             None,
             Some("shell"),
+            None,
+            None,
             None,
             None,
             None,
@@ -673,6 +702,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -706,6 +737,8 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None,
+            None,
             None,
             None,
             None,

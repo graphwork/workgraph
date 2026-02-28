@@ -144,22 +144,40 @@ mod tests {
         // Run init
         run(&wg_dir).unwrap();
 
-        // Verify roles were created
+        // Verify roles were created (4 starter + 4 special agent = 8)
         let roles_dir = wg_dir.join("agency").join("cache/roles");
         let role_count = std::fs::read_dir(&roles_dir).unwrap().count();
         assert!(
-            role_count >= 4,
-            "Expected at least 4 roles, got {}",
+            role_count >= 8,
+            "Expected at least 8 roles (4 starter + 4 special), got {}",
             role_count
         );
 
-        // Verify tradeoffs were created
+        // Verify tradeoffs were created (4 starter + 7 special agent = 11)
         let tradeoffs_dir = wg_dir.join("agency").join("primitives/tradeoffs");
         let tradeoff_count = std::fs::read_dir(&tradeoffs_dir).unwrap().count();
         assert!(
-            tradeoff_count >= 4,
-            "Expected at least 4 tradeoffs, got {}",
+            tradeoff_count >= 11,
+            "Expected at least 11 tradeoffs (4 starter + 7 special), got {}",
             tradeoff_count
+        );
+
+        // Verify components were seeded
+        let components_dir = wg_dir.join("agency").join("primitives/components");
+        let component_count = std::fs::read_dir(&components_dir).unwrap().count();
+        assert!(
+            component_count >= 8,
+            "Expected at least 8 components, got {}",
+            component_count
+        );
+
+        // Verify outcomes were seeded
+        let outcomes_dir = wg_dir.join("agency").join("primitives/outcomes");
+        let outcome_count = std::fs::read_dir(&outcomes_dir).unwrap().count();
+        assert!(
+            outcome_count >= 4,
+            "Expected at least 4 outcomes, got {}",
+            outcome_count
         );
 
         // Verify agent was created

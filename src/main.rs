@@ -885,6 +885,14 @@ enum Commands {
         /// Set max bytes to read from agent output log for triage (default: 50000)
         #[arg(long)]
         triage_max_log_bytes: Option<usize>,
+
+        /// Max tasks a single agent can create per execution (default: 10)
+        #[arg(long)]
+        max_child_tasks: Option<u32>,
+
+        /// Max depth of task dependency chains from root (default: 8)
+        #[arg(long)]
+        max_task_depth: Option<u32>,
     },
 
     /// Detect and clean up dead agents
@@ -1549,6 +1557,17 @@ enum AgencyCommands {
         /// Optional note explaining rejection
         #[arg(long, short = 'n')]
         note: Option<String>,
+    },
+
+    /// Invoke the creator agent to discover and add new primitives
+    Create {
+        /// Model to use for the creator agent
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Show what would be created without writing
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Push local entities to another agency store
@@ -2928,6 +2947,14 @@ fn main() -> Result<()> {
                     commands::agency_remote::run_show(&workgraph_dir, &name, cli.json)
                 }
             },
+            AgencyCommands::Create { model, dry_run } => {
+                commands::agency_create::run(
+                    &workgraph_dir,
+                    model.as_deref(),
+                    dry_run,
+                    cli.json,
+                )
+            }
             AgencyCommands::Deferred => {
                 commands::evolve::run_deferred_list(&workgraph_dir, cli.json)
             }
@@ -3282,6 +3309,8 @@ fn main() -> Result<()> {
             triage_model,
             triage_timeout,
             triage_max_log_bytes,
+            max_child_tasks,
+            max_task_depth,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -3343,7 +3372,9 @@ fn main() -> Result<()> {
                     && auto_triage.is_none()
                     && triage_model.is_none()
                     && triage_timeout.is_none()
-                    && triage_max_log_bytes.is_none())
+                    && triage_max_log_bytes.is_none()
+                    && max_child_tasks.is_none()
+                    && max_task_depth.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -3375,6 +3406,8 @@ fn main() -> Result<()> {
                     triage_model.as_deref(),
                     triage_timeout,
                     triage_max_log_bytes,
+                    max_child_tasks,
+                    max_task_depth,
                 )
             }
         }

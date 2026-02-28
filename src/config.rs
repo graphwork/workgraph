@@ -193,6 +193,7 @@ pub struct OrgRewardConfig {
     pub weights: OrgRewardWeights,
 }
 
+fn default_auto_create_threshold() -> u32 { 20 }
 fn default_run_mode() -> f64 { 0.2 }
 fn default_min_exploration_rate() -> f64 { 0.05 }
 fn default_exploration_interval() -> u32 { 20 }
@@ -262,6 +263,16 @@ pub struct AgencyConfig {
     /// Fallback when creator_agent is not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_model: Option<String>,
+
+    /// Automatically invoke the creator agent when the primitive store
+    /// needs expansion. Default: false.
+    #[serde(default)]
+    pub auto_create: bool,
+
+    /// Minimum completed tasks since last creator invocation before
+    /// triggering `wg agency create` again. Default: 20.
+    #[serde(default = "default_auto_create_threshold")]
+    pub auto_create_threshold: u32,
 
     /// Prose policy for the evolver describing retention heuristics
     /// (e.g. when to retire underperforming roles/motivations)
@@ -345,6 +356,8 @@ impl Default for AgencyConfig {
             evolver_agent: None,
             creator_agent: None,
             creator_model: None,
+            auto_create: false,
+            auto_create_threshold: default_auto_create_threshold(),
             retention_heuristics: None,
             auto_triage: false,
             triage_model: None,
