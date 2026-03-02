@@ -1083,7 +1083,37 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 let visible_idx = app.scroll.offset_y + content_row as usize;
                 if visible_idx < app.visible_line_count() {
                     let orig_line = app.visible_to_original(visible_idx);
+                    // Check if the click is on the mail indicator (✉) region.
+                    let content_col =
+                        (column.saturating_sub(app.last_graph_area.x) as usize)
+                            + app.scroll.offset_x;
+                    let clicked_mail = app
+                        .plain_lines
+                        .get(orig_line)
+                        .and_then(|line| {
+                            let envelope_pos = line.find('✉')?;
+                            // The mail indicator region spans from the ✉ char
+                            // through the count digits that follow it.
+                            // Find the end: skip ✉ and any subsequent non-space chars.
+                            let after = &line[envelope_pos + '✉'.len_utf8()..];
+                            let suffix_len =
+                                after.chars().take_while(|c| !c.is_whitespace()).count();
+                            let end = envelope_pos + '✉'.len_utf8() + suffix_len;
+                            if content_col >= envelope_pos && content_col <= end {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some();
                     app.select_task_at_line(orig_line);
+                    if clicked_mail {
+                        // Switch to the Messages tab for this task.
+                        app.right_panel_visible = true;
+                        app.right_panel_tab = RightPanelTab::Messages;
+                        app.invalidate_messages_panel();
+                        app.load_messages_panel();
+                    }
                 }
             }
         }
