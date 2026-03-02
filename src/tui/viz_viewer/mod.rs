@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -30,7 +31,7 @@ pub fn run(
     }));
 
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
 
     let mut terminal = ratatui::init();
     let mut app = VizApp::new(workgraph_dir, viz_options, mouse_override);
@@ -44,6 +45,6 @@ pub fn run(
 
 fn restore_terminal() -> Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste)?;
     Ok(())
 }
