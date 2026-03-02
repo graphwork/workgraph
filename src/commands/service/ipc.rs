@@ -187,7 +187,15 @@ pub(crate) fn handle_connection(
             }
         };
 
-        let response = handle_request(dir, request, running, wake_coordinator, urgent_wake, daemon_cfg, logger);
+        let response = handle_request(
+            dir,
+            request,
+            running,
+            wake_coordinator,
+            urgent_wake,
+            daemon_cfg,
+            logger,
+        );
         write_response(&mut write_stream, &response)?;
 
         // Check if we should stop
@@ -1092,7 +1100,10 @@ poll_interval = 120
 
         // Verify urgent_wake was set (not wake_coordinator)
         assert!(urgent_wake, "urgent_wake should be true after UserChat");
-        assert!(!wake_coordinator, "wake_coordinator should NOT be set by UserChat");
+        assert!(
+            !wake_coordinator,
+            "wake_coordinator should NOT be set by UserChat"
+        );
 
         // Verify message was written to inbox
         let msgs = workgraph::chat::read_inbox(dir).unwrap();
@@ -1132,7 +1143,13 @@ poll_interval = 120
         );
 
         // GraphChanged should set wake_coordinator, NOT urgent_wake
-        assert!(wake_coordinator, "wake_coordinator should be true after GraphChanged");
-        assert!(!urgent_wake, "urgent_wake should NOT be set by GraphChanged");
+        assert!(
+            wake_coordinator,
+            "wake_coordinator should be true after GraphChanged"
+        );
+        assert!(
+            !urgent_wake,
+            "urgent_wake should NOT be set by GraphChanged"
+        );
     }
 }

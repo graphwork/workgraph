@@ -853,14 +853,14 @@ fn record_tick_events(
         for agent in registry.list_agents() {
             if agent.is_alive() && is_process_alive(agent.pid) {
                 // Check if agent was spawned very recently (within last 5 seconds)
-                if let Some(secs) = agent.uptime_secs() {
-                    if secs <= 5 {
-                        log.record(coordinator_agent::Event::AgentSpawned {
-                            agent_id: agent.id.clone(),
-                            task_id: agent.task_id.clone(),
-                            executor: agent.executor.clone(),
-                        });
-                    }
+                if let Some(secs) = agent.uptime_secs()
+                    && secs <= 5
+                {
+                    log.record(coordinator_agent::Event::AgentSpawned {
+                        agent_id: agent.id.clone(),
+                        task_id: agent.task_id.clone(),
+                        executor: agent.executor.clone(),
+                    });
                 }
             }
         }
@@ -878,32 +878,30 @@ fn record_tick_events(
         for task in graph.tasks() {
             match task.status {
                 workgraph::graph::Status::Done => {
-                    if let Some(ref completed_at) = task.completed_at {
-                        if let Ok(dt) = completed_at.parse::<DateTime<Utc>>() {
-                            if dt > recent_cutoff {
-                                log.record(coordinator_agent::Event::TaskCompleted {
-                                    task_id: task.id.clone(),
-                                    agent_id: task.assigned.clone(),
-                                });
-                            }
-                        }
+                    if let Some(ref completed_at) = task.completed_at
+                        && let Ok(dt) = completed_at.parse::<DateTime<Utc>>()
+                        && dt > recent_cutoff
+                    {
+                        log.record(coordinator_agent::Event::TaskCompleted {
+                            task_id: task.id.clone(),
+                            agent_id: task.assigned.clone(),
+                        });
                     }
                 }
                 workgraph::graph::Status::Failed => {
                     // Check the last log entry for recency
-                    if let Some(last_log) = task.log.last() {
-                        if let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>() {
-                            if dt > recent_cutoff {
-                                log.record(coordinator_agent::Event::TaskFailed {
-                                    task_id: task.id.clone(),
-                                    reason: task
-                                        .failure_reason
-                                        .as_deref()
-                                        .unwrap_or("unknown")
-                                        .to_string(),
-                                });
-                            }
-                        }
+                    if let Some(last_log) = task.log.last()
+                        && let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>()
+                        && dt > recent_cutoff
+                    {
+                        log.record(coordinator_agent::Event::TaskFailed {
+                            task_id: task.id.clone(),
+                            reason: task
+                                .failure_reason
+                                .as_deref()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        });
                     }
                 }
                 _ => {}
@@ -1058,7 +1056,9 @@ pub fn run_daemon(
         if no_coordinator_agent {
             logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
         } else {
-            logger.info("Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)");
+            logger.info(
+                "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
+            );
         }
         None
     };

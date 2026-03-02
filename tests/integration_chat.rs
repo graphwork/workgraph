@@ -65,7 +65,18 @@ fn init_workgraph(tmp: &TempDir) -> PathBuf {
 /// Disables the coordinator agent so tests use Phase 1 stub responses.
 /// Returns the wg_dir for convenience.
 fn start_daemon(wg_dir: &Path) -> &Path {
-    let output = wg_cmd(wg_dir, &["service", "start", "--interval", "600", "--max-agents", "0", "--no-coordinator-agent"]);
+    let output = wg_cmd(
+        wg_dir,
+        &[
+            "service",
+            "start",
+            "--interval",
+            "600",
+            "--max-agents",
+            "0",
+            "--no-coordinator-agent",
+        ],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -124,7 +135,10 @@ fn chat_round_trip() {
     let _guard = DaemonGuard::new(&wg_dir);
 
     // Send a chat message with a short timeout
-    let output = wg_cmd(&wg_dir, &["chat", "Hello coordinator, how are you?", "--timeout", "10"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["chat", "Hello coordinator, how are you?", "--timeout", "10"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -158,7 +172,10 @@ fn chat_round_trip_storage() {
     let _guard = DaemonGuard::new(&wg_dir);
 
     // Send a chat message
-    let output = wg_cmd(&wg_dir, &["chat", "storage test message", "--timeout", "10"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["chat", "storage test message", "--timeout", "10"],
+    );
     assert!(
         output.status.success(),
         "chat failed: {}",
@@ -167,13 +184,23 @@ fn chat_round_trip_storage() {
 
     // Check inbox has the user message
     let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
-    assert_eq!(inbox.len(), 1, "Expected 1 inbox message, got {}", inbox.len());
+    assert_eq!(
+        inbox.len(),
+        1,
+        "Expected 1 inbox message, got {}",
+        inbox.len()
+    );
     assert_eq!(inbox[0].role, "user");
     assert_eq!(inbox[0].content, "storage test message");
 
     // Check outbox has the coordinator response
     let outbox = workgraph::chat::read_outbox_since(&wg_dir, 0).unwrap();
-    assert_eq!(outbox.len(), 1, "Expected 1 outbox message, got {}", outbox.len());
+    assert_eq!(
+        outbox.len(),
+        1,
+        "Expected 1 outbox message, got {}",
+        outbox.len()
+    );
     assert_eq!(outbox[0].role, "coordinator");
     assert_eq!(
         outbox[0].request_id, inbox[0].request_id,
@@ -207,11 +234,17 @@ fn chat_history_after_round_trip() {
 
     // JSON history should be valid
     let json_output = wg_ok(&wg_dir, &["chat", "--history", "--json"]);
-    let parsed: serde_json::Value = serde_json::from_str(&json_output).expect("History JSON should be valid");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_output).expect("History JSON should be valid");
     assert!(parsed.is_array(), "JSON history should be an array");
     let arr = parsed.as_array().unwrap();
     // 2 user messages + 2 coordinator responses = 4 total
-    assert_eq!(arr.len(), 4, "Expected 4 messages in history, got {}", arr.len());
+    assert_eq!(
+        arr.len(),
+        4,
+        "Expected 4 messages in history, got {}",
+        arr.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +347,9 @@ fn chat_concurrent_messages() {
         assert!(
             stdout.contains(&expected),
             "Response for message {} should contain the original text.\nExpected to find: {}\nGot: {}",
-            i, expected, stdout
+            i,
+            expected,
+            stdout
         );
     }
 
@@ -339,9 +374,7 @@ fn chat_concurrent_messages() {
 
     // Each inbox message should have a matching outbox response with the same request_id
     for inbox_msg in &inbox {
-        let matching = outbox
-            .iter()
-            .find(|o| o.request_id == inbox_msg.request_id);
+        let matching = outbox.iter().find(|o| o.request_id == inbox_msg.request_id);
         assert!(
             matching.is_some(),
             "No outbox response found for request_id '{}'",
@@ -370,7 +403,10 @@ fn chat_error_service_not_running() {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     // Should mention service/connection failure
     assert!(
-        stderr.contains("service") || stderr.contains("connect") || stderr.contains("running") || stderr.contains("Start"),
+        stderr.contains("service")
+            || stderr.contains("connect")
+            || stderr.contains("running")
+            || stderr.contains("Start"),
         "Error should mention service connectivity, got stderr: {}",
         stderr
     );
@@ -405,7 +441,10 @@ fn chat_clear_works() {
     let _guard = DaemonGuard::new(&wg_dir);
 
     // Send a message first
-    let output = wg_cmd(&wg_dir, &["chat", "message before clear", "--timeout", "10"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["chat", "message before clear", "--timeout", "10"],
+    );
     assert!(output.status.success());
 
     // Verify data exists
@@ -445,7 +484,11 @@ fn chat_coordinator_cursor_advances() {
 
     // Check coordinator cursor advanced
     let cursor = workgraph::chat::read_coordinator_cursor(&wg_dir).unwrap();
-    assert!(cursor >= 1, "Coordinator cursor should have advanced to >= 1, got {}", cursor);
+    assert!(
+        cursor >= 1,
+        "Coordinator cursor should have advanced to >= 1, got {}",
+        cursor
+    );
 
     // Send second message
     let output = wg_cmd(&wg_dir, &["chat", "cursor test 2", "--timeout", "10"]);

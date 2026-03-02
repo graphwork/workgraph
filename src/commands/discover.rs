@@ -17,12 +17,12 @@ fn parse_duration(s: &str) -> Result<Duration> {
         anyhow::bail!("Empty duration string");
     }
 
-    let (num_str, unit) = if s.ends_with('h') {
-        (&s[..s.len() - 1], 'h')
-    } else if s.ends_with('d') {
-        (&s[..s.len() - 1], 'd')
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], 'm')
+    let (num_str, unit) = if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, 'h')
+    } else if let Some(stripped) = s.strip_suffix('d') {
+        (stripped, 'd')
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, 'm')
     } else {
         // Default to hours if no unit
         (s, 'h')
@@ -164,7 +164,7 @@ fn print_task(task: &workgraph::graph::Task, with_artifacts: bool) {
         .completed_at
         .as_ref()
         .and_then(|ts| ts.parse::<DateTime<Utc>>().ok())
-        .map(|ts| format_relative(ts))
+        .map(format_relative)
         .unwrap_or_default();
 
     println!("    {} — {} ({})", task.id, task.title, completed);

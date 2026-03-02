@@ -295,11 +295,7 @@ mod llm_tests {
         // Create a task that requires reading a file and creating a subtask
         let test_file_dir = dir.parent().unwrap_or(dir);
         let test_file = test_file_dir.join("test_input.txt");
-        fs::write(
-            &test_file,
-            "This file contains the answer: 42.",
-        )
-        .unwrap();
+        fs::write(&test_file, "This file contains the answer: 42.").unwrap();
 
         let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
         let mut task = make_task("test-native", "Read file and report answer");
@@ -335,7 +331,10 @@ mod llm_tests {
             .block_on(agent.run("Complete the task as described in your system prompt."))
             .expect("Agent loop should complete");
 
-        eprintln!("Agent result: {} turns, final: {}", result.turns, result.final_text);
+        eprintln!(
+            "Agent result: {} turns, final: {}",
+            result.turns, result.final_text
+        );
 
         // Verify the task was marked done
         let graph = workgraph::parser::load_graph(&graph_path).unwrap();

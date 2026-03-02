@@ -71,10 +71,7 @@ pub enum Event {
         agent_id: Option<String>,
     },
     /// A task failed.
-    TaskFailed {
-        task_id: String,
-        reason: String,
-    },
+    TaskFailed { task_id: String, reason: String },
     /// A new task was added to the graph.
     TaskAdded {
         task_id: String,
@@ -88,10 +85,7 @@ pub enum Event {
         executor: String,
     },
     /// An agent completed and exited.
-    AgentCompleted {
-        agent_id: String,
-        task_id: String,
-    },
+    AgentCompleted { agent_id: String, task_id: String },
     /// An agent failed or died.
     AgentFailed {
         agent_id: String,
@@ -143,11 +137,7 @@ impl std::fmt::Display for Event {
                 task_id,
                 reason,
             } => {
-                write!(
-                    f,
-                    "agent {} failed on {}: {}",
-                    agent_id, task_id, reason
-                )
+                write!(f, "agent {} failed on {}: {}", agent_id, task_id, reason)
             }
         }
     }
@@ -240,6 +230,7 @@ pub struct CoordinatorAgent {
     /// Shared PID of the agent process (0 if not running).
     pid: Arc<Mutex<u32>>,
     /// Shared event log for recording events from the daemon.
+    #[allow(dead_code)]
     event_log: SharedEventLog,
 }
 
@@ -317,6 +308,7 @@ impl CoordinatorAgent {
     ///
     /// The daemon uses this to record events that the coordinator agent
     /// will see on its next context refresh.
+    #[allow(dead_code)]
     pub fn event_log(&self) -> &SharedEventLog {
         &self.event_log
     }
@@ -426,13 +418,11 @@ fn agent_thread_main(
         let is_restart = !restart_timestamps.is_empty();
 
         // Rotate old chat history on restart to prevent unbounded growth
-        if is_restart {
-            if let Err(e) = chat::rotate_history(dir, HISTORY_ROTATION_KEEP) {
-                logger.warn(&format!(
-                    "Coordinator agent: failed to rotate chat history: {}",
-                    e
-                ));
-            }
+        if is_restart && let Err(e) = chat::rotate_history(dir, HISTORY_ROTATION_KEEP) {
+            logger.warn(&format!(
+                "Coordinator agent: failed to rotate chat history: {}",
+                e
+            ));
         }
 
         // Spawn the Claude CLI process
@@ -471,9 +461,7 @@ fn agent_thread_main(
         // If this is a restart, inject crash recovery context
         if is_restart {
             logger.info("Coordinator agent: injecting crash recovery context");
-            if let Err(e) =
-                inject_crash_recovery_context(dir, &mut stdin, &response_rx, logger)
-            {
+            if let Err(e) = inject_crash_recovery_context(dir, &mut stdin, &response_rx, logger) {
                 logger.warn(&format!(
                     "Coordinator agent: failed to inject crash recovery context: {}",
                     e
@@ -665,9 +653,7 @@ fn inject_crash_recovery_context(
 fn build_crash_recovery_summary(dir: &Path) -> Result<String> {
     let mut parts = Vec::new();
 
-    parts.push(
-        "You were restarted after a crash. Previous conversation summary:".to_string(),
-    );
+    parts.push("You were restarted after a crash. Previous conversation summary:".to_string());
     parts.push(String::new());
 
     // Load recent conversation history from chat inbox/outbox
@@ -770,10 +756,10 @@ fn stdout_reader(
                     // Extract text blocks from content array
                     if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
                         for block in content {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                    let _ = tx.send(ResponseEvent::Text(text.to_string()));
-                                }
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                                && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                            {
+                                let _ = tx.send(ResponseEvent::Text(text.to_string()));
                             }
                         }
                     }
@@ -1156,11 +1142,11 @@ pub fn build_coordinator_context(
 
     if let Some(elog) = event_log {
         // Drain events from the shared event log (preferred path)
-        if let Ok(last_dt) = last_interaction.parse::<DateTime<Utc>>() {
-            if let Ok(mut log) = elog.lock() {
-                for (ts, event) in log.drain_since(&last_dt) {
-                    events.push(format!("- [{}] {}", ts.format("%H:%M:%S"), event));
-                }
+        if let Ok(last_dt) = last_interaction.parse::<DateTime<Utc>>()
+            && let Ok(mut log) = elog.lock()
+        {
+            for (ts, event) in log.drain_since(&last_dt) {
+                events.push(format!("- [{}] {}", ts.format("%H:%M:%S"), event));
             }
         }
     } else {
@@ -1168,15 +1154,15 @@ pub fn build_coordinator_context(
         if let Ok(last_dt) = last_interaction.parse::<DateTime<Utc>>() {
             for task in graph.tasks() {
                 for log_entry in &task.log {
-                    if let Ok(entry_dt) = log_entry.timestamp.parse::<DateTime<Utc>>() {
-                        if entry_dt > last_dt {
-                            events.push(format!(
-                                "- [{}] {} (task: {})",
-                                &log_entry.timestamp[11..19], // HH:MM:SS
-                                log_entry.message,
-                                task.id,
-                            ));
-                        }
+                    if let Ok(entry_dt) = log_entry.timestamp.parse::<DateTime<Utc>>()
+                        && entry_dt > last_dt
+                    {
+                        events.push(format!(
+                            "- [{}] {} (task: {})",
+                            &log_entry.timestamp[11..19], // HH:MM:SS
+                            log_entry.message,
+                            task.id,
+                        ));
                     }
                 }
             }
@@ -1434,12 +1420,7 @@ mod tests {
         // Add more messages than RECOVERY_HISTORY_COUNT
         for i in 0..20 {
             chat::append_inbox(dir, &format!("msg-{}", i), &format!("req-{}", i)).unwrap();
-            chat::append_outbox(
-                dir,
-                &format!("response-{}", i),
-                &format!("req-{}", i),
-            )
-            .unwrap();
+            chat::append_outbox(dir, &format!("response-{}", i), &format!("req-{}", i)).unwrap();
         }
 
         let summary = build_crash_recovery_summary(dir).unwrap();

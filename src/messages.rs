@@ -145,11 +145,7 @@ pub fn message_count(workgraph_dir: &Path, task_id: &str) -> usize {
             let reader = BufReader::new(file);
             reader
                 .lines()
-                .filter(|line| {
-                    line.as_ref()
-                        .map(|l| !l.trim().is_empty())
-                        .unwrap_or(false)
-                })
+                .filter(|line| line.as_ref().map(|l| !l.trim().is_empty()).unwrap_or(false))
                 .count()
         }
         Err(_) => 0,
@@ -173,7 +169,11 @@ pub struct MessageStats {
 ///
 /// Determines in/out counts relative to the task's assigned agent,
 /// and whether there are unread messages based on the agent's cursor.
-pub fn message_stats(workgraph_dir: &Path, task_id: &str, assigned_agent: Option<&str>) -> MessageStats {
+pub fn message_stats(
+    workgraph_dir: &Path,
+    task_id: &str,
+    assigned_agent: Option<&str>,
+) -> MessageStats {
     let messages = match list_messages(workgraph_dir, task_id) {
         Ok(msgs) => msgs,
         Err(_) => return MessageStats::default(),
@@ -189,9 +189,7 @@ pub fn message_stats(workgraph_dir: &Path, task_id: &str, assigned_agent: Option
     let mut last_outgoing_id: u64 = 0;
 
     for msg in &messages {
-        let is_from_agent = assigned_agent
-            .map(|a| msg.sender == a)
-            .unwrap_or(false);
+        let is_from_agent = assigned_agent.map(|a| msg.sender == a).unwrap_or(false);
         if is_from_agent {
             outgoing += 1;
             last_outgoing_id = msg.id;

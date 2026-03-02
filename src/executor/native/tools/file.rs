@@ -61,14 +61,8 @@ impl Tool for ReadFileTool {
             None => return ToolOutput::error("Missing required parameter: path".to_string()),
         };
 
-        let offset = input
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as usize;
-        let limit = input
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2000) as usize;
+        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
 
         match fs::read_to_string(path) {
             Ok(content) => {
@@ -140,15 +134,11 @@ impl Tool for WriteFileTool {
         let path = Path::new(path);
 
         // Create parent directories if needed
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    return ToolOutput::error(format!(
-                        "Failed to create directories: {}",
-                        e
-                    ));
-                }
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            return ToolOutput::error(format!("Failed to create directories: {}", e));
         }
 
         match fs::write(path, content) {
@@ -157,11 +147,9 @@ impl Tool for WriteFileTool {
                 content.len(),
                 path.display()
             )),
-            Err(e) => ToolOutput::error(format!(
-                "Failed to write file '{}': {}",
-                path.display(),
-                e
-            )),
+            Err(e) => {
+                ToolOutput::error(format!("Failed to write file '{}': {}", path.display(), e))
+            }
         }
     }
 }
@@ -208,15 +196,11 @@ impl Tool for EditFileTool {
         };
         let old_string = match input.get("old_string").and_then(|v| v.as_str()) {
             Some(s) => s,
-            None => {
-                return ToolOutput::error("Missing required parameter: old_string".to_string())
-            }
+            None => return ToolOutput::error("Missing required parameter: old_string".to_string()),
         };
         let new_string = match input.get("new_string").and_then(|v| v.as_str()) {
             Some(s) => s,
-            None => {
-                return ToolOutput::error("Missing required parameter: new_string".to_string())
-            }
+            None => return ToolOutput::error("Missing required parameter: new_string".to_string()),
         };
 
         let content = match fs::read_to_string(path) {
@@ -283,10 +267,7 @@ impl Tool for GlobTool {
             None => return ToolOutput::error("Missing required parameter: pattern".to_string()),
         };
 
-        let base = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let base = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         // Combine base path with pattern
         let full_pattern = if pattern.starts_with('/') {
@@ -356,18 +337,13 @@ impl Tool for GrepTool {
             None => return ToolOutput::error("Missing required parameter: pattern".to_string()),
         };
 
-        let search_path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let search_path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let glob_filter = input.get("glob").and_then(|v| v.as_str());
 
         let re = match Regex::new(pattern_str) {
             Ok(r) => r,
-            Err(e) => {
-                return ToolOutput::error(format!("Invalid regex '{}': {}", pattern_str, e))
-            }
+            Err(e) => return ToolOutput::error(format!("Invalid regex '{}': {}", pattern_str, e)),
         };
 
         let path = PathBuf::from(search_path);
@@ -391,12 +367,11 @@ impl Tool for GrepTool {
                 let entry_path = entry.path();
 
                 // Apply glob filter if specified
-                if let Some(ref pat) = glob_pattern {
-                    if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                        if !pat.matches(name) {
-                            continue;
-                        }
-                    }
+                if let Some(ref pat) = glob_pattern
+                    && let Some(name) = entry_path.file_name().and_then(|n| n.to_str())
+                    && !pat.matches(name)
+                {
+                    continue;
                 }
 
                 // Skip binary files and hidden directories
@@ -420,7 +395,10 @@ impl Tool for GrepTool {
             let truncated = results.len() >= max_results;
             let mut output = results.join("\n");
             if truncated {
-                output.push_str(&format!("\n\n[Results truncated at {} matches]", max_results));
+                output.push_str(&format!(
+                    "\n\n[Results truncated at {} matches]",
+                    max_results
+                ));
             }
             ToolOutput::success(truncate_output(output))
         }
@@ -438,10 +416,10 @@ fn search_file(path: &Path, re: &Regex, results: &mut Vec<String>, max: usize) {
         if results.len() >= max {
             break;
         }
-        if let Ok(line) = line {
-            if re.is_match(&line) {
-                results.push(format!("{}:{}: {}", path.display(), line_num + 1, line));
-            }
+        if let Ok(line) = line
+            && re.is_match(&line)
+        {
+            results.push(format!("{}:{}: {}", path.display(), line_num + 1, line));
         }
     }
 }
@@ -450,8 +428,8 @@ fn is_likely_binary(path: &Path) -> bool {
     let binary_extensions = [
         "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "woff", "woff2", "ttf", "eot", "mp3",
         "mp4", "avi", "mov", "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "pdf", "doc", "docx",
-        "xls", "xlsx", "ppt", "pptx", "exe", "dll", "so", "dylib", "o", "a", "class", "jar",
-        "pyc", "wasm", "zst",
+        "xls", "xlsx", "ppt", "pptx", "exe", "dll", "so", "dylib", "o", "a", "class", "jar", "pyc",
+        "wasm", "zst",
     ];
 
     path.extension()

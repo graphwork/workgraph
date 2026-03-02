@@ -142,10 +142,7 @@ pub fn configure_project_claude_md(project_dir: &Path) -> Result<(String, bool)>
 /// Shared implementation for configuring a CLAUDE.md at a specific path.
 fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
     if has_workgraph_directives(claude_md) {
-        return Ok((
-            format!("{} already configured", claude_md.display()),
-            false,
-        ));
+        return Ok((format!("{} already configured", claude_md.display()), false));
     }
 
     // Ensure parent directory exists
@@ -472,9 +469,7 @@ fn guide_claude_md_install() -> Result<String> {
         return Ok("already configured ✓".to_string());
     }
 
-    println!(
-        "Claude Code's built-in task and agent tools conflict with workgraph."
-    );
+    println!("Claude Code's built-in task and agent tools conflict with workgraph.");
     println!(
         "Configuring ~/.claude/CLAUDE.md suppresses them so Claude uses `wg` commands instead."
     );
@@ -486,10 +481,7 @@ fn guide_claude_md_install() -> Result<String> {
     };
 
     let install = Confirm::new()
-        .with_prompt(format!(
-            "{} ~/.claude/CLAUDE.md? (recommended)",
-            action
-        ))
+        .with_prompt(format!("{} ~/.claude/CLAUDE.md? (recommended)", action))
         .default(true)
         .interact()?;
 

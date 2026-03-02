@@ -511,10 +511,8 @@ mod tests {
         setup_graph(&dir, &graph);
 
         // Send a message to the task queue
-        messages::send_message(&dir, "t1", "Please handle edge case X", "user", "normal")
-            .unwrap();
-        messages::send_message(&dir, "t1", "Urgent fix needed", "coordinator", "urgent")
-            .unwrap();
+        messages::send_message(&dir, "t1", "Please handle edge case X", "user", "normal").unwrap();
+        messages::send_message(&dir, "t1", "Urgent fix needed", "coordinator", "urgent").unwrap();
 
         // Log with an agent_id should read and advance cursor
         run_add(&dir, "t1", "Working on it", None, Some("agent-1")).unwrap();

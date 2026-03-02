@@ -80,7 +80,9 @@ pub fn run_send(dir: &Path, message: &str, timeout_secs: Option<u64>) -> Result<
                 "Timeout: coordinator did not respond within {}s.",
                 timeout.as_secs()
             );
-            eprintln!("Your message was stored in the inbox. The response will appear when the coordinator processes it.");
+            eprintln!(
+                "Your message was stored in the inbox. The response will appear when the coordinator processes it."
+            );
             eprintln!("Use 'wg chat --history' to view past messages.");
         }
     }
@@ -95,9 +97,7 @@ pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>) -> Result<()> {
     // Verify service is running before entering the REPL
     let status_response = service::send_request(dir, &service::IpcRequest::Status);
     if status_response.is_err() {
-        anyhow::bail!(
-            "Service not running. Start it with: wg service start"
-        );
+        anyhow::bail!("Service not running. Start it with: wg service start");
     }
 
     eprintln!("Interactive chat with coordinator (Ctrl-C to exit)");
@@ -247,7 +247,11 @@ mod tests {
     #[test]
     fn test_generate_request_id_format() {
         let id = generate_request_id();
-        assert!(id.starts_with("chat-"), "ID should start with 'chat-': {}", id);
+        assert!(
+            id.starts_with("chat-"),
+            "ID should start with 'chat-': {}",
+            id
+        );
         // Should contain the timestamp portion
         assert!(id.len() > 10, "ID should be non-trivial length: {}", id);
     }

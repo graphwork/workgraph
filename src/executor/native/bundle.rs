@@ -100,8 +100,8 @@ impl Bundle {
                 "wg_artifact".to_string(),
             ],
             context_scope: "graph".to_string(),
-            system_prompt_suffix:
-                "You are a research agent. Report findings, do not modify files.".to_string(),
+            system_prompt_suffix: "You are a research agent. Report findings, do not modify files."
+                .to_string(),
         }
     }
 
@@ -361,8 +361,7 @@ context_scope = "graph"
     #[test]
     fn test_filter_registry() {
         let tmp = TempDir::new().unwrap();
-        let registry =
-            ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
+        let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
         let defs_before = registry.definitions().len();
         assert!(defs_before > 0);
 
@@ -383,8 +382,7 @@ context_scope = "graph"
     #[test]
     fn test_filter_registry_wildcard() {
         let tmp = TempDir::new().unwrap();
-        let registry =
-            ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
+        let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
         let defs_before = registry.definitions().len();
 
         let bundle = Bundle::implementer();

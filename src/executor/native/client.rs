@@ -255,10 +255,7 @@ impl AnthropicClient {
     }
 
     /// Send a streaming request and collect raw SSE events.
-    async fn messages_stream_raw(
-        &self,
-        request: &MessagesRequest,
-    ) -> Result<Vec<StreamEvent>> {
+    async fn messages_stream_raw(&self, request: &MessagesRequest) -> Result<Vec<StreamEvent>> {
         let url = format!("{}/v1/messages", self.base_url);
 
         let mut req = request.clone();
@@ -326,8 +323,8 @@ impl AnthropicClient {
                             .text()
                             .await
                             .context("Failed to read response body")?;
-                        let msg: MessagesResponse = serde_json::from_str(&body)
-                            .with_context(|| {
+                        let msg: MessagesResponse =
+                            serde_json::from_str(&body).with_context(|| {
                                 format!("Failed to parse API response: {}", truncate(&body, 500))
                             })?;
                         return Ok(msg);
@@ -388,25 +385,22 @@ impl AnthropicClient {
 /// Resolve the API key using the standard priority chain.
 fn resolve_api_key() -> Result<String> {
     // 1. Environment variable
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
+        && !key.is_empty()
+    {
+        return Ok(key);
     }
 
     // 2. .workgraph/config.toml [native_executor] api_key
-    if let Ok(content) = std::fs::read_to_string(".workgraph/config.toml") {
-        if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-            if let Some(key) = val
-                .get("native_executor")
-                .and_then(|v| v.get("api_key"))
-                .and_then(|v| v.as_str())
-            {
-                if !key.is_empty() {
-                    return Ok(key.to_string());
-                }
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(".workgraph/config.toml")
+        && let Ok(val) = toml::from_str::<toml::Value>(&content)
+        && let Some(key) = val
+            .get("native_executor")
+            .and_then(|v| v.get("api_key"))
+            .and_then(|v| v.as_str())
+        && !key.is_empty()
+    {
+        return Ok(key.to_string());
     }
 
     // 3. ~/.config/anthropic/api_key file
@@ -430,26 +424,23 @@ fn resolve_api_key() -> Result<String> {
 /// Resolve the API key, optionally looking in a specific workgraph directory.
 pub fn resolve_api_key_from_dir(workgraph_dir: &Path) -> Result<String> {
     // 1. Environment variable
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
+        && !key.is_empty()
+    {
+        return Ok(key);
     }
 
     // 2. Workgraph config
     let config_path = workgraph_dir.join("config.toml");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-            if let Some(key) = val
-                .get("native_executor")
-                .and_then(|v| v.get("api_key"))
-                .and_then(|v| v.as_str())
-            {
-                if !key.is_empty() {
-                    return Ok(key.to_string());
-                }
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(&config_path)
+        && let Ok(val) = toml::from_str::<toml::Value>(&content)
+        && let Some(key) = val
+            .get("native_executor")
+            .and_then(|v| v.get("api_key"))
+            .and_then(|v| v.as_str())
+        && !key.is_empty()
+    {
+        return Ok(key.to_string());
     }
 
     // 3. ~/.config/anthropic/api_key
@@ -485,20 +476,16 @@ fn api_error(status: u16, body: &str) -> anyhow::Error {
             err.error.error_type
         )
     } else {
-        anyhow!(
-            "Anthropic API error {}: {}",
-            status,
-            truncate(body, 500)
-        )
+        anyhow!("Anthropic API error {}: {}", status, truncate(body, 500))
     }
 }
 
 fn parse_retry_after(body: &str) -> Option<u64> {
     // Try to parse retry-after from error response
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(secs) = val.get("retry_after").and_then(|v| v.as_f64()) {
-            return Some((secs * 1000.0) as u64);
-        }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(secs) = val.get("retry_after").and_then(|v| v.as_f64())
+    {
+        return Some((secs * 1000.0) as u64);
     }
     None
 }
@@ -583,9 +570,7 @@ async fn assemble_stream_response(events: Vec<StreamEvent>) -> Result<MessagesRe
             }
             StreamEvent::ContentBlockDelta { index, delta } => match delta {
                 ContentDelta::TextDelta { text } => {
-                    if let Some(ContentBlock::Text { text: t }) =
-                        content_blocks.get_mut(index)
-                    {
+                    if let Some(ContentBlock::Text { text: t }) = content_blocks.get_mut(index) {
                         t.push_str(&text);
                     }
                 }
@@ -598,12 +583,10 @@ async fn assemble_stream_response(events: Vec<StreamEvent>) -> Result<MessagesRe
             },
             StreamEvent::ContentBlockStop { index } => {
                 // Finalize JSON accumulator for tool_use blocks
-                if let Some(json_str) = json_accumulators.remove(&index) {
-                    if let Some(ContentBlock::ToolUse { input, .. }) =
-                        content_blocks.get_mut(index)
-                    {
-                        *input = serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
-                    }
+                if let Some(json_str) = json_accumulators.remove(&index)
+                    && let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.get_mut(index)
+                {
+                    *input = serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
                 }
             }
             StreamEvent::MessageDelta {

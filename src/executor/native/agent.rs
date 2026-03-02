@@ -269,13 +269,7 @@ impl AgentLoop {
         self.write_log_event(&event);
     }
 
-    fn log_tool_call(
-        &self,
-        name: &str,
-        input: &serde_json::Value,
-        output: &str,
-        is_error: bool,
-    ) {
+    fn log_tool_call(&self, name: &str, input: &serde_json::Value, output: &str, is_error: bool) {
         let event = LogEvent::ToolCall {
             name: name.to_string(),
             input: input.clone(),
@@ -295,14 +289,13 @@ impl AgentLoop {
     }
 
     fn write_log_event(&self, event: &LogEvent) {
-        if let Ok(json) = serde_json::to_string(event) {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
+        if let Ok(json) = serde_json::to_string(event)
+            && let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.output_log)
-            {
-                let _ = writeln!(file, "{}", json);
-            }
+        {
+            let _ = writeln!(file, "{}", json);
         }
     }
 }

@@ -1162,7 +1162,10 @@ fn process_chat_inbox(dir: &Path) {
     let inbox_cursor = match chat::read_coordinator_cursor(dir) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[coordinator] Failed to read chat coordinator cursor: {}", e);
+            eprintln!(
+                "[coordinator] Failed to read chat coordinator cursor: {}",
+                e
+            );
             return;
         }
     };
@@ -1198,13 +1201,13 @@ fn process_chat_inbox(dir: &Path) {
         }
     }
 
-    if let Some(last) = new_messages.last() {
-        if let Err(e) = chat::write_coordinator_cursor(dir, last.id) {
-            eprintln!(
-                "[coordinator] Failed to update chat coordinator cursor: {}",
-                e
-            );
-        }
+    if let Some(last) = new_messages.last()
+        && let Err(e) = chat::write_coordinator_cursor(dir, last.id)
+    {
+        eprintln!(
+            "[coordinator] Failed to update chat coordinator cursor: {}",
+            e
+        );
     }
 }
 

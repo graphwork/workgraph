@@ -140,7 +140,9 @@ fn wait_for_coordinator_agent(wg_dir: &Path) {
             );
         }
         if let Ok(content) = fs::read_to_string(&log_path) {
-            if content.contains("Claude CLI started") || content.contains("Coordinator agent spawned successfully") {
+            if content.contains("Claude CLI started")
+                || content.contains("Coordinator agent spawned successfully")
+            {
                 return;
             }
         }
@@ -278,9 +280,7 @@ impl<'a> CoordinatorDaemonGuard<'a> {
     fn start_with_env(wg_dir: &'a Path, mock: &MockClaude, extra_env: &[(&str, &str)]) -> Self {
         enable_coordinator_agent(wg_dir);
 
-        let mut env_vars: Vec<(String, String)> = vec![
-            ("PATH".to_string(), mock.path_env()),
-        ];
+        let mut env_vars: Vec<(String, String)> = vec![("PATH".to_string(), mock.path_env())];
         for &(key, val) in extra_env {
             env_vars.push((key.to_string(), val.to_string()));
         }
@@ -422,11 +422,7 @@ fn coordinator_agent_chat_history() {
     guard.chat_ok("history test beta", 15);
 
     // Check JSON history
-    let json_output = wg_ok_env(
-        &wg_dir,
-        &["chat", "--history", "--json"],
-        &guard.env_refs(),
-    );
+    let json_output = wg_ok_env(&wg_dir, &["chat", "--history", "--json"], &guard.env_refs());
     let parsed: serde_json::Value =
         serde_json::from_str(&json_output).expect("History JSON should be valid");
     assert!(parsed.is_array(), "JSON history should be an array");
@@ -442,12 +438,18 @@ fn coordinator_agent_chat_history() {
     );
 
     // Verify user messages are present
-    let has_alpha = arr
-        .iter()
-        .any(|m| m["content"].as_str().unwrap_or("").contains("history test alpha"));
-    let has_beta = arr
-        .iter()
-        .any(|m| m["content"].as_str().unwrap_or("").contains("history test beta"));
+    let has_alpha = arr.iter().any(|m| {
+        m["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("history test alpha")
+    });
+    let has_beta = arr.iter().any(|m| {
+        m["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("history test beta")
+    });
     assert!(has_alpha, "History missing 'history test alpha'");
     assert!(has_beta, "History missing 'history test beta'");
 
@@ -754,11 +756,22 @@ fn coordinator_agent_real_list_tasks() {
     let wg_dir = init_workgraph(&tmp);
 
     // Create a task so the graph isn't empty
-    wg_ok(&wg_dir, &["add", "Fix the login bug", "-d", "The login form crashes on submit"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Fix the login bug",
+            "-d",
+            "The login form crashes on submit",
+        ],
+    );
 
     start_real_coordinator_daemon(&wg_dir);
 
-    let output = wg_cmd(&wg_dir, &["chat", "list all open tasks", "--timeout", "120"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["chat", "list all open tasks", "--timeout", "120"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
         output.status.success(),
@@ -788,7 +801,12 @@ fn coordinator_agent_real_create_task() {
 
     let output = wg_cmd(
         &wg_dir,
-        &["chat", "create a task for fixing the login bug", "--timeout", "120"],
+        &[
+            "chat",
+            "create a task for fixing the login bug",
+            "--timeout",
+            "120",
+        ],
     );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
@@ -823,7 +841,15 @@ fn coordinator_agent_real_multi_turn() {
     start_real_coordinator_daemon(&wg_dir);
 
     // First turn: establish context
-    let r1 = wg_cmd(&wg_dir, &["chat", "I'm working on an auth system. Can you create a task for researching JWT vs session-based auth?", "--timeout", "120"]);
+    let r1 = wg_cmd(
+        &wg_dir,
+        &[
+            "chat",
+            "I'm working on an auth system. Can you create a task for researching JWT vs session-based auth?",
+            "--timeout",
+            "120",
+        ],
+    );
     assert!(
         r1.status.success(),
         "First message failed: {}",
@@ -833,7 +859,12 @@ fn coordinator_agent_real_multi_turn() {
     // Second turn: reference previous context
     let r2 = wg_cmd(
         &wg_dir,
-        &["chat", "what tasks have we created so far?", "--timeout", "120"],
+        &[
+            "chat",
+            "what tasks have we created so far?",
+            "--timeout",
+            "120",
+        ],
     );
     let r2_stdout = String::from_utf8_lossy(&r2.stdout).to_string();
     assert!(
@@ -845,7 +876,10 @@ fn coordinator_agent_real_multi_turn() {
     // The response should reference the auth/JWT context from the first turn
     let lower = r2_stdout.to_lowercase();
     assert!(
-        lower.contains("auth") || lower.contains("jwt") || lower.contains("session") || lower.contains("task"),
+        lower.contains("auth")
+            || lower.contains("jwt")
+            || lower.contains("session")
+            || lower.contains("task"),
         "Expected second response to reference auth context.\nResponse: {}",
         r2_stdout
     );
@@ -863,7 +897,12 @@ fn coordinator_agent_real_inspect_and_edit() {
     // Create a task with a known ID
     wg_ok(
         &wg_dir,
-        &["add", "Test task for inspection", "--id", "test-inspect-task"],
+        &[
+            "add",
+            "Test task for inspection",
+            "--id",
+            "test-inspect-task",
+        ],
     );
 
     start_real_coordinator_daemon(&wg_dir);
@@ -871,7 +910,12 @@ fn coordinator_agent_real_inspect_and_edit() {
     // Ask to show the task
     let r1 = wg_cmd(
         &wg_dir,
-        &["chat", "show me the details of task test-inspect-task", "--timeout", "120"],
+        &[
+            "chat",
+            "show me the details of task test-inspect-task",
+            "--timeout",
+            "120",
+        ],
     );
     let r1_stdout = String::from_utf8_lossy(&r1.stdout).to_string();
     assert!(
@@ -890,7 +934,12 @@ fn coordinator_agent_real_inspect_and_edit() {
     // Ask to edit the task
     let r2 = wg_cmd(
         &wg_dir,
-        &["chat", "add the tag 'urgent' to task test-inspect-task", "--timeout", "120"],
+        &[
+            "chat",
+            "add the tag 'urgent' to task test-inspect-task",
+            "--timeout",
+            "120",
+        ],
     );
     assert!(
         r2.status.success(),

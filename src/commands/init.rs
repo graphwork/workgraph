@@ -105,13 +105,13 @@ pub fn run(dir: &Path) -> Result<()> {
     }
 
     // Configure project-level CLAUDE.md if using Claude executor
-    if executor == "claude" {
-        if let Some(project_dir) = dir.parent() {
-            let (status, changed) = super::setup::configure_project_claude_md(project_dir)?;
-            if changed {
-                println!();
-                println!("{}", status);
-            }
+    if executor == "claude"
+        && let Some(project_dir) = dir.parent()
+    {
+        let (status, changed) = super::setup::configure_project_claude_md(project_dir)?;
+        if changed {
+            println!();
+            println!("{}", status);
         }
     }
 

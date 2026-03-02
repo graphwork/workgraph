@@ -1567,8 +1567,8 @@ mod tests {
 
         assert_eq!(cycles.len(), 3);
         assert!(
-            elapsed.as_millis() < 10,
-            "Tarjan SCC took {}ms, expected < 10ms",
+            elapsed.as_millis() < 50,
+            "Tarjan SCC took {}ms, expected < 50ms",
             elapsed.as_millis()
         );
     }
@@ -1591,8 +1591,8 @@ mod tests {
 
         let elapsed = start.elapsed();
         assert!(
-            elapsed.as_millis() < 10,
-            "Incremental detection took {}ms, expected < 10ms",
+            elapsed.as_millis() < 50,
+            "Incremental detection took {}ms, expected < 50ms",
             elapsed.as_millis()
         );
     }

@@ -2,7 +2,7 @@
 //!
 //! These call workgraph library functions directly — no subprocess, no CLI parsing overhead.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -34,16 +34,14 @@ pub fn register_wg_tools(registry: &mut ToolRegistry, workgraph_dir: PathBuf) {
     registry.register(Box::new(WgLogTool {
         dir: workgraph_dir.clone(),
     }));
-    registry.register(Box::new(WgArtifactTool {
-        dir: workgraph_dir,
-    }));
+    registry.register(Box::new(WgArtifactTool { dir: workgraph_dir }));
 }
 
-fn graph_path(dir: &PathBuf) -> PathBuf {
+fn graph_path(dir: &Path) -> PathBuf {
     dir.join("graph.jsonl")
 }
 
-fn load_workgraph(dir: &PathBuf) -> Result<(crate::graph::WorkGraph, PathBuf), String> {
+fn load_workgraph(dir: &Path) -> Result<(crate::graph::WorkGraph, PathBuf), String> {
     let path = graph_path(dir);
     if !path.exists() {
         return Err("Workgraph not initialized".to_string());
@@ -207,10 +205,10 @@ impl Tool for WgListTool {
 
         let mut lines = Vec::new();
         for task in graph.tasks() {
-            if let Some(ref target) = target_status {
-                if task.status != *target {
-                    continue;
-                }
+            if let Some(ref target) = target_status
+                && task.status != *target
+            {
+                continue;
             }
             lines.push(format!("{}\t{}\t{}", task.id, task.status, task.title));
         }
@@ -271,7 +269,9 @@ impl Tool for WgAddTool {
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let title = match input.get("title").and_then(|v| v.as_str()) {
             Some(t) if !t.trim().is_empty() => t,
-            _ => return ToolOutput::error("Missing or empty required parameter: title".to_string()),
+            _ => {
+                return ToolOutput::error("Missing or empty required parameter: title".to_string());
+            }
         };
 
         let description = input.get("description").and_then(|v| v.as_str());

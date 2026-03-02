@@ -98,10 +98,10 @@ fn append_message(path: &Path, role: &str, content: &str, request_id: &str) -> R
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(msg) = serde_json::from_str::<ChatMessage>(&line) {
-                if msg.id > max {
-                    max = msg.id;
-                }
+            if let Ok(msg) = serde_json::from_str::<ChatMessage>(&line)
+                && msg.id > max
+            {
+                max = msg.id;
             }
         }
         max
@@ -266,9 +266,7 @@ pub fn write_cursor(workgraph_dir: &Path, cursor: u64) -> Result<()> {
 /// Read and advance the CLI/TUI cursor.
 ///
 /// Returns (new_cursor_value, messages_since_old_cursor).
-pub fn read_and_advance_cursor(
-    workgraph_dir: &Path,
-) -> Result<(u64, Vec<ChatMessage>)> {
+pub fn read_and_advance_cursor(workgraph_dir: &Path) -> Result<(u64, Vec<ChatMessage>)> {
     let old_cursor = read_cursor(workgraph_dir)?;
     let new_messages = read_outbox_since(workgraph_dir, old_cursor)?;
 
@@ -332,8 +330,9 @@ fn rotate_file(path: &Path, keep_count: usize) -> Result<()> {
             let mut json = serde_json::to_string(msg)
                 .context("Failed to serialize message during rotation")?;
             json.push('\n');
-            file.write_all(json.as_bytes())
-                .with_context(|| format!("Failed to write to rotation temp file: {}", tmp.display()))?;
+            file.write_all(json.as_bytes()).with_context(|| {
+                format!("Failed to write to rotation temp file: {}", tmp.display())
+            })?;
         }
     }
 
@@ -520,8 +519,7 @@ mod tests {
         append_outbox(&wg_dir, "here is my response", "target-req").unwrap();
         append_outbox(&wg_dir, "other response", "other-req").unwrap();
 
-        let result =
-            wait_for_response(&wg_dir, "target-req", Duration::from_secs(1)).unwrap();
+        let result = wait_for_response(&wg_dir, "target-req", Duration::from_secs(1)).unwrap();
         assert!(result.is_some());
         let msg = result.unwrap();
         assert_eq!(msg.content, "here is my response");
@@ -535,8 +533,7 @@ mod tests {
         // No matching response exists
         append_outbox(&wg_dir, "wrong response", "wrong-req").unwrap();
 
-        let result =
-            wait_for_response(&wg_dir, "target-req", Duration::from_millis(300)).unwrap();
+        let result = wait_for_response(&wg_dir, "target-req", Duration::from_millis(300)).unwrap();
         assert!(result.is_none());
     }
 
@@ -551,8 +548,7 @@ mod tests {
             append_outbox(&wg_dir_clone, "delayed response", "late-req").unwrap();
         });
 
-        let result =
-            wait_for_response(&wg_dir, "late-req", Duration::from_secs(5)).unwrap();
+        let result = wait_for_response(&wg_dir, "late-req", Duration::from_secs(5)).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().content, "delayed response");
 
