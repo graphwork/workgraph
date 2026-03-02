@@ -55,6 +55,7 @@ You MUST use these commands to track your work:
 
 ## Important
 - Run `wg log` commands BEFORE doing work to track progress
+- After each `wg log`, check the output for messages and reply to any you see
 - Validate BEFORE running `wg done`
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation\n";
@@ -164,17 +165,31 @@ The coordinator will dispatch them automatically.
 /// Message polling instructions for agents.
 /// Contains {{task_id}} placeholder for variable substitution.
 pub const MESSAGE_POLLING_SECTION: &str = "\
-## Messages
-
-Check for new messages periodically during long-running tasks:
-```bash
-wg msg read {{task_id}} --agent $WG_AGENT_ID
-```
-Messages may contain updated requirements, context from other agents,
-or instructions from the user. Check at natural breakpoints in your work.
-
-**Note:** Messages are also automatically surfaced when you run `wg log`. \
-When you see messages in your log output, respond to them via `wg msg send`.\n";
+## Messages\n\
+\n\
+Check for new messages periodically during long-running tasks:\n\
+```bash\n\
+wg msg read {{task_id}} --agent $WG_AGENT_ID\n\
+```\n\
+Messages may contain updated requirements, context from other agents,\n\
+or instructions from the user. Check at natural breakpoints in your work.\n\
+\n\
+**Your messaging identity:** When you send messages, you are identified as \
+'{{task_id}}'. Other agents and the coordinator will see your task name as the sender.\n\
+\n\
+**Cross-task messaging:** If you discover something relevant to a sibling or \
+related task, send them a message:\n\
+```bash\n\
+wg msg send <other-task-id> \"Found X while working on {{task_id}}\"\n\
+```\n\
+This helps the whole graph converge faster.\n\
+\n\
+**IMPORTANT: When you receive a message, you MUST acknowledge it.**\n\
+- Reply using: `wg msg send {{task_id}} \"your response\"`\n\
+- If the message contains new requirements, acknowledge and explain how you'll incorporate them\n\
+- If the message asks a question, answer it\n\
+- If the message is informational, briefly acknowledge (e.g., \"Noted, incorporating that\")\n\
+- Never ignore messages \u{2014} the coordinator or user is watching for your response\n";
 
 /// Hint for task+ scopes about using wg context/show to get more info (R2).
 const WG_CONTEXT_HINT: &str = "\
@@ -735,9 +750,7 @@ impl ExecutorRegistry {
                 executor: ExecutorSettings {
                     executor_type: "native".to_string(),
                     command: "wg".to_string(),
-                    args: vec![
-                        "native-exec".to_string(),
-                    ],
+                    args: vec!["native-exec".to_string()],
                     env: {
                         let mut env = HashMap::new();
                         env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());

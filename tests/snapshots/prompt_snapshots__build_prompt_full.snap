@@ -78,6 +78,7 @@ You MUST use these commands to track your work:
 
 ## Important
 - Run `wg log` commands BEFORE doing work to track progress
+- After each `wg log`, check the output for messages and reply to any you see
 - Validate BEFORE running `wg done`
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation
@@ -92,7 +93,20 @@ wg msg read test-task-123 --agent $WG_AGENT_ID
 Messages may contain updated requirements, context from other agents,
 or instructions from the user. Check at natural breakpoints in your work.
 
-**Note:** Messages are also automatically surfaced when you run `wg log`. When you see messages in your log output, respond to them via `wg msg send`.
+**Your messaging identity:** When you send messages, you are identified as 'test-task-123'. Other agents and the coordinator will see your task name as the sender.
+
+**Cross-task messaging:** If you discover something relevant to a sibling or related task, send them a message:
+```bash
+wg msg send <other-task-id> "Found X while working on test-task-123"
+```
+This helps the whole graph converge faster.
+
+**IMPORTANT: When you receive a message, you MUST acknowledge it.**
+- Reply using: `wg msg send test-task-123 "your response"`
+- If the message contains new requirements, acknowledge and explain how you'll incorporate them
+- If the message asks a question, answer it
+- If the message is informational, briefly acknowledge (e.g., "Noted, incorporating that")
+- Never ignore messages — the coordinator or user is watching for your response
 
 
 ## The Graph is Alive
