@@ -129,6 +129,14 @@ pub enum Commands {
         /// Create the task in paused state
         #[arg(long)]
         paused: bool,
+
+        /// Delay before task becomes ready (e.g., 30s, 5m, 1h, 1d)
+        #[arg(long)]
+        delay: Option<String>,
+
+        /// Absolute timestamp before which task won't be dispatched (ISO 8601)
+        #[arg(long = "not-before")]
+        not_before: Option<String>,
     },
 
     /// Edit an existing task
@@ -204,6 +212,14 @@ pub enum Commands {
         /// Set execution weight: full (default), light (read-only tools), bare (wg CLI only), shell (no LLM)
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
+
+        /// Delay before task becomes ready (e.g., 30s, 5m, 1h, 1d)
+        #[arg(long)]
+        delay: Option<String>,
+
+        /// Absolute timestamp before which task won't be dispatched (ISO 8601)
+        #[arg(long = "not-before")]
+        not_before: Option<String>,
     },
 
     /// Mark a task as done

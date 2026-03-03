@@ -28,6 +28,8 @@ pub fn run(
     visibility: Option<&str>,
     context_scope: Option<&str>,
     exec_mode: Option<&str>,
+    delay: Option<&str>,
+    not_before: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -270,6 +272,36 @@ pub fn run(
                 ),
             }
         }
+
+        // Update not_before (from --delay or --not-before)
+        if delay.is_some() && not_before.is_some() {
+            anyhow::bail!("Cannot specify both --delay and --not-before");
+        }
+        if let Some(d) = delay {
+            let secs = workgraph::graph::parse_delay(d).ok_or_else(|| {
+                anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+            })?;
+            let new_ts = (chrono::Utc::now() + chrono::Duration::seconds(secs as i64)).to_rfc3339();
+            let old = task.not_before.clone();
+            task.not_before = Some(new_ts.clone());
+            field_changes.push(serde_json::json!({"field": "not_before", "old": old, "new": new_ts}));
+            println!("Set not_before: {} (delay {})", new_ts, d);
+            changed = true;
+        } else if let Some(ts) = not_before {
+            ts.parse::<chrono::DateTime<chrono::Utc>>()
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                })
+                .map_err(|_| {
+                    anyhow::anyhow!("Invalid timestamp '{}'. Use ISO 8601 format", ts)
+                })?;
+            let old = task.not_before.clone();
+            task.not_before = Some(ts.to_string());
+            field_changes.push(serde_json::json!({"field": "not_before", "old": old, "new": ts}));
+            println!("Set not_before: {}", ts);
+            changed = true;
+        }
     } // task borrow released here
 
     // When new dependencies are added, clear any existing auto-assignment.
@@ -376,6 +408,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         )?;
 
         Ok(())
@@ -411,6 +445,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         )?;
 
         crate::commands::add::run(
@@ -437,6 +473,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         )?;
 
         Ok(())
@@ -463,6 +501,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -499,6 +539,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -529,6 +571,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -566,6 +610,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -596,6 +642,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -633,6 +681,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -666,6 +716,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -696,6 +748,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -733,6 +787,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -766,6 +822,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -795,6 +853,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -820,6 +880,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -855,6 +917,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -897,6 +961,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -917,6 +983,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -965,6 +1033,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -1024,6 +1094,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1061,6 +1133,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1090,6 +1164,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             None,
             None,
             None,

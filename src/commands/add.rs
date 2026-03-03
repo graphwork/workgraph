@@ -66,6 +66,8 @@ pub fn run(
     context_scope: Option<&str>,
     exec_mode: Option<&str>,
     paused: bool,
+    delay: Option<&str>,
+    not_before: Option<&str>,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -214,6 +216,29 @@ pub fn run(
         None
     };
 
+    // Compute not_before from --delay or --not-before
+    if delay.is_some() && not_before.is_some() {
+        anyhow::bail!("Cannot specify both --delay and --not-before");
+    }
+    let computed_not_before = if let Some(d) = delay {
+        let secs = parse_delay(d).ok_or_else(|| {
+            anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+        })?;
+        Some((Utc::now() + chrono::Duration::seconds(secs as i64)).to_rfc3339())
+    } else if let Some(ts) = not_before {
+        ts.parse::<chrono::DateTime<Utc>>()
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+            })
+            .map_err(|_| {
+                anyhow::anyhow!("Invalid timestamp '{}'. Use ISO 8601 format", ts)
+            })?;
+        Some(ts.to_string())
+    } else {
+        None
+    };
+
     let log = if paused {
         vec![workgraph::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -240,7 +265,7 @@ pub fn run(
         deliverables: deliverables.to_vec(),
         artifacts: vec![],
         exec: None,
-        not_before: None,
+        not_before: computed_not_before,
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
         completed_at: None,
@@ -925,6 +950,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -963,6 +990,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1001,6 +1030,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(
@@ -1046,6 +1077,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -1088,6 +1121,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
         assert!(result.is_ok());
 

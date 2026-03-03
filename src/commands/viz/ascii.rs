@@ -356,6 +356,27 @@ pub(crate) fn generate_ascii(
                 }
             })
             .unwrap_or_default();
+        // Delay indicator for tasks with not_before in the future
+        let delay_hint = task
+            .filter(|t| t.status == Status::Open)
+            .and_then(|t| {
+                t.not_before.as_deref().and_then(|nb| {
+                    nb.parse::<chrono::DateTime<Utc>>().ok().and_then(|ts| {
+                        if ts > now {
+                            let secs = (ts - now).num_seconds();
+                            let dur = workgraph::format_duration(secs, true);
+                            if use_color {
+                                Some(format!(" \x1b[33m⏳{}\x1b[0m", dur))
+                            } else {
+                                Some(format!(" ⏳{}", dur))
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                })
+            })
+            .unwrap_or_default();
         let relative_ts = task
             .and_then(|t| {
                 // Pick the most relevant timestamp based on status
@@ -378,8 +399,8 @@ pub(crate) fn generate_ascii(
             })
             .unwrap_or_default();
         format!(
-            "{}{}{}  ({}){}{}{}{}",
-            color, id, reset, status_with_tokens, relative_ts, msg_indicator, phase_info, loop_info
+            "{}{}{}  ({}){}{}{}{}{}",
+            color, id, reset, status_with_tokens, delay_hint, relative_ts, msg_indicator, phase_info, loop_info
         )
     };
 

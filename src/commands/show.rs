@@ -366,7 +366,7 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Completed: {}", completed);
     }
     if let Some(ref not_before) = details.not_before {
-        println!("Not before: {}", not_before);
+        println!("Not before: {}{}", not_before, format_countdown(not_before));
     }
     if let Some(ref ready_after) = details.ready_after {
         println!(

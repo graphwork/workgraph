@@ -47,6 +47,9 @@ pub fn run(
                 if !t.tags.is_empty() {
                     obj["tags"] = serde_json::json!(t.tags);
                 }
+                if let Some(ref nb) = t.not_before {
+                    obj["not_before"] = serde_json::json!(nb);
+                }
                 if let Some(ref ra) = t.ready_after {
                     obj["ready_after"] = serde_json::json!(ra);
                 }
@@ -70,6 +73,7 @@ pub fn run(
                 Status::Abandoned => "[A]",
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
+            let not_before_str = format_not_before_hint(task.not_before.as_deref());
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
             let tag_str = if task.tags.is_empty() {
                 String::new()
@@ -77,13 +81,38 @@ pub fn run(
                 format!(" [{}]", task.tags.join(", "))
             };
             println!(
-                "{} {} - {}{}{}{}",
-                status, task.id, task.title, pause_str, delay_str, tag_str
+                "{} {} - {}{}{}{}{}",
+                status, task.id, task.title, pause_str, not_before_str, delay_str, tag_str
             );
         }
     }
 
     Ok(())
+}
+
+/// If not_before is set and in the future, return a hint string like " [delayed 5m 30s]".
+fn format_not_before_hint(not_before: Option<&str>) -> String {
+    let Some(nb) = not_before else {
+        return String::new();
+    };
+    let Ok(ts) = nb.parse::<DateTime<Utc>>() else {
+        return String::new();
+    };
+    let now = Utc::now();
+    if ts <= now {
+        return String::new();
+    }
+    let secs = (ts - now).num_seconds();
+    let countdown = if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    };
+    format!(" [delayed {}]", countdown)
 }
 
 /// If ready_after is set and in the future, return a hint string like " [ready in 5m 30s]".

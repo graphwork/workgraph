@@ -321,6 +321,8 @@ fn main() -> Result<()> {
             context_scope,
             exec_mode,
             paused,
+            delay,
+            not_before,
         } => {
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -361,6 +363,8 @@ fn main() -> Result<()> {
                     context_scope.as_deref(),
                     exec_mode.as_deref(),
                     paused,
+                    delay.as_deref(),
+                    not_before.as_deref(),
                 )
             }
         }
@@ -382,6 +386,8 @@ fn main() -> Result<()> {
             visibility,
             context_scope,
             exec_mode,
+            delay,
+            not_before,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -401,6 +407,8 @@ fn main() -> Result<()> {
             visibility.as_deref(),
             context_scope.as_deref(),
             exec_mode.as_deref(),
+            delay.as_deref(),
+            not_before.as_deref(),
         ),
         Commands::Done { id, converged } => commands::done::run(&workgraph_dir, &id, converged),
         Commands::Fail { id, reason } => {
