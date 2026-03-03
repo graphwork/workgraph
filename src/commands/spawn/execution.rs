@@ -392,8 +392,13 @@ fn build_inner_command(
             cmd_parts.push("--verbose".to_string());
             cmd_parts.push("--output-format".to_string());
             cmd_parts.push("stream-json".to_string());
+            cmd_parts.push("--dangerously-skip-permissions".to_string());
             cmd_parts.push("--tools".to_string());
             cmd_parts.push(shell_escape("Bash(wg:*)"));
+            cmd_parts.push("--allowedTools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*)"));
+            cmd_parts.push("--no-session-persistence".to_string());
+            cmd_parts.push("--disable-slash-commands".to_string());
             cmd_parts.push("--system-prompt".to_string());
             cmd_parts.push(shell_escape(&prompt_content));
             // Add model flag if specified
@@ -423,8 +428,13 @@ fn build_inner_command(
             cmd_parts.push("--verbose".to_string());
             cmd_parts.push("--output-format".to_string());
             cmd_parts.push("stream-json".to_string());
+            cmd_parts.push("--dangerously-skip-permissions".to_string());
             cmd_parts.push("--allowedTools".to_string());
             cmd_parts.push(shell_escape("Bash(wg:*),Read,Glob,Grep,WebFetch,WebSearch"));
+            cmd_parts.push("--disallowedTools".to_string());
+            cmd_parts.push(shell_escape("Edit,Write,NotebookEdit,Agent"));
+            cmd_parts.push("--no-session-persistence".to_string());
+            cmd_parts.push("--disable-slash-commands".to_string());
             // Add model flag if specified
             if let Some(m) = effective_model {
                 cmd_parts.push("--model".to_string());
@@ -449,6 +459,11 @@ fn build_inner_command(
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
             }
+            // Prevent agents from spawning sub-agents outside workgraph
+            cmd_parts.push("--disallowedTools".to_string());
+            cmd_parts.push(shell_escape("Agent"));
+            cmd_parts.push("--no-session-persistence".to_string());
+            cmd_parts.push("--disable-slash-commands".to_string());
             // Add model flag if specified
             if let Some(m) = effective_model {
                 cmd_parts.push("--model".to_string());

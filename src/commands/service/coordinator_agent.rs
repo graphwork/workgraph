@@ -891,8 +891,7 @@ fn spawn_claude_process(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--permission-mode",
-        "bypassPermissions",
+        "--dangerously-skip-permissions",
     ]);
 
     // Pass system prompt (also saved to coordinator-prompt.txt for debugging)
