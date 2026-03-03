@@ -426,23 +426,41 @@ pub(crate) fn generate_ascii(
     let mut rendered: HashSet<&str> = HashSet::new();
 
     // Sort components by LRU ordering: most-recently-operated-on WCC first.
-    // Two-level sort: active WCCs (with in-progress tasks) first, then by
-    // most recent timestamp (completed_at, started_at, log entries, created_at).
+    // Two-level sort: "hot" WCCs (with in-progress tasks or recently-created
+    // open tasks) first, then by most recent timestamp.
+    // This ensures new tasks appear at the top of the graph immediately,
+    // rather than appearing after running tasks then jumping on the next refresh.
     let mut component_list: Vec<Vec<&str>> = components.into_values().collect();
     component_list.retain(|c| !c.is_empty());
+    let now_utc = Utc::now();
     component_list.sort_by(|a, b| {
-        let has_active = |ids: &[&str]| -> bool {
+        let is_hot = |ids: &[&str]| -> bool {
             ids.iter().any(|id| {
-                task_map
-                    .get(id)
-                    .map(|t| t.status == Status::InProgress)
-                    .unwrap_or(false)
+                let Some(t) = task_map.get(id) else {
+                    return false;
+                };
+                if t.status == Status::InProgress {
+                    return true;
+                }
+                // Treat recently-created open tasks as hot so they sort to the
+                // top immediately instead of appearing after running components.
+                if t.status == Status::Open {
+                    if let Some(ref created) = t.created_at {
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created) {
+                            let age = now_utc.signed_duration_since(dt);
+                            if age.num_seconds() < 5 {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
             })
         };
-        let a_active = has_active(a);
-        let b_active = has_active(b);
-        // Active WCCs first, then by most-recently-updated timestamp
-        b_active.cmp(&a_active).then_with(|| {
+        let a_hot = is_hot(a);
+        let b_hot = is_hot(b);
+        // Hot WCCs first, then by most-recently-updated timestamp
+        b_hot.cmp(&a_hot).then_with(|| {
             let latest = |ids: &[&str]| -> Option<String> {
                 ids.iter()
                     .filter_map(|id| task_map.get(id))
