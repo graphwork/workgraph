@@ -236,10 +236,12 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
         KeyCode::Tab => app.next_match(),
         KeyCode::Left => {
             app.record_graph_scroll_activity();
+            app.record_graph_hscroll_activity();
             app.scroll.scroll_left(4);
         }
         KeyCode::Right => {
             app.record_graph_scroll_activity();
+            app.record_graph_hscroll_activity();
             app.scroll.scroll_right(4);
         }
         KeyCode::Up => {
@@ -1036,8 +1038,28 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('J') => app.toggle_log_json(),
 
         // Horizontal scroll
-        KeyCode::Left | KeyCode::Char('h') => app.scroll.scroll_left(4),
-        KeyCode::Right | KeyCode::Char('l') => app.scroll.scroll_right(4),
+        KeyCode::Left | KeyCode::Char('h')
+            if !modifiers.contains(KeyModifiers::SHIFT)
+                && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.record_graph_hscroll_activity();
+            app.scroll.scroll_left(4);
+        }
+        KeyCode::Right | KeyCode::Char('l')
+            if !modifiers.contains(KeyModifiers::SHIFT)
+                && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.record_graph_hscroll_activity();
+            app.scroll.scroll_right(4);
+        }
+        KeyCode::Left if modifiers.contains(KeyModifiers::SHIFT) => {
+            app.record_graph_hscroll_activity();
+            app.scroll.page_left();
+        }
+        KeyCode::Right if modifiers.contains(KeyModifiers::SHIFT) => {
+            app.record_graph_hscroll_activity();
+            app.scroll.page_right();
+        }
 
         // ── Quick action keys (require a selected task) ──
 
@@ -1487,10 +1509,14 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
 }
 
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
+    use super::state::ScrollbarDragTarget;
+
     let pos = Position::new(column, row);
     let in_graph = app.last_graph_area.contains(pos);
     let in_tab_bar = app.last_tab_bar_area.contains(pos);
     let in_right_content = app.last_right_content_area.contains(pos);
+    let in_graph_hscrollbar = app.last_graph_hscrollbar_area.width > 0
+        && app.last_graph_hscrollbar_area.contains(pos);
 
     match kind {
         MouseEventKind::ScrollUp => {
@@ -1515,8 +1541,25 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.scroll.scroll_down(3);
             }
         }
+        MouseEventKind::ScrollLeft => {
+            if in_graph {
+                app.record_graph_hscroll_activity();
+                app.scroll.scroll_left(3);
+            }
+        }
+        MouseEventKind::ScrollRight => {
+            if in_graph {
+                app.record_graph_hscroll_activity();
+                app.scroll.scroll_right(3);
+            }
+        }
         MouseEventKind::Down(MouseButton::Left) => {
-            if in_tab_bar {
+            if in_graph_hscrollbar {
+                app.focused_panel = FocusedPanel::Graph;
+                app.scrollbar_drag = Some(ScrollbarDragTarget::GraphHorizontal);
+                app.record_graph_hscroll_activity();
+                hscrollbar_jump_to_column(app, column);
+            } else if in_tab_bar {
                 // Click on tab header: always focus right panel, switch tab if hit.
                 app.focused_panel = FocusedPanel::RightPanel;
                 let col_in_tabs = column.saturating_sub(app.last_tab_bar_area.x);
@@ -1578,8 +1621,41 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.focused_panel = FocusedPanel::RightPanel;
             }
         }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.scrollbar_drag == Some(ScrollbarDragTarget::GraphHorizontal) {
+                app.record_graph_hscroll_activity();
+                hscrollbar_jump_to_column(app, column);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if app.scrollbar_drag.is_some() {
+                app.scrollbar_drag = None;
+            }
+        }
         _ => {}
     }
+}
+
+fn hscrollbar_jump_to_column(app: &mut VizApp, column: u16) {
+    let sb = app.last_graph_hscrollbar_area;
+    if sb.width == 0 {
+        return;
+    }
+    let max_offset = app
+        .scroll
+        .content_width
+        .saturating_sub(app.scroll.viewport_width);
+    if max_offset == 0 {
+        return;
+    }
+    let col_in_track = column.saturating_sub(sb.x) as usize;
+    let track_width = sb.width as usize;
+    let new_offset = if track_width <= 1 {
+        0
+    } else {
+        (col_in_track * max_offset) / track_width.saturating_sub(1)
+    };
+    app.scroll.offset_x = new_offset.min(max_offset);
 }
 
 /// Enter edit mode for the currently selected config entry.

@@ -251,6 +251,11 @@ pub enum ScrollbarDragTarget {
     Graph,
     /// Dragging the right panel scrollbar.
     Panel,
+    /// Dragging the graph pane horizontal scrollbar.
+    GraphHorizontal,
+    /// Dragging the right panel horizontal scrollbar.
+    #[allow(dead_code)]
+    PanelHorizontal,
 }
 
 /// Sort mode for task ordering in the graph view.
@@ -1028,6 +1033,13 @@ pub struct VizApp {
     /// Which scrollbar (if any) is currently being dragged.
     pub scrollbar_drag: Option<ScrollbarDragTarget>,
 
+    pub graph_hscroll_activity: Option<Instant>,
+    #[allow(dead_code)]
+    pub panel_hscroll_activity: Option<Instant>,
+    pub last_graph_hscrollbar_area: Rect,
+    #[allow(dead_code)]
+    pub last_panel_hscrollbar_area: Rect,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -1158,6 +1170,10 @@ impl VizApp {
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            graph_hscroll_activity: None,
+            panel_hscroll_activity: None,
+            last_graph_hscrollbar_area: Rect::default(),
+            last_panel_hscrollbar_area: Rect::default(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -2830,6 +2846,36 @@ impl VizApp {
         }
     }
 
+    pub fn record_graph_hscroll_activity(&mut self) {
+        self.graph_hscroll_activity = Some(Instant::now());
+    }
+
+    #[allow(dead_code)]
+    pub fn record_panel_hscroll_activity(&mut self) {
+        self.panel_hscroll_activity = Some(Instant::now());
+    }
+
+    pub fn graph_hscrollbar_visible(&self) -> bool {
+        if self.scrollbar_drag == Some(ScrollbarDragTarget::GraphHorizontal) {
+            return true;
+        }
+        match self.graph_hscroll_activity {
+            Some(when) => when.elapsed() < std::time::Duration::from_secs(2),
+            None => false,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn panel_hscrollbar_visible(&self) -> bool {
+        if self.scrollbar_drag == Some(ScrollbarDragTarget::PanelHorizontal) {
+            return true;
+        }
+        match self.panel_hscroll_activity {
+            Some(when) => when.elapsed() < std::time::Duration::from_secs(2),
+            None => false,
+        }
+    }
+
     // ── Log pane ──
 
     /// Load log entries for the currently selected task into the log pane.
@@ -3199,6 +3245,10 @@ impl VizApp {
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            graph_hscroll_activity: None,
+            panel_hscroll_activity: None,
+            last_graph_hscrollbar_area: Rect::default(),
+            last_panel_hscrollbar_area: Rect::default(),
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
@@ -5447,6 +5497,28 @@ impl ViewportScroll {
     pub fn is_at_bottom(&self) -> bool {
         let max_y = self.content_height.saturating_sub(self.viewport_height);
         self.offset_y + 3 >= max_y || self.content_height <= self.viewport_height
+    }
+
+    pub fn page_left(&mut self) {
+        self.scroll_left(self.viewport_width / 2);
+    }
+
+    pub fn page_right(&mut self) {
+        self.scroll_right(self.viewport_width / 2);
+    }
+
+    #[allow(dead_code)]
+    pub fn go_leftmost(&mut self) {
+        self.offset_x = 0;
+    }
+
+    #[allow(dead_code)]
+    pub fn go_rightmost(&mut self) {
+        self.offset_x = self.content_width.saturating_sub(self.viewport_width);
+    }
+
+    pub fn has_horizontal_overflow(&self) -> bool {
+        self.content_width > self.viewport_width
     }
 
     /// Clamp scroll offset to valid range after content changes.

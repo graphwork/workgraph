@@ -83,6 +83,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.scroll.viewport_width = 0;
 
             draw_right_panel(frame, app, main_area);
+            app.last_graph_hscrollbar_area = Rect::default();
         }
         LayoutMode::FullGraph => {
             // Full-width graph: graph takes entire main area, no panel.
@@ -99,6 +100,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             {
                 draw_scrollbar(frame, app, main_area);
             }
+            app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                frame,
+                main_area,
+                app.scroll.content_width,
+                app.scroll.viewport_width,
+                app.scroll.offset_x,
+                app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+            );
         }
         LayoutMode::Split => {
             if app.right_panel_visible {
@@ -124,6 +133,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     {
                         draw_scrollbar(frame, app, viz_area);
                     }
+                    app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                        frame,
+                        viz_area,
+                        app.scroll.content_width,
+                        app.scroll.viewport_width,
+                        app.scroll.offset_x,
+                        app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                    );
                     draw_right_panel(frame, app, right_area);
                 } else {
                     // Narrow: viz on top, right panel on bottom.
@@ -148,6 +165,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     {
                         draw_scrollbar(frame, app, viz_area);
                     }
+                    app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                        frame,
+                        viz_area,
+                        app.scroll.content_width,
+                        app.scroll.viewport_width,
+                        app.scroll.offset_x,
+                        app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                    );
                     draw_right_panel(frame, app, right_area);
                 }
             } else {
@@ -165,6 +190,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 {
                     draw_scrollbar(frame, app, main_area);
                 }
+                app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                    frame,
+                    main_area,
+                    app.scroll.content_width,
+                    app.scroll.viewport_width,
+                    app.scroll.offset_x,
+                    app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                );
             }
         }
     }
@@ -798,6 +831,30 @@ fn draw_scrollbar(frame: &mut Frame, app: &VizApp, area: Rect) {
     let mut state = ScrollbarState::new(app.scroll.content_height).position(app.scroll.offset_y);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     frame.render_stateful_widget(scrollbar, area, &mut state);
+}
+
+fn draw_horizontal_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    content_width: usize,
+    viewport_width: usize,
+    offset_x: usize,
+    visible: bool,
+) -> Rect {
+    if !visible || content_width <= viewport_width || area.height == 0 {
+        return Rect::default();
+    }
+    let scrollbar_area = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    let max_offset = content_width.saturating_sub(viewport_width);
+    let mut state = ScrollbarState::new(max_offset).position(offset_x);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom);
+    frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    scrollbar_area
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
