@@ -115,21 +115,53 @@ CONTEXT & ARTIFACTS
 
 CYCLES (repeating workflows)
 ─────────────────────────────────────────
-  Some workflows repeat. Workgraph models these as structural cycles —
-  after back-edges with a CycleConfig controlling iteration limits.
+  Workgraph is a directed graph, NOT a DAG. It supports cycles natively.
+  Use cycles instead of duplicating tasks (e.g., don't create "pass 1",
+  "pass 2", "pass 3" — create one cycle that iterates).
 
-  wg add "Write" --after review --max-iterations 3  # cycle header
-  wg add "Review" --after write                     # completes the cycle
-  wg cycles                   # List detected cycles
-  wg show <task-id>           # See loop_iteration to know which pass you're on
+  A cycle is formed when task A depends on task C, and task C (transitively)
+  depends back on task A. The --after flag creates the back-edge, and
+  --max-iterations caps how many times the cycle runs.
+
+  CREATING A CYCLE — step by step:
+
+    # 1. Create the first task in the loop
+    wg add "Cleanup code"
+
+    # 2. Chain the next steps
+    wg add "Commit changes" --after cleanup-code
+    wg add "Verify build" --after commit-changes
+
+    # 3. Close the loop with a back-edge + iteration cap
+    wg add "Cleanup code" --after verify-build --max-iterations 5
+
+    This creates: cleanup → commit → verify → cleanup (up to 5 iterations)
+
+  ANOTHER EXAMPLE — write/review cycle:
+
+    wg add "Write draft"
+    wg add "Review draft" --after write-draft
+    wg add "Write draft" --after review-draft --max-iterations 3
+
+  INSPECTING CYCLES:
+
+    wg cycles                   # List detected cycles
+    wg show <task-id>           # See loop_iteration to know which pass you're on
 
   IMPORTANT — Signaling convergence:
-  When the loop's work is complete and no more iterations are needed:
+  Agents in a cycle MUST check whether the work has converged (i.e., no
+  further changes are needed). When converged:
 
     wg done <task-id> --converged
 
-  This stops the loop/cycle. Using plain 'wg done' causes iteration again.
-  Only use plain 'wg done' if you want the next iteration to proceed.
+  This stops the loop/cycle. Using plain 'wg done' causes the cycle to
+  iterate again. Only use plain 'wg done' if you want the next iteration.
+
+  KEY RULES:
+  • One cycle, not N copies of tasks — let the iteration mechanism repeat
+  • Use --max-iterations to prevent runaway loops (always set a cap)
+  • Each agent in the cycle sees its loop_iteration count via wg show
+  • Check for convergence: if nothing changed, use --converged to stop
 
 HOUSEKEEPING
 ─────────────────────────────────────────

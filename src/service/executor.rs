@@ -60,13 +60,19 @@ You MUST use these commands to track your work:
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation\n";
 
-/// Graph Patterns section: vocabulary, golden rule, subtask guidance.
+/// Graph Patterns section: vocabulary, golden rule, subtask guidance, cycle awareness.
 pub const GRAPH_PATTERNS_SECTION: &str = "\
 ## Graph Patterns (see docs/AGENT-GUIDE.md for details)
 
 **Vocabulary:** pipeline (A\u{2192}B\u{2192}C), diamond (A\u{2192}[B,C,D]\u{2192}E), scatter-gather (heterogeneous reviewers of same artifact), loop (A\u{2192}B\u{2192}C\u{2192}A with `--max-iterations`).
 
 **Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files \u{2014} one will overwrite the other. When unsure, default to pipeline.
+
+**Cycles (back-edges):** Workgraph is a directed graph, NOT a DAG. For repeating workflows \
+(cleanup\u{2192}commit\u{2192}verify, write\u{2192}review, etc.), create ONE cycle with `--max-iterations` \
+instead of duplicating tasks for each pass. Use `wg done --converged` to stop the cycle \
+when no more changes are needed. If you are inside a cycle, check `wg show` for your \
+`loop_iteration` and evaluate whether the work has converged before deciding to iterate or stop.
 
 **When creating subtasks:**
 - Always include an integrator task at join points: `wg add \"Integrate\" --after worker-a,worker-b`
