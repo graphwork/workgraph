@@ -9,9 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{
-    CycleConfig, Node, Status, Task, WorkGraph,
-};
+use workgraph::graph::{CycleConfig, Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::{is_time_ready, ready_tasks};
 
@@ -108,16 +106,16 @@ fn add_delay_sets_not_before_in_future() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     let before = Utc::now();
-    wg_ok(&wg_dir, &["add", "Delayed task", "--id", "d1", "--delay", "60s"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Delayed task", "--id", "d1", "--delay", "60s"],
+    );
     let after = Utc::now();
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("d1").unwrap();
 
-    let nb = task
-        .not_before
-        .as_ref()
-        .expect("not_before should be set");
+    let nb = task.not_before.as_ref().expect("not_before should be set");
     let nb_ts: DateTime<Utc> = nb.parse().expect("not_before should be valid timestamp");
 
     // not_before should be approximately now + 60s (within a few seconds tolerance)
@@ -206,14 +204,7 @@ fn add_not_before_past_timestamp_immediately_ready() {
     let past = (Utc::now() - Duration::hours(1)).to_rfc3339();
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Past scheduled",
-            "--id",
-            "p1",
-            "--not-before",
-            &past,
-        ],
+        &["add", "Past scheduled", "--id", "p1", "--not-before", &past],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -253,7 +244,10 @@ fn edit_delay_sets_not_before_on_existing_task() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("e1").unwrap();
 
-    let nb = task.not_before.as_ref().expect("not_before should be set after edit --delay");
+    let nb = task
+        .not_before
+        .as_ref()
+        .expect("not_before should be set after edit --delay");
     let nb_ts: DateTime<Utc> = nb.parse().expect("not_before should be valid timestamp");
 
     let expected_low = before + Duration::seconds(118);
@@ -291,7 +285,10 @@ fn edit_not_before_overrides_existing() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("e2").unwrap();
-    let updated_nb = task.not_before.as_ref().expect("not_before should still be set");
+    let updated_nb = task
+        .not_before
+        .as_ref()
+        .expect("not_before should still be set");
 
     assert_ne!(
         updated_nb, &original_nb,
@@ -443,7 +440,10 @@ fn cli_add_cycle_delay_stores_in_config() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("cd1").unwrap();
-    let config = task.cycle_config.as_ref().expect("Should have cycle_config");
+    let config = task
+        .cycle_config
+        .as_ref()
+        .expect("Should have cycle_config");
     assert_eq!(
         config.delay,
         Some("30s".to_string()),
@@ -461,14 +461,7 @@ fn show_displays_not_before_with_countdown() {
     let future = (Utc::now() + Duration::hours(2)).to_rfc3339();
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Show test",
-            "--id",
-            "st1",
-            "--not-before",
-            &future,
-        ],
+        &["add", "Show test", "--id", "st1", "--not-before", &future],
     );
 
     let output = wg_ok(&wg_dir, &["show", "st1"]);
@@ -617,14 +610,7 @@ fn edit_delay_and_not_before_mutually_exclusive() {
     let future = (Utc::now() + Duration::hours(1)).to_rfc3339();
     let output = wg_cmd(
         &wg_dir,
-        &[
-            "edit",
-            "me1",
-            "--delay",
-            "60s",
-            "--not-before",
-            &future,
-        ],
+        &["edit", "me1", "--delay", "60s", "--not-before", &future],
     );
     assert!(
         !output.status.success(),
@@ -675,7 +661,10 @@ fn add_delay_various_units() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Test seconds
-    wg_ok(&wg_dir, &["add", "Seconds", "--id", "u-s", "--delay", "30s"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Seconds", "--id", "u-s", "--delay", "30s"],
+    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("u-s").unwrap();
     assert!(task.not_before.is_some(), "30s delay should set not_before");

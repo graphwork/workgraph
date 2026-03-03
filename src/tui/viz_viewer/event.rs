@@ -1515,8 +1515,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     let in_graph = app.last_graph_area.contains(pos);
     let in_tab_bar = app.last_tab_bar_area.contains(pos);
     let in_right_content = app.last_right_content_area.contains(pos);
-    let in_graph_hscrollbar = app.last_graph_hscrollbar_area.width > 0
-        && app.last_graph_hscrollbar_area.contains(pos);
+    let in_graph_hscrollbar =
+        app.last_graph_hscrollbar_area.width > 0 && app.last_graph_hscrollbar_area.contains(pos);
 
     match kind {
         MouseEventKind::ScrollUp => {
