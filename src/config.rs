@@ -49,6 +49,14 @@ pub struct Config {
     /// Visualization settings
     #[serde(default)]
     pub viz: VizConfig,
+
+    /// TUI-specific settings
+    #[serde(default)]
+    pub tui: TuiConfig,
+
+    /// LLM endpoints
+    #[serde(default)]
+    pub llm_endpoints: EndpointsConfig,
 }
 
 /// Help display configuration
@@ -154,18 +162,131 @@ pub struct VizConfig {
     /// Edge color style: "gray" (default), "white", or "mixed" (tree=white, arcs=gray)
     #[serde(default = "default_edge_color")]
     pub edge_color: String,
+    /// Animation mode: "normal" (default), "fast", "slow", "reduced", "off"
+    #[serde(default = "default_animation_mode")]
+    pub animations: String,
 }
 
 fn default_edge_color() -> String {
     "gray".to_string()
 }
 
+fn default_animation_mode() -> String {
+    "normal".to_string()
+}
+
 impl Default for VizConfig {
     fn default() -> Self {
         Self {
             edge_color: default_edge_color(),
+            animations: default_animation_mode(),
         }
     }
+}
+
+/// TUI-specific settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TuiConfig {
+    /// Enable mouse support (default: auto-detected based on tmux)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_mode: Option<bool>,
+    /// Default layout mode: "auto", "horizontal", "vertical"
+    #[serde(default = "default_tui_layout")]
+    pub default_layout: String,
+    /// Color theme: "dark" (default), "light"
+    #[serde(default = "default_tui_theme")]
+    pub color_theme: String,
+    /// Timestamp display format: "relative" (default), "iso", "local", "off"
+    #[serde(default = "default_timestamp_format")]
+    pub timestamp_format: String,
+    /// Show token counts in task details
+    #[serde(default = "default_true")]
+    pub show_token_counts: bool,
+}
+
+fn default_tui_layout() -> String {
+    "auto".to_string()
+}
+fn default_tui_theme() -> String {
+    "dark".to_string()
+}
+fn default_timestamp_format() -> String {
+    "relative".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            mouse_mode: None,
+            default_layout: default_tui_layout(),
+            color_theme: default_tui_theme(),
+            timestamp_format: default_timestamp_format(),
+            show_token_counts: true,
+        }
+    }
+}
+
+/// A configured LLM endpoint (like a WiFi network entry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    /// Display name for this endpoint
+    pub name: String,
+    /// Provider type: "anthropic", "openai", "openrouter", "local"
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// API endpoint URL
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Default model for this endpoint
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// API key for this endpoint (stored in config — user should gitignore)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Whether this is the default endpoint for new agents
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+fn default_provider() -> String {
+    "anthropic".to_string()
+}
+
+impl EndpointConfig {
+    /// Return the API key masked for display: "sk-****...ab12"
+    pub fn masked_key(&self) -> String {
+        match &self.api_key {
+            Some(key) if key.len() > 8 => {
+                let prefix = &key[..3];
+                let suffix = &key[key.len() - 4..];
+                format!("{}****...{}", prefix, suffix)
+            }
+            Some(key) if !key.is_empty() => "****".to_string(),
+            _ => "(not set)".to_string(),
+        }
+    }
+
+    /// Default URL for known providers.
+    pub fn default_url_for_provider(provider: &str) -> &'static str {
+        match provider {
+            "anthropic" => "https://api.anthropic.com",
+            "openai" => "https://api.openai.com/v1",
+            "openrouter" => "https://openrouter.ai/api/v1",
+            "local" => "http://localhost:11434/v1",
+            _ => "",
+        }
+    }
+}
+
+/// LLM endpoints configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EndpointsConfig {
+    /// List of configured endpoints
+    #[serde(default)]
+    pub endpoints: Vec<EndpointConfig>,
 }
 
 fn default_auto_create_threshold() -> u32 {
