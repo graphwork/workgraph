@@ -179,7 +179,8 @@ pub enum RightPanelTab {
     Messages, // 3
     Agency,   // 4
     Config,   // 5
-    Files,    // 6
+    Files,     // 6
+    CoordLog,  // 7
 }
 
 impl RightPanelTab {
@@ -192,6 +193,7 @@ impl RightPanelTab {
             Self::Agency => "Agency",
             Self::Config => "Config",
             Self::Files => "Files",
+            Self::CoordLog => "Coord",
         }
     }
 
@@ -204,6 +206,7 @@ impl RightPanelTab {
             Self::Agency => 4,
             Self::Config => 5,
             Self::Files => 6,
+            Self::CoordLog => 7,
         }
     }
 
@@ -216,19 +219,20 @@ impl RightPanelTab {
             4 => Some(Self::Agency),
             5 => Some(Self::Config),
             6 => Some(Self::Files),
+            7 => Some(Self::CoordLog),
             _ => None,
         }
     }
 
     pub fn next(&self) -> Self {
-        Self::from_index((self.index() + 1) % 7).unwrap()
+        Self::from_index((self.index() + 1) % 8).unwrap()
     }
 
     pub fn prev(&self) -> Self {
-        Self::from_index((self.index() + 6) % 7).unwrap()
+        Self::from_index((self.index() + 7) % 8).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 7] = [
+    pub const ALL: [RightPanelTab; 8] = [
         Self::Chat,
         Self::Detail,
         Self::Log,
@@ -236,6 +240,7 @@ impl RightPanelTab {
         Self::Agency,
         Self::Config,
         Self::Files,
+        Self::CoordLog,
     ];
 }
 
@@ -612,6 +617,29 @@ impl Default for LogPaneState {
     }
 }
 
+/// State for the Coordinator Log panel (panel 7) — shows daemon activity log.
+pub struct CoordLogState {
+    pub scroll: usize,
+    pub auto_tail: bool,
+    pub rendered_lines: Vec<String>,
+    pub last_offset: u64,
+    pub viewport_height: usize,
+    pub total_wrapped_lines: usize,
+}
+
+impl Default for CoordLogState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            auto_tail: true,
+            rendered_lines: Vec::new(),
+            last_offset: 0,
+            viewport_height: 0,
+            total_wrapped_lines: 0,
+        }
+    }
+}
+
 /// State for the Messages panel (panel 3) — shows message queue for the selected task.
 #[derive(Default)]
 pub struct MessagesPanelState {
@@ -940,6 +968,9 @@ pub struct VizApp {
     // ── Log pane state (now embedded as panel 2) ──
     pub log_pane: LogPaneState,
 
+    // ── Coordinator log state (panel 7) ──
+    pub coord_log: CoordLogState,
+
     // ── Messages panel state (panel 3) ──
     pub messages_panel: MessagesPanelState,
 
@@ -1112,6 +1143,7 @@ impl VizApp {
             agent_monitor: AgentMonitorState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
+            coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
@@ -2102,6 +2134,10 @@ impl VizApp {
             {
                 fb.refresh();
             }
+            // Refresh coordinator log if CoordLog tab is active.
+            if self.right_panel_tab == RightPanelTab::CoordLog {
+                self.load_coord_log();
+            }
             self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
         }
 
@@ -2932,6 +2968,93 @@ impl VizApp {
         self.invalidate_log_pane();
     }
 
+
+    // ── Coordinator log (panel 7) ──
+
+    /// Toggle coordinator log view: switch to CoordLog tab in right panel.
+    pub fn toggle_coord_log(&mut self) {
+        if self.right_panel_tab == RightPanelTab::CoordLog && self.right_panel_visible {
+            self.right_panel_visible = false;
+            self.focused_panel = FocusedPanel::Graph;
+        } else {
+            self.right_panel_visible = true;
+            self.right_panel_tab = RightPanelTab::CoordLog;
+            self.load_coord_log();
+        }
+    }
+
+    /// Load coordinator activity log from daemon.log (incremental).
+    pub fn load_coord_log(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+        let log_path = self.workgraph_dir.join("service").join("daemon.log");
+        let file = match std::fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(_) => {
+                if !self.coord_log.rendered_lines.is_empty() {
+                    self.coord_log.rendered_lines.clear();
+                    self.coord_log.last_offset = 0;
+                }
+                return;
+            }
+        };
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_len < self.coord_log.last_offset {
+            self.coord_log.rendered_lines.clear();
+            self.coord_log.last_offset = 0;
+        }
+        if file_len == self.coord_log.last_offset {
+            return;
+        }
+        let mut reader = BufReader::new(file);
+        if self.coord_log.last_offset > 0 {
+            if reader.seek(SeekFrom::Start(self.coord_log.last_offset)).is_err() {
+                return;
+            }
+        }
+        let mut new_lines = Vec::new();
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+            let line = buf.trim_end().to_string();
+            if !line.is_empty() {
+                new_lines.push(line);
+            }
+            buf.clear();
+        }
+        self.coord_log.last_offset = file_len;
+        self.coord_log.rendered_lines.extend(new_lines);
+        if self.coord_log.auto_tail {
+            self.coord_log.scroll = usize::MAX;
+        }
+    }
+
+    /// Scroll coordinator log up.
+    pub fn coord_log_scroll_up(&mut self, amount: usize) {
+        self.coord_log.scroll = self.coord_log.scroll.saturating_sub(amount);
+        self.coord_log.auto_tail = false;
+    }
+
+    /// Scroll coordinator log down.
+    pub fn coord_log_scroll_down(&mut self, amount: usize) {
+        let max_scroll = self.coord_log.total_wrapped_lines.saturating_sub(self.coord_log.viewport_height);
+        self.coord_log.scroll = (self.coord_log.scroll + amount).min(max_scroll);
+        if self.coord_log.scroll >= max_scroll {
+            self.coord_log.auto_tail = true;
+        }
+    }
+
+    /// Scroll coordinator log to top.
+    pub fn coord_log_scroll_to_top(&mut self) {
+        self.coord_log.scroll = 0;
+        self.coord_log.auto_tail = false;
+    }
+
+    /// Scroll coordinator log to bottom.
+    pub fn coord_log_scroll_to_bottom(&mut self) {
+        let max_scroll = self.coord_log.total_wrapped_lines.saturating_sub(self.coord_log.viewport_height);
+        self.coord_log.scroll = max_scroll;
+        self.coord_log.auto_tail = true;
+    }
+
     // ── Messages panel (panel 3) ──
 
     /// Load messages for the currently selected task into the messages panel.
@@ -3070,6 +3193,7 @@ impl VizApp {
             agent_monitor: AgentMonitorState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
+            coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,

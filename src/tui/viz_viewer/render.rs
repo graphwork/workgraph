@@ -65,6 +65,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     {
         app.load_agency_lifecycle();
     }
+    // Lazy-load coordinator log on first switch to CoordLog tab.
+    if app.right_panel_tab == RightPanelTab::CoordLog && app.coord_log.rendered_lines.is_empty() {
+        app.load_coord_log();
+    }
     // Lazy-init file browser on first switch to Files tab.
     if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
         app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
@@ -864,6 +868,9 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         RightPanelTab::Files => {
             super::file_browser_render::draw_files_tab(frame, app, content_area);
         }
+        RightPanelTab::CoordLog => {
+            draw_coord_log_tab(frame, app, content_area);
+        }
     }
 }
 
@@ -1444,6 +1451,87 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
         let mut scrollbar_state =
             ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+}
+
+/// Draw the Coordinator Log tab (panel 7) — daemon activity log.
+fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    if app.coord_log.rendered_lines.is_empty() {
+        let msg = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Coordinator Log",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("No coordinator activity yet.", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("(Start the service with `wg service start`)", Style::default().fg(Color::DarkGray))),
+        ]);
+        frame.render_widget(msg, area);
+        return;
+    }
+    let viewport_h = area.height as usize;
+    app.coord_log.viewport_height = viewport_h;
+    if viewport_h == 0 { return; }
+    let wrap_width = area.width as usize;
+    let mut wrapped_lines: Vec<Line> = Vec::new();
+    for s in &app.coord_log.rendered_lines {
+        if let Some(bracket_start) = s.find('[') {
+            if let Some(bracket_end) = s[bracket_start..].find(']') {
+                let bracket_end = bracket_start + bracket_end;
+                let timestamp = &s[..bracket_start];
+                let level = &s[bracket_start..=bracket_end];
+                let message = &s[bracket_end + 1..];
+                let prefix_len = bracket_end + 1;
+                let level_color = match level {
+                    "[INFO]" => Color::Green,
+                    "[WARN]" => Color::Yellow,
+                    "[ERROR]" => Color::Red,
+                    _ => Color::DarkGray,
+                };
+                let text_width = wrap_width.saturating_sub(prefix_len);
+                if text_width == 0 || message.trim().is_empty() {
+                    wrapped_lines.push(Line::from(vec![
+                        Span::styled(timestamp.to_string(), Style::default().fg(Color::DarkGray)),
+                        Span::styled(level.to_string(), Style::default().fg(level_color)),
+                        Span::raw(message.to_string()),
+                    ]));
+                } else {
+                    let leading_space = &message[..message.len() - message.trim_start().len()];
+                    let wrapped = word_wrap(message.trim_start(), text_width);
+                    let indent = " ".repeat(prefix_len + leading_space.len());
+                    for (i, wl) in wrapped.iter().enumerate() {
+                        if i == 0 {
+                            wrapped_lines.push(Line::from(vec![
+                                Span::styled(timestamp.to_string(), Style::default().fg(Color::DarkGray)),
+                                Span::styled(level.to_string(), Style::default().fg(level_color)),
+                                Span::raw(format!("{}{}", leading_space, wl)),
+                            ]));
+                        } else {
+                            wrapped_lines.push(Line::from(Span::raw(format!("{}{}", indent, wl))));
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+        if wrap_width > 0 && s.len() > wrap_width {
+            let wrapped = word_wrap(s, wrap_width);
+            for wl in wrapped { wrapped_lines.push(Line::from(wl)); }
+        } else {
+            wrapped_lines.push(Line::from(Span::raw(s.as_str())));
+        }
+    }
+    let total_lines = wrapped_lines.len();
+    app.coord_log.total_wrapped_lines = total_lines;
+    let scroll = app.coord_log.scroll.min(total_lines.saturating_sub(viewport_h));
+    let end = (scroll + viewport_h).min(total_lines);
+    let visible_lines: Vec<Line> = wrapped_lines[scroll..end].to_vec();
+    let paragraph = Paragraph::new(visible_lines);
+    frame.render_widget(paragraph, area);
+    if total_lines > viewport_h && app.panel_scrollbar_visible() {
+        let mut scrollbar_state = ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
@@ -2638,7 +2726,7 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
             }
             FocusedPanel::RightPanel => {
                 let mut hints = vec![
-                    Span::styled(" 0-4", Style::default().fg(Color::Yellow)),
+                    Span::styled(" 0-7", Style::default().fg(Color::Yellow)),
                     Span::styled(":tab ", Style::default().fg(Color::DarkGray)),
                     Span::styled("↑↓", Style::default().fg(Color::Yellow)),
                     Span::styled(":scroll ", Style::default().fg(Color::DarkGray)),
@@ -2946,7 +3034,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("Alt-←/→", "Cycle tabs (prev / next)"),
         binding("\\", "Toggle right panel visible"),
         binding("=", "Cycle layout: split/panel/graph"),
-        binding("0-6", "Switch tab: Chat/.../Config/Files"),
+        binding("0-7", "Switch tab: Chat/.../Files/Coord"),
         binding("R", "Toggle raw JSON in Detail tab"),
         blank(),
         heading("Edge Tracing"),
@@ -2975,7 +3063,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
         binding("m", "Toggle mouse capture"),
         binding("r", "Force refresh"),
-        binding("L", "Cycle layout mode"),
+        binding("L", "Toggle coordinator log"),
         binding("?", "Toggle this help"),
         binding("q", "Quit"),
         blank(),

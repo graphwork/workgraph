@@ -1034,8 +1034,8 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let _ = set_mouse_capture(app.mouse_enabled);
         }
 
-        // Toggle log pane
-        KeyCode::Char('L') => app.toggle_log_pane(),
+        // Toggle coordinator log view
+        KeyCode::Char('L') => app.toggle_coord_log(),
 
         // Toggle log pane JSON mode
         KeyCode::Char('J') => app.toggle_log_json(),
@@ -1092,7 +1092,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Digit keys 0-6: switch right panel tab
-        KeyCode::Char(d @ '0'..='6') => {
+        KeyCode::Char(d @ '0'..='7') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_visible = true;
@@ -1130,7 +1130,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.focused_panel = FocusedPanel::Graph;
                     app.chat_input_dismissed = false;
                 }
-                KeyCode::Char(d @ '0'..='6') => {
+                KeyCode::Char(d @ '0'..='7') => {
                     let idx = (d as u8 - b'0') as usize;
                     if let Some(tab) = RightPanelTab::from_index(idx) {
                         app.right_panel_tab = tab;
@@ -1181,7 +1181,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Number keys 0-6 switch tabs
-        KeyCode::Char(d @ '0'..='6') => {
+        KeyCode::Char(d @ '0'..='7') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 // Reset dismissed flag when navigating away from Chat tab
@@ -1383,6 +1383,9 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Files => {
             // File browser handles its own scrolling.
         }
+        RightPanelTab::CoordLog => {
+            app.coord_log_scroll_up(amount);
+        }
     }
 }
 
@@ -1418,6 +1421,9 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         RightPanelTab::Files => {
             // File browser handles its own scrolling.
         }
+        RightPanelTab::CoordLog => {
+            app.coord_log_scroll_down(amount);
+        }
     }
 }
 
@@ -1447,6 +1453,9 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
             }
         }
         RightPanelTab::Files => {}
+        RightPanelTab::CoordLog => {
+            app.coord_log_scroll_to_top();
+        }
     }
 }
 
@@ -1476,6 +1485,9 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
             }
         }
         RightPanelTab::Files => {}
+        RightPanelTab::CoordLog => {
+            app.coord_log_scroll_to_bottom();
+        }
     }
 }
 
