@@ -1909,19 +1909,12 @@ impl VizApp {
 
             // Build snapshot for change detection.
             let total_tokens = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
-            let plain_line = self
-                .node_line_map
-                .get(&task.id)
-                .and_then(|&idx| self.plain_lines.get(idx))
-                .cloned()
-                .unwrap_or_default();
 
             let snapshot = TaskSnapshot {
                 status: task.status,
                 assigned: task.assigned.clone(),
                 token_bucket: total_tokens / TOKEN_DEBOUNCE_BUCKET,
                 edge_count: task.after.len(),
-                plain_line,
             };
 
             // Compare with previous snapshot and create animations for changes.
