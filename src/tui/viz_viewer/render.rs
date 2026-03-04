@@ -1603,7 +1603,7 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
         let editor_area = Rect { x: area.x + prefix_len, y: input_y, width: area.width.saturating_sub(prefix_len), height: input_h };
         let text_color = if is_editing { Color::Reset } else { Color::DarkGray };
-        let theme = EditorTheme::default().base(Style::default().fg(text_color)).cursor_style(if is_editing { Style::default().fg(Color::Black).bg(Color::White) } else { Style::default().fg(text_color) });
+        let theme = EditorTheme::default().hide_status_line().base(Style::default().fg(text_color)).cursor_style(if is_editing { Style::default().fg(Color::Black).bg(Color::White) } else { Style::default().fg(text_color) });
         frame.render_widget(EditorView::new(&mut app.chat.editor).wrap(true).theme(theme), editor_area);
         if !app.chat.pending_attachments.is_empty() {
             let att_text: String = app.chat.pending_attachments.iter().map(|a| format!("[{}]", a.filename)).collect::<Vec<_>>().join(" ");
@@ -2190,7 +2190,7 @@ fn draw_message_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
         let editor_area = Rect { x: area.x + prefix_len, y: input_y, width: area.width.saturating_sub(prefix_len), height: input_h };
         let text_color = if is_editing { Color::Reset } else { Color::DarkGray };
-        let theme = EditorTheme::default().base(Style::default().fg(text_color)).cursor_style(if is_editing { Style::default().fg(Color::Black).bg(Color::White) } else { Style::default().fg(text_color) });
+        let theme = EditorTheme::default().hide_status_line().base(Style::default().fg(text_color)).cursor_style(if is_editing { Style::default().fg(Color::Black).bg(Color::White) } else { Style::default().fg(text_color) });
         frame.render_widget(EditorView::new(&mut app.messages_panel.editor).wrap(true).theme(theme), editor_area);
     } else {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(" Enter: compose  \u{2191}\u{2193}: scroll", Style::default().fg(Color::DarkGray)))), area);
@@ -2914,7 +2914,7 @@ fn draw_text_prompt(
         frame.render_widget(block, area);
         let edit_height = inner.height.saturating_sub(1);
         let edit_area = Rect::new(inner.x, inner.y, inner.width, edit_height);
-        let theme = EditorTheme::default().base(Style::default().fg(Color::White)).cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        let theme = EditorTheme::default().hide_status_line().base(Style::default().fg(Color::White)).cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(EditorView::new(editor).wrap(true).theme(theme), edit_area);
         frame.render_widget(Paragraph::new(vec![Line::from(Span::styled("Ctrl+Enter: submit  Esc: cancel", Style::default().fg(Color::DarkGray)))]), Rect::new(inner.x, inner.y + edit_height, inner.width, 1));
         area
@@ -2930,7 +2930,7 @@ fn draw_text_prompt(
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(Line::from(Span::styled("> ", Style::default().fg(Color::Yellow)))), Rect::new(inner.x, inner.y, 2, 1));
         let editor_area = Rect::new(inner.x + 2, inner.y, inner.width.saturating_sub(2), 1);
-        let theme = EditorTheme::default().base(Style::default().fg(Color::White)).cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        let theme = EditorTheme::default().hide_status_line().base(Style::default().fg(Color::White)).cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(EditorView::new(editor).theme(theme), editor_area);
         if inner.height >= 3 {
             frame.render_widget(Paragraph::new(vec![Line::from(Span::styled("Enter: submit  Esc: cancel", Style::default().fg(Color::DarkGray)))]), Rect::new(inner.x, inner.y + 2, inner.width, 1));
