@@ -5,12 +5,14 @@
 //! channels based on event type and supports escalation chains.
 
 pub mod config;
+pub mod discord;
 pub mod dispatch;
 #[cfg(feature = "email")]
 pub mod email;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix;
 pub mod slack;
+pub mod sms;
 pub mod telegram;
 pub mod webhook;
 
