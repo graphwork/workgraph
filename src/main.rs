@@ -323,9 +323,22 @@ fn main() -> Result<()> {
             context_scope,
             exec_mode,
             paused,
+            immediate,
             delay,
             not_before,
         } => {
+            // Determine effective paused state:
+            // - --paused always pauses
+            // - --immediate always skips draft mode
+            // - Default: paused (draft) in interactive mode, immediate in agent context
+            let effective_paused = if paused {
+                true
+            } else if immediate {
+                false
+            } else {
+                // Draft by default for interactive use; agents get immediate mode
+                std::env::var("WG_AGENT_ID").is_err()
+            };
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
                     &workgraph_dir,
@@ -366,7 +379,7 @@ fn main() -> Result<()> {
                     &visibility,
                     context_scope.as_deref(),
                     exec_mode.as_deref(),
-                    paused,
+                    effective_paused,
                     delay.as_deref(),
                     not_before.as_deref(),
                 )
@@ -440,6 +453,7 @@ fn main() -> Result<()> {
         Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
         Commands::Pause { id } => commands::pause::run(&workgraph_dir, &id),
         Commands::Resume { id } => commands::resume::run(&workgraph_dir, &id),
+        Commands::Publish { id } => commands::resume::publish(&workgraph_dir, &id),
         Commands::AddDep { task, dependency } => {
             commands::link::run_link(&workgraph_dir, &task, &dependency)
         }

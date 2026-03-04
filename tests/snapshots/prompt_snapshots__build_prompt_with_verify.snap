@@ -73,7 +73,19 @@ You MUST use these commands to track your work:
      wg log test-task-123 "Validated: cargo build + cargo test pass"
      ```
 
-4. **Check messages AGAIN and reply** (BEFORE marking done — this is a completion gate):
+4. **Commit and push** if you modified files:
+   - Run `cargo build` and `cargo test` BEFORE committing — never commit broken code
+   - Stage and commit with a descriptive message referencing the task ID:
+     ```bash
+     git add -A && git commit -m "feat: <description> (test-task-123)"
+     git push
+     ```
+   - Log the commit hash:
+     ```bash
+     wg log test-task-123 "Committed: $(git rev-parse --short HEAD) — pushed to remote"
+     ```
+
+5. **Check messages AGAIN and reply** (BEFORE marking done — this is a completion gate):
    ```bash
    wg msg read test-task-123 --agent $WG_AGENT_ID
    ```
@@ -83,13 +95,13 @@ You MUST use these commands to track your work:
    ```
    If you skip replies, the task is incomplete. Do NOT mark done with unreplied messages.
 
-5. **Complete the task** when done:
+6. **Complete the task** when done:
    ```bash
    wg done test-task-123
    wg done test-task-123 --converged  # Use this if task has loop edges and work is complete
    ```
 
-6. **Mark as failed** if you cannot complete:
+7. **Mark as failed** if you cannot complete:
    ```bash
    wg fail test-task-123 --reason "Specific reason why"
    ```
@@ -97,6 +109,7 @@ You MUST use these commands to track your work:
 ## Important
 - Run `wg log` commands BEFORE doing work to track progress
 - Validate BEFORE running `wg done`
+- Commit and push your changes BEFORE running `wg done`
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation
 

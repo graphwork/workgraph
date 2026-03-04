@@ -358,7 +358,12 @@ pub fn run(
         config.log.rotation_threshold,
     );
 
-    println!("Added task: {} ({})", title, task_id);
+    if paused {
+        println!("Added task (draft): {} ({})", title, task_id);
+        println!("  Task is paused (draft mode). When ready, run: wg publish {}", task_id);
+    } else {
+        println!("Added task: {} ({})", title, task_id);
+    }
     if id.is_none() {
         println!("  Use --after {} to depend on this task", task_id);
     }

@@ -134,9 +134,13 @@ pub enum Commands {
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
 
-        /// Create the task in paused state
+        /// Create the task in paused state (default for interactive use)
         #[arg(long)]
         paused: bool,
+
+        /// Skip draft mode and make task immediately available for dispatch
+        #[arg(long, alias = "ready")]
+        immediate: bool,
 
         /// Delay before task becomes ready (e.g., 30s, 5m, 1h, 1d)
         #[arg(long)]
@@ -313,6 +317,13 @@ pub enum Commands {
     /// Resume a paused task
     Resume {
         /// Task ID to resume
+        #[arg(value_name = "TASK")]
+        id: String,
+    },
+
+    /// Publish a draft task (validates dependencies, then resumes)
+    Publish {
+        /// Task ID to publish
         #[arg(value_name = "TASK")]
         id: String,
     },
@@ -2335,6 +2346,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Unclaim { .. } => "unclaim",
         Commands::Pause { .. } => "pause",
         Commands::Resume { .. } => "resume",
+        Commands::Publish { .. } => "publish",
         Commands::AddDep { .. } => "add-dep",
         Commands::RmDep { .. } => "rm-dep",
         Commands::Reclaim { .. } => "reclaim",
