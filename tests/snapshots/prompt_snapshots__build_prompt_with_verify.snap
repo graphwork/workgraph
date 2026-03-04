@@ -41,17 +41,22 @@ Tasks that depend on your work:
 
 You MUST use these commands to track your work:
 
-0. **Check for messages** (BEFORE any other work):
+0. **Check for messages and reply** (BEFORE any other work):
    ```bash
    wg msg read test-task-123 --agent $WG_AGENT_ID
    ```
-   Reply to EACH message: `wg msg send test-task-123 "your response"`
+   For EACH message, reply with what you'll do about it:
+   ```bash
+   wg msg send test-task-123 "Acknowledged — will fix the prefix on line 42"
+   ```
+   Unreplied messages = incomplete task. This is not optional.
 
 1. **Log progress** as you work (helps recovery if interrupted):
    ```bash
    wg log test-task-123 "Starting implementation..."
    wg log test-task-123 "Completed X, now working on Y"
    ```
+   If you received messages in step 0, reply to them too (`wg msg send`).
 
 2. **Record artifacts** if you create/modify files:
    ```bash
@@ -67,11 +72,15 @@ You MUST use these commands to track your work:
      wg log test-task-123 "Validated: re-read description, all requirements addressed"
      ```
 
-4. **Check messages AGAIN** (BEFORE marking done — this is a gate, not optional):
+4. **Check messages AGAIN and reply** (BEFORE marking done — this is a completion gate):
    ```bash
    wg msg read test-task-123 --agent $WG_AGENT_ID
    ```
-   Reply to any new messages. Do NOT skip this step.
+   Reply to ALL new messages before proceeding:
+   ```bash
+   wg msg send test-task-123 "Done — applied the requested changes in commit abc123"
+   ```
+   If you skip replies, the task is incomplete. Do NOT mark done with unreplied messages.
 
 5. **Complete the task** when done:
    ```bash
@@ -99,6 +108,11 @@ wg msg read test-task-123 --agent $WG_AGENT_ID
 ```
 Messages may contain updated requirements, context from other agents,
 or instructions from the user. Check at natural breakpoints in your work.
+
+If there are messages, reply to each one:
+```bash
+wg msg send test-task-123 "Acknowledged — adjusting approach per your feedback"
+```
 
 
 ## The Graph is Alive

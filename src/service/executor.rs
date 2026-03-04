@@ -22,17 +22,22 @@ pub const REQUIRED_WORKFLOW_SECTION: &str = "\
 
 You MUST use these commands to track your work:
 
-0. **Check for messages** (BEFORE any other work):
+0. **Check for messages and reply** (BEFORE any other work):
    ```bash
    wg msg read {{task_id}} --agent $WG_AGENT_ID
    ```
-   Reply to EACH message: `wg msg send {{task_id}} \"your response\"`
+   For EACH message, reply with what you'll do about it:
+   ```bash
+   wg msg send {{task_id}} \"Acknowledged — will fix the prefix on line 42\"
+   ```
+   Unreplied messages = incomplete task. This is not optional.
 
 1. **Log progress** as you work (helps recovery if interrupted):
    ```bash
    wg log {{task_id}} \"Starting implementation...\"
    wg log {{task_id}} \"Completed X, now working on Y\"
    ```
+   If you received messages in step 0, reply to them too (`wg msg send`).
 
 2. **Record artifacts** if you create/modify files:
    ```bash
@@ -48,11 +53,15 @@ You MUST use these commands to track your work:
      wg log {{task_id}} \"Validated: re-read description, all requirements addressed\"
      ```
 
-4. **Check messages AGAIN** (BEFORE marking done — this is a gate, not optional):
+4. **Check messages AGAIN and reply** (BEFORE marking done — this is a completion gate):
    ```bash
    wg msg read {{task_id}} --agent $WG_AGENT_ID
    ```
-   Reply to any new messages. Do NOT skip this step.
+   Reply to ALL new messages before proceeding:
+   ```bash
+   wg msg send {{task_id}} \"Done — applied the requested changes in commit abc123\"
+   ```
+   If you skip replies, the task is incomplete. Do NOT mark done with unreplied messages.
 
 5. **Complete the task** when done:
    ```bash
@@ -189,7 +198,12 @@ Check for new messages periodically during long-running tasks:
 wg msg read {{task_id}} --agent $WG_AGENT_ID
 ```
 Messages may contain updated requirements, context from other agents,
-or instructions from the user. Check at natural breakpoints in your work.\n";
+or instructions from the user. Check at natural breakpoints in your work.
+
+If there are messages, reply to each one:
+```bash
+wg msg send {{task_id}} \"Acknowledged — adjusting approach per your feedback\"
+```\n";
 
 /// Hint for task+ scopes about using wg context/show to get more info (R2).
 const WG_CONTEXT_HINT: &str = "\

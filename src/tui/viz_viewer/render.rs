@@ -1237,7 +1237,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Build rendered lines from messages with word-wrapping.
     // Scrollbar overlays the rightmost column when visible.
-    let content_width = width;
+    let content_width = width.saturating_sub(1);
     let mut rendered_lines: Vec<Line> = Vec::new();
     // Map each rendered line to its source message index (for click-to-toggle).
     let mut line_to_message: Vec<Option<usize>> = Vec::new();
@@ -1245,26 +1245,25 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     for (msg_idx, msg) in app.chat.messages.iter().enumerate() {
         let is_coordinator = msg.role == super::state::ChatRole::Coordinator;
 
-        let (role_label, role_style) = match msg.role {
+        let (prefix, role_style) = match msg.role {
             super::state::ChatRole::User => (
-                "you",
+                "> ".to_string(),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::Coordinator => (
-                "↯↯↯",
+                "↯ ".to_string(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::System => (
-                "sys",
+                "! ".to_string(),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
         };
 
-        let prefix = format!("{}: ", role_label);
         let prefix_len = prefix.width();
         let indent = " ".repeat(prefix_len);
         let text_width = content_width.saturating_sub(prefix_len);
@@ -2412,32 +2411,146 @@ fn wrap_line_spans<'a>(lines: &[Line<'a>], max_width: usize) -> Vec<Line<'a>> {
             continue;
         }
 
-        // Multi-span line: concatenate all text, wrap, then rebuild.
-        // First span keeps its style for the prefix; continuation lines use
-        // the style of the last span.
-        let wrapped = word_wrap(&text, max_width);
-        let continuation_style = line.spans.last().map(|s| s.style).unwrap_or_default();
-        for (i, w) in wrapped.iter().enumerate() {
-            if i == 0 {
-                // Rebuild spans for the first wrapped line by walking original spans
-                // and slicing at the character boundary.
-                let first_char_count = w.chars().count();
-                let mut remaining = first_char_count;
-                let mut new_spans: Vec<Span> = Vec::new();
-                for span in &line.spans {
-                    if remaining == 0 {
-                        break;
-                    }
-                    let span_chars: Vec<char> = span.content.chars().collect();
-                    let take = remaining.min(span_chars.len());
-                    let slice: String = span_chars[..take].iter().collect();
-                    new_spans.push(Span::styled(slice, span.style));
-                    remaining -= take;
-                }
-                out.push(Line::from(new_spans));
-            } else {
-                out.push(Line::from(Span::styled(w.clone(), continuation_style)));
+        // Multi-span line: wrap by walking styled characters with display-width
+        // tracking, breaking at word boundaries. This avoids the whitespace
+        // normalization issue that word_wrap's split_whitespace() causes.
+        let styled_chars: Vec<(char, Style)> = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+            .collect();
+
+        // Split into tokens: alternating whitespace and non-whitespace runs,
+        // each token is a slice range into styled_chars.
+        let mut tokens: Vec<(usize, usize, bool)> = Vec::new(); // (start, end, is_space)
+        let mut i = 0;
+        while i < styled_chars.len() {
+            let is_space = styled_chars[i].0.is_whitespace();
+            let start = i;
+            while i < styled_chars.len() && styled_chars[i].0.is_whitespace() == is_space {
+                i += 1;
             }
+            tokens.push((start, i, is_space));
+        }
+
+        // Greedy line-breaking using display width.
+        let char_width =
+            |c: char| -> usize { unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) };
+        let token_width = |start: usize, end: usize| -> usize {
+            styled_chars[start..end]
+                .iter()
+                .map(|&(c, _)| char_width(c))
+                .sum()
+        };
+
+        let mut result_lines: Vec<Vec<(char, Style)>> = Vec::new();
+        let mut cur_line: Vec<(char, Style)> = Vec::new();
+        let mut cur_width: usize = 0;
+
+        for &(tok_start, tok_end, is_space) in &tokens {
+            let tw = token_width(tok_start, tok_end);
+
+            if is_space {
+                if cur_line.is_empty() {
+                    // Skip leading whitespace on continuation lines.
+                    continue;
+                }
+                if cur_width + tw <= max_width {
+                    cur_line.extend_from_slice(&styled_chars[tok_start..tok_end]);
+                    cur_width += tw;
+                } else {
+                    // Space would overflow — break here, trim trailing space.
+                    while cur_line.last().map(|&(c, _)| c.is_whitespace()).unwrap_or(false) {
+                        cur_line.pop();
+                    }
+                    if !cur_line.is_empty() {
+                        result_lines.push(std::mem::take(&mut cur_line));
+                    }
+                    cur_width = 0;
+                }
+            } else {
+                // Word token.
+                if cur_width + tw <= max_width {
+                    cur_line.extend_from_slice(&styled_chars[tok_start..tok_end]);
+                    cur_width += tw;
+                } else if cur_line.is_empty() {
+                    // Word alone exceeds max_width — hard break.
+                    let mut buf: Vec<(char, Style)> = Vec::new();
+                    let mut bw: usize = 0;
+                    for &(c, style) in &styled_chars[tok_start..tok_end] {
+                        let cw = char_width(c);
+                        if bw + cw > max_width && !buf.is_empty() {
+                            result_lines.push(std::mem::take(&mut buf));
+                            bw = 0;
+                        }
+                        buf.push((c, style));
+                        bw += cw;
+                    }
+                    cur_line = buf;
+                    cur_width = bw;
+                } else {
+                    // Wrap: start new line with this word.
+                    // Trim trailing whitespace from current line.
+                    while cur_line.last().map(|&(c, _)| c.is_whitespace()).unwrap_or(false) {
+                        cur_line.pop();
+                    }
+                    if !cur_line.is_empty() {
+                        result_lines.push(std::mem::take(&mut cur_line));
+                    }
+                    // Word may still exceed max_width — hard break if needed.
+                    if tw <= max_width {
+                        cur_line.extend_from_slice(&styled_chars[tok_start..tok_end]);
+                        cur_width = tw;
+                    } else {
+                        let mut buf: Vec<(char, Style)> = Vec::new();
+                        let mut bw: usize = 0;
+                        for &(c, style) in &styled_chars[tok_start..tok_end] {
+                            let cw = char_width(c);
+                            if bw + cw > max_width && !buf.is_empty() {
+                                result_lines.push(std::mem::take(&mut buf));
+                                bw = 0;
+                            }
+                            buf.push((c, style));
+                            bw += cw;
+                        }
+                        cur_line = buf;
+                        cur_width = bw;
+                    }
+                }
+            }
+        }
+        // Flush last line, trimming trailing whitespace.
+        while cur_line.last().map(|&(c, _)| c.is_whitespace()).unwrap_or(false) {
+            cur_line.pop();
+        }
+        if !cur_line.is_empty() {
+            result_lines.push(cur_line);
+        }
+
+        // Convert styled char sequences back into Lines with merged Spans.
+        for char_line in &result_lines {
+            if char_line.is_empty() {
+                out.push(Line::from(""));
+                continue;
+            }
+            let mut spans: Vec<Span> = Vec::new();
+            let mut buf = String::new();
+            let mut buf_style = char_line[0].1;
+            for &(c, style) in char_line {
+                if style == buf_style {
+                    buf.push(c);
+                } else {
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+                    }
+                    buf.push(c);
+                    buf_style = style;
+                }
+            }
+            if !buf.is_empty() {
+                spans.push(Span::styled(buf, buf_style));
+            }
+            out.push(Line::from(spans));
         }
     }
     out
@@ -6643,5 +6756,205 @@ mod tests {
     fn test_word_wrap_zero_width() {
         let result = word_wrap("hello", 0);
         assert_eq!(result, vec!["hello"]);
+    }
+
+    // ── wrap_line_spans tests ──
+
+    /// Helper: compute display width of a Line.
+    fn line_display_width(line: &Line) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        line.spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum()
+    }
+
+    /// Helper: extract all text content from wrapped lines.
+    fn all_text(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn test_wrap_line_spans_multi_span_with_internal_whitespace() {
+        // Multi-span line with extra internal whitespace — every output line
+        // must fit within max_width.
+        let max_width = 20;
+        let line = Line::from(vec![
+            Span::styled("hello  ", Style::default().fg(Color::Red)),
+            Span::styled("world  this  ", Style::default().fg(Color::Blue)),
+            Span::styled("is a longer sentence", Style::default()),
+        ]);
+        let result = wrap_line_spans(&[line], max_width);
+        for (i, l) in result.iter().enumerate() {
+            let w = line_display_width(l);
+            assert!(
+                w <= max_width,
+                "Line {} has display width {} > max_width {}: {:?}",
+                i,
+                w,
+                max_width,
+                l
+            );
+        }
+        // Verify no content is lost (all non-whitespace chars preserved).
+        let original_words: Vec<&str> = "hello  world  this  is a longer sentence"
+            .split_whitespace()
+            .collect();
+        let result_text = all_text(&result);
+        let result_words: Vec<&str> = result_text.split_whitespace().collect();
+        assert_eq!(original_words, result_words, "Content was lost during wrapping");
+    }
+
+    #[test]
+    fn test_wrap_line_spans_inline_code_extra_spaces() {
+        // Simulates inline code spans with padding spaces (like " config ").
+        let max_width = 25;
+        let line = Line::from(vec![
+            Span::styled("Check the ", Style::default()),
+            Span::styled(
+                " config ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" file for details here", Style::default()),
+        ]);
+        let result = wrap_line_spans(&[line], max_width);
+        for (i, l) in result.iter().enumerate() {
+            let w = line_display_width(l);
+            assert!(
+                w <= max_width,
+                "Line {} has display width {} > max_width {}: {:?}",
+                i,
+                w,
+                max_width,
+                l
+            );
+        }
+        assert!(result.len() >= 2, "Should have wrapped to multiple lines");
+    }
+
+    #[test]
+    fn test_wrap_line_spans_single_span_long() {
+        // Long single-span line wraps correctly.
+        let max_width = 15;
+        let line = Line::from(Span::styled(
+            "this is a fairly long single span line",
+            Style::default().fg(Color::Green),
+        ));
+        let result = wrap_line_spans(&[line], max_width);
+        for (i, l) in result.iter().enumerate() {
+            let w = line_display_width(l);
+            assert!(
+                w <= max_width,
+                "Line {} has display width {} > max_width {}: {:?}",
+                i,
+                w,
+                max_width,
+                l
+            );
+        }
+        assert!(result.len() >= 3, "Should wrap into multiple lines");
+    }
+
+    #[test]
+    fn test_wrap_line_spans_mixed_bold_italic_no_truncation() {
+        // Mixed styles: bold + italic + normal. No content should be lost.
+        let max_width = 18;
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let italic = Style::default().add_modifier(Modifier::ITALIC);
+        let normal = Style::default();
+        let line = Line::from(vec![
+            Span::styled("bold text ", bold),
+            Span::styled("italic text ", italic),
+            Span::styled("and normal ending", normal),
+        ]);
+        let result = wrap_line_spans(&[line], max_width);
+        for (i, l) in result.iter().enumerate() {
+            let w = line_display_width(l);
+            assert!(
+                w <= max_width,
+                "Line {} has display width {} > max_width {}: {:?}",
+                i,
+                w,
+                max_width,
+                l
+            );
+        }
+        // Verify all words are present.
+        let original_words: Vec<&str> = "bold text italic text and normal ending"
+            .split_whitespace()
+            .collect();
+        let result_text = all_text(&result);
+        let result_words: Vec<&str> = result_text.split_whitespace().collect();
+        assert_eq!(original_words, result_words, "Content was lost during wrapping");
+    }
+
+    #[test]
+    fn test_wrap_line_spans_content_preserved() {
+        // Verify total non-whitespace character content is preserved across wrapping.
+        let max_width = 12;
+        let line = Line::from(vec![
+            Span::styled("abc ", Style::default().fg(Color::Red)),
+            Span::styled("defgh ", Style::default().fg(Color::Blue)),
+            Span::styled("ijklm nopqrs", Style::default()),
+        ]);
+        let result = wrap_line_spans(&[line], max_width);
+
+        // Collect all non-whitespace chars from result.
+        let result_chars: String = result
+            .iter()
+            .flat_map(|l| l.spans.iter().flat_map(|s| s.content.chars()))
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let original_chars: String = "abc defgh ijklm nopqrs"
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(original_chars, result_chars, "Non-whitespace content was lost");
+
+        for (i, l) in result.iter().enumerate() {
+            let w = line_display_width(l);
+            assert!(
+                w <= max_width,
+                "Line {} has display width {} > max_width {}: {:?}",
+                i,
+                w,
+                max_width,
+                l
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_line_spans_styles_preserved() {
+        // Verify that span styles are preserved through wrapping.
+        let max_width = 10;
+        let red = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+        let line = Line::from(vec![
+            Span::styled("red ", red),
+            Span::styled("blue text here", blue),
+        ]);
+        let result = wrap_line_spans(&[line], max_width);
+        // First line should have red "red " and blue portion.
+        assert!(!result.is_empty());
+        let first_line = &result[0];
+        // The first span should be red.
+        assert_eq!(first_line.spans[0].style, red);
+        // Should have a blue span too.
+        assert!(
+            first_line.spans.iter().any(|s| s.style == blue),
+            "Blue style should be present in first wrapped line"
+        );
     }
 }
