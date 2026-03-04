@@ -197,7 +197,7 @@ pub struct TaskSnapshot {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Which panel currently has keyboard focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusedPanel {
     Graph,
     RightPanel,
@@ -456,7 +456,7 @@ impl LayoutMode {
 }
 
 /// Input modes — at most one is active at a time.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputMode {
     /// Normal navigation mode. Keys go to the focused panel.
     Normal,
@@ -477,14 +477,14 @@ pub enum InputMode {
 }
 
 /// What action the confirmation dialog is for.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmAction {
     MarkDone(String), // task_id
     Retry(String),    // task_id
 }
 
 /// What action the text prompt dialog is for.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextPromptAction {
     MarkFailed(String), // task_id
     #[allow(dead_code)]

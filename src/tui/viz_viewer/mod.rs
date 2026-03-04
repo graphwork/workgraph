@@ -4,6 +4,9 @@ pub mod file_browser_render;
 pub mod render;
 pub mod state;
 
+#[cfg(test)]
+mod editor_tests;
+
 use std::io;
 use std::path::PathBuf;
 
