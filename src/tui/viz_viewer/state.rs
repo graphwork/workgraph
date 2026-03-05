@@ -1706,6 +1706,9 @@ impl VizApp {
                 self.char_edge_map = viz_output.char_edge_map;
                 self.cycle_members = viz_output.cycle_members;
 
+                // Save and clear toggle flag — used for viewport centering below.
+                let was_system_toggle = self.system_tasks_just_toggled;
+
                 // Detect newly appeared/disappeared tasks and register animations.
                 // Skip on initial load (old_task_order is empty).
                 if !old_task_order.is_empty() && self.animation_mode.is_enabled() {
@@ -1815,6 +1818,9 @@ impl VizApp {
                     // stable tasks.
                 }
 
+                // Ensure toggle flag is cleared even if animation block was skipped.
+                self.system_tasks_just_toggled = false;
+
                 // Re-apply the current sort mode so task_order reflects the
                 // user's selected ordering (e.g. StatusGrouped) immediately,
                 // rather than staying in raw viz line order until the next
@@ -1871,6 +1877,11 @@ impl VizApp {
                     // First load: scroll to top so tasks are visible immediately.
                     self.scroll.go_top();
                     self.initial_load = false;
+                } else if was_system_toggle {
+                    // System task visibility toggled — center on the most
+                    // relevant area instead of preserving old scroll position
+                    // (which may point at empty space after collapsing).
+                    self.center_on_best_target();
                 } else if was_at_bottom && !new_task_focused {
                     // Smart-follow: user was at the bottom, keep them there.
                     self.scroll.go_bottom();
@@ -2155,6 +2166,48 @@ impl VizApp {
             let half = self.scroll.viewport_height / 2;
             self.scroll.offset_y = visible_pos.saturating_sub(half);
             self.scroll.clamp();
+        }
+    }
+
+    /// After toggling system task visibility, center the viewport on the most
+    /// relevant area. Priority: in-progress tasks > last task in order (most
+    /// recently created) > top of graph. If the graph fits entirely in the
+    /// viewport, just reset scroll to top.
+    fn center_on_best_target(&mut self) {
+        // If everything fits, just go to the top.
+        if self.scroll.content_height <= self.scroll.viewport_height {
+            self.scroll.go_top();
+            if !self.task_order.is_empty() {
+                self.selected_task_idx = Some(0);
+                self.recompute_trace();
+            }
+            return;
+        }
+
+        // Find best target: first in-progress task, else last task (most recent).
+        let target_idx = self
+            .task_order
+            .iter()
+            .position(|id| {
+                self.task_snapshots
+                    .get(id)
+                    .map(|s| s.status == Status::InProgress)
+                    .unwrap_or(false)
+            })
+            .or_else(|| {
+                if self.task_order.is_empty() {
+                    None
+                } else {
+                    Some(self.task_order.len() - 1)
+                }
+            });
+
+        if let Some(idx) = target_idx {
+            self.selected_task_idx = Some(idx);
+            self.recompute_trace();
+            self.needs_center_on_selected = true;
+        } else {
+            self.scroll.go_top();
         }
     }
 
