@@ -186,7 +186,6 @@ impl AnimationMode {
         !matches!(self, Self::Off)
     }
 
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "normal",
@@ -1422,6 +1421,8 @@ pub struct VizApp {
     pub task_snapshots: HashMap<String, TaskSnapshot>,
     /// Animation mode (from config: normal/fast/slow/reduced/off).
     pub animation_mode: AnimationMode,
+    /// Remembered animation mode before toggling to Off (for toggle-back).
+    pub pre_off_animation_mode: AnimationMode,
     /// Cached: name length threshold for inline vs above-line display.
     pub message_name_threshold: u16,
     /// Cached: indent for message body when name is on its own line.
@@ -1605,6 +1606,11 @@ impl VizApp {
             next_fade_cleanup: None,
             task_snapshots: HashMap::new(),
             animation_mode,
+            pre_off_animation_mode: if animation_mode.is_enabled() {
+                animation_mode
+            } else {
+                AnimationMode::Normal
+            },
             message_name_threshold: config.tui.message_name_threshold,
             message_indent: config.tui.message_indent,
             graph_scroll_activity: None,
@@ -2884,6 +2890,28 @@ impl VizApp {
         usage
     }
 
+    /// Toggle animations on/off, persisting to config.
+    pub fn toggle_animations(&mut self) {
+        if self.animation_mode.is_enabled() {
+            self.pre_off_animation_mode = self.animation_mode;
+            self.animation_mode = AnimationMode::Off;
+        } else {
+            self.animation_mode = self.pre_off_animation_mode;
+        }
+        // Persist
+        let label = self.animation_mode.label();
+        let mut config = Config::load_or_default(&self.workgraph_dir);
+        config.viz.animations = label.to_string();
+        let _ = config.save(&self.workgraph_dir);
+        // Show notification
+        let status = if self.animation_mode.is_enabled() {
+            "ON"
+        } else {
+            "OFF"
+        };
+        self.notification = Some((format!("Animations: {}", status), Instant::now()));
+    }
+
     /// Toggle mouse capture on/off.
     pub fn toggle_mouse(&mut self) {
         self.mouse_enabled = !self.mouse_enabled;
@@ -4067,6 +4095,7 @@ impl VizApp {
             next_fade_cleanup: None,
             task_snapshots: HashMap::new(),
             animation_mode: AnimationMode::Normal,
+            pre_off_animation_mode: AnimationMode::Normal,
             message_name_threshold: 8,
             message_indent: 2,
             graph_scroll_activity: None,

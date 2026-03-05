@@ -783,6 +783,9 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let _ = set_mouse_capture(app.mouse_enabled);
         }
 
+        // Toggle animations on/off
+        KeyCode::Char('A') => app.toggle_animations(),
+
         // Toggle coordinator log view
         KeyCode::Char('L') => app.toggle_coord_log(),
 

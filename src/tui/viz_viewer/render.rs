@@ -4430,6 +4430,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         blank(),
         heading("General"),
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
+        binding("A", "Toggle animations on/off"),
         binding("m", "Toggle mouse capture"),
         binding("r", "Force refresh"),
         binding("L", "Toggle coordinator log"),
