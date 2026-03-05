@@ -261,6 +261,14 @@ pub(crate) fn spawn_agent_inner(
     task.status = Status::InProgress;
     task.started_at = Some(Utc::now().to_rfc3339());
     task.assigned = Some(temp_agent_id.clone());
+
+    // When task.agent is not set (e.g. auto_assign disabled), fall back to
+    // the configured default_agent so evaluations can record performance.
+    if task.agent.is_none() {
+        if let Some(ref default_agent) = config.agency.default_agent {
+            task.agent = Some(default_agent.clone());
+        }
+    }
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(temp_agent_id.clone()),

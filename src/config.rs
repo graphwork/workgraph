@@ -228,6 +228,13 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
+    /// Number of tail preview lines to show for collapsed detail sections (default: 3)
+    #[serde(default = "default_detail_tail_lines")]
+    pub detail_tail_lines: usize,
+}
+
+fn default_detail_tail_lines() -> usize {
+    3
 }
 
 fn default_tui_layout() -> String {
@@ -272,6 +279,7 @@ impl Default for TuiConfig {
             default_inspector_size: default_inspector_size(),
             chat_history: true,
             chat_history_max: default_chat_history_max(),
+            detail_tail_lines: default_detail_tail_lines(),
         }
     }
 }
@@ -808,6 +816,12 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolver_agent: Option<String>,
 
+    /// Default agent identity to assign to tasks when auto_assign is disabled.
+    /// When set, tasks spawned without a `task.agent` will get this identity,
+    /// allowing evaluations to record performance against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+
     /// Content-hash of agent to use as agent creator (None = not configured)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_agent: Option<String>,
@@ -950,6 +964,7 @@ impl Default for AgencyConfig {
             evaluator_model: None,
             evolver_model: None,
             evolver_agent: None,
+            default_agent: None,
             creator_agent: None,
             creator_model: None,
             auto_create: false,
@@ -1638,6 +1653,7 @@ name = "My Project"
         let config = Config::default();
         assert!(!config.agency.auto_evaluate);
         assert!(!config.agency.auto_assign);
+        assert!(config.agency.default_agent.is_none());
         assert!(config.agency.assigner_agent.is_none());
         assert!(config.agency.assigner_model.is_none());
         assert!(config.agency.evaluator_agent.is_none());
@@ -1668,6 +1684,7 @@ auto_assign = true
 assigner_model = "haiku"
 evaluator_model = "haiku"
 evolver_model = "opus-4-5"
+default_agent = "default00"
 assigner_agent = "abc123"
 evaluator_agent = "def456"
 evolver_agent = "ghi789"
@@ -1676,6 +1693,7 @@ retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.agency.auto_evaluate);
         assert!(config.agency.auto_assign);
+        assert_eq!(config.agency.default_agent, Some("default00".to_string()));
         assert_eq!(config.agency.assigner_model, Some("haiku".to_string()));
         assert_eq!(config.agency.evaluator_model, Some("haiku".to_string()));
         assert_eq!(config.agency.evolver_model, Some("opus-4-5".to_string()));
