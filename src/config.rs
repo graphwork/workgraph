@@ -669,6 +669,79 @@ impl Config {
                 .and_then(|c| c.provider.clone()),
         }
     }
+
+    /// Check for legacy `agency.*_model` fields and emit deprecation warnings to stderr.
+    /// Returns the list of deprecated fields found (useful for testing).
+    pub fn check_legacy_deprecations(&self) -> Vec<String> {
+        let legacy_fields: &[(&str, &Option<String>, &str)] = &[
+            (
+                "agency.evaluator_model",
+                &self.agency.evaluator_model,
+                "evaluator",
+            ),
+            (
+                "agency.assigner_model",
+                &self.agency.assigner_model,
+                "assigner",
+            ),
+            (
+                "agency.evolver_model",
+                &self.agency.evolver_model,
+                "evolver",
+            ),
+            (
+                "agency.creator_model",
+                &self.agency.creator_model,
+                "creator",
+            ),
+            (
+                "agency.triage_model",
+                &self.agency.triage_model,
+                "triage",
+            ),
+            (
+                "agency.flip_inference_model",
+                &self.agency.flip_inference_model,
+                "flip_inference",
+            ),
+            (
+                "agency.flip_comparison_model",
+                &self.agency.flip_comparison_model,
+                "flip_comparison",
+            ),
+        ];
+
+        let mut deprecated = Vec::new();
+
+        for (field, value, role) in legacy_fields {
+            if value.is_some() {
+                eprintln!(
+                    "Warning: {} is deprecated. Use [models.{}] model = \"{}\" instead. \
+                     Migrate with: wg config --set-model {} {}",
+                    field,
+                    role,
+                    value.as_ref().unwrap(),
+                    role,
+                    value.as_ref().unwrap(),
+                );
+                deprecated.push(field.to_string());
+            }
+        }
+
+        // Special case: flip_verification_model is non-optional with default "opus"
+        // Only warn if user explicitly changed it from default
+        if self.agency.flip_verification_model != "opus" {
+            eprintln!(
+                "Warning: agency.flip_verification_model is deprecated. Use [models.verification] model = \"{}\" instead. \
+                 Migrate with: wg config --set-model verification {}",
+                self.agency.flip_verification_model,
+                self.agency.flip_verification_model,
+            );
+            deprecated.push("agency.flip_verification_model".to_string());
+        }
+
+        deprecated
+    }
 }
 
 fn default_auto_create_threshold() -> u32 {
@@ -1328,7 +1401,10 @@ impl Config {
     /// their configuration is being ignored.
     pub fn load_or_default(workgraph_dir: &Path) -> Self {
         match Self::load_merged(workgraph_dir) {
-            Ok(config) => config,
+            Ok(config) => {
+                config.check_legacy_deprecations();
+                config
+            }
             Err(e) => {
                 eprintln!("Warning: {}, using defaults", e);
                 Self::default()
@@ -1908,5 +1984,74 @@ model = "haiku"
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, config.agent.model);
+    }
+
+    #[test]
+    fn test_deprecation_no_warnings_on_default() {
+        let config = Config::default();
+        let deprecated = config.check_legacy_deprecations();
+        assert!(
+            deprecated.is_empty(),
+            "Default config should have no deprecation warnings"
+        );
+    }
+
+    #[test]
+    fn test_deprecation_warning_evaluator_model() {
+        let mut config = Config::default();
+        config.agency.evaluator_model = Some("haiku".to_string());
+        let deprecated = config.check_legacy_deprecations();
+        assert!(deprecated.contains(&"agency.evaluator_model".to_string()));
+    }
+
+    #[test]
+    fn test_deprecation_warning_multiple_fields() {
+        let mut config = Config::default();
+        config.agency.evaluator_model = Some("haiku".to_string());
+        config.agency.assigner_model = Some("sonnet".to_string());
+        config.agency.triage_model = Some("haiku".to_string());
+        let deprecated = config.check_legacy_deprecations();
+        assert_eq!(deprecated.len(), 3);
+        assert!(deprecated.contains(&"agency.evaluator_model".to_string()));
+        assert!(deprecated.contains(&"agency.assigner_model".to_string()));
+        assert!(deprecated.contains(&"agency.triage_model".to_string()));
+    }
+
+    #[test]
+    fn test_deprecation_warning_flip_verification_non_default() {
+        let mut config = Config::default();
+        config.agency.flip_verification_model = "sonnet".to_string();
+        let deprecated = config.check_legacy_deprecations();
+        assert!(deprecated.contains(&"agency.flip_verification_model".to_string()));
+    }
+
+    #[test]
+    fn test_deprecation_no_warning_flip_verification_default() {
+        let mut config = Config::default();
+        config.agency.flip_verification_model = "opus".to_string();
+        let deprecated = config.check_legacy_deprecations();
+        assert!(
+            !deprecated.contains(&"agency.flip_verification_model".to_string()),
+            "Default 'opus' should not trigger deprecation"
+        );
+    }
+
+    #[test]
+    fn test_deprecation_no_warning_default_config() {
+        let config = Config::default();
+        let deprecated = config.check_legacy_deprecations();
+        assert!(
+            deprecated.is_empty(),
+            "Default config should have no deprecation warnings"
+        );
+    }
+
+    #[test]
+    fn test_legacy_fields_still_resolve() {
+        // Legacy fields should still work through resolve_model_for_role
+        let mut config = Config::default();
+        config.agency.evaluator_model = Some("haiku".to_string());
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "haiku");
     }
 }

@@ -1175,6 +1175,16 @@ pub enum Commands {
         /// Set provider for a dispatch role: --set-provider <role> <provider>
         #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"])]
         set_provider: Option<Vec<String>>,
+
+        /// Set model for a dispatch role: --role-model <role>=<model>
+        /// Equivalent to --set-model but uses key=value syntax.
+        #[arg(long = "role-model", value_name = "ROLE=MODEL")]
+        role_model: Option<String>,
+
+        /// Set provider for a dispatch role: --role-provider <role>=<provider>
+        /// Equivalent to --set-provider but uses key=value syntax.
+        #[arg(long = "role-provider", value_name = "ROLE=PROVIDER")]
+        role_provider: Option<String>,
     },
 
     /// Detect and clean up dead agents
