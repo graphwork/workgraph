@@ -315,14 +315,15 @@ fn splash_info_for_line(
     None
 }
 
-/// Apply a splash-and-fade background color to the task title portion of a line.
+/// Apply animation styles to the task title portion of a line.
 /// `progress` ranges from 0.0 (start) to 1.0 (end of animation).
-/// `flash_color` is the (r, g, b) color at full brightness.
-/// Only the task title (ID) gets the splash — tree connectors, status/token
+/// `flash_color` is the (r, g, b) color at full brightness (used for NewTask).
+/// Only the task title (ID) gets the effect — tree connectors, status/token
 /// metadata, timestamps, and trailing content are left unchanged.
 ///
-/// For `Revealed` animations the color fades IN (transparent→visible) instead
-/// of the default flash-and-fade-out (bright→transparent).
+/// For `Revealed` animations the text **foreground** fades in from the terminal
+/// background color to its normal color (text emerges from invisibility).
+/// For `NewTask` animations the **background** flashes and fades out.
 fn apply_splash_style<'a>(
     line: Line<'a>,
     progress: f64,
@@ -333,21 +334,17 @@ fn apply_splash_style<'a>(
 ) -> Line<'a> {
     let is_fade_in = matches!(kind, super::state::AnimationKind::Revealed);
 
-    // In reduced motion mode, show full-brightness color for first 50% of duration,
-    // then snap to no background.
+    // Terminal background color assumption (dark terminal).
+    let terminal_bg: (u8, u8, u8) = (0, 0, 0);
+
     if reduced_motion {
         if is_fade_in {
-            // For fade-in with reduced motion, show nothing for first half,
-            // then snap to the color for the second half.
+            // For fade-in with reduced motion, show invisible text for first half,
+            // then snap to normal text for the second half.
             if progress < 0.5 {
-                return line;
+                return apply_fg_fade_to_title_range(line, plain_line, terminal_bg, 0.0);
             }
-            let splash_bg = Color::Rgb(
-                (flash_color.0 as f64 * 0.6) as u8,
-                (flash_color.1 as f64 * 0.6) as u8,
-                (flash_color.2 as f64 * 0.6) as u8,
-            );
-            return apply_bg_to_title_range(line, plain_line, splash_bg);
+            return line;
         }
         if progress > 0.5 {
             return line;
@@ -362,21 +359,10 @@ fn apply_splash_style<'a>(
     }
 
     if is_fade_in {
-        // Fade-in: intensity ramps up from 0 to peak, then holds briefly.
-        // Use an ease-in curve (slow start, accelerating).
-        let t = progress * progress;
-
-        let r = (flash_color.0 as f64 * t) as u8;
-        let g = (flash_color.1 as f64 * t) as u8;
-        let b = (flash_color.2 as f64 * t) as u8;
-
-        // At very low intensity early on, skip to avoid invisible backgrounds.
-        if r < 5 && g < 5 && b < 5 {
-            return line;
-        }
-
-        let splash_bg = Color::Rgb(r, g, b);
-        return apply_bg_to_title_range(line, plain_line, splash_bg);
+        // Fade-in: text foreground transitions from terminal bg (invisible)
+        // to its normal color. Use an ease-in curve (slow start, accelerating).
+        let t = (progress * progress).min(1.0);
+        return apply_fg_fade_to_title_range(line, plain_line, terminal_bg, t);
     }
 
     // Default: flash-and-fade-out.
@@ -469,6 +455,70 @@ fn apply_bg_to_title_range<'a>(line: Line<'a>, plain_line: &str, bg: Color) -> L
     for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
         let style = if char_idx >= text_start && char_idx < text_end {
             base_style.bg(bg)
+        } else {
+            *base_style
+        };
+
+        if first {
+            current_style = style;
+            first = false;
+        } else if style != current_style {
+            new_spans.push(Span::styled(
+                std::mem::take(&mut current_buf),
+                current_style,
+            ));
+            current_style = style;
+        }
+
+        current_buf.push(*c);
+    }
+
+    if !current_buf.is_empty() {
+        new_spans.push(Span::styled(current_buf, current_style));
+    }
+
+    Line::from(new_spans)
+}
+
+/// Apply a foreground color fade to the task title range.
+/// Interpolates each span's foreground from `start_fg` toward its original fg color
+/// based on `t` (0.0 = fully `start_fg`, 1.0 = original foreground).
+fn apply_fg_fade_to_title_range<'a>(
+    line: Line<'a>,
+    plain_line: &str,
+    start_fg: (u8, u8, u8),
+    t: f64,
+) -> Line<'a> {
+    let (text_start, text_end) = match find_title_range(plain_line) {
+        Some(range) => range,
+        None => return line,
+    };
+
+    // Flatten spans into per-character (char, style) pairs.
+    let mut chars_with_styles: Vec<(char, Style)> = Vec::new();
+    for span in &line.spans {
+        for c in span.content.chars() {
+            chars_with_styles.push((c, span.style));
+        }
+    }
+
+    // Rebuild spans, applying fg interpolation only within the title range.
+    let mut new_spans: Vec<Span<'a>> = Vec::new();
+    let mut current_buf = String::new();
+    let mut current_style = Style::default();
+    let mut first = true;
+
+    for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
+        let style = if char_idx >= text_start && char_idx < text_end {
+            let orig_fg = match base_style.fg {
+                Some(Color::Rgb(r, g, b)) => (r, g, b),
+                // Default terminal foreground — assume light gray for dark terminals.
+                _ => (200, 200, 200),
+            };
+            let r = (start_fg.0 as f64 + (orig_fg.0 as f64 - start_fg.0 as f64) * t) as u8;
+            let g = (start_fg.1 as f64 + (orig_fg.1 as f64 - start_fg.1 as f64) * t) as u8;
+            let b = (start_fg.2 as f64 + (orig_fg.2 as f64 - start_fg.2 as f64) * t) as u8;
+            base_style.fg(Color::Rgb(r, g, b))
         } else {
             *base_style
         };
