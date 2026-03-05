@@ -263,6 +263,7 @@ pub fn run(
                 max_retries: None,
                 failure_reason: None,
                 model: task_model,
+                provider: None,
                 verify: rendered.verify.clone(),
                 agent: None,
                 loop_iteration: 0,

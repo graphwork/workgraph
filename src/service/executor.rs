@@ -887,6 +887,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            provider: None,
             verify: None,
             agent: None,
             loop_iteration: 0,

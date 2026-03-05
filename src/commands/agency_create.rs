@@ -359,11 +359,14 @@ pub fn run(dir: &Path, model: Option<&str>, dry_run: bool, json: bool) -> Result
     // Load config for model resolution
     let config = Config::load_or_default(dir);
 
-    // Determine model: CLI flag > agency.creator_model > agent.model
+    // Determine model: CLI flag > model routing > legacy config > agent.model
     let model = model
         .map(std::string::ToString::to_string)
-        .or(config.agency.creator_model.clone())
-        .unwrap_or_else(|| config.agent.model.clone());
+        .unwrap_or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Creator)
+                .model
+        });
 
     // Gather project context
     let project_context = gather_project_context(dir);

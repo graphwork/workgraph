@@ -312,6 +312,7 @@ fn main() -> Result<()> {
             deliverable,
             max_retries,
             model,
+            provider,
             verify,
             max_iterations,
             cycle_guard,
@@ -351,6 +352,7 @@ fn main() -> Result<()> {
                     &skill,
                     &deliverable,
                     model.as_deref(),
+                    provider.as_deref(),
                     verify.as_deref(),
                 )
             } else {
@@ -369,6 +371,7 @@ fn main() -> Result<()> {
                     &deliverable,
                     max_retries,
                     model.as_deref(),
+                    provider.as_deref(),
                     verify.as_deref(),
                     max_iterations,
                     cycle_guard.as_deref(),
@@ -394,6 +397,7 @@ fn main() -> Result<()> {
             add_tag,
             remove_tag,
             model,
+            provider,
             add_skill,
             remove_skill,
             max_iterations,
@@ -417,6 +421,7 @@ fn main() -> Result<()> {
             &add_tag,
             &remove_tag,
             model.as_deref(),
+            provider.as_deref(),
             &add_skill,
             &remove_skill,
             max_iterations,
@@ -1443,8 +1448,13 @@ fn main() -> Result<()> {
             flip_enabled,
             flip_inference_model,
             flip_comparison_model,
+            flip_verification_threshold,
+            flip_verification_model,
             chat_history,
             chat_history_max,
+            show_models,
+            set_model,
+            set_provider,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -1480,6 +1490,17 @@ fn main() -> Result<()> {
                 } else {
                     commands::config_cmd::show_matrix(cli.json)
                 }
+            } else if show_models {
+                commands::config_cmd::show_model_routing(&workgraph_dir, cli.json)
+            } else if set_model.is_some() || set_provider.is_some() {
+                // Default scope for writes = Local
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                commands::config_cmd::update_model_routing(
+                    &workgraph_dir,
+                    write_scope,
+                    set_model.as_deref(),
+                    set_provider.as_deref(),
+                )
             } else if list {
                 commands::config_cmd::list(&workgraph_dir, cli.json)
             } else if init {
@@ -1515,6 +1536,8 @@ fn main() -> Result<()> {
                     && flip_enabled.is_none()
                     && flip_inference_model.is_none()
                     && flip_comparison_model.is_none()
+                    && flip_verification_threshold.is_none()
+                    && flip_verification_model.is_none()
                     && chat_history.is_none()
                     && chat_history_max.is_none())
             {
@@ -1555,6 +1578,8 @@ fn main() -> Result<()> {
                     flip_enabled,
                     flip_inference_model.as_deref(),
                     flip_comparison_model.as_deref(),
+                    flip_verification_threshold,
+                    flip_verification_model.as_deref(),
                     chat_history,
                     chat_history_max,
                 )

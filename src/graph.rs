@@ -256,6 +256,9 @@ pub struct Task {
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Provider override for this task (anthropic, openai, openrouter, local)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Verification criteria - if set, task requires review before done
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
@@ -680,6 +683,8 @@ struct TaskHelper {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
     verify: Option<String>,
     #[serde(default)]
     agent: Option<String>,
@@ -763,6 +768,7 @@ impl<'de> Deserialize<'de> for Task {
             max_retries: helper.max_retries,
             failure_reason: helper.failure_reason,
             model: helper.model,
+            provider: helper.provider,
             verify: helper.verify,
             agent,
             loop_iteration: helper.loop_iteration,

@@ -115,6 +115,7 @@ pub(crate) fn defer_self_mutation(
         max_retries: None,
         failure_reason: None,
         model: None,
+        provider: None,
         verify: Some("Human must approve evolver self-mutation before applying.".to_string()),
         agent: None,
         loop_iteration: 0,

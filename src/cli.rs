@@ -98,6 +98,10 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Provider for this task (anthropic, openai, openrouter, local)
+        #[arg(long)]
+        provider: Option<String>,
+
         /// Verification criteria - task requires review before done
         #[arg(long)]
         verify: Option<String>,
@@ -192,6 +196,10 @@ pub enum Commands {
         /// Update preferred model
         #[arg(long)]
         model: Option<String>,
+
+        /// Update provider for this task
+        #[arg(long)]
+        provider: Option<String>,
 
         /// Add a required skill
         #[arg(long = "add-skill")]
@@ -1138,6 +1146,14 @@ pub enum Commands {
         #[arg(long, name = "flip-comparison-model")]
         flip_comparison_model: Option<String>,
 
+        /// FLIP score threshold for triggering Opus verification (default: 0.7)
+        #[arg(long, name = "flip-verification-threshold")]
+        flip_verification_threshold: Option<f64>,
+
+        /// Model for FLIP-triggered verification agents (default: opus)
+        #[arg(long, name = "flip-verification-model")]
+        flip_verification_model: Option<String>,
+
         /// Enable/disable chat history persistence across TUI restarts
         #[arg(long, name = "chat-history")]
         chat_history: Option<bool>,
@@ -1145,6 +1161,20 @@ pub enum Commands {
         /// Maximum number of chat messages to persist (default: 1000)
         #[arg(long, name = "chat-history-max")]
         chat_history_max: Option<usize>,
+
+        /// Show all model routing assignments (per-role model+provider)
+        #[arg(long = "models")]
+        show_models: bool,
+
+        /// Set model for a dispatch role: --set-model <role> <model>
+        /// Roles: default, task_agent, evaluator, flip_inference, flip_comparison,
+        /// assigner, evolver, verification, triage, creator
+        #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"])]
+        set_model: Option<Vec<String>>,
+
+        /// Set provider for a dispatch role: --set-provider <role> <provider>
+        #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"])]
+        set_provider: Option<Vec<String>>,
     },
 
     /// Detect and clean up dead agents

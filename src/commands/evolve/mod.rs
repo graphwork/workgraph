@@ -98,11 +98,14 @@ pub fn run(
     // Load config for evolver identity and model
     let config = Config::load_or_default(dir);
 
-    // Determine model: CLI flag > agency.evolver_model > agent.model
+    // Determine model: CLI flag > model routing > legacy config > agent.model
     let model = model
         .map(std::string::ToString::to_string)
-        .or(config.agency.evolver_model.clone())
-        .unwrap_or_else(|| config.agent.model.clone());
+        .unwrap_or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Evolver)
+                .model
+        });
 
     // Build performance summary
     let perf_summary = build_performance_summary(&roles, &tradeoffs, &evaluations, &config);

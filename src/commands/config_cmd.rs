@@ -96,6 +96,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(ref model) = config.agency.flip_comparison_model {
             println!("  flip_comparison_model = \"{}\"", model);
         }
+        if let Some(threshold) = config.agency.flip_verification_threshold {
+            println!("  flip_verification_threshold = {}", threshold);
+        }
+        println!("  flip_verification_model = \"{}\"", config.agency.flip_verification_model);
         println!();
         println!("[guardrails]");
         println!(
@@ -178,6 +182,8 @@ pub fn update(
     flip_enabled: Option<bool>,
     flip_inference_model: Option<&str>,
     flip_comparison_model: Option<&str>,
+    flip_verification_threshold: Option<f64>,
+    flip_verification_model: Option<&str>,
     chat_history: Option<bool>,
     chat_history_max: Option<usize>,
 ) -> Result<()> {
@@ -370,6 +376,18 @@ pub fn update(
     if let Some(m) = flip_comparison_model {
         config.agency.flip_comparison_model = Some(m.to_string());
         println!("Set agency.flip_comparison_model = \"{}\"", m);
+        changed = true;
+    }
+
+    if let Some(v) = flip_verification_threshold {
+        config.agency.flip_verification_threshold = Some(v);
+        println!("Set agency.flip_verification_threshold = {}", v);
+        changed = true;
+    }
+
+    if let Some(m) = flip_verification_model {
+        config.agency.flip_verification_model = m.to_string();
+        println!("Set agency.flip_verification_model = \"{}\"", m);
         changed = true;
     }
 
@@ -660,6 +678,130 @@ pub fn update_matrix(
     Ok(())
 }
 
+/// Show model routing configuration: resolved model+provider for each dispatch role.
+pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
+    use workgraph::config::DispatchRole;
+
+    let config = Config::load_merged(dir)?;
+
+    if json {
+        let mut entries = serde_json::Map::new();
+        // Show default
+        let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        entries.insert(
+            "default".to_string(),
+            serde_json::json!({
+                "model": resolved.model,
+                "provider": resolved.provider,
+            }),
+        );
+        for role in DispatchRole::ALL {
+            let resolved = config.resolve_model_for_role(*role);
+            entries.insert(
+                role.to_string(),
+                serde_json::json!({
+                    "model": resolved.model,
+                    "provider": resolved.provider,
+                }),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else {
+        println!("Model Routing Configuration");
+        println!("===========================");
+        println!();
+        println!(
+            "  {:<20} {:<20} {}",
+            "ROLE", "MODEL", "PROVIDER"
+        );
+        println!("  {}", "-".repeat(55));
+
+        // Default
+        let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        println!(
+            "  {:<20} {:<20} {}",
+            "default",
+            resolved.model,
+            resolved.provider.as_deref().unwrap_or("(not set)")
+        );
+
+        // Per-role
+        for role in DispatchRole::ALL {
+            let resolved = config.resolve_model_for_role(*role);
+            let role_cfg = config.models.get_role(*role);
+            let has_explicit = role_cfg.and_then(|c| c.model.as_ref()).is_some();
+            let marker = if has_explicit { "" } else { " (inherited)" };
+            println!(
+                "  {:<20} {:<20} {}{}",
+                role.to_string(),
+                resolved.model,
+                resolved.provider.as_deref().unwrap_or("(not set)"),
+                marker,
+            );
+        }
+        println!();
+        println!("Use --set-model <role> <model> to override a role.");
+        println!("Use --set-provider <role> <provider> to set a provider.");
+    }
+
+    Ok(())
+}
+
+/// Update model routing configuration (--set-model / --set-provider).
+pub fn update_model_routing(
+    dir: &Path,
+    scope: ConfigScope,
+    set_model: Option<&[String]>,
+    set_provider: Option<&[String]>,
+) -> Result<()> {
+    use workgraph::config::DispatchRole;
+
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(dir)?,
+    };
+
+    let mut changed = false;
+
+    if let Some(args) = set_model {
+        if args.len() != 2 {
+            anyhow::bail!("--set-model requires exactly 2 arguments: <role> <model>");
+        }
+        let role: DispatchRole = args[0].parse()?;
+        let model = &args[1];
+        config.models.set_model(role, model);
+        println!("Set models.{}.model = \"{}\"", role, model);
+        changed = true;
+    }
+
+    if let Some(args) = set_provider {
+        if args.len() != 2 {
+            anyhow::bail!("--set-provider requires exactly 2 arguments: <role> <provider>");
+        }
+        let role: DispatchRole = args[0].parse()?;
+        let provider = &args[1];
+        config.models.set_provider(role, provider);
+        println!("Set models.{}.provider = \"{}\"", role, provider);
+        changed = true;
+    }
+
+    if changed {
+        match scope {
+            ConfigScope::Global => {
+                config.save_global()?;
+                let path = Config::global_config_path()?;
+                println!("Global configuration saved to {}", path.display());
+            }
+            ConfigScope::Local => {
+                config.save(dir)?;
+                println!("Configuration saved.");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Mask a token for display (show first and last 4 chars)
 fn mask_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
@@ -701,6 +843,8 @@ mod tests {
             Some("opencode"),
             Some("gpt-4"),
             Some(30),
+            None,
+            None,
             None,
             None,
             None,
@@ -779,6 +923,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -802,6 +948,8 @@ mod tests {
             None,
             None,
             Some(120),
+            None,
+            None,
             None,
             None,
             None,
@@ -861,6 +1009,8 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None,
+            None,
             None,
             None,
             None,
