@@ -1319,6 +1319,8 @@ pub struct VizApp {
     pub detail_raw_json: bool,
     /// Set of collapsed section names in the Detail view (persists across task switches).
     pub detail_collapsed_sections: std::collections::HashSet<String>,
+    /// Number of tail preview lines to show for collapsed detail sections (0 = none).
+    pub detail_tail_lines: usize,
     /// Map from wrapped line index → section name for section headers in the Detail view.
     /// Populated each frame by the renderer; used for mouse click hit-testing.
     pub detail_section_header_lines: Vec<(usize, String)>,
@@ -1567,6 +1569,7 @@ impl VizApp {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            detail_tail_lines: config.tui.detail_tail_lines,
             detail_section_header_lines: Vec::new(),
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
@@ -3523,31 +3526,45 @@ impl VizApp {
     /// Returns the name of the toggled section, if any.
     pub fn toggle_detail_section_at_scroll(&mut self) -> Option<String> {
         let detail = self.hud_detail.as_ref()?;
-        // Find which section header is currently at the top of the viewport (or closest above).
-        // We use the unwrapped rendered_lines to find section headers, then map
-        // through the wrapped lines to find the one at the scroll position.
-        // Since we can't easily map wrapped→unwrapped here, we scan the wrapped
-        // output that was last produced by draw_detail_tab. Instead, we'll just
-        // scan rendered_lines for section headers and let the renderer handle it.
-        // Find the section at the current scroll position by scanning rendered_lines.
         let mut current_section: Option<String> = None;
-        for (line_idx, raw_line) in detail.rendered_lines.iter().enumerate() {
-            if let Some(name) = extract_section_name(raw_line) {
-                // This is a section header. Check if it's the first one at or before scroll pos.
-                current_section = Some(name);
+        if !self.detail_section_header_lines.is_empty() {
+            // Use the wrapped-line positions populated by the renderer.
+            for (line_idx, name) in &self.detail_section_header_lines {
+                if *line_idx <= self.hud_scroll {
+                    current_section = Some(name.clone());
+                } else {
+                    break;
+                }
             }
-            if line_idx >= self.hud_scroll {
-                break;
+        } else {
+            // Fallback: scan rendered_lines directly (e.g. in tests without rendering).
+            for (i, line) in detail.rendered_lines.iter().enumerate() {
+                if i > self.hud_scroll {
+                    break;
+                }
+                if let Some(name) = extract_section_name(line) {
+                    current_section = Some(name);
+                }
             }
         }
         if let Some(ref name) = current_section {
-            if self.detail_collapsed_sections.contains(name) {
-                self.detail_collapsed_sections.remove(name);
-            } else {
-                self.detail_collapsed_sections.insert(name.clone());
-            }
+            self.toggle_detail_section_by_name(name);
         }
         current_section
+    }
+
+    /// Adjust the number of tail preview lines for collapsed sections.
+    pub fn adjust_detail_tail_lines(&mut self, delta: i32) {
+        let new_val = (self.detail_tail_lines as i32 + delta).clamp(0, 20) as usize;
+        self.detail_tail_lines = new_val;
+        // Persist to config.
+        let mut config = Config::load_or_default(&self.workgraph_dir);
+        config.tui.detail_tail_lines = new_val;
+        let _ = config.save(&self.workgraph_dir);
+        self.notification = Some((
+            format!("Tail preview: {} lines", new_val),
+            Instant::now(),
+        ));
     }
 
     /// Toggle collapse state of a section by name.
@@ -4059,6 +4076,7 @@ impl VizApp {
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
             detail_collapsed_sections: std::collections::HashSet::new(),
+            detail_tail_lines: 3,
             detail_section_header_lines: Vec::new(),
             right_panel_visible: false,
             focused_panel: FocusedPanel::Graph,
@@ -5287,6 +5305,13 @@ impl VizApp {
             section: ConfigSection::TuiSettings,
         });
         entries.push(ConfigEntry {
+            key: "tui.detail_tail_lines".into(),
+            label: "Collapsed tail lines".into(),
+            value: config.tui.detail_tail_lines.to_string(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::TuiSettings,
+        });
+        entries.push(ConfigEntry {
             key: "viz.edge_color".into(),
             label: "Edge color".into(),
             value: config.viz.edge_color.clone(),
@@ -5737,6 +5762,13 @@ impl VizApp {
             "tui.color_theme" => config.tui.color_theme = new_value,
             "tui.timestamp_format" => config.tui.timestamp_format = new_value,
             "tui.show_token_counts" => config.tui.show_token_counts = new_value == "on",
+            "tui.detail_tail_lines" => {
+                if let Ok(v) = new_value.parse::<usize>() {
+                    let clamped = v.min(20);
+                    config.tui.detail_tail_lines = clamped;
+                    self.detail_tail_lines = clamped;
+                }
+            }
             "tui.message_name_threshold" => {
                 if let Ok(v) = new_value.parse::<u16>() {
                     config.tui.message_name_threshold = v;

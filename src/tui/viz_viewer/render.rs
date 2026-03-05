@@ -1312,26 +1312,33 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut current_section: Option<String> = None;
     let mut in_collapsed = false;
 
-    // First pass: collect content lines per section for summary when collapsed.
+    // First pass: collect content lines per section for summary/tail when collapsed.
+    // Sections are terminated by the next section header, not by blank lines.
     let mut section_content: HashMap<String, Vec<String>> = HashMap::new();
     {
         let mut cur_sec: Option<String> = None;
         for line in &detail.rendered_lines {
-            if let Some(name) = extract_section_name(line) {
-                cur_sec = Some(name);
-            } else if line.is_empty() {
-                cur_sec = None;
+            if extract_section_name(line).is_some() {
+                cur_sec = extract_section_name(line);
             } else if let Some(ref sec) = cur_sec {
-                section_content
-                    .entry(sec.clone())
-                    .or_default()
-                    .push(line.clone());
+                if !line.is_empty() {
+                    section_content
+                        .entry(sec.clone())
+                        .or_default()
+                        .push(line.clone());
+                }
             }
         }
     }
 
+    let tail_lines = app.detail_tail_lines;
+
     for line in &detail.rendered_lines {
         if let Some(name) = extract_section_name(line) {
+            // When transitioning from a collapsed section, add a blank separator.
+            if in_collapsed {
+                visible_lines.push(String::new());
+            }
             let collapsed = app.detail_collapsed_sections.contains(&name);
             let indicator = if collapsed { "▸" } else { "▾" };
             // Preserve any trailing annotation like " [R: raw JSON]" from the original header.
@@ -1360,17 +1367,23 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     "  [{} lines · {} words · {}]",
                     line_count, word_count, size_str
                 ));
+                // Show tail preview (last N lines of content).
+                if tail_lines > 0 {
+                    if let Some(content) = content_lines {
+                        let start = content.len().saturating_sub(tail_lines);
+                        if start > 0 {
+                            visible_lines.push("  ···".to_string());
+                        }
+                        for tail_line in &content[start..] {
+                            visible_lines.push(tail_line.clone());
+                        }
+                    }
+                }
             }
             current_section = Some(name);
             in_collapsed = collapsed;
         } else if in_collapsed {
-            // Skip content lines in collapsed sections.
-            // But allow the trailing blank line (section separator) through so
-            // the next section header doesn't merge visually with collapsed one.
-            if line.is_empty() {
-                visible_lines.push(String::new());
-                in_collapsed = false;
-            }
+            // Skip all content lines in collapsed sections (including blank lines).
         } else {
             visible_lines.push(line.clone());
             // If we hit an empty line, the current section content ends.
@@ -1415,14 +1428,22 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Track section header positions for mouse click hit-testing.
     let mut section_header_positions: Vec<(usize, String)> = Vec::new();
+    let mut in_collapsed_tail = false;
 
     for line in &visible_lines {
         let is_header = line.starts_with("▸ ──") || line.starts_with("▾ ──");
+        let is_collapsed_header = line.starts_with("▸ ──");
         let is_summary = line.starts_with("  [") && line.contains("lines ·");
+        let is_tail_sep = line == "  ···";
 
         if is_header {
             flush_md(&mut md_buffer, &mut all_lines, wrap_width);
-            in_md_section = is_md_header(line);
+            in_md_section = if is_collapsed_header {
+                false
+            } else {
+                is_md_header(line)
+            };
+            in_collapsed_tail = false;
             // Extract section name from the indicator-prefixed header.
             // Strip trailing annotations like " [R: raw JSON]" before extracting name.
             let base = line.split(" [").next().unwrap_or(line);
@@ -1441,16 +1462,24 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             )));
         } else if is_summary {
             // Collapsed section summary line — render in dim italic style.
+            in_collapsed_tail = true;
             all_lines.push(Line::from(Span::styled(
                 line.clone(),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
             )));
+        } else if in_collapsed_tail && (is_tail_sep || !line.is_empty()) {
+            // Tail preview lines or "···" separator — render dimmed.
+            all_lines.push(Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(Color::DarkGray),
+            )));
         } else if line.is_empty() {
             flush_md(&mut md_buffer, &mut all_lines, wrap_width);
             all_lines.push(Line::from(""));
             in_md_section = false;
+            in_collapsed_tail = false;
         } else if in_md_section {
             // Strip "  " indent; will re-add after markdown rendering.
             let content = line.strip_prefix("  ").unwrap_or(line);

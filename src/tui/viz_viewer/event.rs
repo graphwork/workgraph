@@ -1093,6 +1093,14 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.toggle_detail_section_at_scroll();
         }
 
+        // Detail tab: +/- adjust tail preview lines for collapsed sections
+        KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Detail => {
+            app.adjust_detail_tail_lines(1);
+        }
+        KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Detail => {
+            app.adjust_detail_tail_lines(-1);
+        }
+
         _ => {}
     }
 }
