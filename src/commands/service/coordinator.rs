@@ -8,8 +8,9 @@ use std::path::Path;
 use workgraph::agency;
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
-    AssignerModeContext, AssignmentMode, TaskAssignmentRecord, count_assignment_records,
-    find_cached_agent, load_agent, load_role, load_tradeoff, render_assigner_mode_context,
+    AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
+    count_assignment_records, eval_source, find_cached_agent, load_agent,
+    load_all_evaluations_or_warn, load_role, load_tradeoff, render_assigner_mode_context,
     render_identity_prompt_rich, resolve_all_components, resolve_outcome, save_assignment_record,
 };
 use workgraph::chat;
@@ -1129,7 +1130,8 @@ fn build_auto_assign_tasks(
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
-            model: config.agency.assigner_model.clone(),
+            model: Some(config.resolve_model_for_role(workgraph::config::DispatchRole::Assigner).model),
+            provider: config.resolve_model_for_role(workgraph::config::DispatchRole::Assigner).provider,
             verify: None,
             agent: config.agency.assigner_agent.clone(),
 
@@ -1351,7 +1353,8 @@ fn build_auto_evaluate_tasks(
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
-            model: config.agency.evaluator_model.clone(),
+            model: Some(config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator).model),
+            provider: None,
             verify: None,
             agent: config.agency.evaluator_agent.clone(),
 
@@ -1365,8 +1368,8 @@ fn build_auto_evaluate_tasks(
             exec_mode: None,
             token_usage: None,
             session_id: None,
-        wait_condition: None,
-        checkpoint: None,
+            wait_condition: None,
+            checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
         };
@@ -1417,6 +1420,182 @@ fn build_auto_evaluate_tasks(
                 eval_id, source_id,
             );
         }
+    }
+
+    modified
+}
+
+/// Create verification tasks for tasks whose FLIP score fell below the
+/// configured threshold. The verification task independently checks whether
+/// the work was actually completed, using the Opus model by default.
+///
+/// Returns `true` if the graph was modified.
+fn build_flip_verification_tasks(
+    dir: &Path,
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let threshold = match config.agency.flip_verification_threshold {
+        Some(t) => t,
+        None => return false, // Disabled
+    };
+
+    // Load all FLIP evaluations
+    let evals_dir = dir.join("agency").join("evaluations");
+    let all_evals = load_all_evaluations_or_warn(&evals_dir);
+
+    // Filter to FLIP evaluations below threshold
+    let low_flip: Vec<&Evaluation> = all_evals
+        .iter()
+        .filter(|e| e.source == eval_source::FLIP && e.score < threshold)
+        .collect();
+
+    if low_flip.is_empty() {
+        return false;
+    }
+
+    let mut modified = false;
+    let verification_resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Verification);
+    let verification_model = verification_resolved.model;
+
+    for eval in &low_flip {
+        let source_task_id = &eval.task_id;
+        let verify_task_id = format!("verify-flip-{}", source_task_id);
+
+        // Skip if verification task already exists
+        if graph.get_task(&verify_task_id).is_some() {
+            continue;
+        }
+
+        // Skip if the source task doesn't exist or is already failed
+        let source_task = match graph.get_task(source_task_id) {
+            Some(t) => t,
+            None => continue,
+        };
+        if source_task.status == Status::Failed || source_task.status == Status::Abandoned {
+            continue;
+        }
+
+        // Skip tasks tagged to prevent verification loops
+        if source_task
+            .tags
+            .iter()
+            .any(|t| t == "verification" || t == "evaluation")
+        {
+            continue;
+        }
+
+        // Build verification task description
+        let source_verify_cmd = source_task.verify.clone();
+        let source_title = source_task.title.clone();
+        let source_desc_snippet = source_task
+            .description
+            .as_deref()
+            .unwrap_or("(no description)")
+            .chars()
+            .take(2000)
+            .collect::<String>();
+
+        let mut desc = format!(
+            "## FLIP Verification\n\n\
+             FLIP score {:.2} is below threshold {:.2} — independently verify this task.\n\n\
+             ### Original Task\n\
+             **ID:** {}\n\
+             **Title:** {}\n\
+             **Description:**\n{}\n\n\
+             ### Verification Instructions\n\
+             You must independently verify whether the work was actually completed.\n\
+             Do NOT trust the original agent's claims. Check independently:\n\n",
+            eval.score, threshold, source_task_id, source_title, source_desc_snippet,
+        );
+
+        if let Some(ref verify_cmd) = source_verify_cmd {
+            desc.push_str(&format!(
+                "1. **Run the verification command:** `{}`\n",
+                verify_cmd
+            ));
+            desc.push_str("2. Check git log/diff for actual changes\n");
+            desc.push_str("3. Run relevant tests\n");
+            desc.push_str("4. Verify artifacts exist\n\n");
+        } else {
+            desc.push_str("1. Check `git log --oneline -10` for recent commits related to this task\n");
+            desc.push_str("2. Check `git diff` to see if meaningful changes were made\n");
+            desc.push_str("3. Run `cargo build && cargo test` to verify nothing is broken\n");
+            desc.push_str("4. Verify any artifacts mentioned in the task description exist\n\n");
+        }
+
+        desc.push_str(
+            "### Verdict\n\
+             - If verification **passes**: run `wg log '{source_task_id}' \"FLIP verification passed (score {score:.2})\"` and mark this task done.\n\
+             - If verification **fails**: run `wg fail '{source_task_id}' --reason \"FLIP verification failed: <reason>\"` then mark this task done.\n"
+        );
+        // Replace placeholders
+        desc = desc.replace("{source_task_id}", source_task_id);
+        desc = desc.replace("{score:.2}", &format!("{:.2}", eval.score));
+
+        let verify_task = Task {
+            id: verify_task_id.clone(),
+            title: format!("Verify (FLIP {:.2}): {}", eval.score, source_title),
+            description: Some(desc),
+            status: Status::Open,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: vec![], // Not blocked by anything — source task is already done
+            requires: vec![],
+            tags: vec!["verification".to_string(), "agency".to_string()],
+            skills: vec![],
+            inputs: vec![],
+            deliverables: vec![],
+            artifacts: vec![],
+            exec: None,
+            not_before: None,
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: Some(1),
+            failure_reason: None,
+            model: Some(verification_model.clone()),
+            provider: verification_resolved.provider.clone(),
+            verify: source_verify_cmd,
+            agent: None,
+            loop_iteration: 0,
+            cycle_failure_restarts: 0,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            cycle_config: None,
+            exec_mode: None,
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+        };
+
+        graph.add_node(Node::Task(verify_task));
+
+        // Log the trigger on the source task
+        if let Some(source) = graph.get_task_mut(source_task_id) {
+            source.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("coordinator".to_string()),
+                message: format!(
+                    "FLIP score {:.2} below threshold {:.2} — triggering Opus verification",
+                    eval.score, threshold,
+                ),
+            });
+        }
+
+        eprintln!(
+            "[coordinator] Created FLIP verification task '{}' (score {:.2} < {:.2})",
+            verify_task_id, eval.score, threshold,
+        );
+        modified = true;
     }
 
     modified
@@ -1875,7 +2054,8 @@ fn generate_checkpoint_summary(
 ) -> Result<String> {
     use std::process;
 
-    let model = config.agency.triage_model.as_deref().unwrap_or("haiku");
+    let resolved_triage = config.resolve_model_for_role(workgraph::config::DispatchRole::Triage);
+    let model = resolved_triage.model;
     let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
 
     // Read last 20KB of output for summary context
@@ -2021,6 +2201,10 @@ pub fn coordinator_tick(
         graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
     }
 
+    // Phase 4.5: FLIP verification — create verification tasks for tasks with
+    // low FLIP scores. Only runs when flip_verification_threshold is set.
+    graph_modified |= build_flip_verification_tasks(dir, &mut graph, &config);
+
     // Save graph once if it was modified during auto-assign or auto-evaluate.
     // Abort tick if save fails — continuing with unsaved state would spawn agents
     // on tasks that haven't been persisted.
@@ -2039,7 +2223,21 @@ pub fn coordinator_tick(
     let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
     let ready_count = final_ready.len();
     drop(final_ready);
-    let spawned = spawn_agents_for_ready_tasks(dir, &graph, executor, model, slots_available);
+    // Resolve task agent model: CLI override > models.task_agent > models.default > agent.model
+    let effective_model = model
+        .map(String::from)
+        .unwrap_or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
+                .model
+        });
+    let spawned = spawn_agents_for_ready_tasks(
+        dir,
+        &graph,
+        executor,
+        Some(effective_model.as_str()),
+        slots_available,
+    );
 
     Ok(TickResult {
         agents_alive: alive_count + spawned,

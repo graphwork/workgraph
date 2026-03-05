@@ -61,6 +61,10 @@ pub struct Config {
     /// Checkpoint configuration
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
+
+    /// Model routing: per-role model+provider assignments
+    #[serde(default)]
+    pub models: ModelRoutingConfig,
 }
 
 /// Help display configuration
@@ -370,6 +374,303 @@ impl Default for CheckpointConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Model routing configuration
+// ---------------------------------------------------------------------------
+
+/// Dispatch roles for model routing.
+/// Each role maps to a specific dispatch point in the coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchRole {
+    /// Default fallback for any role without explicit config
+    Default,
+    /// Main task agents spawned by coordinator
+    TaskAgent,
+    /// Evaluation agents (post-task scoring)
+    Evaluator,
+    /// FLIP inference phase (reconstructing prompt from output)
+    FlipInference,
+    /// FLIP comparison phase (scoring similarity)
+    FlipComparison,
+    /// Agent assignment tasks
+    Assigner,
+    /// Agency evolver
+    Evolver,
+    /// FLIP-triggered verification agents
+    Verification,
+    /// Triage (dead-agent summarization)
+    Triage,
+    /// Agent creator
+    Creator,
+}
+
+impl std::fmt::Display for DispatchRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => write!(f, "default"),
+            Self::TaskAgent => write!(f, "task_agent"),
+            Self::Evaluator => write!(f, "evaluator"),
+            Self::FlipInference => write!(f, "flip_inference"),
+            Self::FlipComparison => write!(f, "flip_comparison"),
+            Self::Assigner => write!(f, "assigner"),
+            Self::Evolver => write!(f, "evolver"),
+            Self::Verification => write!(f, "verification"),
+            Self::Triage => write!(f, "triage"),
+            Self::Creator => write!(f, "creator"),
+        }
+    }
+}
+
+impl std::str::FromStr for DispatchRole {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "default" => Ok(Self::Default),
+            "task_agent" => Ok(Self::TaskAgent),
+            "evaluator" => Ok(Self::Evaluator),
+            "flip_inference" => Ok(Self::FlipInference),
+            "flip_comparison" => Ok(Self::FlipComparison),
+            "assigner" => Ok(Self::Assigner),
+            "evolver" => Ok(Self::Evolver),
+            "verification" => Ok(Self::Verification),
+            "triage" => Ok(Self::Triage),
+            "creator" => Ok(Self::Creator),
+            _ => Err(anyhow::anyhow!(
+                "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
+                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator",
+                s
+            )),
+        }
+    }
+}
+
+impl DispatchRole {
+    /// All known roles (excluding Default).
+    pub const ALL: &'static [DispatchRole] = &[
+        Self::TaskAgent,
+        Self::Evaluator,
+        Self::FlipInference,
+        Self::FlipComparison,
+        Self::Assigner,
+        Self::Evolver,
+        Self::Verification,
+        Self::Triage,
+        Self::Creator,
+    ];
+}
+
+/// Per-role model+provider assignment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleModelConfig {
+    /// Provider name (e.g., "anthropic", "openai", "openrouter", "local")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model name within the provider (e.g., "opus", "sonnet", "haiku", "gpt-4o")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Model routing: maps each dispatch role to a model+provider.
+/// Roles without explicit config fall back to `default`, then to `agent.model`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelRoutingConfig {
+    /// Default model+provider for all roles
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<RoleModelConfig>,
+
+    /// Per-role overrides
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_agent: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_inference: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_comparison: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigner: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolver: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<RoleModelConfig>,
+}
+
+impl ModelRoutingConfig {
+    /// Get the role-specific config for a dispatch role.
+    pub fn get_role(&self, role: DispatchRole) -> Option<&RoleModelConfig> {
+        match role {
+            DispatchRole::Default => self.default.as_ref(),
+            DispatchRole::TaskAgent => self.task_agent.as_ref(),
+            DispatchRole::Evaluator => self.evaluator.as_ref(),
+            DispatchRole::FlipInference => self.flip_inference.as_ref(),
+            DispatchRole::FlipComparison => self.flip_comparison.as_ref(),
+            DispatchRole::Assigner => self.assigner.as_ref(),
+            DispatchRole::Evolver => self.evolver.as_ref(),
+            DispatchRole::Verification => self.verification.as_ref(),
+            DispatchRole::Triage => self.triage.as_ref(),
+            DispatchRole::Creator => self.creator.as_ref(),
+        }
+    }
+
+    /// Get a mutable reference to a role's config, creating it if needed.
+    pub fn get_role_mut(&mut self, role: DispatchRole) -> &mut Option<RoleModelConfig> {
+        match role {
+            DispatchRole::Default => &mut self.default,
+            DispatchRole::TaskAgent => &mut self.task_agent,
+            DispatchRole::Evaluator => &mut self.evaluator,
+            DispatchRole::FlipInference => &mut self.flip_inference,
+            DispatchRole::FlipComparison => &mut self.flip_comparison,
+            DispatchRole::Assigner => &mut self.assigner,
+            DispatchRole::Evolver => &mut self.evolver,
+            DispatchRole::Verification => &mut self.verification,
+            DispatchRole::Triage => &mut self.triage,
+            DispatchRole::Creator => &mut self.creator,
+        }
+    }
+
+    /// Set the model for a role.
+    pub fn set_model(&mut self, role: DispatchRole, model: &str) {
+        let slot = self.get_role_mut(role);
+        if let Some(cfg) = slot {
+            cfg.model = Some(model.to_string());
+        } else {
+            *slot = Some(RoleModelConfig {
+                provider: None,
+                model: Some(model.to_string()),
+            });
+        }
+    }
+
+    /// Set the provider for a role.
+    pub fn set_provider(&mut self, role: DispatchRole, provider: &str) {
+        let slot = self.get_role_mut(role);
+        if let Some(cfg) = slot {
+            cfg.provider = Some(provider.to_string());
+        } else {
+            *slot = Some(RoleModelConfig {
+                provider: Some(provider.to_string()),
+                model: None,
+            });
+        }
+    }
+}
+
+/// Resolved model+provider for a dispatch.
+#[derive(Debug, Clone)]
+pub struct ResolvedModel {
+    pub model: String,
+    pub provider: Option<String>,
+}
+
+impl Config {
+    /// Resolve the model (and optional provider) for a given dispatch role.
+    ///
+    /// Resolution order:
+    /// 1. `models.<role>.model` (role-specific override in [models] section)
+    /// 2. Legacy per-role config (e.g., `agency.evaluator_model` for Evaluator)
+    /// 3. `models.default.model` (default in [models] section)
+    /// 4. `agent.model` (global fallback)
+    ///
+    /// Provider resolution follows the same cascade but only from [models].
+    pub fn resolve_model_for_role(&self, role: DispatchRole) -> ResolvedModel {
+        // 1. Check role-specific [models] config
+        if let Some(role_cfg) = self.models.get_role(role) {
+            if let Some(ref model) = role_cfg.model {
+                return ResolvedModel {
+                    model: model.clone(),
+                    provider: role_cfg.provider.clone(),
+                };
+            }
+        }
+
+        // 2. Legacy per-role config (backward compatibility)
+        let legacy_model = match role {
+            DispatchRole::Evaluator => self.agency.evaluator_model.as_ref(),
+            DispatchRole::Assigner => self.agency.assigner_model.as_ref(),
+            DispatchRole::Evolver => self.agency.evolver_model.as_ref(),
+            DispatchRole::Creator => self.agency.creator_model.as_ref(),
+            DispatchRole::Triage => self.agency.triage_model.as_ref(),
+            DispatchRole::FlipInference => self.agency.flip_inference_model.as_ref(),
+            DispatchRole::FlipComparison => self.agency.flip_comparison_model.as_ref(),
+            // Verification: use the non-optional legacy field only if it differs
+            // from the old hardcoded default (meaning the user explicitly set it)
+            DispatchRole::Verification => {
+                if self.agency.flip_verification_model != "opus" {
+                    Some(&self.agency.flip_verification_model)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(model) = legacy_model {
+            // Legacy config has no provider — check if [models] role has provider set
+            let provider = self
+                .models
+                .get_role(role)
+                .and_then(|c| c.provider.clone());
+            return ResolvedModel {
+                model: model.clone(),
+                provider,
+            };
+        }
+
+        // 2.5. Tier-appropriate defaults for roles that historically had
+        // hardcoded fallbacks. This ensures these roles get sensible models
+        // even without explicit config, while keeping defaults in one place.
+        let tier_default = match role {
+            DispatchRole::Triage => Some("haiku"),
+            DispatchRole::FlipComparison => Some("haiku"),
+            DispatchRole::FlipInference => Some("sonnet"),
+            DispatchRole::Verification => Some("opus"),
+            _ => None,
+        };
+        if let Some(default_model) = tier_default {
+            let provider = self
+                .models
+                .get_role(role)
+                .and_then(|c| c.provider.clone());
+            return ResolvedModel {
+                model: default_model.to_string(),
+                provider,
+            };
+        }
+
+        // 3. Check [models.default]
+        if let Some(default_cfg) = self.models.get_role(DispatchRole::Default) {
+            if let Some(ref model) = default_cfg.model {
+                return ResolvedModel {
+                    model: model.clone(),
+                    provider: default_cfg.provider.clone(),
+                };
+            }
+        }
+
+        // 4. Global fallback
+        ResolvedModel {
+            model: self.agent.model.clone(),
+            provider: self
+                .models
+                .get_role(DispatchRole::Default)
+                .and_then(|c| c.provider.clone()),
+        }
+    }
+}
+
 fn default_auto_create_threshold() -> u32 {
     20
 }
@@ -396,6 +697,12 @@ fn default_bizarre_ideation_interval() -> u32 {
 }
 fn default_performance_threshold() -> f64 {
     0.7
+}
+fn default_flip_verification_threshold() -> Option<f64> {
+    Some(0.7)
+}
+fn default_flip_verification_model() -> String {
+    "opus".to_string()
 }
 fn default_auto_assign_grace_seconds() -> u64 {
     10
@@ -556,6 +863,18 @@ pub struct AgencyConfig {
     /// Default: "haiku" (comparison is simpler).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flip_comparison_model: Option<String>,
+
+    /// FLIP score threshold below which automatic Opus verification is triggered.
+    /// When a FLIP evaluation scores below this threshold, the coordinator creates
+    /// a verification task that independently checks whether the work was done.
+    /// Default: 0.7. Set to None to disable.
+    #[serde(default = "default_flip_verification_threshold")]
+    pub flip_verification_threshold: Option<f64>,
+
+    /// Model to use for FLIP-triggered verification agents.
+    /// Default: "opus" (highest capability for independent verification).
+    #[serde(default = "default_flip_verification_model")]
+    pub flip_verification_model: String,
 }
 
 impl Default for AgencyConfig {
@@ -592,6 +911,8 @@ impl Default for AgencyConfig {
             flip_enabled: false,
             flip_inference_model: None,
             flip_comparison_model: None,
+            flip_verification_threshold: default_flip_verification_threshold(),
+            flip_verification_model: default_flip_verification_model(),
         }
     }
 }
@@ -1516,5 +1837,76 @@ model = "haiku"
         assert_eq!(ConfigSource::Global.to_string(), "global");
         assert_eq!(ConfigSource::Local.to_string(), "local");
         assert_eq!(ConfigSource::Default.to_string(), "default");
+    }
+
+    #[test]
+    fn test_resolve_triage_default() {
+        // With no config at all, triage should resolve to "haiku" (budget tier)
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "haiku");
+        assert!(resolved.provider.is_none());
+    }
+
+    #[test]
+    fn test_resolve_flip_inference_default() {
+        // With no config, flip_inference should resolve to "sonnet" (mid tier)
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
+        assert_eq!(resolved.model, "sonnet");
+    }
+
+    #[test]
+    fn test_resolve_flip_comparison_default() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
+        assert_eq!(resolved.model, "haiku");
+    }
+
+    #[test]
+    fn test_resolve_verification_default() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Verification);
+        assert_eq!(resolved.model, "opus");
+    }
+
+    #[test]
+    fn test_resolve_triage_legacy_override() {
+        // Legacy agency.triage_model should take priority over tier default
+        let mut config = Config::default();
+        config.agency.triage_model = Some("gpt-4o-mini".to_string());
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_resolve_models_section_override() {
+        // [models.triage] should take highest priority
+        let mut config = Config::default();
+        config.agency.triage_model = Some("legacy-model".to_string());
+        config.models.triage = Some(RoleModelConfig {
+            model: Some("routing-model".to_string()),
+            provider: Some("openrouter".to_string()),
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "routing-model");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_verification_legacy_override() {
+        // If user explicitly sets flip_verification_model to non-default, it should be used
+        let mut config = Config::default();
+        config.agency.flip_verification_model = "sonnet".to_string();
+        let resolved = config.resolve_model_for_role(DispatchRole::Verification);
+        assert_eq!(resolved.model, "sonnet");
+    }
+
+    #[test]
+    fn test_resolve_evaluator_falls_to_global() {
+        // Evaluator has no tier default, should fall through to agent.model
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, config.agent.model);
     }
 }

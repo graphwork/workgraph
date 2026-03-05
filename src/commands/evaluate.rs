@@ -257,12 +257,14 @@ pub fn run(
 
     let prompt = render_evaluator_prompt(&evaluator_input);
 
-    // Determine the model to use
+    // Determine the model to use via model routing
     let model = evaluator_model
         .map(std::string::ToString::to_string)
-        .or(config.agency.evaluator_model.clone())
-        .or(task.model.clone())
-        .unwrap_or_else(|| config.agent.model.clone());
+        .unwrap_or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
+                .model
+        });
 
     // Resolve the task execution model early so dry-run can show it
     let task_model_preview = extract_spawn_model(&task.log).or_else(|| task.model.clone());
@@ -590,17 +592,18 @@ pub fn run_flip(
     let log_entries = &task.log;
     let artifact_diff = compute_artifact_diff(artifacts, task.started_at.as_deref());
 
-    // Determine models for each phase
+    // Determine models for each phase via model routing
     let inference_model = evaluator_model
         .map(std::string::ToString::to_string)
-        .or(config.agency.flip_inference_model.clone())
-        .unwrap_or_else(|| "sonnet".to_string());
+        .unwrap_or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::FlipInference)
+                .model
+        });
 
     let comparison_model = config
-        .agency
-        .flip_comparison_model
-        .clone()
-        .unwrap_or_else(|| "haiku".to_string());
+        .resolve_model_for_role(workgraph::config::DispatchRole::FlipComparison)
+        .model;
 
     // --- Phase 1: Inference ---
     let inference_input = FlipInferenceInput {

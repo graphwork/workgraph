@@ -403,7 +403,8 @@ Be conservative: only use "done" if the output clearly shows the task was finish
 fn run_triage(config: &Config, task: &Task, output_file: &str) -> Result<TriageVerdict> {
     let max_log_bytes = config.agency.triage_max_log_bytes.unwrap_or(50_000);
     let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
-    let model = config.agency.triage_model.as_deref().unwrap_or("haiku");
+    let resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Triage);
+    let model = resolved.model;
 
     let log_content = read_truncated_log(output_file, max_log_bytes);
     let prompt = build_triage_prompt(task, &log_content);
