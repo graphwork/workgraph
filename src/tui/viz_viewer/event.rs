@@ -654,6 +654,12 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.show_total_tokens = !app.show_total_tokens;
         }
 
+        // Period: toggle system task visibility
+        KeyCode::Char('.') => {
+            app.show_system_tasks = !app.show_system_tasks;
+            app.force_refresh();
+        }
+
         // Backslash: toggle right panel visibility
         KeyCode::Char('\\') => {
             app.toggle_right_panel();
@@ -1486,27 +1492,131 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 }
 
 /// Which editor should receive a mouse event.
-enum EditorTarget {
+pub(super) enum EditorTarget {
     Chat,
     TextPrompt,
 }
 
 /// Route a mouse-down event to the appropriate edtui editor for click-to-position.
-fn route_mouse_to_editor(app: &mut VizApp, row: u16, column: u16, target: EditorTarget) {
-    let mouse_event = crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row,
-        modifiers: crossterm::event::KeyModifiers::NONE,
-    };
+///
+/// For the chat editor (which uses our custom `render_editor_word_wrap` instead of
+/// edtui's `EditorView`), we bypass `on_mouse_event` entirely because edtui's
+/// coordinate mapping relies on `screen_area` which is never set by our renderer.
+/// Instead, we compute the cursor position ourselves using the same word-wrapping
+/// logic as the renderer.
+pub(super) fn route_mouse_to_editor(
+    app: &mut VizApp,
+    row: u16,
+    column: u16,
+    target: EditorTarget,
+) {
     match target {
         EditorTarget::Chat => {
-            app.editor_handler
-                .on_mouse_event(mouse_event, &mut app.chat.editor);
+            chat_click_to_cursor(app, row, column);
         }
         EditorTarget::TextPrompt => {
+            let mouse_event = crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            };
             app.editor_handler
                 .on_mouse_event(mouse_event, &mut app.text_prompt.editor);
+        }
+    }
+}
+
+/// Map a screen-space mouse click to a logical cursor position in the chat editor.
+///
+/// This replicates the coordinate logic from `render_editor_word_wrap` and
+/// `draw_chat_input` to correctly handle the separator line, "> " prefix, and
+/// word-boundary wrapping.
+fn chat_click_to_cursor(app: &mut VizApp, screen_row: u16, screen_col: u16) {
+    use unicode_width::UnicodeWidthChar;
+
+    let input_area = app.last_chat_input_area;
+    if input_area.width == 0 || input_area.height == 0 {
+        return;
+    }
+
+    // Editor area matches draw_chat_input layout: separator at y, editor at y+1, prefix "> ".
+    let prefix_len: u16 = 2;
+    let editor_y = if input_area.height >= 2 {
+        input_area.y + 1
+    } else {
+        input_area.y
+    };
+    let editor_x = input_area.x + prefix_len;
+    let editor_width = input_area.width.saturating_sub(prefix_len) as usize;
+    let editor_height = if input_area.height >= 2 {
+        input_area.height - 1
+    } else {
+        input_area.height
+    } as usize;
+
+    if editor_width == 0 || editor_height == 0 {
+        return;
+    }
+
+    // Convert screen coords to editor-local.
+    let local_row = screen_row.saturating_sub(editor_y) as usize;
+    let local_col = screen_col.saturating_sub(editor_x) as usize;
+
+    // Build visual row table and compute scroll offset (same algorithm as renderer).
+    let text = app.chat.editor.lines.to_string();
+    let logical_lines: Vec<&str> = text.split('\n').collect();
+
+    // Each entry: (logical_line_idx, segment_char_start, segment_char_end)
+    let mut visual_rows: Vec<(usize, usize, usize)> = Vec::new();
+    let mut cursor_visual_row = 0usize;
+
+    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
+        let segments = super::render::word_wrap_segments(logical_line, editor_width);
+        if line_idx == app.chat.editor.cursor.row {
+            let (sub_row, _) =
+                super::render::cursor_in_segments(&segments, app.chat.editor.cursor.col);
+            cursor_visual_row = visual_rows.len() + sub_row;
+        }
+        for &(start, end) in &segments {
+            visual_rows.push((line_idx, start, end));
+        }
+    }
+
+    // Scroll offset (same as render_editor_word_wrap).
+    let scroll = if cursor_visual_row >= editor_height {
+        cursor_visual_row - editor_height + 1
+    } else {
+        0
+    };
+
+    // The clicked visual row, accounting for scroll.
+    let target_visual = scroll + local_row;
+
+    if target_visual < visual_rows.len() {
+        let (line_idx, seg_start, seg_end) = visual_rows[target_visual];
+        let chars: Vec<char> = logical_lines[line_idx].chars().collect();
+
+        // Walk chars in this segment to find the char index matching the click column.
+        let mut char_idx = seg_start;
+        let mut display_col = 0usize;
+        while char_idx < seg_end {
+            let cw = UnicodeWidthChar::width(chars[char_idx]).unwrap_or(0);
+            if display_col + cw > local_col {
+                break;
+            }
+            display_col += cw;
+            char_idx += 1;
+        }
+
+        app.chat.editor.cursor = edtui::Index2::new(line_idx, char_idx);
+    } else {
+        // Click beyond content: place cursor at end of last line.
+        if let Some(last_line) = logical_lines.last() {
+            app.chat.editor.cursor = edtui::Index2::new(
+                logical_lines.len().saturating_sub(1),
+                last_line.chars().count(),
+            );
         }
     }
 }

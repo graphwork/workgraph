@@ -579,39 +579,178 @@ mod tui_editor_tests {
 
     #[test]
     fn tui_editor_mouse_click_positions_cursor() {
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
 
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
         type_string(&mut app, "hello world");
 
-        // Render to populate screen areas (edtui needs screen_area set).
+        // Render to populate screen areas.
         render_to_string(&mut app, 120, 40);
 
-        // The cursor should be at the end (col 11). Click at the
-        // beginning to reposition. We use the chat input area coordinates.
-        if app.last_chat_input_area.height > 0 {
-            let click_row = app.last_chat_input_area.y + 1; // after separator
-            let click_col = app.last_chat_input_area.x + 2; // after "> " prefix
+        // Cursor should be at end (col 11). Click at the beginning to reposition.
+        assert!(app.last_chat_input_area.height > 0);
+        let click_row = app.last_chat_input_area.y + 1; // after separator
+        let click_col = app.last_chat_input_area.x + 2; // after "> " prefix
 
-            let mouse_event = crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: click_col,
-                row: click_row,
-                modifiers: KeyModifiers::NONE,
-            };
-            app.editor_handler
-                .on_mouse_event(mouse_event, &mut app.chat.editor);
+        route_mouse_to_editor(&mut app, click_row, click_col, EditorTarget::Chat);
 
-            // Now type a character — it should be inserted near the beginning.
-            send_chat_key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
-            let text = editor_text(&app.chat.editor);
-            assert!(
-                text.starts_with('Z') || text.starts_with("hZ") || text.contains('Z'),
-                "Z should be inserted near click position, got: {:?}",
-                text
-            );
-        }
+        // Cursor should now be at (row=0, col=0).
+        assert_eq!(
+            app.chat.editor.cursor.row, 0,
+            "cursor row should be 0, got {}",
+            app.chat.editor.cursor.row
+        );
+        assert_eq!(
+            app.chat.editor.cursor.col, 0,
+            "cursor col should be 0, got {}",
+            app.chat.editor.cursor.col
+        );
+
+        // Type 'Z' and verify it's inserted at position 0.
+        send_chat_key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
+        let text = editor_text(&app.chat.editor);
+        assert!(
+            text.starts_with('Z'),
+            "Z should be at start of text, got: {:?}",
+            text
+        );
+    }
+
+    #[test]
+    fn tui_editor_mouse_click_positions_cursor_multiline() {
+        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Type 3 lines separated by Shift+Enter (newlines).
+        type_string(&mut app, "line zero");
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        type_string(&mut app, "line one");
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        type_string(&mut app, "line two");
+
+        // Render to populate screen areas.
+        render_to_string(&mut app, 120, 40);
+
+        // Click on the second visual line (line index 1 = "line one").
+        assert!(app.last_chat_input_area.height > 0);
+        let editor_y = app.last_chat_input_area.y + 1; // after separator
+        let editor_x = app.last_chat_input_area.x + 2; // after "> "
+        let click_row = editor_y + 1; // visual row 1 = "line one"
+        let click_col = editor_x + 5; // col 5 within "line one"
+
+        route_mouse_to_editor(&mut app, click_row, click_col, EditorTarget::Chat);
+
+        assert_eq!(
+            app.chat.editor.cursor.row, 1,
+            "cursor should be on logical line 1, got {}",
+            app.chat.editor.cursor.row
+        );
+        assert_eq!(
+            app.chat.editor.cursor.col, 5,
+            "cursor col should be 5, got {}",
+            app.chat.editor.cursor.col
+        );
+    }
+
+    #[test]
+    fn tui_editor_mouse_click_positions_cursor_exact_col() {
+        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "abcdef");
+
+        render_to_string(&mut app, 120, 40);
+
+        assert!(app.last_chat_input_area.height > 0);
+        let click_row = app.last_chat_input_area.y + 1;
+        let click_col = app.last_chat_input_area.x + 2 + 3; // col 3 within "abcdef"
+
+        route_mouse_to_editor(&mut app, click_row, click_col, EditorTarget::Chat);
+
+        assert_eq!(app.chat.editor.cursor.row, 0);
+        assert_eq!(
+            app.chat.editor.cursor.col, 3,
+            "cursor col should be 3 (between 'c' and 'd'), got {}",
+            app.chat.editor.cursor.col
+        );
+
+        // Insert 'X' at position 3 — result should be "abcXdef".
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        let text = editor_text(&app.chat.editor);
+        assert_eq!(
+            text, "abcXdef",
+            "inserting X at col 3 should give 'abcXdef', got {:?}",
+            text
+        );
+    }
+
+    #[test]
+    fn tui_editor_mouse_click_wrapped_line() {
+        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Use a narrow terminal so text wraps. Editor width = terminal_width - panel
+        // overhead - prefix(2). With width=40, the right panel is roughly 20 chars wide,
+        // so the editor area will be ~18 chars. Type a long line that wraps.
+        // We need to know the exact editor width after render, so render first with
+        // some text, check the area, then construct the right amount.
+        type_string(&mut app, "a]placeholder");
+        render_to_string(&mut app, 40, 20);
+
+        let prefix_len: u16 = 2;
+        let editor_width =
+            app.last_chat_input_area.width.saturating_sub(prefix_len) as usize;
+
+        // Clear and type text that will wrap to 2+ visual lines.
+        // We need at least editor_width+1 chars. Use distinct chars so we can verify.
+        crate::tui::viz_viewer::state::editor_clear(&mut app.chat.editor);
+        // Build a string with known content: "aaaa... bbbb..."
+        // First word fills most of the line, second word forces wrap.
+        let word1 = "a".repeat(editor_width.saturating_sub(1)); // fills line minus 1
+        let word2 = "bbb click_here ccc";
+        let full_text = format!("{} {}", word1, word2);
+        type_string(&mut app, &full_text);
+
+        // Re-render to populate areas with the new content.
+        render_to_string(&mut app, 40, 20);
+
+        // The text should wrap: visual row 0 = word1 (+ maybe space), visual row 1 = word2.
+        assert!(app.last_chat_input_area.height > 0);
+        let editor_y = app.last_chat_input_area.y + 1;
+        let editor_x = app.last_chat_input_area.x + prefix_len;
+
+        // Click on visual row 1, col 0 (start of wrapped portion).
+        let click_row = editor_y + 1;
+        let click_col = editor_x;
+
+        route_mouse_to_editor(&mut app, click_row, click_col, EditorTarget::Chat);
+
+        // The cursor should NOT be on row 0, col 0 — it should be somewhere in the
+        // logical line past the wrap point.
+        assert_eq!(
+            app.chat.editor.cursor.row, 0,
+            "still logical line 0 (single logical line, wrapped)"
+        );
+        assert!(
+            app.chat.editor.cursor.col > 0,
+            "cursor col should be past the wrap point, got {}",
+            app.chat.editor.cursor.col
+        );
+        // The col should be near the start of word2 in the logical line.
+        // word1 length + 1 space = word1.len() + 1, but wrapping may consume the space.
+        // The important thing: col is in the second visual line's range.
+        assert!(
+            app.chat.editor.cursor.col >= editor_width.saturating_sub(2),
+            "cursor col {} should be near or past editor_width {}",
+            app.chat.editor.cursor.col,
+            editor_width
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════

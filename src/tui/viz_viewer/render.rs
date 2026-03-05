@@ -1777,7 +1777,7 @@ fn count_visual_lines(input: &str, usable_width: usize) -> usize {
 /// Returns `Vec<(start_char, end_char)>` pairs — character index ranges within the line.
 /// Characters between consecutive segments (gaps) are consumed whitespace.
 /// Only hard-breaks when a single word exceeds the width.
-fn word_wrap_segments(line: &str, width: usize) -> Vec<(usize, usize)> {
+pub(super) fn word_wrap_segments(line: &str, width: usize) -> Vec<(usize, usize)> {
     use unicode_width::UnicodeWidthChar;
 
     let chars: Vec<char> = line.chars().collect();
@@ -1852,7 +1852,7 @@ fn word_wrap_segments(line: &str, width: usize) -> Vec<(usize, usize)> {
 
 /// Map a cursor column (char index) in a logical line to (visual_line_offset, char_offset)
 /// within the word-wrapped segments.
-fn cursor_in_segments(segments: &[(usize, usize)], cursor_col: usize) -> (usize, usize) {
+pub(super) fn cursor_in_segments(segments: &[(usize, usize)], cursor_col: usize) -> (usize, usize) {
     for (i, &(start, end)) in segments.iter().enumerate() {
         if cursor_col < end {
             return (i, cursor_col - start);
