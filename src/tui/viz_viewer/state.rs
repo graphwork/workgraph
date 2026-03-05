@@ -48,7 +48,9 @@ pub fn editor_clear(state: &mut EditorState) {
 
 pub fn create_editor_handler() -> EditorEventHandler {
     use edtui::actions::delete::DeleteToEndOfLine;
-    use edtui::actions::{MoveBackward, MoveForward, MoveToEndOfLine, MoveToStartOfLine};
+    use edtui::actions::{
+        MoveBackward, MoveDown, MoveForward, MoveToEndOfLine, MoveToStartOfLine, MoveUp,
+    };
     use edtui::events::{KeyEvent as EdKeyEvent, KeyEventRegister};
     let mut handler = EditorEventHandler::default();
     // Emacs keybindings for insert mode
@@ -71,6 +73,14 @@ pub fn create_editor_handler() -> EditorEventHandler {
     handler.key_handler.insert(
         KeyEventRegister::i(vec![EdKeyEvent::Ctrl('k')]),
         DeleteToEndOfLine,
+    );
+    handler.key_handler.insert(
+        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('n')]),
+        MoveDown(1),
+    );
+    handler.key_handler.insert(
+        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('p')]),
+        MoveUp(1),
     );
     // Ctrl-U (kill to beginning of line) is already mapped by edtui default
     handler

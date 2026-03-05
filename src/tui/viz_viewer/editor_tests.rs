@@ -866,6 +866,55 @@ mod tui_editor_tests {
     }
 
     #[test]
+    fn tui_editor_ctrl_n_moves_down() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        type_string(&mut app, "line1");
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        type_string(&mut app, "line2");
+
+        // Move to beginning of line2, then up to line1.
+        send_chat_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        // Now on line1. Ctrl+N should move down to line2.
+        send_chat_key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+
+        let text = editor_text(&app.chat.editor);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.len() >= 2, "Should have 2 lines, got: {:?}", lines);
+        assert!(
+            lines[1].contains('X'),
+            "X should be in second line after Ctrl+N. Lines: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_p_moves_up() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        type_string(&mut app, "line1");
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        type_string(&mut app, "line2");
+
+        // Cursor is at end of line2. Ctrl+P should move up to line1.
+        send_chat_key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+
+        let text = editor_text(&app.chat.editor);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.len() >= 2, "Should have 2 lines, got: {:?}", lines);
+        assert!(
+            lines[0].contains('X'),
+            "X should be in first line after Ctrl+P. Lines: {:?}",
+            lines
+        );
+    }
+
+    #[test]
     fn tui_editor_ctrl_u_kills_to_beginning() {
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
