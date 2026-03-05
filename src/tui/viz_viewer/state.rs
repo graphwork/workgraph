@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 use crate::commands::viz::{VizOptions, VizOutput};
 use workgraph::config::Config;
 use workgraph::graph::{Status, TokenUsage, format_tokens, parse_token_usage_live};
+use workgraph::models::load_model_choices;
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
 
@@ -4705,6 +4706,7 @@ impl VizApp {
     /// Load configuration from disk and populate config panel entries.
     pub fn load_config_panel(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
+        let model_choices = load_model_choices(&self.workgraph_dir);
         let mut entries = Vec::new();
 
         // ── 1. LLM Endpoints ──
@@ -4836,7 +4838,7 @@ impl VizApp {
                 .model
                 .clone()
                 .unwrap_or_else(|| config.agent.model.clone()),
-            edit_kind: ConfigEditKind::Choice(vec!["opus".into(), "sonnet".into(), "haiku".into()]),
+            edit_kind: ConfigEditKind::Choice(model_choices.clone()),
             section: ConfigSection::Service,
         });
         entries.push(ConfigEntry {
@@ -4979,7 +4981,7 @@ impl VizApp {
             key: "agent.model".into(),
             label: "Default model".into(),
             value: config.agent.model.clone(),
-            edit_kind: ConfigEditKind::Choice(vec!["opus".into(), "sonnet".into(), "haiku".into()]),
+            edit_kind: ConfigEditKind::Choice(model_choices.clone()),
             section: ConfigSection::AgentDefaults,
         });
         // ── 6. Agency ──

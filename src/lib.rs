@@ -16,6 +16,7 @@ pub mod matrix_commands;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix_lite;
 pub mod messages;
+pub mod models;
 pub mod notify;
 pub mod parser;
 pub mod plan_validator;

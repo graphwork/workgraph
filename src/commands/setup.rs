@@ -7,6 +7,7 @@ use dialoguer::{Confirm, Input, Select};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use workgraph::config::Config;
+use workgraph::models::ModelRegistry;
 
 /// Marker used to detect whether workgraph directives are already present in CLAUDE.md.
 const CLAUDE_MD_MARKER: &str = "<!-- workgraph-managed -->";
@@ -219,12 +220,9 @@ pub fn run() -> Result<()> {
         executor_options[executor_idx].to_string()
     };
 
-    // 2. Default model
-    let model_options = &[
-        ("opus", "Most capable, best for complex tasks"),
-        ("sonnet", "Balanced capability and speed"),
-        ("haiku", "Fastest, best for simple tasks"),
-    ];
+    // 2. Default model (from model registry)
+    let registry = ModelRegistry::with_defaults();
+    let model_options = registry.model_choices_with_descriptions();
     let model_labels: Vec<String> = model_options
         .iter()
         .map(|(name, desc)| format!("{} — {}", name, desc))
@@ -237,7 +235,7 @@ pub fn run() -> Result<()> {
         .unwrap_or(&existing.agent.model);
     let current_model_idx = model_options
         .iter()
-        .position(|(name, _)| *name == current_model)
+        .position(|(name, _)| name == current_model)
         .unwrap_or(0);
 
     let model_idx = Select::new()
@@ -247,7 +245,7 @@ pub fn run() -> Result<()> {
         .interact()?;
 
     let model = if model_idx < model_options.len() {
-        model_options[model_idx].0.to_string()
+        model_options[model_idx].0.clone()
     } else {
         // Shouldn't happen with Select, but handle gracefully
         let custom: String = Input::new()
