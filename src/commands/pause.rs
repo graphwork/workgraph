@@ -94,7 +94,7 @@ mod tests {
 
         let result = run(dir.path(), "t1");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already paused"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("already paused"));
     }
 
     #[test]
@@ -104,7 +104,7 @@ mod tests {
 
         let result = run(dir.path(), "nonexistent");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("not found"));
     }
 
     #[test]

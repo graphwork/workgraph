@@ -132,7 +132,7 @@ mod tests {
 
         let result = run(dir_path, "t1");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("not failed"),
             "Expected 'not failed' error, got: {}",
@@ -151,7 +151,7 @@ mod tests {
 
         let result = run(dir_path, "t1");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("not failed"));
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
 
         let result = run(dir_path, "t1");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("not failed"));
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
 
         let result = run(dir_path, "t1");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("max retries"),
             "Expected 'max retries' error, got: {}",
@@ -290,7 +290,7 @@ mod tests {
 
         let result = run(dir_path, "nonexistent");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("not found"));
     }
 
     #[test]

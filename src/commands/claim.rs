@@ -245,7 +245,7 @@ mod tests {
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("already in progress"));
+        assert!(format!("{:#}", err).contains("already in progress"));
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("already done"));
+        assert!(format!("{:#}", err).contains("already done"));
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
         let result = claim(dir_path, "nonexistent", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not found"));
+        assert!(format!("{:#}", err).contains("not found"));
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
         let result = unclaim(dir_path, "nonexistent");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not found"));
+        assert!(format!("{:#}", err).contains("not found"));
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not initialized"));
+        assert!(format!("{:#}", err).contains("not initialized"));
     }
 
     #[test]
@@ -339,7 +339,7 @@ mod tests {
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Done"));
+        assert!(format!("{:#}", err).contains("Done"));
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Failed"));
+        assert!(format!("{:#}", err).contains("Failed"));
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Abandoned"));
+        assert!(format!("{:#}", err).contains("Abandoned"));
     }
 
     #[test]
@@ -378,8 +378,9 @@ mod tests {
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Failed"));
-        assert!(err.to_string().contains("retry"));
+        let err_msg = format!("{:#}", err);
+        assert!(err_msg.contains("Failed") || err_msg.contains("failed"));
+        assert!(err_msg.contains("retry"));
     }
 
     #[test]
@@ -394,7 +395,7 @@ mod tests {
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Abandoned"));
+        assert!(format!("{:#}", err).contains("Abandoned"));
     }
 
     #[test]
@@ -406,6 +407,6 @@ mod tests {
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not initialized"));
+        assert!(format!("{:#}", err).contains("not initialized"));
     }
 }

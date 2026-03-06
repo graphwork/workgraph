@@ -66,6 +66,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::graph::{Node, Status, Task, WorkGraph};
+    use workgraph::save_graph;
     
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -162,8 +163,8 @@ mod tests {
 
         let result = run(&dir, "t1", None);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("already done"));
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("already done"), "unexpected error: {err}");
     }
 
     #[test]
@@ -197,7 +198,8 @@ mod tests {
 
         let result = run(&dir, "nope", None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("not found"), "unexpected error: {err}");
     }
 
     #[test]
