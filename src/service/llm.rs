@@ -67,6 +67,8 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
         .arg("--print")
         .arg("--dangerously-skip-permissions")
         .arg(prompt)
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
         .output()
         .context("Failed to run claude CLI for lightweight LLM call")?;
 
