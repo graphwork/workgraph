@@ -1306,8 +1306,6 @@ pub struct VizApp {
     pub hud_wrapped_line_count: usize,
     /// Viewport height of the detail panel (set by renderer each frame).
     pub hud_detail_viewport_height: usize,
-    /// When true, show raw JSON in the Detail tab instead of human-readable format.
-    pub detail_raw_json: bool,
     /// Set of collapsed section names in the Detail view (persists across task switches).
     pub detail_collapsed_sections: std::collections::HashSet<String>,
     /// Map from wrapped line index → section name for section headers in the Detail view.
@@ -1542,8 +1540,7 @@ impl VizApp {
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
-            detail_raw_json: false,
-            detail_collapsed_sections: ["Output", "Output (raw)", "Prompt"]
+            detail_collapsed_sections: ["Description", "Output (raw)", "Prompt"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -2864,36 +2861,35 @@ impl VizApp {
             .filter(|p| p.exists())
             .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
         if let Some(output_path) = output_path {
-            if self.detail_raw_json {
-                lines.push("── Output (raw) ── [R: human-readable]".to_string());
-            } else {
-                lines.push("── Output ── [R: raw JSON]".to_string());
-            }
             if let Ok(content) = std::fs::read_to_string(&output_path) {
+                // ── Output ── (readable chat transcript, expanded by default)
+                let blocks = extract_chat_transcript(&content);
+                if !blocks.is_empty() {
+                    lines.push("── Output ──".to_string());
+                    render_chat_blocks(&blocks, &mut lines);
+                    lines.push(String::new());
+                }
+
+                // ── Output (raw) ── (pretty-printed JSON, collapsed by default)
+                lines.push("── Output (raw) ──".to_string());
                 for line in content.lines() {
                     let trimmed = line.trim();
                     if (trimmed.starts_with('{') || trimmed.starts_with('['))
                         && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
                     {
-                        if self.detail_raw_json {
-                            // Raw mode: pretty-printed JSON
-                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                                for pline in pretty.lines() {
-                                    lines.push(format!("  {}", pline));
-                                }
-                            } else {
-                                lines.push(format!("  {}", line));
+                        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                            for pline in pretty.lines() {
+                                lines.push(format!("  {}", pline));
                             }
                         } else {
-                            // Human-readable mode: extract key/value pairs
-                            flatten_json_to_lines(&val, "  ", &mut lines);
+                            lines.push(format!("  {}", line));
                         }
                     } else {
                         lines.push(format!("  {}", line));
                     }
                 }
+                lines.push(String::new());
             }
-            lines.push(String::new());
         }
 
         // ── Evaluation ──
@@ -3160,8 +3156,17 @@ impl VizApp {
             .filter(|p| p.exists())
             .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
         if let Some(output_path) = output_path {
-            lines.push("── Output ──".to_string());
             if let Ok(content) = std::fs::read_to_string(&output_path) {
+                // ── Output ── (readable chat transcript)
+                let blocks = extract_chat_transcript(&content);
+                if !blocks.is_empty() {
+                    lines.push("── Output ──".to_string());
+                    render_chat_blocks(&blocks, &mut lines);
+                    lines.push(String::new());
+                }
+
+                // ── Output (raw) ── (pretty-printed JSON)
+                lines.push("── Output (raw) ──".to_string());
                 for line in content.lines() {
                     let trimmed = line.trim();
                     if (trimmed.starts_with('{') || trimmed.starts_with('['))
@@ -3178,8 +3183,8 @@ impl VizApp {
                         lines.push(format!("  {}", line));
                     }
                 }
+                lines.push(String::new());
             }
-            lines.push(String::new());
         }
 
         // ── Token usage ──
@@ -3805,7 +3810,6 @@ impl VizApp {
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
-            detail_raw_json: false,
             detail_collapsed_sections: std::collections::HashSet::new(),
             detail_section_header_lines: Vec::new(),
             right_panel_visible: false,
@@ -6111,101 +6115,202 @@ fn find_latest_archive(
     None
 }
 
-/// Format an ISO 8601 timestamp for HUD display (shorter, local time).
-/// Flatten a JSON value into human-readable key/value lines.
-/// Strings are displayed directly, objects show "Key: Value", arrays are listed.
-/// Nested objects recurse with increased indent.
-fn flatten_json_to_lines(val: &serde_json::Value, indent: &str, lines: &mut Vec<String>) {
-    match val {
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                match value {
-                    serde_json::Value::String(s) => {
-                        // Capitalize the key nicely
-                        let label = humanize_key(key);
-                        for (i, line) in s.lines().enumerate() {
-                            if i == 0 {
-                                lines.push(format!("{}{}: {}", indent, label, line));
-                            } else {
-                                let continuation = " ".repeat(indent.len() + label.len() + 2);
-                                lines.push(format!("{}{}", continuation, line));
-                            }
+/// Represents a block in the extracted chat transcript from stream-json output.
+enum ChatBlock {
+    /// Model-generated text content.
+    Text(String),
+    /// A tool invocation: name + condensed input summary.
+    ToolUse { name: String, input_summary: String },
+    /// Final result message from the CLI.
+    Result(String),
+}
+
+/// Parse Claude CLI stream-json output and extract a clean chat transcript.
+///
+/// Deduplicates partial assistant messages (keeps the last/longest per message ID)
+/// and extracts text blocks, tool-use summaries, and the final result.
+fn extract_chat_transcript(content: &str) -> Vec<ChatBlock> {
+    use std::collections::HashMap;
+
+    // First pass: collect all assistant messages, keeping only the last per ID
+    // (Claude CLI emits partial messages that grow over time).
+    let mut assistant_msgs: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut assistant_order: Vec<String> = Vec::new();
+    let mut result_block: Option<serde_json::Value> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !(trimmed.starts_with('{')) {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match msg_type {
+            "assistant" => {
+                if let Some(id) = val
+                    .get("message")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let id = id.to_string();
+                    if !assistant_msgs.contains_key(&id) {
+                        assistant_order.push(id.clone());
+                    }
+                    assistant_msgs.insert(id, val);
+                }
+            }
+            "result" => {
+                result_block = Some(val);
+            }
+            _ => {} // skip system, user, rate_limit_event, etc.
+        }
+    }
+
+    let mut blocks: Vec<ChatBlock> = Vec::new();
+
+    // Second pass: extract content from deduplicated assistant messages in order.
+    for id in &assistant_order {
+        let val = match assistant_msgs.get(id) {
+            Some(v) => v,
+            None => continue,
+        };
+        let content_arr = match val
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for item in content_arr {
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match item_type {
+                "text" => {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        if !text.is_empty() {
+                            blocks.push(ChatBlock::Text(text.to_string()));
                         }
                     }
-                    serde_json::Value::Number(n) => {
-                        lines.push(format!("{}{}: {}", indent, humanize_key(key), n));
+                }
+                "tool_use" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let input_summary = if let Some(input) = item.get("input") {
+                        summarize_tool_input(input)
+                    } else {
+                        String::new()
+                    };
+                    blocks.push(ChatBlock::ToolUse {
+                        name,
+                        input_summary,
+                    });
+                }
+                // Skip "thinking" blocks — internal model reasoning
+                _ => {}
+            }
+        }
+    }
+
+    // Append the final result if present.
+    if let Some(ref result) = result_block {
+        if let Some(text) = result.get("result").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                // Only add if it's different from the last text block
+                let dominated = blocks.iter().rev().any(|b| {
+                    if let ChatBlock::Text(t) = b {
+                        t.contains(text) || text.len() < 20
+                    } else {
+                        false
                     }
-                    serde_json::Value::Bool(b) => {
-                        lines.push(format!("{}{}: {}", indent, humanize_key(key), b));
-                    }
-                    serde_json::Value::Null => {
-                        lines.push(format!("{}{}: null", indent, humanize_key(key)));
-                    }
-                    serde_json::Value::Array(arr) => {
-                        lines.push(format!("{}{}:", indent, humanize_key(key)));
-                        let child_indent = format!("{}  ", indent);
-                        for item in arr {
-                            match item {
-                                serde_json::Value::String(s) => {
-                                    lines.push(format!("{}- {}", child_indent, s));
-                                }
-                                serde_json::Value::Object(_) => {
-                                    flatten_json_to_lines(item, &child_indent, lines);
-                                    lines.push(String::new());
-                                }
-                                other => {
-                                    lines.push(format!("{}- {}", child_indent, other));
-                                }
-                            }
-                        }
-                    }
-                    serde_json::Value::Object(_) => {
-                        lines.push(format!("{}{}:", indent, humanize_key(key)));
-                        let child_indent = format!("{}  ", indent);
-                        flatten_json_to_lines(value, &child_indent, lines);
-                    }
+                });
+                if !dominated {
+                    blocks.push(ChatBlock::Result(text.to_string()));
                 }
             }
         }
-        serde_json::Value::Array(arr) => {
-            for item in arr {
-                flatten_json_to_lines(item, indent, lines);
+    }
+
+    blocks
+}
+
+/// Produce a condensed summary of a tool's input object (for display in tool-use lines).
+fn summarize_tool_input(input: &serde_json::Value) -> String {
+    match input {
+        serde_json::Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .filter_map(|(k, v)| {
+                    let val_str = match v {
+                        serde_json::Value::String(s) => {
+                            if s.len() > 80 {
+                                format!("{}…", &s[..80])
+                            } else {
+                                s.clone()
+                            }
+                        }
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => return None, // skip complex nested values
+                    };
+                    Some(format!("{}={}", k, val_str))
+                })
+                .collect();
+            parts.join(", ")
+        }
+        _ => format!("{}", input),
+    }
+}
+
+/// Render extracted chat blocks into display lines for the Detail panel.
+fn render_chat_blocks(blocks: &[ChatBlock], lines: &mut Vec<String>) {
+    for block in blocks {
+        match block {
+            ChatBlock::Text(text) => {
+                for line in text.lines() {
+                    lines.push(format!("  {}", line));
+                }
                 lines.push(String::new());
             }
-        }
-        serde_json::Value::String(s) => {
-            lines.push(format!("{}{}", indent, s));
-        }
-        other => {
-            lines.push(format!("{}{}", indent, other));
+            ChatBlock::ToolUse {
+                name,
+                input_summary,
+            } => {
+                if input_summary.is_empty() {
+                    lines.push(format!("  ⚙ {}", name));
+                } else {
+                    // Truncate total line to ~120 chars
+                    let prefix = format!("  ⚙ {}(", name);
+                    let max_input = 120usize.saturating_sub(prefix.len() + 1);
+                    if input_summary.len() > max_input {
+                        lines.push(format!("{}{}…)", prefix, &input_summary[..max_input]));
+                    } else {
+                        lines.push(format!("{}{})", prefix, input_summary));
+                    }
+                }
+            }
+            ChatBlock::Result(text) => {
+                lines.push("  ── Result ──".to_string());
+                // Show first ~5 lines of result
+                for (i, line) in text.lines().enumerate() {
+                    if i >= 5 {
+                        lines.push("  …".to_string());
+                        break;
+                    }
+                    lines.push(format!("  {}", line));
+                }
+                lines.push(String::new());
+            }
         }
     }
 }
 
-/// Convert a snake_case or camelCase JSON key to a human-readable label.
-fn humanize_key(key: &str) -> String {
-    // Replace underscores and split camelCase, then capitalize first letter.
-    let mut result = String::new();
-    let mut prev_lower = false;
-    for (i, c) in key.chars().enumerate() {
-        if c == '_' || c == '-' {
-            result.push(' ');
-            prev_lower = false;
-        } else if c.is_uppercase() && prev_lower {
-            result.push(' ');
-            result.push(c.to_lowercase().next().unwrap_or(c));
-            prev_lower = false;
-        } else {
-            if i == 0 {
-                result.push(c.to_uppercase().next().unwrap_or(c));
-            } else {
-                result.push(c);
-            }
-            prev_lower = c.is_lowercase();
-        }
-    }
-    result
-}
 
 fn format_timestamp(ts: &str) -> String {
     match chrono::DateTime::parse_from_rfc3339(ts) {

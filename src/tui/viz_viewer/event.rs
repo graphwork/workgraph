@@ -1066,13 +1066,6 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
 
-        // Detail tab: 'R' toggles raw JSON display
-        KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
-            app.detail_raw_json = !app.detail_raw_json;
-            app.hud_detail = None; // force reload with new format
-            app.load_hud_detail();
-        }
-
         // Detail tab: Space toggles section collapse at current scroll position
         KeyCode::Char(' ') if app.right_panel_tab == RightPanelTab::Detail => {
             app.toggle_detail_section_at_scroll();
