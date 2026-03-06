@@ -706,6 +706,101 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
     modified
 }
 
+/// Repair bidirectional edges for auto-created system tasks (.assign-*, .evaluate-*,
+/// .verify-flip-*) that were created before the edge-wiring fix. Scans all such tasks
+/// and ensures both sides of every edge exist. Returns `true` if the graph was modified.
+fn repair_auto_task_edges(graph: &mut workgraph::graph::WorkGraph) -> bool {
+    let mut modified = false;
+    let mut repairs = 0u32;
+
+    // Collect auto-task info to avoid borrowing graph while iterating.
+    enum AutoKind {
+        Evaluate,
+        Assign,
+        VerifyFlip,
+    }
+    let auto_tasks: Vec<(String, String, AutoKind)> = graph
+        .tasks()
+        .filter_map(|t| {
+            if let Some(source) = t.id.strip_prefix(".evaluate-") {
+                Some((t.id.clone(), source.to_string(), AutoKind::Evaluate))
+            } else if let Some(target) = t.id.strip_prefix(".assign-") {
+                Some((t.id.clone(), target.to_string(), AutoKind::Assign))
+            } else if let Some(source) = t.id.strip_prefix(".verify-flip-") {
+                Some((t.id.clone(), source.to_string(), AutoKind::VerifyFlip))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (auto_id, related_id, kind) in &auto_tasks {
+        if graph.get_task(related_id).is_none() {
+            continue;
+        }
+
+        match kind {
+            AutoKind::Evaluate => {
+                if let Some(eval_task) = graph.get_task_mut(auto_id) {
+                    if !eval_task.after.contains(related_id) {
+                        eval_task.after.push(related_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+                if let Some(source) = graph.get_task_mut(related_id) {
+                    if !source.before.contains(auto_id) {
+                        source.before.push(auto_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+            }
+            AutoKind::Assign => {
+                if let Some(assign_task) = graph.get_task_mut(auto_id) {
+                    if !assign_task.before.contains(related_id) {
+                        assign_task.before.push(related_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+                if let Some(target) = graph.get_task_mut(related_id) {
+                    if !target.after.contains(auto_id) {
+                        target.after.push(auto_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+            }
+            AutoKind::VerifyFlip => {
+                if let Some(verify_task) = graph.get_task_mut(auto_id) {
+                    if !verify_task.after.contains(related_id) {
+                        verify_task.after.push(related_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+                if let Some(source) = graph.get_task_mut(related_id) {
+                    if !source.before.contains(auto_id) {
+                        source.before.push(auto_id.clone());
+                        modified = true;
+                        repairs += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if repairs > 0 {
+        eprintln!(
+            "[coordinator] Repaired {} bidirectional edge(s) on auto-tasks",
+            repairs,
+        );
+    }
+
+    modified
+}
+
 /// Auto-assign: run lightweight LLM assignment for unassigned ready tasks.
 ///
 /// Uses a single `run_lightweight_llm_call()` to select the best agent for each
@@ -1043,6 +1138,13 @@ fn build_auto_assign_tasks(
 
         graph.add_node(Node::Task(assign_task));
 
+        // Wire the bidirectional edge: add assign task to target task's `after` list
+        if let Some(target) = graph.get_task_mut(&task_id) {
+            if !target.after.contains(&assign_task_id) {
+                target.after.push(assign_task_id.clone());
+            }
+        }
+
         // Persist TaskAssignmentRecord with actual agent info
         let assignment_mode = match assignment_path {
             AssignmentPath::Performance => {
@@ -1261,11 +1363,15 @@ fn build_auto_evaluate_tasks(
 
         graph.add_node(Node::Task(eval_task));
 
-        // Tag the source task so we never recreate the eval task after gc.
-        if let Some(source) = graph.get_task_mut(task_id)
-            && !source.tags.iter().any(|t| t == "eval-scheduled")
-        {
-            source.tags.push("eval-scheduled".to_string());
+        // Wire the bidirectional edge: add eval task to source task's `before` list
+        if let Some(source) = graph.get_task_mut(task_id) {
+            if !source.before.contains(&eval_task_id) {
+                source.before.push(eval_task_id.clone());
+            }
+            // Tag the source task so we never recreate the eval task after gc.
+            if !source.tags.iter().any(|t| t == "eval-scheduled") {
+                source.tags.push("eval-scheduled".to_string());
+            }
         }
 
         eprintln!(
@@ -1425,7 +1531,7 @@ fn build_flip_verification_tasks(
             assigned: None,
             estimate: None,
             before: vec![],
-            after: vec![], // Not blocked by anything — source task is already done
+            after: vec![source_task_id.clone()], // Wire edge to source task
             requires: vec![],
             tags: vec!["verification".to_string(), "agency".to_string()],
             skills: vec![],
@@ -1465,8 +1571,11 @@ fn build_flip_verification_tasks(
 
         graph.add_node(Node::Task(verify_task));
 
-        // Log the trigger on the source task
+        // Wire the bidirectional edge and log the trigger on the source task
         if let Some(source) = graph.get_task_mut(source_task_id) {
+            if !source.before.contains(&verify_task_id) {
+                source.before.push(verify_task_id.clone());
+            }
             source.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
@@ -2064,6 +2173,16 @@ pub fn coordinator_tick(
         let resurrect_modified = resurrect_done_tasks(&mut graph, dir);
         if resurrect_modified {
             save_graph(&graph, &graph_path).context("Failed to save graph after resurrection")?;
+        }
+    }
+
+    // Phase 2.9: Repair bidirectional edges on auto-tasks (.assign-*, .evaluate-*,
+    // .verify-flip-*) that were created before the edge-wiring fix.
+    {
+        let repair_modified = repair_auto_task_edges(&mut graph);
+        if repair_modified {
+            save_graph(&graph, &graph_path)
+                .context("Failed to save graph after auto-task edge repair")?;
         }
     }
 
