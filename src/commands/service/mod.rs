@@ -533,6 +533,8 @@ pub fn run_start(
                     let request = IpcRequest::Shutdown {
                         force: false,
                         kill_agents: false,
+                        triggered_by_agent: None,
+                        triggered_by_task: None,
                     };
                     if let Ok(json_req) = serde_json::to_string(&request) {
                         let _ = writeln!(stream, "{}", json_req);
@@ -1447,12 +1449,21 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
         }
     };
 
+    // Capture caller identity from env vars (set when running inside an agent)
+    let triggered_by_agent = std::env::var("WG_AGENT_ID").ok();
+    let triggered_by_task = std::env::var("WG_TASK_ID").ok();
+
     // Try to send shutdown command via socket
     let socket = PathBuf::from(&state.socket_path);
     if socket.exists()
         && let Ok(mut stream) = UnixStream::connect(&socket)
     {
-        let request = IpcRequest::Shutdown { force, kill_agents };
+        let request = IpcRequest::Shutdown {
+            force,
+            kill_agents,
+            triggered_by_agent,
+            triggered_by_task,
+        };
         let json_req = serde_json::to_string(&request)?;
         // Best-effort: shutdown falls through to kill if IPC fails
         if let Err(e) = writeln!(stream, "{}", json_req) {
@@ -1522,6 +1533,57 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
 
 #[cfg(not(unix))]
 pub fn run_stop(_dir: &Path, _force: bool, _kill_agents: bool, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Restart the service daemon (atomic stop + start)
+#[cfg(unix)]
+pub fn run_restart(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
+    // Capture current config before stopping
+    let coord = CoordinatorState::load_or_default(dir);
+    let max_agents = if coord.max_agents > 0 {
+        Some(coord.max_agents)
+    } else {
+        None
+    };
+    let executor = if coord.executor.is_empty() {
+        None
+    } else {
+        Some(coord.executor.clone())
+    };
+    let model = coord.model.clone();
+    let poll_interval = if coord.poll_interval > 0 {
+        Some(coord.poll_interval)
+    } else {
+        None
+    };
+
+    // Stop
+    run_stop(dir, force, kill_agents, json)?;
+
+    // Brief pause to ensure socket cleanup
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Start with preserved config
+    if !json {
+        println!("Restarting service...");
+    }
+    run_start(
+        dir,
+        None,
+        None,
+        max_agents,
+        executor.as_deref(),
+        poll_interval,
+        model.as_deref(),
+        json,
+        true, // force: clean start after stop
+        false,
+    )
+}
+
+#[cfg(not(unix))]
+pub fn run_restart(_dir: &Path, _force: bool, _kill_agents: bool, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
