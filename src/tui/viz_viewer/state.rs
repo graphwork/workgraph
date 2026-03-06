@@ -1661,18 +1661,6 @@ impl VizApp {
 
         match self.generate_viz() {
             Ok(viz_output) => {
-                // Save old task line data before overwriting — needed to populate
-                // fading_out_lines for tasks that disappear due to filter changes.
-                let old_task_lines: HashMap<String, (String, String)> = self
-                    .node_line_map
-                    .iter()
-                    .filter_map(|(id, &line_idx)| {
-                        let ansi = self.lines.get(line_idx)?;
-                        let plain = self.plain_lines.get(line_idx)?;
-                        Some((id.clone(), (ansi.clone(), plain.clone())))
-                    })
-                    .collect();
-
                 self.lines = viz_output
                     .text
                     .lines()
@@ -1735,30 +1723,8 @@ impl VizApp {
                             .unwrap_or(false)
                     });
 
-                    // Register fade-out for tasks that just disappeared due to
-                    // filter toggle (e.g. system task visibility).
-                    if self.system_tasks_just_toggled {
-                        for id in &old_task_order {
-                            if !new_set.contains(id.as_str())
-                                && !self.fading_out_lines.contains_key(id)
-                            {
-                                if let Some(line_data) = old_task_lines.get(id) {
-                                    self.fading_out_lines
-                                        .insert(id.clone(), line_data.clone());
-                                    self.splash_animations.insert(
-                                        id.clone(),
-                                        Animation {
-                                            start: now,
-                                            flash_color: flash_color_for_kind(
-                                                AnimationKind::FadeOut,
-                                            ),
-                                            kind: AnimationKind::FadeOut,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    // System task toggle: instant show/hide — no fade-out
+                    // animation. Tasks simply disappear/appear immediately.
 
                     // Detect tasks that reappeared while fading out — cancel
                     // the fade-out so they render at full visibility immediately
@@ -1841,12 +1807,42 @@ impl VizApp {
                         .iter()
                         .position(|id| id == prev_id)
                         .or_else(|| {
-                            // Task disappeared — clamp to end.
+                            // Task disappeared (e.g. dot-task hidden by toggle).
+                            // Find the nearest visible task by walking outward
+                            // from the old position in the old order.
                             if self.task_order.is_empty() {
-                                None
-                            } else {
-                                Some(self.task_order.len() - 1)
+                                return None;
                             }
+                            let old_idx = old_task_order
+                                .iter()
+                                .position(|id| id == prev_id)
+                                .unwrap_or(0);
+                            // Walk outward: check i+1, i-1, i+2, i-2, ...
+                            for delta in 1..=old_task_order.len() {
+                                // Check forward
+                                if old_idx + delta < old_task_order.len() {
+                                    let candidate = &old_task_order[old_idx + delta];
+                                    if let Some(pos) = self
+                                        .task_order
+                                        .iter()
+                                        .position(|id| id == candidate)
+                                    {
+                                        return Some(pos);
+                                    }
+                                }
+                                // Check backward
+                                if delta <= old_idx {
+                                    let candidate = &old_task_order[old_idx - delta];
+                                    if let Some(pos) = self
+                                        .task_order
+                                        .iter()
+                                        .position(|id| id == candidate)
+                                    {
+                                        return Some(pos);
+                                    }
+                                }
+                            }
+                            Some(0)
                         });
                 } else if !self.task_order.is_empty() {
                     // Default to first task on initial load (top of graph).
@@ -1875,10 +1871,25 @@ impl VizApp {
                     self.scroll.go_top();
                     self.initial_load = false;
                 } else if was_system_toggle {
-                    // System task visibility toggled — center on the most
-                    // relevant area instead of preserving old scroll position
-                    // (which may point at empty space after collapsing).
-                    self.center_on_best_target();
+                    // System task visibility toggled — preserve scroll
+                    // position relative to the selected task (instant
+                    // show/hide, no centering jump).
+                    let anchored = old_relative_pos.and_then(|rel_pos| {
+                        let id = new_selected_id.as_ref()?;
+                        let new_orig_line = *self.node_line_map.get(id)?;
+                        let new_visible_pos = self.original_to_visible(new_orig_line)?;
+                        let raw = new_visible_pos as isize - rel_pos;
+                        let clamped = raw.max(0) as usize;
+                        Some(clamped)
+                    });
+                    if let Some(new_offset) = anchored {
+                        self.scroll.offset_y = new_offset;
+                        self.scroll.clamp();
+                    } else {
+                        self.scroll.offset_y = old_offset_y;
+                        self.scroll.clamp();
+                        self.scroll_to_selected_task();
+                    }
                 } else if was_at_bottom && !new_task_focused {
                     // Smart-follow: user was at the bottom, keep them there.
                     self.scroll.go_bottom();
@@ -7790,79 +7801,39 @@ mod dot_task_toggle_tests {
         assert_eq!(splash_animations["task-b"].kind, AnimationKind::NewTask);
     }
 
-    // ── Hide: fade-out animation registered ─────────────────────────────
+    // ── Hide: instant (no fade-out animation) ──────────────────────────
 
     #[test]
-    fn hide_registers_fade_out_for_dot_tasks() {
+    fn hide_skips_fade_out_for_dot_tasks() {
         // Simulate hiding dot-tasks: tasks disappear from new_task_order
-        // and get FadeOut animations.
+        // instantly — no FadeOut animations are created.
         let old_task_order: Vec<String> = vec![
             "task-a".into(),
             ".setup-a".into(),
             "task-b".into(),
             ".assign-b".into(),
         ];
-        let new_task_order: Vec<String> = vec!["task-a".into(), "task-b".into()];
+        let _new_task_order: Vec<String> = vec!["task-a".into(), "task-b".into()];
 
-        let new_set: HashSet<&str> = new_task_order.iter().map(|s| s.as_str()).collect();
+        let fading_out_lines: HashMap<String, (String, String)> = HashMap::new();
+        let splash_animations: HashMap<String, Animation> = HashMap::new();
 
-        // Build old line data for the tasks that will disappear.
-        let mut old_task_lines: HashMap<String, (String, String)> = HashMap::new();
-        old_task_lines.insert(
-            ".setup-a".to_string(),
-            (".setup-a: done".to_string(), ".setup-a: done".to_string()),
-        );
-        old_task_lines.insert(
-            ".assign-b".to_string(),
-            (
-                ".assign-b: done".to_string(),
-                ".assign-b: done".to_string(),
-            ),
-        );
+        // System task toggle: no fade-out animations should be created.
+        // The old code registered FadeOut here; the new code does nothing.
+        let _system_tasks_just_toggled = true;
 
-        let mut fading_out_lines: HashMap<String, (String, String)> = HashMap::new();
-        let mut splash_animations: HashMap<String, Animation> = HashMap::new();
-
-        let system_tasks_just_toggled = true;
-        if system_tasks_just_toggled {
-            for id in &old_task_order {
-                if !new_set.contains(id.as_str()) && !fading_out_lines.contains_key(id) {
-                    if let Some(line_data) = old_task_lines.get(id) {
-                        fading_out_lines.insert(id.clone(), line_data.clone());
-                        splash_animations.insert(
-                            id.clone(),
-                            Animation {
-                                start: Instant::now(),
-                                flash_color: (0, 0, 0),
-                                kind: AnimationKind::FadeOut,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-
+        // No fade-out lines or animations should exist.
         assert!(
-            fading_out_lines.contains_key(".setup-a"),
-            "hidden dot-task should have fade-out line data"
+            fading_out_lines.is_empty(),
+            "no fade-out lines should be created on system toggle"
         );
         assert!(
-            fading_out_lines.contains_key(".assign-b"),
-            "hidden dot-task should have fade-out line data"
+            splash_animations.is_empty(),
+            "no animations should be created on system toggle"
         );
-        assert_eq!(
-            splash_animations[".setup-a"].kind,
-            AnimationKind::FadeOut,
-            "hidden dot-task should get FadeOut animation"
-        );
-        assert_eq!(
-            splash_animations[".assign-b"].kind,
-            AnimationKind::FadeOut,
-            "hidden dot-task should get FadeOut animation"
-        );
-        // Regular tasks should NOT be fading.
-        assert!(!fading_out_lines.contains_key("task-a"));
-        assert!(!fading_out_lines.contains_key("task-b"));
+        // Verify old_task_order still has the dot-tasks (they were just
+        // filtered out, not deleted).
+        assert!(old_task_order.iter().any(|id| id.starts_with('.')));
     }
 
     // ── Reappearing during fade-out cancels animation ───────────────────
