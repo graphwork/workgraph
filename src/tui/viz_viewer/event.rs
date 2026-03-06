@@ -1001,10 +1001,14 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             right_panel_scroll_to_bottom(app);
         }
 
-        // Enter: in chat tab, enter chat input mode; in messages tab, enter message input mode;
-        // in config tab, start editing the selected setting.
+        // Enter: in detail tab, navigate to related task; in chat tab, enter chat input mode;
+        // in messages tab, enter message input mode; in config tab, start editing the setting.
         KeyCode::Enter => {
-            if app.right_panel_tab == RightPanelTab::Chat {
+            if app.right_panel_tab == RightPanelTab::Detail {
+                if let Some(task_id) = app.related_task_at_scroll() {
+                    app.navigate_to_related_task(&task_id);
+                }
+            } else if app.right_panel_tab == RightPanelTab::Chat {
                 app.chat_input_dismissed = false;
                 app.input_mode = InputMode::ChatInput;
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;

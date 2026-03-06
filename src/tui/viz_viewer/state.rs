@@ -1154,6 +1154,22 @@ pub fn extract_section_name(line: &str) -> Option<String> {
     }
 }
 
+/// Parse a related task ID from a detail line.
+/// Related task lines have the format: `  ⊳ .assign-foo  [done]  agent-1234`
+/// Returns the task ID (e.g., ".assign-foo") if the line matches.
+pub fn parse_related_task_id(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    for prefix in &["⊳ ", "∴ ", "✓ ", "↩ ", "· ", "← ", "→ "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let task_id = rest.split("  [").next()?.trim();
+            if !task_id.is_empty() {
+                return Some(task_id.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Task status counts for the status bar.
 #[derive(Default)]
 pub struct TaskCounts {
@@ -2766,6 +2782,210 @@ impl VizApp {
         }
     }
 
+    /// Build the "Related Tasks" section lines for a given task.
+    /// Shows dot-tasks (system tasks) first, then upstream/downstream deps.
+    fn build_related_tasks_lines(
+        graph: &workgraph::WorkGraph,
+        task_id: &str,
+        workgraph_dir: &std::path::Path,
+    ) -> Vec<String> {
+        let status_label = |s: &Status| -> &'static str {
+            match s {
+                Status::Open => "open",
+                Status::InProgress => "in-progress",
+                Status::Waiting => "waiting",
+                Status::Done => "done",
+                Status::Blocked => "blocked",
+                Status::Failed => "failed",
+                Status::Abandoned => "abandoned",
+            }
+        };
+
+        let known_prefixes = [
+            (format!(".assign-{}", task_id), "⊳"),
+            (format!(".evaluate-{}", task_id), "∴"),
+            (format!(".verify-flip-{}", task_id), "✓"),
+            (format!(".respond-to-{}", task_id), "↩"),
+        ];
+        let legacy_prefixes = [
+            (format!("assign-{}", task_id), "⊳"),
+            (format!("evaluate-{}", task_id), "∴"),
+            (format!("verify-flip-{}", task_id), "✓"),
+            (format!("respond-to-{}", task_id), "↩"),
+        ];
+
+        // Collect dot-tasks (system tasks)
+        let mut dot_tasks: Vec<(String, String, &workgraph::graph::Task)> = Vec::new();
+
+        for (sys_id, icon) in &known_prefixes {
+            if let Some(t) = graph.get_task(sys_id) {
+                dot_tasks.push((sys_id.clone(), icon.to_string(), t));
+            }
+        }
+        for (sys_id, icon) in &legacy_prefixes {
+            if let Some(t) = graph.get_task(sys_id) {
+                if !dot_tasks.iter().any(|(id, _, _)| id == sys_id) {
+                    dot_tasks.push((sys_id.clone(), icon.to_string(), t));
+                }
+            }
+        }
+
+        // Other dot-tasks referencing this task
+        for t in graph.tasks() {
+            if !t.id.starts_with('.') {
+                continue;
+            }
+            if dot_tasks.iter().any(|(id, _, _)| *id == t.id) {
+                continue;
+            }
+            let refs_task = t.after.iter().any(|d| d == task_id)
+                || t.before.iter().any(|d| d == task_id);
+            if refs_task {
+                dot_tasks.push((t.id.clone(), "·".to_string(), t));
+            }
+        }
+
+        // Collect upstream (after) and downstream (before) deps
+        let task = match graph.get_task(task_id) {
+            Some(t) => t,
+            None => {
+                if dot_tasks.is_empty() {
+                    return Vec::new();
+                }
+                // Fall through with no deps
+                let mut lines = Vec::new();
+                lines.push("── Related Tasks ──".to_string());
+                let evals_dir = workgraph_dir.join("agency").join("evaluations");
+                for (id, icon, t) in &dot_tasks {
+                    let mut detail =
+                        format!("  {} {}  [{}]", icon, id, status_label(&t.status));
+                    if id.contains("evaluate-") {
+                        if let Some(score) = Self::read_eval_score(&evals_dir, task_id) {
+                            detail.push_str(&format!("  score: {:.2}", score));
+                        }
+                    }
+                    if let Some(ref agent) = t.assigned {
+                        detail.push_str(&format!("  {}", agent));
+                    }
+                    lines.push(detail);
+                }
+                lines.push(String::new());
+                return lines;
+            }
+        };
+
+        // Upstream deps (tasks this task depends on)
+        let mut upstream: Vec<(&str, &workgraph::graph::Task)> = Vec::new();
+        for dep_id in &task.after {
+            // Skip dot-tasks already shown above
+            if dot_tasks.iter().any(|(id, _, _)| id == dep_id) {
+                continue;
+            }
+            if let Some(dep_task) = graph.get_task(dep_id) {
+                upstream.push((dep_id, dep_task));
+            }
+        }
+
+        // Downstream deps (tasks that depend on this task, via before edges)
+        let mut downstream: Vec<(&str, &workgraph::graph::Task)> = Vec::new();
+        for dep_id in &task.before {
+            if dot_tasks.iter().any(|(id, _, _)| id == dep_id) {
+                continue;
+            }
+            if let Some(dep_task) = graph.get_task(dep_id) {
+                downstream.push((dep_id, dep_task));
+            }
+        }
+        // Also find tasks whose `after` includes this task (reverse lookup)
+        for t in graph.tasks() {
+            if t.id == task_id {
+                continue;
+            }
+            if t.id.starts_with('.') {
+                continue; // dot-tasks handled above
+            }
+            if downstream.iter().any(|(id, _)| *id == t.id) {
+                continue;
+            }
+            if t.after.iter().any(|d| d == task_id) {
+                downstream.push((&t.id, t));
+            }
+        }
+
+        let has_content =
+            !dot_tasks.is_empty() || !upstream.is_empty() || !downstream.is_empty();
+        if !has_content {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push("── Related Tasks ──".to_string());
+
+        let evals_dir = workgraph_dir.join("agency").join("evaluations");
+
+        // Dot-tasks first (system tasks)
+        for (id, icon, t) in &dot_tasks {
+            let mut detail = format!("  {} {}  [{}]", icon, id, status_label(&t.status));
+            if id.contains("evaluate-") {
+                if let Some(score) = Self::read_eval_score(&evals_dir, task_id) {
+                    detail.push_str(&format!("  score: {:.2}", score));
+                }
+            }
+            if let Some(ref agent) = t.assigned {
+                detail.push_str(&format!("  {}", agent));
+            }
+            lines.push(detail);
+        }
+
+        // Upstream deps
+        if !upstream.is_empty() {
+            for (id, t) in &upstream {
+                let detail = format!("  ← {}  [{}]", id, status_label(&t.status));
+                lines.push(detail);
+            }
+        }
+
+        // Downstream deps
+        if !downstream.is_empty() {
+            for (id, t) in &downstream {
+                let detail = format!("  → {}  [{}]", id, status_label(&t.status));
+                lines.push(detail);
+            }
+        }
+
+        lines.push(String::new());
+        lines
+    }
+
+    fn read_eval_score(evals_dir: &std::path::Path, task_id: &str) -> Option<f64> {
+        if !evals_dir.exists() {
+            return None;
+        }
+        let prefix = format!("eval-{}-", task_id);
+        let entries = std::fs::read_dir(evals_dir).ok()?;
+        let mut eval_files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .collect();
+        eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+        let entry = eval_files.first()?;
+        let content = std::fs::read_to_string(entry.path()).ok()?;
+        let eval: serde_json::Value = serde_json::from_str(&content).ok()?;
+        eval.get("score").and_then(|v| v.as_f64())
+    }
+
+    /// Extract the related task ID from the line at the current scroll position.
+    pub fn related_task_at_scroll(&self) -> Option<String> {
+        let detail = self.hud_detail.as_ref()?;
+        let line = detail.rendered_lines.get(self.hud_scroll)?;
+        parse_related_task_id(line)
+    }
+
+    /// Navigate to a related task's detail view.
+    pub fn navigate_to_related_task(&mut self, task_id: &str) {
+        self.load_hud_detail_for_task(task_id);
+    }
+
     /// Load HUD detail for the currently selected task.
     /// Called when selection changes or trace is toggled on.
     pub fn load_hud_detail(&mut self) {
@@ -2813,6 +3033,11 @@ impl VizApp {
             lines.push(format!("Agent: {}", agent));
         }
         lines.push(String::new());
+
+        // ── Related Tasks ──
+        let related_lines =
+            Self::build_related_tasks_lines(&graph, &task_id, &self.workgraph_dir);
+        lines.extend(related_lines);
 
         // ── Description ──
         if let Some(ref desc) = task.description {
@@ -3133,6 +3358,11 @@ impl VizApp {
             lines.push(format!("Agent: {}", agent));
         }
         lines.push(String::new());
+
+        // ── Related Tasks ──
+        let related_lines =
+            Self::build_related_tasks_lines(&graph, target_task_id, &self.workgraph_dir);
+        lines.extend(related_lines);
 
         // ── Description ──
         if let Some(ref desc) = task.description {

@@ -1346,6 +1346,7 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let is_md_header =
         |h: &str| h.contains("Description") || h.contains("Prompt") || h.contains("Output");
     let mut in_md_section = false;
+    let mut in_related_section = false;
     let mut md_buffer: Vec<String> = Vec::new();
 
     // Flush accumulated markdown content lines into styled, wrapped output.
@@ -1380,6 +1381,7 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         if is_header {
             flush_md(&mut md_buffer, &mut all_lines, wrap_width);
             in_md_section = is_md_header(line);
+            in_related_section = line.contains("Related Tasks");
             // Extract section name from the indicator-prefixed header.
             // Strip trailing annotations like " [R: raw JSON]" before extracting name.
             let base = line.split(" [").next().unwrap_or(line);
@@ -1408,6 +1410,22 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             flush_md(&mut md_buffer, &mut all_lines, wrap_width);
             all_lines.push(Line::from(""));
             in_md_section = false;
+            in_related_section = false;
+        } else if in_related_section {
+            // Color related task lines based on their [status] bracket.
+            let status_color = if line.contains("[done]") {
+                Color::Green
+            } else if line.contains("[in-progress]") {
+                Color::Yellow
+            } else if line.contains("[failed]") {
+                Color::Red
+            } else {
+                Color::DarkGray // open, blocked, waiting, abandoned
+            };
+            all_lines.push(Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(status_color),
+            )));
         } else if in_md_section {
             // Strip "  " indent; will re-add after markdown rendering.
             let content = line.strip_prefix("  ").unwrap_or(line);
