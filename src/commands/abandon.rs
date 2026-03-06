@@ -1,8 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
 
 #[cfg(test)]
 use super::graph_path;
@@ -10,34 +9,39 @@ use super::graph_path;
 use workgraph::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
+    let prev_assigned = super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(id)?;
 
-    let task = graph.get_task_mut_or_err(id)?;
+        if task.status == Status::Done {
+            anyhow::bail!("Task '{}' is already done and cannot be abandoned", id);
+        }
 
-    if task.status == Status::Done {
-        anyhow::bail!("Task '{}' is already done and cannot be abandoned", id);
-    }
+        if task.status == Status::Abandoned {
+            return Ok(None);
+        }
 
-    if task.status == Status::Abandoned {
+        let prev_assigned = task.assigned.clone();
+        task.status = Status::Abandoned;
+        task.failure_reason = reason.map(String::from);
+
+        let log_message = match reason {
+            Some(r) => format!("Task abandoned: {}", r),
+            None => "Task abandoned".to_string(),
+        };
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: task.assigned.clone(),
+            message: log_message,
+        });
+
+        Ok(Some(prev_assigned))
+    })?;
+
+    let Some(prev_assigned) = prev_assigned else {
         println!("Task '{}' is already abandoned", id);
         return Ok(());
-    }
-
-    let prev_assigned = task.assigned.clone();
-    task.status = Status::Abandoned;
-    task.failure_reason = reason.map(String::from);
-
-    let log_message = match reason {
-        Some(r) => format!("Task abandoned: {}", r),
-        None => "Task abandoned".to_string(),
     };
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: task.assigned.clone(),
-        message: log_message,
-    });
 
-    save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -62,8 +66,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
-
+    
     fn make_task(id: &str, title: &str) -> Task {
         Task {
             id: id.to_string(),

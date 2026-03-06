@@ -91,12 +91,8 @@ fn get_lock_path<P: AsRef<Path>>(graph_path: P) -> PathBuf {
     }
 }
 
-/// Load a work graph from a JSONL file
-/// Uses advisory file locking to prevent concurrent access corruption
-pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
-    let lock_path = get_lock_path(&path);
-    let _lock = FileLock::acquire(&lock_path)?;
-
+/// Internal: load graph without acquiring lock (caller must hold it).
+fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut graph = WorkGraph::new();
@@ -129,17 +125,18 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     }
 
     Ok(graph)
-    // Lock is automatically released when _lock goes out of scope
 }
 
-/// Save a work graph to a JSONL file
-/// Uses advisory file locking and atomic write (temp file + rename) to
-/// prevent data loss on crash.
-pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
-    let path = path.as_ref();
-    let lock_path = get_lock_path(path);
+/// Load a work graph from a JSONL file.
+/// Acquires an advisory file lock for the duration of the read.
+pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
+    let lock_path = get_lock_path(&path);
     let _lock = FileLock::acquire(&lock_path)?;
+    load_graph_inner(path)
+}
 
+/// Internal: save graph without acquiring lock (caller must hold it).
+fn save_graph_inner(graph: &WorkGraph, path: &Path) -> Result<(), ParseError> {
     // Write to a temporary file in the same directory, then atomically rename.
     // This ensures a crash mid-write leaves the original file intact.
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -180,7 +177,33 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
     }
 
     result
-    // Lock is automatically released when _lock goes out of scope
+}
+
+/// Save a work graph to a JSONL file.
+/// Uses advisory file locking and atomic write (temp file + rename) to
+/// prevent data loss on crash.
+pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    save_graph_inner(graph, path)
+}
+
+/// Atomically load, modify, and save the workgraph while holding flock across
+/// the entire read-modify-write cycle. Prevents TOCTOU races.
+pub fn mutate_graph<P, F, T, E>(path: P, f: F) -> Result<T, E>
+where
+    P: AsRef<Path>,
+    F: FnOnce(&mut WorkGraph) -> Result<T, E>,
+    E: From<ParseError>,
+{
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    let mut graph = load_graph_inner(path)?;
+    let result = f(&mut graph)?;
+    save_graph_inner(&graph, path)?;
+    Ok(result)
 }
 
 #[cfg(test)]

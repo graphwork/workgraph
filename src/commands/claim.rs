@@ -1,18 +1,21 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
+struct ClaimResult {
+    prev_status: String,
+    prev_assigned: Option<String>,
+}
+
 /// Claim a task for work: sets status to InProgress, optionally assigns an actor
 pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
+    let result = super::mutate_workgraph(dir, |graph| {
     let task = graph.get_task_mut_or_err(id)?;
 
     // Only allow claiming tasks that are Open or Blocked
@@ -76,7 +79,9 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         message: log_message,
     });
 
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    Ok(ClaimResult { prev_status, prev_assigned })
+    })?;
+
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -86,7 +91,7 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         "claim",
         Some(id),
         actor,
-        serde_json::json!({ "prev_status": prev_status, "prev_assigned": prev_assigned }),
+        serde_json::json!({ "prev_status": result.prev_status, "prev_assigned": result.prev_assigned }),
         config.log.rotation_threshold,
     );
 
@@ -100,38 +105,39 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
 
 /// Unclaim a task: sets status back to Open and clears assigned
 pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
+    let prev_assigned = super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(id)?;
 
-    let task = graph.get_task_mut_or_err(id)?;
-
-    // Only allow unclaiming tasks that are InProgress (or Open, as a no-op).
+        // Only allow unclaiming tasks that are InProgress (or Open, as a no-op).
     // Terminal states should not be reverted via unclaim.
-    match task.status {
-        Status::InProgress | Status::Open | Status::Blocked => {}
-        Status::Waiting => anyhow::bail!(
-            "Cannot claim task '{}': task is Waiting. Use 'wg resume' first.",
-            id
-        ),
-        Status::Done => anyhow::bail!("Cannot unclaim task '{}': task is Done", id),
-        Status::Failed => anyhow::bail!("Cannot unclaim task '{}': task is Failed", id),
-        Status::Abandoned => anyhow::bail!("Cannot unclaim task '{}': task is Abandoned", id),
-    }
+        match task.status {
+            Status::InProgress | Status::Open | Status::Blocked => {}
+            Status::Waiting => anyhow::bail!(
+                "Cannot claim task '{}': task is Waiting. Use 'wg resume' first.",
+                id
+            ),
+            Status::Done => anyhow::bail!("Cannot unclaim task '{}': task is Done", id),
+            Status::Failed => anyhow::bail!("Cannot unclaim task '{}': task is Failed", id),
+            Status::Abandoned => anyhow::bail!("Cannot unclaim task '{}': task is Abandoned", id),
+        }
 
-    let prev_assigned = task.assigned.clone();
-    task.status = Status::Open;
-    task.assigned = None;
+        let prev_assigned = task.assigned.clone();
+        task.status = Status::Open;
+        task.assigned = None;
 
-    let log_message = match &prev_assigned {
-        Some(actor_id) => format!("Task unclaimed (was assigned to @{})", actor_id),
-        None => "Task unclaimed".to_string(),
-    };
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: prev_assigned.clone(),
-        message: log_message,
-    });
+        let log_message = match &prev_assigned {
+            Some(actor_id) => format!("Task unclaimed (was assigned to @{})", actor_id),
+            None => "Task unclaimed".to_string(),
+        };
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: prev_assigned.clone(),
+            message: log_message,
+        });
 
-    save_graph(&graph, &path).context("Failed to save graph")?;
+        Ok(prev_assigned)
+    })?;
+
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -155,6 +161,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
     use workgraph::graph::{Node, Task, WorkGraph};
+    use workgraph::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
