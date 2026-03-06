@@ -448,9 +448,9 @@ The agent wrote: fn main() { println!("Hello, world!"); }
 Respond with ONLY a JSON object:
 {"score": <0.0-1.0>, "dimensions": {"correctness": <0.0-1.0>, "completeness": <0.0-1.0>}, "notes": "<brief assessment>"}"#;
 
-    let output = Command::new("claude")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .env_remove("CLAUDECODE")
+    let mut cmd = Command::new("claude");
+    workgraph::env_sanitize::sanitize_command(&mut cmd);
+    let output = cmd
         .arg("--model")
         .arg(HAIKU_MODEL)
         .arg("--print")

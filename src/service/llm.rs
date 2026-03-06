@@ -59,17 +59,16 @@ pub fn run_lightweight_llm_call(
 }
 
 fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
-    let output = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
+    let mut cmd = process::Command::new("timeout");
+    cmd.arg(format!("{}s", timeout_secs))
         .arg("claude")
         .arg("--model")
         .arg(model)
         .arg("--print")
         .arg("--dangerously-skip-permissions")
-        .arg(prompt)
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .output()
+        .arg(prompt);
+    crate::env_sanitize::sanitize_command(&mut cmd);
+    let output = cmd.output()
         .context("Failed to run claude CLI for lightweight LLM call")?;
 
     if !output.status.success() {

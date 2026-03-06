@@ -1080,8 +1080,7 @@ fn spawn_claude_process(
         .context("Failed to write coordinator system prompt file")?;
 
     let mut cmd = Command::new("claude");
-    cmd.env_remove("CLAUDECODE");
-    cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+    workgraph::env_sanitize::sanitize_command(&mut cmd);
     cmd.args([
         "--print",
         "--input-format",

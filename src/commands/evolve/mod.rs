@@ -47,13 +47,9 @@ pub fn run(
     }
 
     // Pre-flight: check that claude CLI is available
-    if Command::new("claude")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .env_remove("CLAUDECODE")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
+    let mut version_check = Command::new("claude");
+    workgraph::env_sanitize::sanitize_command(&mut version_check);
+    if version_check.arg("--version").output().is_err() {
         bail!(
             "The 'claude' CLI is required for evolve but was not found in PATH.\n\
              Install it from https://docs.anthropic.com/en/docs/claude-code and ensure it is on your PATH."
@@ -172,9 +168,9 @@ pub fn run(
         model
     );
 
-    let output = Command::new("claude")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .env_remove("CLAUDECODE")
+    let mut cmd = Command::new("claude");
+    workgraph::env_sanitize::sanitize_command(&mut cmd);
+    let output = cmd
         .arg("--model")
         .arg(&model)
         .arg("--print")

@@ -718,15 +718,14 @@ fn write_wrapper_script(
         }
     };
 
+    let env_unset = workgraph::env_sanitize::shell_unset_clause();
     let wrapper_script = format!(
         r#"#!/bin/bash
 TASK_ID={escaped_task_id}
 OUTPUT_FILE={escaped_output_file}
 
 # Allow nested Claude Code sessions (spawned agents are independent)
-unset CLAUDECODE
-unset CLAUDE_CODE_ENTRYPOINT
-{timeout_note}
+{env_unset}{timeout_note}
 {stream_init}
 # Run the agent command
 {run_command}

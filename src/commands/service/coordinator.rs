@@ -1599,11 +1599,11 @@ fn spawn_eval_inline(
         .unwrap_or_default();
 
     // Single script: run eval, optionally run FLIP, record special agent perf, then mark done/failed
+    let env_unset = workgraph::env_sanitize::shell_unset_clause();
     let script = if let Some(ref sa_id) = special_agent_verified {
         let escaped_sa_id = sa_id.replace('\'', "'\\''");
         format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-{eval_cmd} >> '{escaped_output}' 2>&1
+            r#"{env_unset}{eval_cmd} >> '{escaped_output}' 2>&1
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then{flip_fragment}
     wg evaluate record '{escaped_eval_id}' 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
@@ -1616,8 +1616,7 @@ exit $EXIT_CODE"#,
         )
     } else {
         format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-{eval_cmd} >> '{escaped_output}' 2>&1
+            r#"{env_unset}{eval_cmd} >> '{escaped_output}' 2>&1
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then{flip_fragment}
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
