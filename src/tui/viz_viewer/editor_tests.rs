@@ -931,3 +931,207 @@ mod tui_editor_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tui_cursor_tests {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::collections::HashMap;
+
+    use crate::commands::viz::VizOutput;
+    use crate::tui::viz_viewer::render;
+    use crate::tui::viz_viewer::state::{
+        FocusedPanel, InputMode, InspectorSubFocus, RightPanelTab, VizApp, editor_text,
+    };
+
+    fn make_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::from("(empty graph)"),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+        };
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.mouse_enabled = true;
+        app
+    }
+
+    fn enter_chat(app: &mut VizApp) {
+        app.input_mode = InputMode::ChatInput;
+        app.chat_input_dismissed = false;
+        app.inspector_sub_focus = InspectorSubFocus::TextEntry;
+    }
+
+    fn send_key(app: &mut VizApp, code: KeyCode, mods: KeyModifiers) {
+        use crossterm::event::KeyEvent;
+        match code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                app.chat_input_dismissed = true;
+                app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            }
+            KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => {
+                crate::tui::viz_viewer::state::editor_clear(&mut app.chat.editor);
+                app.input_mode = InputMode::Normal;
+                app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            }
+            _ => {
+                if code == KeyCode::Enter
+                    && (mods.contains(KeyModifiers::SHIFT) || mods.contains(KeyModifiers::ALT))
+                {
+                    app.editor_handler.on_key_event(
+                        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                        &mut app.chat.editor,
+                    );
+                } else {
+                    app.editor_handler
+                        .on_key_event(KeyEvent::new(code, mods), &mut app.chat.editor);
+                }
+            }
+        }
+    }
+
+    fn type_str(app: &mut VizApp, s: &str) {
+        for ch in s.chars() {
+            send_key(app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+    }
+
+    fn find_cursor(app: &mut VizApp, w: u16, h: u16) -> Option<(u16, u16)> {
+        use ratatui::style::Color;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render::draw(frame, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].bg == Color::White {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
+    fn paste_chat(app: &mut VizApp, text: &str) {
+        use crate::tui::viz_viewer::event::dispatch_event;
+        use crossterm::event::Event;
+        dispatch_event(app, Event::Paste(text.to_string()));
+    }
+
+    #[test]
+    fn cursor_col_advances_each_char() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        assert_eq!(app.chat.editor.cursor.col, 0);
+        for (i, ch) in "abcdef".chars().enumerate() {
+            send_key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+            assert_eq!(app.chat.editor.cursor.col, i + 1, "after '{}'", ch);
+        }
+        assert_eq!(editor_text(&app.chat.editor), "abcdef");
+    }
+
+    #[test]
+    fn cursor_advances_right_visually() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        let init = find_cursor(&mut app, 120, 40).expect("cursor visible");
+        let mut px = init.0;
+        for (i, ch) in "abcdef".chars().enumerate() {
+            send_key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+            let p = find_cursor(&mut app, 120, 40)
+                .unwrap_or_else(|| panic!("cursor visible after '{}'", ch));
+            assert_eq!(p.0, px + 1, "char {}: visual cursor right", i + 1);
+            px = p.0;
+        }
+    }
+
+    #[test]
+    fn cursor_mid_insert() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        type_str(&mut app, "abc");
+        send_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 1);
+        send_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 2, "cursor right after mid-insert");
+        assert_eq!(editor_text(&app.chat.editor), "aXbc");
+    }
+
+    #[test]
+    fn cursor_at_start_insert() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        type_str(&mut app, "hello");
+        send_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 0);
+        send_key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 1);
+        assert_eq!(editor_text(&app.chat.editor), "Zhello");
+    }
+
+    #[test]
+    fn cursor_col_tracks_100_chars() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        for i in 0..100 {
+            send_key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+            assert_eq!(
+                app.chat.editor.cursor.col,
+                i + 1,
+                "cursor.col after {} chars",
+                i + 1
+            );
+        }
+        assert_eq!(editor_text(&app.chat.editor).len(), 100);
+    }
+
+    #[test]
+    fn cursor_unicode() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        send_key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 1);
+        send_key(&mut app, KeyCode::Char('\u{00e9}'), KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 2);
+        send_key(&mut app, KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(app.chat.editor.cursor.col, 3);
+        assert_eq!(editor_text(&app.chat.editor), "a\u{00e9}b");
+    }
+
+    #[test]
+    fn paste_cursor_after_text() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        paste_chat(&mut app, "hello");
+        assert_eq!(editor_text(&app.chat.editor), "hello");
+        assert_eq!(app.chat.editor.cursor.col, 5, "cursor AFTER pasted text");
+    }
+
+    #[test]
+    fn paste_then_type_appends() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        paste_chat(&mut app, "abc");
+        send_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(editor_text(&app.chat.editor), "abcX");
+    }
+
+    #[test]
+    fn paste_with_newline() {
+        let mut app = make_app();
+        enter_chat(&mut app);
+        paste_chat(&mut app, "line1\nline2");
+        let text = editor_text(&app.chat.editor);
+        assert!(text.contains("line1"));
+        assert!(text.contains("line2"));
+    }
+}

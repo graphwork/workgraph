@@ -2,9 +2,11 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::parser::{load_graph, save_graph};
 
+#[cfg(test)]
 use super::graph_path;
+#[cfg(test)]
+use workgraph::parser::{load_graph, save_graph};
 
 /// Record an evaluation against the assigner special agent's performance.
 ///
@@ -69,18 +71,12 @@ fn record_assigner_evaluation(
 /// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
 /// `wg assign <task-id> --clear`       — remove agent assignment
 pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> Result<()> {
-    let path = graph_path(dir);
-
-    if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
-    }
-
     if clear {
-        return run_clear(dir, &path, task_id);
+        return run_clear(dir, task_id);
     }
 
     match agent_hash {
-        Some(hash) => run_explicit_assign(dir, &path, task_id, hash),
+        Some(hash) => run_explicit_assign(dir, task_id, hash),
         None => {
             anyhow::bail!(
                 "Usage: wg assign <task-id> <agent-hash>\n\
@@ -91,11 +87,11 @@ pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> 
 }
 
 /// Explicitly assign an agent (by hash or prefix) to a task.
-fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str) -> Result<()> {
+fn run_explicit_assign(dir: &Path, task_id: &str, agent_hash: &str) -> Result<()> {
     let agency_dir = dir.join("agency");
     let agents_dir = agency_dir.join("cache/agents");
 
-    // Resolve agent by prefix
+    // Resolve agent by prefix (outside lock — doesn't touch graph)
     let agent = agency::find_agent_by_prefix(&agents_dir, agent_hash).with_context(|| {
         let available = list_available_agent_ids(&agents_dir);
         let hint = if available.is_empty() {
@@ -106,12 +102,11 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         format!("No agent matching '{}'. {}", agent_hash, hint)
     })?;
 
-    let mut graph = load_graph(path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.agent = Some(agent.id.clone());
-    save_graph(&graph, path).context("Failed to save graph")?;
+    super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(task_id)?;
+        task.agent = Some(agent.id.clone());
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -188,14 +183,13 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
 }
 
 /// Clear the agent assignment from a task.
-fn run_clear(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
-    let mut graph = load_graph(path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    let prev_agent = task.agent.clone();
-    task.agent = None;
-    save_graph(&graph, path).context("Failed to save graph")?;
+fn run_clear(dir: &Path, task_id: &str) -> Result<()> {
+    let prev_agent = super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(task_id)?;
+        let prev_agent = task.agent.clone();
+        task.agent = None;
+        Ok(prev_agent)
+    })?;
     super::notify_graph_changed(dir);
 
     // Record operation
