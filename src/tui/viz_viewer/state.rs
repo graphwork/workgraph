@@ -131,6 +131,10 @@ pub enum AnimationKind {
     EdgeChange,
     /// A previously hidden task was revealed (e.g. toggling system task visibility).
     Revealed,
+    /// A lifecycle phase transition: parent entered evaluation phase.
+    Evaluation,
+    /// A lifecycle phase transition: parent entered verification phase.
+    Verification,
 }
 
 /// A single active flash-and-fade animation on a task.
@@ -218,7 +222,18 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
         AnimationKind::Revealed => (120, 120, 140),  // soft gray-blue
+        AnimationKind::Evaluation => (80, 180, 220),  // cyan (matches ANSI 81)
+        AnimationKind::Verification => (220, 190, 60), // gold (matches ANSI 220)
     }
+}
+
+/// Active lifecycle phase for a task (derived from system task states).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ActivePhase {
+    None,
+    Assigning,
+    Evaluating,
+    Verifying,
 }
 
 /// Lightweight snapshot of per-task state for change detection.
@@ -230,6 +245,8 @@ pub struct TaskSnapshot {
     pub token_bucket: u64,
     /// Number of dependency edges (after).
     pub edge_count: usize,
+    /// Current lifecycle phase (from system task states).
+    pub active_phase: ActivePhase,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1296,6 +1313,8 @@ pub struct VizApp {
     /// Set of task IDs in the same SCC as the currently selected task.
     /// Empty if the selected task is not in any cycle.
     pub cycle_set: HashSet<String>,
+    /// Active lifecycle phase annotations: parent_task_id → list of phases.
+    pub phase_annotations: HashMap<String, Vec<crate::commands::viz::PhaseAnnotation>>,
 
     // ── HUD (info panel) ──
     /// Loaded HUD detail for the currently selected task.
@@ -1538,6 +1557,7 @@ impl VizApp {
             char_edge_map: std::collections::HashMap::new(),
             cycle_members: HashMap::new(),
             cycle_set: HashSet::new(),
+            phase_annotations: HashMap::new(),
             hud_detail: None,
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
@@ -1805,6 +1825,7 @@ impl VizApp {
                 self.char_edge_map.clear();
                 self.cycle_members.clear();
                 self.cycle_set.clear();
+                self.phase_annotations.clear();
                 self.update_scroll_bounds();
             }
         }
@@ -1812,7 +1833,9 @@ impl VizApp {
 
     fn generate_viz(&self) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
-        opts.show_internal = self.show_system_tasks;
+        // System tasks are never shown as separate nodes in the dot view.
+        // Their lifecycle state is shown as phase indicators on the parent node.
+        opts.show_internal = false;
         crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
     }
 
@@ -2432,6 +2455,28 @@ impl VizApp {
             }
         }
 
+        // Build phase_map: parent_task_id → ActivePhase for in-progress system tasks.
+        let phase_map: HashMap<String, ActivePhase> = {
+            let mut map = HashMap::new();
+            for task in graph.tasks() {
+                if task.status != Status::InProgress {
+                    continue;
+                }
+                let id = &task.id;
+                if let Some(parent_id) = crate::commands::viz::system_task_parent_id(id) {
+                    let phase = if id.starts_with(".assign-") || id.starts_with("assign-") {
+                        ActivePhase::Assigning
+                    } else if id.starts_with(".verify-") || id.starts_with("verify-") {
+                        ActivePhase::Verifying
+                    } else {
+                        ActivePhase::Evaluating
+                    };
+                    map.insert(parent_id, phase);
+                }
+            }
+            map
+        };
+
         let mut new_snapshots: HashMap<String, TaskSnapshot> = HashMap::new();
         let now = Instant::now();
 
@@ -2462,11 +2507,17 @@ impl VizApp {
             // Build snapshot for change detection.
             let total_tokens = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
 
+            let active_phase = phase_map
+                .get(&task.id)
+                .copied()
+                .unwrap_or(ActivePhase::None);
+
             let snapshot = TaskSnapshot {
                 status: task.status,
                 assigned: task.assigned.clone(),
                 token_bucket: total_tokens / TOKEN_DEBOUNCE_BUCKET,
                 edge_count: task.after.len(),
+                active_phase,
             };
 
             // Compare with previous snapshot and create animations for changes.
@@ -2518,6 +2569,26 @@ impl VizApp {
                             start: now,
                             flash_color: flash_color_for_kind(AnimationKind::ContentChange),
                             kind: AnimationKind::ContentChange,
+                        },
+                    );
+                }
+                // Lifecycle phase changed (e.g. assigning → evaluating → verifying).
+                else if old.active_phase != snapshot.active_phase
+                    && snapshot.active_phase != ActivePhase::None
+                    && !self.splash_animations.contains_key(&task.id)
+                {
+                    let anim_kind = match snapshot.active_phase {
+                        ActivePhase::Assigning => AnimationKind::Assignment,
+                        ActivePhase::Evaluating => AnimationKind::Evaluation,
+                        ActivePhase::Verifying => AnimationKind::Verification,
+                        ActivePhase::None => unreachable!(),
+                    };
+                    self.splash_animations.insert(
+                        task.id.clone(),
+                        Animation {
+                            start: now,
+                            flash_color: flash_color_for_kind(anim_kind),
+                            kind: anim_kind,
                         },
                     );
                 }
@@ -3800,6 +3871,7 @@ impl VizApp {
             downstream_set: HashSet::new(),
             char_edge_map: viz.char_edge_map.clone(),
             cycle_members: viz.cycle_members.clone(),
+            phase_annotations: viz.phase_annotations.clone(),
             cycle_set: HashSet::new(),
             hud_detail: None,
             hud_scroll: 0,
@@ -6900,6 +6972,7 @@ mod hud_tests {
             reverse_edges: HashMap::new(),
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
+            phase_annotations: HashMap::new(),
         };
 
         let mut app = VizApp::from_viz_output_for_test(&empty_viz);
