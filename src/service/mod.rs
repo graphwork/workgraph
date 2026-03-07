@@ -6,6 +6,7 @@
 //! - Executor configuration for spawning agents
 //! - Agent registry for tracking running agents
 
+pub mod compactor;
 pub mod executor;
 pub mod llm;
 pub mod registry;

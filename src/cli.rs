@@ -335,6 +335,10 @@ pub enum Commands {
         /// Reason for abandonment
         #[arg(long)]
         reason: Option<String>,
+
+        /// Task IDs that supersede/replace this task (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        superseded_by: Vec<String>,
     },
 
     /// Retry a failed task (resets to open status)

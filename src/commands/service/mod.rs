@@ -1403,6 +1403,24 @@ pub fn run_daemon(
                 }
             }
 
+            // Compaction: distill graph state into context.md at configured intervals
+            {
+                let config = workgraph::config::Config::load_or_default(&dir);
+                if workgraph::service::compactor::should_compact(&dir, coord_state.ticks, &config) {
+                    match workgraph::service::compactor::run_compaction(&dir, coord_state.ticks) {
+                        Ok(path) => {
+                            logger.info(&format!(
+                                "Compaction complete → {}",
+                                path.display()
+                            ));
+                        }
+                        Err(e) => {
+                            logger.warn(&format!("Compaction failed: {}", e));
+                        }
+                    }
+                }
+            }
+
             // Liveness detection: check for sleep gaps and stuck agents
             {
                 let config = workgraph::config::Config::load_or_default(&dir);

@@ -407,6 +407,8 @@ pub enum DispatchRole {
     Creator,
     /// Failure diagnostician for self-healing
     Diagnostician,
+    /// Compactor: distills graph state into context.md
+    Compactor,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -424,6 +426,7 @@ impl std::fmt::Display for DispatchRole {
             Self::Triage => write!(f, "triage"),
             Self::Creator => write!(f, "creator"),
             Self::Diagnostician => write!(f, "diagnostician"),
+            Self::Compactor => write!(f, "compactor"),
         }
     }
 }
@@ -445,9 +448,10 @@ impl std::str::FromStr for DispatchRole {
             "triage" => Ok(Self::Triage),
             "creator" => Ok(Self::Creator),
             "diagnostician" => Ok(Self::Diagnostician),
+            "compactor" => Ok(Self::Compactor),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, system_evaluator, \
-                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator, diagnostician",
+                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator, diagnostician, compactor",
                 s
             )),
         }
@@ -468,6 +472,7 @@ impl DispatchRole {
         Self::Triage,
         Self::Creator,
         Self::Diagnostician,
+        Self::Compactor,
     ];
 }
 
@@ -523,6 +528,9 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostician: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compactor: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -541,6 +549,7 @@ impl ModelRoutingConfig {
             DispatchRole::Triage => self.triage.as_ref(),
             DispatchRole::Creator => self.creator.as_ref(),
             DispatchRole::Diagnostician => self.diagnostician.as_ref(),
+            DispatchRole::Compactor => self.compactor.as_ref(),
         }
     }
 
@@ -559,6 +568,7 @@ impl ModelRoutingConfig {
             DispatchRole::Triage => &mut self.triage,
             DispatchRole::Creator => &mut self.creator,
             DispatchRole::Diagnostician => &mut self.diagnostician,
+            DispatchRole::Compactor => &mut self.compactor,
         }
     }
 
@@ -651,6 +661,7 @@ impl Config {
         // even without explicit config, while keeping defaults in one place.
         let tier_default = match role {
             DispatchRole::Triage => Some("haiku"),
+            DispatchRole::Compactor => Some("haiku"),
             DispatchRole::FlipComparison => Some("haiku"),
             DispatchRole::FlipInference => Some("sonnet"),
             DispatchRole::Verification => Some("opus"),
@@ -1130,6 +1141,14 @@ pub struct CoordinatorConfig {
     /// Token budget multiplier for remediation (e.g. 2.0 = 2x original cost)
     #[serde(default = "default_remediation_budget_multiplier")]
     pub remediation_budget_multiplier: f64,
+
+    /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
+    #[serde(default = "default_compactor_interval")]
+    pub compactor_interval: u32,
+
+    /// Provenance ops growth threshold that triggers compaction (default: 100)
+    #[serde(default = "default_compactor_ops_threshold")]
+    pub compactor_ops_threshold: usize,
 }
 
 fn default_max_agents() -> usize {
@@ -1164,6 +1183,14 @@ fn default_agent_timeout() -> String {
     "30m".to_string()
 }
 
+fn default_compactor_interval() -> u32 {
+    5
+}
+
+fn default_compactor_ops_threshold() -> usize {
+    100
+}
+
 impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
@@ -1179,6 +1206,8 @@ impl Default for CoordinatorConfig {
             auto_remediate: false,
             max_remediation_attempts: default_max_remediation_attempts(),
             remediation_budget_multiplier: default_remediation_budget_multiplier(),
+            compactor_interval: default_compactor_interval(),
+            compactor_ops_threshold: default_compactor_ops_threshold(),
         }
     }
 }
