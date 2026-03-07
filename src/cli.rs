@@ -151,6 +151,10 @@ pub enum Commands {
         #[arg(long, alias = "ready")]
         immediate: bool,
 
+        /// Explicitly mark task as having no dependencies (skip draft mode in agent context)
+        #[arg(long)]
+        independent: bool,
+
         /// Delay before task becomes ready (e.g., 30s, 5m, 1h, 1d)
         #[arg(long)]
         delay: Option<String>,
@@ -268,6 +272,21 @@ pub enum Commands {
         /// Skip the verify command gate (human escape hatch, blocked when WG_AGENT_ID is set)
         #[arg(long)]
         skip_verify: bool,
+    },
+
+    /// Decompose a task into subtasks (atomic: creates subtasks + blocks parent)
+    Decompose {
+        /// Parent task ID to decompose
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Subtask titles (repeat for multiple subtasks)
+        #[arg(long = "subtask", required = true, num_args = 1)]
+        subtasks: Vec<String>,
+
+        /// Finalization guidance to append to the parent's description
+        #[arg(long = "finalize-description")]
+        finalize_description: Option<String>,
     },
 
     /// Mark a task as failed (can be retried)
@@ -1244,6 +1263,9 @@ pub enum Commands {
         #[arg(long)]
         idle: bool,
     },
+
+    /// Live summary of what every active agent is doing
+    Activity,
 
     /// Kill running agent(s)
     Kill {
@@ -2456,6 +2478,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
+        Commands::Decompose { .. } => "decompose",
         Commands::Fail { .. } => "fail",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
@@ -2523,6 +2546,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Config { .. } => "config",
         Commands::DeadAgents { .. } => "dead-agents",
         Commands::Agents { .. } => "agents",
+        Commands::Activity => "activity",
         Commands::Kill { .. } => "kill",
         Commands::Service { .. } => "service",
         Commands::Tui { .. } => "tui",
@@ -2589,6 +2613,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Config { .. }
             | Commands::DeadAgents { .. }
             | Commands::Agents { .. }
+            | Commands::Activity
             | Commands::Kill { .. }
             | Commands::Service { .. }
             | Commands::Cost { .. }

@@ -1,4 +1,5 @@
 pub mod abandon;
+pub mod activity;
 pub mod add;
 pub mod agency_create;
 pub mod agency_init;
@@ -30,6 +31,7 @@ pub mod cost;
 pub mod critical_path;
 pub mod cycles;
 pub mod dead_agents;
+pub mod decompose;
 pub mod discover;
 pub mod done;
 pub mod edit;

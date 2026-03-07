@@ -325,20 +325,26 @@ fn main() -> Result<()> {
             exec_mode,
             paused,
             immediate,
+            independent,
             delay,
             not_before,
         } => {
             // Determine effective paused state:
             // - --paused always pauses
-            // - --immediate always skips draft mode
-            // - Default: paused (draft) in interactive mode, immediate in agent context
+            // - --immediate or --independent always skips draft mode
+            // - Agent context: immediate only if deps are specified or --independent
+            //   (prevents scheduling races when agents create tasks then add deps later)
+            // - Interactive: always draft
             let effective_paused = if paused {
                 true
-            } else if immediate {
+            } else if immediate || independent {
                 false
+            } else if std::env::var("WG_AGENT_ID").is_ok() {
+                // Agent context: draft if no deps and not independent
+                after.is_empty()
             } else {
-                // Draft by default for interactive use; agents get immediate mode
-                std::env::var("WG_AGENT_ID").is_err()
+                // Interactive: always draft
+                true
             };
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -441,6 +447,16 @@ fn main() -> Result<()> {
             converged,
             skip_verify,
         } => commands::done::run(&workgraph_dir, &id, converged, skip_verify),
+        Commands::Decompose {
+            id,
+            subtasks,
+            finalize_description,
+        } => commands::decompose::run(
+            &workgraph_dir,
+            &id,
+            &subtasks,
+            finalize_description.as_deref(),
+        ),
         Commands::Fail {
             id,
             reason,
@@ -1656,6 +1672,7 @@ fn main() -> Result<()> {
             };
             commands::agents::run(&workgraph_dir, filter, cli.json)
         }
+        Commands::Activity => commands::activity::run(&workgraph_dir, cli.json),
         Commands::Kill { agent, force, all } => {
             if all {
                 commands::kill::run_all(&workgraph_dir, force, cli.json)
