@@ -6,7 +6,7 @@ use workgraph::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::load_graph;
 
 use super::graph_path;
 
@@ -174,6 +174,7 @@ pub fn run(
     // 7. Build ID map and create tasks
     let mut id_map: HashMap<String, String> = HashMap::new(); // template_id -> real task_id
     let mut created_ids: Vec<String> = Vec::new();
+    let mut tasks_to_add: Vec<Task> = Vec::new();
 
     // Pre-compute all task IDs so loops_to can reference forward
     for template in &task_templates {
@@ -282,16 +283,7 @@ pub fn run(
                 exec_mode: None,
             };
 
-            graph.add_node(Node::Task(task));
-
-            // Maintain bidirectional consistency: update blocks on blocker tasks
-            for dep in &real_after {
-                if let Some(blocker) = graph.get_task_mut(dep)
-                    && !blocker.before.contains(&task_id)
-                {
-                    blocker.before.push(task_id.clone());
-                }
-            }
+            tasks_to_add.push(task);
         }
 
         created_ids.push(task_id);
@@ -317,8 +309,24 @@ pub fn run(
         return Ok(());
     }
 
-    // Save graph
-    save_graph(&graph, &graph_file).context("Failed to save graph")?;
+    // Save graph atomically with all new tasks
+    drop(graph);
+    workgraph::parser::mutate_graph(&graph_file, |graph| -> Result<()> {
+        for task in tasks_to_add {
+            let task_id = task.id.clone();
+            let after_deps = task.after.clone();
+            graph.add_node(Node::Task(task));
+            // Maintain bidirectional consistency: update blocks on blocker tasks
+            for dep in &after_deps {
+                if let Some(blocker) = graph.get_task_mut(dep)
+                    && !blocker.before.contains(&task_id)
+                {
+                    blocker.before.push(task_id.clone());
+                }
+            }
+        }
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     // Record provenance
@@ -375,14 +383,17 @@ pub fn run(
             created_ids.len(),
             func.id
         );
+        let saved_graph =
+            workgraph::parser::load_graph(&graph_file).context("Failed to reload graph")?;
         for task_id in &created_ids {
-            let task = graph.get_task(task_id).unwrap();
-            let blocked_str = if task.after.is_empty() {
-                String::new()
-            } else {
-                format!(" (blocked by {})", task.after.join(", "))
-            };
-            println!("  {} (Open{})", task_id, blocked_str);
+            if let Some(task) = saved_graph.get_task(task_id) {
+                let blocked_str = if task.after.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (blocked by {})", task.after.join(", "))
+                };
+                println!("  {} (Open{})", task_id, blocked_str);
+            }
         }
         println!();
         super::print_service_hint(dir);
@@ -642,6 +653,7 @@ mod tests {
     use tempfile::TempDir;
     use workgraph::function::*;
     use workgraph::graph::WorkGraph;
+    use workgraph::parser::save_graph;
 
     fn sample_function() -> TraceFunction {
         TraceFunction {

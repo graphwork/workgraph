@@ -1403,3 +1403,175 @@ fn test_blocked_json_nonexistent_fails_gracefully() {
         "blocked of nonexistent task should fail"
     );
 }
+
+// ===========================================================================
+// Spawn-time dep re-check (atomic task addition defense)
+// ===========================================================================
+
+/// When a task has an unsatisfied dep at spawn time (e.g., dep was added after
+/// the coordinator's readiness check), the spawn should fail atomically.
+#[test]
+fn test_spawn_fails_with_unsatisfied_dep() {
+    let tmp = TempDir::new().unwrap();
+
+    // Create a task with an unsatisfied dependency
+    let mut blocker = make_task("blocker", "Blocker task", Status::Open);
+    blocker.status = Status::Open; // NOT done
+
+    let mut task = make_task("my-task", "Task with dep", Status::Open);
+    task.after = vec!["blocker".to_string()];
+    task.exec = Some("echo hello".to_string()); // shell exec
+
+    let wg_dir = setup_workgraph(&tmp, vec![blocker, task]);
+
+    // Try to spawn — should fail because blocker is not done
+    let output = wg_cmd(
+        &wg_dir,
+        &["spawn", "my-task", "--executor", "shell"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        !output.status.success(),
+        "spawn should fail when task has unsatisfied dep. stderr: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("unsatisfied dep") || stderr.contains("blocker"),
+        "error should mention unsatisfied dep. stderr: {}",
+        stderr
+    );
+}
+
+/// When all deps are satisfied, spawn should succeed (task goes to in-progress).
+#[test]
+fn test_spawn_succeeds_with_satisfied_deps() {
+    let tmp = TempDir::new().unwrap();
+
+    let mut blocker = make_task("blocker", "Blocker task", Status::Done);
+    blocker.status = Status::Done;
+
+    let mut task = make_task("dep-task", "Task with satisfied dep", Status::Open);
+    task.after = vec!["blocker".to_string()];
+    task.exec = Some("echo done".to_string());
+
+    let wg_dir = setup_workgraph(&tmp, vec![blocker, task]);
+
+    let output = wg_cmd(
+        &wg_dir,
+        &["spawn", "dep-task", "--executor", "shell"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        output.status.success(),
+        "spawn should succeed when deps are satisfied. stderr: {}",
+        stderr
+    );
+
+    // Verify task is now in-progress
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("dep-task").unwrap();
+    assert_eq!(task.status, Status::InProgress);
+}
+
+// ===========================================================================
+// --independent flag and agent draft-by-default
+// ===========================================================================
+
+/// In agent context, `wg add` without --after or --independent should create a paused task.
+#[test]
+fn test_agent_add_no_deps_creates_paused_task() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    // Simulate agent context with WG_AGENT_ID env var
+    let output = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args(["add", "No deps task", "--id", "no-deps"])
+        .env("WG_AGENT_ID", "agent-test")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "wg add should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Task should be paused (draft mode)
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("no-deps").unwrap();
+    assert!(
+        task.paused,
+        "agent-created task without deps should be paused (draft mode)"
+    );
+}
+
+/// In agent context, `wg add --after dep` should create an immediate (not paused) task.
+#[test]
+fn test_agent_add_with_deps_creates_immediate_task() {
+    let tmp = TempDir::new().unwrap();
+
+    let blocker = make_task("dep", "Dependency", Status::Open);
+    let wg_dir = setup_workgraph(&tmp, vec![blocker]);
+
+    let output = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args(["add", "Has deps task", "--id", "has-deps", "--after", "dep"])
+        .env("WG_AGENT_ID", "agent-test")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "wg add should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("has-deps").unwrap();
+    assert!(
+        !task.paused,
+        "agent-created task with deps should NOT be paused"
+    );
+}
+
+/// In agent context, `wg add --independent` should create an immediate task.
+#[test]
+fn test_agent_add_independent_creates_immediate_task() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    let output = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args(["add", "Independent task", "--id", "indie", "--independent"])
+        .env("WG_AGENT_ID", "agent-test")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "wg add should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("indie").unwrap();
+    assert!(
+        !task.paused,
+        "agent-created task with --independent should NOT be paused"
+    );
+}

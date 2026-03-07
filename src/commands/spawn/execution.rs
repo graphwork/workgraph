@@ -296,6 +296,28 @@ pub(crate) fn spawn_agent_inner(
                 );
             }
 
+            // Collect deps before re-borrowing mutably
+            let deps: Vec<String> = t.after.clone();
+
+            // Re-check all deps are satisfied under the lock.
+            // This catches the race where deps are added (via `wg edit --add-after`)
+            // between the coordinator's readiness check and the actual spawn.
+            for dep_id in &deps {
+                let dep_satisfied = g
+                    .get_task(dep_id)
+                    .map(|d| d.status.is_terminal())
+                    .unwrap_or(false);
+                if !dep_satisfied {
+                    anyhow::bail!(
+                        "Task '{}' has unsatisfied dep '{}' (added after readiness check)",
+                        task_id_owned,
+                        dep_id
+                    );
+                }
+            }
+
+            // Re-acquire mutable reference after immutable borrows are done
+            let t = g.get_task_mut_or_err(&task_id_owned)?;
             t.status = Status::InProgress;
             t.started_at = Some(Utc::now().to_rfc3339());
             t.assigned = Some(agent_id_for_claim.clone());
