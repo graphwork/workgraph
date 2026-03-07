@@ -20,6 +20,7 @@ mod assignment;
 mod coordinator;
 pub(crate) mod coordinator_agent;
 pub mod ipc;
+pub(crate) mod liveness;
 mod triage;
 
 pub use ipc::{IpcRequest, IpcResponse};
@@ -1220,6 +1221,9 @@ pub fn run_daemon(
         None
     };
 
+    // Initialize liveness detection (sleep-aware stuck agent handling)
+    let mut sleep_tracker = liveness::SleepTracker::new();
+
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
@@ -1393,6 +1397,40 @@ pub fn run_daemon(
                     coord_state.ticks += 1;
                     coord_state.save(&dir);
                     logger.error(&format!("Coordinator tick error: {}", e));
+                }
+            }
+
+            // Liveness detection: check for sleep gaps and stuck agents
+            {
+                let config = workgraph::config::Config::load_or_default(&dir);
+                let sleep_gap = sleep_tracker.tick(&config);
+                if sleep_gap > 30.0 {
+                    logger.info(&format!(
+                        "Sleep detected: gap={:.1}s, grace period active",
+                        sleep_gap
+                    ));
+                }
+
+                // Check for stuck agents (only if not in grace period)
+                if let Ok(registry) =
+                    workgraph::service::registry::AgentRegistry::load(&dir)
+                {
+                    let triage_targets =
+                        liveness::check_stuck_agents(&mut sleep_tracker, &registry, &config);
+                    if !triage_targets.is_empty() {
+                        logger.info(&format!(
+                            "Stuck agents detected: {} target(s) for triage",
+                            triage_targets.len()
+                        ));
+                        if let Err(e) = liveness::handle_stuck_agents(
+                            &mut sleep_tracker,
+                            &dir,
+                            triage_targets,
+                            &config,
+                        ) {
+                            logger.error(&format!("Stuck agent triage error: {}", e));
+                        }
+                    }
                 }
             }
         }
