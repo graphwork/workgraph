@@ -126,6 +126,8 @@ pub(crate) fn defer_self_mutation(
         resurrection_count: 0,
         last_resurrected_at: None,
         exec_mode: None,
+        iteration_snapshots: vec![],
+        remediation_count: 0,
     };
 
     let task_id_clone = task_id.clone();

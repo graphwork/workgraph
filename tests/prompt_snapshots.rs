@@ -60,11 +60,13 @@ fn test_log_entries() -> Vec<LogEntry> {
             timestamp: "2025-01-15T10:00:00Z".into(),
             actor: Some("agent-abc".into()),
             message: "Starting implementation of feature X".into(),
+            ..Default::default()
         },
         LogEntry {
             timestamp: "2025-01-15T10:30:00Z".into(),
             actor: None,
             message: "Completed core logic, writing tests".into(),
+            ..Default::default()
         },
     ]
 }

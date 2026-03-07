@@ -467,6 +467,7 @@ pub fn execute_input(workgraph_dir: &Path, task_id: &str, text: &str, actor: &st
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor.to_string()),
         message: text.to_string(),
+        ..Default::default()
     };
 
     task.log.push(entry);

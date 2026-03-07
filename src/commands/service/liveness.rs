@@ -500,6 +500,7 @@ pub fn handle_stuck_agents(
                                     "Stuck triage: wait (stale {}s) — {}",
                                     stale_secs, verdict.reason
                                 ),
+                                ..Default::default()
                             });
                         }
                     }
@@ -528,6 +529,7 @@ pub fn handle_stuck_agents(
                                     "Stuck triage: kill-done (agent '{}' PID {}, stale {}s) — {}",
                                     agent_id, pid, stale_secs, verdict.reason
                                 ),
+                                ..Default::default()
                             });
                         }
                         tracker.agent_stale_ticks.remove(agent_id);
@@ -559,6 +561,7 @@ pub fn handle_stuck_agents(
                                     "Stuck triage: kill-restart (agent '{}' PID {}, stale {}s) — {}",
                                     agent_id, pid, stale_secs, verdict.reason
                                 ),
+                                ..Default::default()
                             });
                         }
                         tracker.agent_stale_ticks.remove(agent_id);

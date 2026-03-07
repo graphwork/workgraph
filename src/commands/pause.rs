@@ -21,6 +21,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: "Task paused".to_string(),
+            ..Default::default()
         });
 
         Ok(())

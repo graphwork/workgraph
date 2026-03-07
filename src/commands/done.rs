@@ -266,6 +266,7 @@ fn run_inner(
             } else {
                 "Task marked as done".to_string()
             },
+            ..Default::default()
         });
 
         // Extract token usage from stream.jsonl (canonical source)
@@ -799,6 +800,7 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: "Validated: all tests pass".to_string(),
+            ..Default::default()
         });
         setup_workgraph(dir_path, vec![task]);
 

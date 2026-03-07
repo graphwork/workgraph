@@ -53,6 +53,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor_owned,
                 message: format!("Started execution: {}", exec_cmd_clone),
+                ..Default::default()
             });
             Ok(())
         })?;
@@ -91,6 +92,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor_owned,
                 message: "Execution completed successfully".to_string(),
+                ..Default::default()
             });
             Ok(())
         })?;
@@ -107,6 +109,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor_owned,
                 message: format!("Execution failed with exit code {}", exit_code),
+                ..Default::default()
             });
             Ok(())
         })?;

@@ -455,16 +455,19 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
                 message: "Started work".to_string(),
+                ..Default::default()
             },
             LogEntry {
                 timestamp: "2026-01-01T00:01:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
                 message: "Found important result".to_string(),
+                ..Default::default()
             },
             LogEntry {
                 timestamp: "2026-01-01T00:02:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
                 message: "Completed successfully".to_string(),
+                ..Default::default()
             },
         ];
         graph.add_node(Node::Task(dep_task));

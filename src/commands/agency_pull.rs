@@ -233,6 +233,8 @@ mod tests {
                 context_id: "mot-1".to_string(),
                 cost_usd: None,
             }],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         };
         target.save_role(&target_role).unwrap();
 
@@ -248,6 +250,8 @@ mod tests {
                 context_id: "mot-2".to_string(),
                 cost_usd: None,
             }],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         };
         source.save_role(&source_role).unwrap();
 
@@ -322,6 +326,8 @@ mod tests {
                 context_id: "mot-x".to_string(),
                 cost_usd: None,
             }],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         };
         source.save_role(&role).unwrap();
 

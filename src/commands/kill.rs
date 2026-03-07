@@ -187,6 +187,7 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
                 message: format!("Task unclaimed: agent '{}' was killed", agent_id),
+                ..Default::default()
             });
 
             save_graph(&graph, &path).context("Failed to save graph")?;

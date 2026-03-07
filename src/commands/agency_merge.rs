@@ -366,6 +366,8 @@ mod tests {
                 context_id: "ctx-1".to_string(),
                 cost_usd: None,
             }],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         };
         store_a.save_role(&role_a).unwrap();
 
@@ -380,6 +382,8 @@ mod tests {
                 context_id: "ctx-2".to_string(),
                 cost_usd: None,
             }],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         };
         store_b.save_role(&role_b).unwrap();
 

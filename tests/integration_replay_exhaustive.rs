@@ -703,6 +703,7 @@ fn test_replay_field_clearing_and_preservation() {
         timestamp: "2026-02-18T10:00:00+00:00".to_string(),
         actor: None,
         message: "Started work".to_string(),
+        ..Default::default()
     }];
 
     let dep = make_task("dep", "Dependency", Status::Done);

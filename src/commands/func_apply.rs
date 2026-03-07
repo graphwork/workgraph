@@ -282,6 +282,8 @@ pub fn run(
                 resurrection_count: 0,
                 last_resurrected_at: None,
                 exec_mode: None,
+                iteration_snapshots: vec![],
+                remediation_count: 0,
             };
 
             tasks_to_add.push(task);
@@ -1834,6 +1836,7 @@ mod tests {
                 timestamp: "2026-02-21T12:00:00Z".to_string(),
                 actor: Some("agent".to_string()),
                 message: planner_yaml.to_string(),
+                ..Default::default()
             }],
             ..Task::default()
         }));

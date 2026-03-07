@@ -159,6 +159,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         timestamp: Utc::now().to_rfc3339(),
         actor: task.assigned.clone(),
         message: format!("Agent parked. Waiting for: {}", until),
+        ..Default::default()
     });
 
     // Update agent status to Parked if there's an assigned agent

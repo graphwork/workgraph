@@ -333,6 +333,7 @@ pub(crate) fn spawn_agent_inner(
                         .map(|m| format!(" --model {}", m))
                         .unwrap_or_default()
                 ),
+                ..Default::default()
             });
 
             // Create .assign-* audit trail if missing (defense-in-depth).
@@ -369,6 +370,7 @@ pub(crate) fn spawn_agent_inner(
                         actor: Some("coordinator".to_string()),
                         message: "Created at spawn time (no prior .assign-* task existed)"
                             .to_string(),
+                        ..Default::default()
                     }],
                     ..Default::default()
                 }));
@@ -397,6 +399,7 @@ pub(crate) fn spawn_agent_inner(
                             timestamp: Utc::now().to_rfc3339(),
                             actor: Some(rollback_agent.clone()),
                             message: rollback_err_msg.clone(),
+                            ..Default::default()
                         });
                     }
                     Ok(())

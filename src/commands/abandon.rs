@@ -32,6 +32,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
             message: log_message,
+            ..Default::default()
         });
 
         Ok(Some(prev_assigned))

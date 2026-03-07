@@ -200,6 +200,7 @@ pub fn run(
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: "Task paused".to_string(),
+            ..Default::default()
         }]
     } else {
         vec![]
@@ -302,6 +303,8 @@ pub fn run(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+        iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         // Add task to graph
@@ -549,6 +552,8 @@ fn add_task_directly(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+        iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         graph.add_node(Node::Task(task));

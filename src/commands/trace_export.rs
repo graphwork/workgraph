@@ -352,6 +352,7 @@ mod tests {
                 timestamp: "2026-02-28T12:30:00Z".to_string(),
                 actor: None,
                 message: "Progress update".to_string(),
+                ..Default::default()
             }],
         };
 

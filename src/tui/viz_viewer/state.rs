@@ -3608,6 +3608,43 @@ impl VizApp {
             lines.push(String::new());
         }
 
+        // Iteration history for cycle tasks
+        if !task.iteration_snapshots.is_empty() {
+            lines.push("── Iteration History ──".to_string());
+            for snap in &task.iteration_snapshots {
+                let log_count = snap.log_entries.len();
+                let summary = snap.summary.as_deref().unwrap_or("(no summary)");
+                lines.push(format!(
+                    "  Iteration {} [{}] — {} ({} log entries)",
+                    snap.iteration + 1,
+                    snap.status,
+                    summary,
+                    log_count,
+                ));
+                lines.push(format!(
+                    "    Completed: {}",
+                    format_timestamp(&snap.timestamp)
+                ));
+                for entry in &snap.log_entries {
+                    let actor = entry.actor.as_deref().unwrap_or("system");
+                    lines.push(format!(
+                        "    [{}] {}: {}",
+                        format_timestamp(&entry.timestamp),
+                        actor,
+                        entry.message
+                    ));
+                }
+            }
+            if task.loop_iteration > 0 {
+                lines.push(format!(
+                    "  Iteration {} [{}] — current",
+                    task.loop_iteration + 1,
+                    task.status,
+                ));
+            }
+            lines.push(String::new());
+        }
+
         // Log entries are now shown in the dedicated log pane (L to toggle).
 
         self.hud_detail = Some(HudDetail {

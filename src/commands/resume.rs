@@ -227,6 +227,7 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
         message: format!("Task {}", action),
+        ..Default::default()
     });
 }
 

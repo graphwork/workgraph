@@ -405,6 +405,8 @@ pub enum DispatchRole {
     Triage,
     /// Agent creator
     Creator,
+    /// Failure diagnostician for self-healing
+    Diagnostician,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -421,6 +423,7 @@ impl std::fmt::Display for DispatchRole {
             Self::Verification => write!(f, "verification"),
             Self::Triage => write!(f, "triage"),
             Self::Creator => write!(f, "creator"),
+            Self::Diagnostician => write!(f, "diagnostician"),
         }
     }
 }
@@ -441,9 +444,10 @@ impl std::str::FromStr for DispatchRole {
             "verification" => Ok(Self::Verification),
             "triage" => Ok(Self::Triage),
             "creator" => Ok(Self::Creator),
+            "diagnostician" => Ok(Self::Diagnostician),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, system_evaluator, \
-                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator",
+                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator, diagnostician",
                 s
             )),
         }
@@ -463,6 +467,7 @@ impl DispatchRole {
         Self::Verification,
         Self::Triage,
         Self::Creator,
+        Self::Diagnostician,
     ];
 }
 
@@ -515,6 +520,9 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostician: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -532,6 +540,7 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => self.verification.as_ref(),
             DispatchRole::Triage => self.triage.as_ref(),
             DispatchRole::Creator => self.creator.as_ref(),
+            DispatchRole::Diagnostician => self.diagnostician.as_ref(),
         }
     }
 
@@ -549,6 +558,7 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => &mut self.verification,
             DispatchRole::Triage => &mut self.triage,
             DispatchRole::Creator => &mut self.creator,
+            DispatchRole::Diagnostician => &mut self.diagnostician,
         }
     }
 
@@ -1108,6 +1118,18 @@ pub struct CoordinatorConfig {
     /// Default: true.
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
+
+    /// Whether to auto-remediate failed tasks
+    #[serde(default)]
+    pub auto_remediate: bool,
+
+    /// Maximum remediation attempts per task
+    #[serde(default = "default_max_remediation_attempts")]
+    pub max_remediation_attempts: u32,
+
+    /// Token budget multiplier for remediation (e.g. 2.0 = 2x original cost)
+    #[serde(default = "default_remediation_budget_multiplier")]
+    pub remediation_budget_multiplier: f64,
 }
 
 fn default_max_agents() -> usize {
@@ -1124,6 +1146,14 @@ fn default_settling_delay_ms() -> u64 {
 
 fn default_coordinator_agent() -> bool {
     true
+}
+
+fn default_max_remediation_attempts() -> u32 {
+    3
+}
+
+fn default_remediation_budget_multiplier() -> f64 {
+    2.0
 }
 
 fn default_poll_interval() -> u64 {
@@ -1146,6 +1176,9 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
+            auto_remediate: false,
+            max_remediation_attempts: default_max_remediation_attempts(),
+            remediation_budget_multiplier: default_remediation_budget_multiplier(),
         }
     }
 }

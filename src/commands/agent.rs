@@ -448,6 +448,7 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(actor_id),
             message: "Claimed by autonomous agent".to_string(),
+            ..Default::default()
         });
         Ok(())
     })?;
@@ -467,6 +468,7 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(actor_id),
             message: "Completed by autonomous agent".to_string(),
+            ..Default::default()
         });
         Ok(())
     })?;
@@ -488,6 +490,7 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(actor_id),
             message: format!("Failed: {}", reason),
+            ..Default::default()
         });
         Ok(())
     })?;

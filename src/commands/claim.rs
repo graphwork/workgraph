@@ -77,6 +77,7 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         timestamp: Utc::now().to_rfc3339(),
         actor: actor.map(std::string::ToString::to_string),
         message: log_message,
+        ..Default::default()
     });
 
     Ok(ClaimResult { prev_status, prev_assigned })
@@ -133,6 +134,7 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
             timestamp: Utc::now().to_rfc3339(),
             actor: prev_assigned.clone(),
             message: log_message,
+            ..Default::default()
         });
 
         Ok(prev_assigned)

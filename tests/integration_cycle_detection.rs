@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{
-    CycleConfig, LoopGuard, Node, Status, Task, WorkGraph, evaluate_all_cycle_failure_restarts,
-    evaluate_all_cycle_iterations, evaluate_cycle_iteration, evaluate_cycle_on_failure,
+    CycleConfig, LogEntry, LoopGuard, Node, Status, Task, WorkGraph,
+    evaluate_all_cycle_failure_restarts, evaluate_all_cycle_iterations,
+    evaluate_cycle_iteration, evaluate_cycle_on_failure,
 };
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::{ready_tasks, ready_tasks_cycle_aware};
@@ -5199,4 +5200,116 @@ fn test_failure_restart_not_triggered_for_non_cycle_task() {
         reactivated.is_empty(),
         "Non-cycle task should not trigger restart"
     );
+}
+
+// ===========================================================================
+// Iteration snapshot tests
+// ===========================================================================
+
+#[test]
+fn test_completion_creates_iteration_snapshots() {
+    // Verify that reactivate_cycle creates snapshots for each completed iteration
+    let mut a = make_task_with_status("a", "A", Status::Done);
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    let mut b = make_task_with_status("b", "B", Status::Done);
+    b.after = vec!["a".to_string()];
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    // First iteration completes → snapshot for iteration 0
+    evaluate_cycle_iteration(&mut graph, "b", &analysis);
+    assert_eq!(graph.get_task("a").unwrap().iteration_snapshots.len(), 1);
+    assert_eq!(graph.get_task("a").unwrap().iteration_snapshots[0].iteration, 0);
+    assert_eq!(graph.get_task("a").unwrap().iteration_snapshots[0].status, "done");
+    assert_eq!(graph.get_task("b").unwrap().iteration_snapshots.len(), 1);
+
+    // Complete second iteration
+    graph.get_task_mut("a").unwrap().status = Status::Done;
+    graph.get_task_mut("b").unwrap().status = Status::Done;
+    let analysis = graph.compute_cycle_analysis();
+    evaluate_cycle_iteration(&mut graph, "b", &analysis);
+
+    // Now each task should have 2 snapshots
+    assert_eq!(graph.get_task("a").unwrap().iteration_snapshots.len(), 2);
+    assert_eq!(graph.get_task("a").unwrap().iteration_snapshots[1].iteration, 1);
+    assert_eq!(graph.get_task("b").unwrap().iteration_snapshots.len(), 2);
+}
+
+#[test]
+fn test_iteration_snapshot_captures_log_entries() {
+    // Verify snapshots capture log entries from the completed iteration
+    let mut a = make_task_with_status("a", "A", Status::Done);
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    // Add a log entry for iteration 0 (no iteration tag = iteration 0)
+    a.log.push(LogEntry {
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        actor: Some("agent".to_string()),
+        message: "Did work in iteration 0".to_string(),
+        ..Default::default()
+    });
+    let mut b = make_task_with_status("b", "B", Status::Done);
+    b.after = vec!["a".to_string()];
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    evaluate_cycle_iteration(&mut graph, "b", &analysis);
+
+    let snap = &graph.get_task("a").unwrap().iteration_snapshots[0];
+    assert_eq!(snap.iteration, 0);
+    // The snapshot should contain the log entry from iteration 0
+    assert!(
+        snap.log_entries.iter().any(|e| e.message == "Did work in iteration 0"),
+        "Snapshot should capture log entries from the completed iteration"
+    );
+}
+
+#[test]
+fn test_iteration_snapshot_serialization_roundtrip() {
+    // Verify iteration_snapshots survive a save/load cycle
+    let mut a = make_task_with_status("a", "A", Status::Done);
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    let mut b = make_task_with_status("b", "B", Status::Done);
+    b.after = vec!["a".to_string()];
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+    evaluate_cycle_iteration(&mut graph, "b", &analysis);
+
+    // Save to disk
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.jsonl");
+    save_graph(&graph, &path).unwrap();
+
+    // Load back
+    let loaded = load_graph(&path).unwrap();
+    let a_loaded = loaded.get_task("a").unwrap();
+    assert_eq!(a_loaded.iteration_snapshots.len(), 1);
+    assert_eq!(a_loaded.iteration_snapshots[0].iteration, 0);
+    assert_eq!(a_loaded.iteration_snapshots[0].status, "done");
 }

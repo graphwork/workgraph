@@ -152,6 +152,7 @@ pub fn run_cleanup(
                         dead_agent.pid,
                         dead_agent.seconds_since_heartbeat
                     ),
+                    ..Default::default()
                 });
 
                 tasks_unclaimed.push(dead_agent.task_id.clone());

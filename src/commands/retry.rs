@@ -45,6 +45,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
                 message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
+                ..Default::default()
             });
 
             let retry_count = task.retry_count;

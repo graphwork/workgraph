@@ -277,6 +277,7 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: "Done!".to_string(),
+            ..Default::default()
         }];
         setup_graph(dir, vec![task]);
         let result = run(dir, Some("24h"), true, false);

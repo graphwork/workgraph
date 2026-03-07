@@ -69,6 +69,7 @@ fn run_inner(dir: &Path, id: &str, reason: Option<&str>, eval_reject: bool) -> R
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
             message: log_message,
+            ..Default::default()
         });
 
         // Extract values we need before cycle restart may modify the task

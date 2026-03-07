@@ -400,6 +400,7 @@ pub fn run(
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: None,
                     message: recall_msg.clone(),
+                    ..Default::default()
                 });
                 eprintln!(
                     "WARNING: Task '{}' was in-progress but new dep(s) [{}] not done — task paused (blocked).",

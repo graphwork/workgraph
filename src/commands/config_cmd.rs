@@ -224,6 +224,9 @@ pub fn update(
     flip_verification_model: Option<&str>,
     chat_history: Option<bool>,
     chat_history_max: Option<usize>,
+    auto_remediate: Option<bool>,
+    max_remediation_attempts: Option<u32>,
+    remediation_budget_multiplier: Option<f64>,
 ) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
@@ -495,6 +498,24 @@ pub fn update(
                 );
             }
         }
+    }
+
+    if let Some(v) = auto_remediate {
+        config.coordinator.auto_remediate = v;
+        println!("Set coordinator.auto_remediate = {}", v);
+        changed = true;
+    }
+
+    if let Some(v) = max_remediation_attempts {
+        config.coordinator.max_remediation_attempts = v;
+        println!("Set coordinator.max_remediation_attempts = {}", v);
+        changed = true;
+    }
+
+    if let Some(v) = remediation_budget_multiplier {
+        config.coordinator.remediation_budget_multiplier = v;
+        println!("Set coordinator.remediation_budget_multiplier = {}", v);
+        changed = true;
     }
 
     if changed {
@@ -948,6 +969,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -972,6 +996,9 @@ mod tests {
             Some(60),
             None,
             Some("shell"),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1052,6 +1079,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -1085,6 +1115,9 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None,
+            None,
+            None,
             None,
             None,
             None,

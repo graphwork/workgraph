@@ -121,6 +121,7 @@ pub fn run(
                 created_ids.len(),
                 subtask_list
             ),
+            ..Default::default()
         });
 
         // Maintain bidirectional consistency: each subtask's `before` should include parent

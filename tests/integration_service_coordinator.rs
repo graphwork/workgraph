@@ -354,6 +354,7 @@ fn test_cleanup_unclaims_in_progress_task() {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: format!("Task unclaimed: agent '{}' process exited", agent_id),
+            ..Default::default()
         });
     }
     save_graph(&graph, &graph_path).unwrap();

@@ -1181,11 +1181,13 @@ mod tests {
                 timestamp: "2025-05-01T10:00:00Z".into(),
                 actor: Some("agent-1".into()),
                 message: "Starting implementation".into(),
+                ..Default::default()
             },
             crate::graph::LogEntry {
                 timestamp: "2025-05-01T10:30:00Z".into(),
                 actor: None,
                 message: "Completed core logic".into(),
+                ..Default::default()
             },
         ]
     }

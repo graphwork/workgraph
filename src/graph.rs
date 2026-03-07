@@ -342,6 +342,9 @@ pub struct Task {
     /// Snapshots of completed cycle iterations (populated by reactivate_cycle)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub iteration_snapshots: Vec<IterationSnapshot>,
+    /// Number of remediation attempts for this task
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub remediation_count: u32,
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -758,6 +761,8 @@ struct TaskHelper {
     last_resurrected_at: Option<String>,
     #[serde(default)]
     iteration_snapshots: Vec<IterationSnapshot>,
+    #[serde(default)]
+    remediation_count: u32,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -824,6 +829,7 @@ impl<'de> Deserialize<'de> for Task {
             resurrection_count: helper.resurrection_count,
             last_resurrected_at: helper.last_resurrected_at,
             iteration_snapshots: helper.iteration_snapshots,
+            remediation_count: helper.remediation_count,
         })
     }
 }
@@ -1307,6 +1313,24 @@ fn reactivate_cycle(
 
     for member_id in members {
         if let Some(task) = graph.get_task_mut(member_id) {
+            // Capture iteration snapshot before re-opening
+            let snapshot = IterationSnapshot {
+                iteration: current_iter,
+                timestamp: Utc::now().to_rfc3339(),
+                status: format!("{}", task.status),
+                summary: None,
+                log_entries: task
+                    .log
+                    .iter()
+                    .filter(|e| {
+                        e.iteration == Some(current_iter)
+                            || (current_iter == 0 && e.iteration.is_none())
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            task.iteration_snapshots.push(snapshot);
+
             task.status = Status::Open;
             task.assigned = None;
             task.started_at = None;
@@ -1323,6 +1347,8 @@ fn reactivate_cycle(
                     "Re-activated by cycle iteration (iteration {}/{})",
                     new_iteration, cycle_config.max_iterations
                 ),
+                iteration: Some(new_iteration),
+                ..Default::default()
             });
 
             reactivated.push(member_id.clone());
@@ -1497,6 +1523,7 @@ fn reactivate_cycle_on_failure(
                     "Cycle failure restart budget exhausted ({}/{}). Task '{}' failed — cycle dead-ended.",
                     failure_restarts, max_failure_restarts, failed_task_id
                 ),
+                ..Default::default()
             });
         }
         return vec![];
@@ -1552,6 +1579,7 @@ fn reactivate_cycle_on_failure(
                     "Cycle failure restart {}/{} (iteration {}). Failed: [{}]",
                     new_failure_restarts, max_failure_restarts, current_iter, failure_info
                 ),
+                ..Default::default()
             });
 
             reactivated.push(member_id.clone());

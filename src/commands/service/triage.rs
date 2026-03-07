@@ -159,6 +159,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                                         "Triage failed ({}), task reset: agent '{}' (PID {}) process exited",
                                         e, agent_id, pid
                                     ),
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -177,6 +178,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             timestamp: Utc::now().to_rfc3339(),
                             actor: None,
                             message: reason_msg,
+                            ..Default::default()
                         });
                     }
                 }
@@ -435,6 +437,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                     "Triage: work complete (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
                 ),
+                ..Default::default()
             });
         }
         "continue" => {
@@ -455,6 +458,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                         "Triage: wanted continue but max retries exceeded ({}/{}) — failing task",
                         task.retry_count, max
                     ),
+                    ..Default::default()
                 });
                 return;
             }
@@ -490,6 +494,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                     "Triage: continuing (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
                 ),
+                ..Default::default()
             });
         }
         _ => {
@@ -511,6 +516,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                         "Triage: wanted restart but max retries exceeded ({}/{}) — failing task",
                         task.retry_count, max
                     ),
+                    ..Default::default()
                 });
                 return;
             }
@@ -525,6 +531,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                     "Triage: restarting (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
                 ),
+                ..Default::default()
             });
         }
     }

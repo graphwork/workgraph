@@ -539,7 +539,6 @@ mod tests {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
-            iteration_snapshots: vec![],
             remediation_count: 0,
         };
 

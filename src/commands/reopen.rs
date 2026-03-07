@@ -68,6 +68,7 @@ pub fn reopen_task(graph: &mut workgraph::graph::WorkGraph, id: &str, reason: &s
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             message: reason.to_string(),
+            ..Default::default()
         });
     }
 }

@@ -153,6 +153,7 @@ fn reset_task(task: &mut workgraph::graph::Task) {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
         message: "Task reset to clean open state via `wg reset`".to_string(),
+        ..Default::default()
     });
 }
 

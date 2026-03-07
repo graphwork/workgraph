@@ -742,6 +742,8 @@ fn handle_add_task(
             resurrection_count: 0,
             last_resurrected_at: None,
             exec_mode: None,
+            iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         graph.add_node(Node::Task(task));

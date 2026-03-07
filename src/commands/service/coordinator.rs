@@ -394,6 +394,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
                     message: format!("Failed: circular wait detected ({})", cycle.join(" -> ")),
+                    ..Default::default()
                 });
                 modified = true;
             }
@@ -463,6 +464,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
                     message: format!("Failed: {}", reason),
+                    ..Default::default()
                 });
                 modified = true;
                 eprintln!(
@@ -494,6 +496,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
                     message: "Wait condition satisfied. Task ready for resume.".to_string(),
+                    ..Default::default()
                 });
                 modified = true;
                 eprintln!(
@@ -667,6 +670,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                         child_id,
                         triggering_msgs.len()
                     ),
+                    ..Default::default()
                 });
             }
 
@@ -691,6 +695,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                         "Resurrection: reopened due to {} pending message(s)",
                         triggering_msgs.len()
                     ),
+                    ..Default::default()
                 });
 
                 eprintln!(
@@ -1068,6 +1073,7 @@ fn build_auto_assign_tasks(
                     verdict.context_scope.as_deref().unwrap_or("(default)"),
                     verdict.reason,
                 ),
+                ..Default::default()
             });
         }
 
@@ -1106,6 +1112,7 @@ fn build_auto_assign_tasks(
                     "Completed via lightweight LLM call (path: {:?})",
                     assignment_path,
                 ),
+                ..Default::default()
             }],
             retry_count: 0,
             max_retries: None,
@@ -1135,6 +1142,8 @@ fn build_auto_assign_tasks(
             resurrection_count: 0,
             last_resurrected_at: None,
             exec_mode: Some("bare".to_string()),
+            iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -1365,6 +1374,8 @@ fn build_auto_evaluate_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         graph.add_node(Node::Task(eval_task));
@@ -1574,6 +1585,8 @@ fn build_flip_verification_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+        iteration_snapshots: vec![],
+        remediation_count: 0,
         };
 
         graph.add_node(Node::Task(verify_task));
@@ -1590,6 +1603,7 @@ fn build_flip_verification_tasks(
                     "FLIP score {:.2} below threshold {:.2} — triggering Opus verification",
                     eval.score, threshold,
                 ),
+                ..Default::default()
             });
         }
 
@@ -1711,6 +1725,8 @@ fn build_verify_prompt_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+        iteration_snapshots: vec![],
+        remediation_count: 0,
         };
 
         graph.add_node(Node::Task(verify_task));
@@ -1895,6 +1911,7 @@ exit $EXIT_CODE"#,
                         .map(|m| format!(" --model {}", m))
                         .unwrap_or_default()
                 ),
+                ..Default::default()
             });
             Ok(())
         })
@@ -1935,6 +1952,7 @@ exit $EXIT_CODE"#,
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some(agent_id_clone),
                         message: format!("Eval spawn failed, reverting claim: {}", e),
+                        ..Default::default()
                     });
                 }
                 Ok(())
@@ -2347,6 +2365,8 @@ pub fn coordinator_tick(
 
         // Phase 2.8: Message-triggered resurrection
         resurrect_done_tasks(graph, dir);
+
+        // Phase 2.9: Self-healing
 
         // Phase 3: Auto-assign unassigned ready tasks
         if config.agency.auto_assign {

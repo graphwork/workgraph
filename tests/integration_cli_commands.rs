@@ -360,6 +360,7 @@ fn add_log_entry_persists() {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some("agent-1".to_string()),
         message: "Starting work".to_string(),
+        ..Default::default()
     });
     save_graph(&graph, &path).unwrap();
 

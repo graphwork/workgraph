@@ -482,6 +482,7 @@ impl Tool for WgFailTool {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("native-agent".to_string()),
             message: format!("Failed: {}", reason),
+            ..Default::default()
         });
 
         if let Err(e) = save_graph(&graph, &path) {
@@ -549,6 +550,7 @@ impl Tool for WgLogTool {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("native-agent".to_string()),
             message: message.to_string(),
+            ..Default::default()
         });
 
         if let Err(e) = save_graph(&graph, &path) {

@@ -48,6 +48,7 @@ pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Resul
             timestamp: now,
             actor: Some(to_actor.to_string()),
             message: format!("Task reclaimed from @{} to @{} (agent takeover)", from_actor, to_actor),
+            ..Default::default()
         });
 
         Ok(())

@@ -25,6 +25,7 @@ pub fn run_add(
         timestamp: Utc::now().to_rfc3339(),
         actor: actor.map(String::from),
         message: message.to_string(),
+        ..Default::default()
     };
 
     task.log.push(entry);

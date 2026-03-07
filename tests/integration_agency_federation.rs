@@ -123,6 +123,8 @@ fn make_perf(evals: Vec<(f64, &str, &str)>) -> PerformanceRecord {
         task_count,
         avg_score,
         evaluations,
+        avg_cost_usd: None,
+        total_cost_usd: 0.0,
     }
 }
 
@@ -1993,6 +1995,8 @@ fn performance_merge_preserves_context_id() {
             context_id: "motivation-xyz".to_string(),
             cost_usd: None,
         }],
+        avg_cost_usd: None,
+        total_cost_usd: 0.0,
     };
     source.save_role(&source_role).unwrap();
 
@@ -2007,6 +2011,8 @@ fn performance_merge_preserves_context_id() {
             context_id: "motivation-abc".to_string(),
             cost_usd: None,
         }],
+        avg_cost_usd: None,
+        total_cost_usd: 0.0,
     };
     target.save_role(&target_role).unwrap();
 

@@ -676,6 +676,7 @@ mod tests {
             timestamp: old,
             actor: None,
             message: "Task marked as failed".to_string(),
+            ..Default::default()
         });
         setup_graph(wg_dir, vec![task]);
 
@@ -698,6 +699,7 @@ mod tests {
             timestamp: recent,
             actor: None,
             message: "Task marked as failed".to_string(),
+            ..Default::default()
         });
         setup_graph(wg_dir, vec![task]);
 
