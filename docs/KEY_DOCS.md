@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-02-26 (verified by doc-sync run 3)
+Last updated: 2026-03-07 (verified by doc-audit-inventory)
 
 ---
 
@@ -18,6 +18,10 @@ Last updated: 2026-02-26 (verified by doc-sync run 3)
 | `docs/AGENCY.md` | Agency system: roles, motivations, evaluation, evolution, skill system | Users setting up agency |
 | `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
 | `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
+| `docs/WORKTREE-ISOLATION.md` | Worktree-based isolation for concurrent agents | Operators, contributors |
+| `docs/COORDINATOR_ENTITY.md` | Design: coordinator as visible entity | Contributors |
+| `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
+| `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
 
 ## Embedded Documentation
 
@@ -40,6 +44,20 @@ Last updated: 2026-02-26 (verified by doc-sync run 3)
 | `docs/manual/README.md` | Manual build instructions | Contributors |
 | `docs/manual/PLAN.md` | Manual chapter planning notes | Contributors |
 | `docs/manual/UPDATE-SPEC.md` | Spec for manual updates | Contributors |
+
+## Report Documents
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `docs/reports/spark-v3-retrospective.md` | SPARK v3 retrospective: 9-day cycle analysis | Current |
+| `docs/reports/autopoietic-validation.md` | Capstone synthesis: autopoietic validation | Current |
+| `docs/reports/validate-core-dispatch.md` | Dispatch validation report | Current |
+| `docs/reports/validate-safety-resilience.md` | Safety and resilience validation report | Current |
+| `docs/reports/validate-agency-pipeline.md` | Agency pipeline validation report | Current |
+| `docs/reports/validate-tui-observability.md` | TUI and observability validation report | Current |
+| `docs/reports/self-hosting-integration-validation.md` | Self-hosting integration validation | Current |
+| `docs/reports/messaging-research-report.md` | Messaging system research report | Current |
+| `docs/reports/amplifier-research-report.md` | Amplifier research report | Current |
 
 ## Design Documents
 
@@ -84,6 +102,18 @@ Last updated: 2026-02-26 (verified by doc-sync run 3)
 | `docs/research/agent-context-awareness.md` | Agent context awareness research | Research |
 | `docs/research/agent-context-scopes.md` | Configurable agent context scopes design | Implemented (shipped in `wg add --context-scope`) |
 | `docs/research/organizational-patterns.typ` | Organizational patterns research (Typst) | Research |
+| `docs/research/organizational-patterns.md` | Organizational patterns research (Markdown) | Research |
+| `docs/research/flip-pipeline-ordering.md` | FLIP pipeline ordering research | Research |
+| `docs/research/gitbutler-virtual-branches.md` | GitButler virtual branches research | Research |
+| `docs/research/git-worktrees-agent-isolation.md` | Git worktrees for agent isolation | Research |
+| `docs/research/human-in-the-loop-channels.md` | Human-in-the-loop communication channels | Research |
+| `docs/research/validation-current-mechanisms.md` | Validation: current mechanisms survey | Research |
+| `docs/research/validation-graph-structure.md` | Validation: graph structure analysis | Research |
+| `docs/research/validation-cycles.md` | Validation: cycle handling analysis | Research |
+| `docs/research/validation-evaluation-quality.md` | Validation: evaluation quality | Research |
+| `docs/research/validation-agent-self-checks.md` | Validation: agent self-check mechanisms | Research |
+| `docs/research/validation-teaching-agents.md` | Validation: teaching agents validation skills | Research |
+| `docs/research/validation-synthesis.md` | Validation: synthesis and recommendations | Research |
 
 ## Other Documentation
 
