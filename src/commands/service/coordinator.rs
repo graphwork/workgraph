@@ -1238,7 +1238,9 @@ fn build_auto_evaluate_tasks(
                     .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
                     .model,
             ),
-            provider: None,
+            provider: config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
+                .provider,
             verify: None,
             agent: config.agency.evaluator_agent.clone(),
 
@@ -1716,11 +1718,34 @@ fn spawn_agents_for_ready_tasks(
     let agents_dir = dir.join("agency").join("cache/agents");
     let mut spawned = 0;
 
+    // Load agent registry once to check for alive agents on each task.
+    // This prevents re-spawning on a task when a duplicate agent is killed
+    // but another agent is still alive and working on the same task.
+    let registry = AgentRegistry::load(dir).ok();
+
     let to_spawn = final_ready.iter().take(slots_available);
     for task in to_spawn {
         // Skip if already claimed
         if task.assigned.is_some() {
             continue;
+        }
+
+        // Skip if any alive agent is already working on this task.
+        // This guards against the race where killing a duplicate unclaims the
+        // task (setting assigned=None) before the surviving agent's next
+        // heartbeat re-claims it — without this check the coordinator would
+        // see the task as ready and spawn yet another duplicate.
+        if let Some(ref reg) = registry {
+            let has_alive_agent = reg.agents.values().any(|a| {
+                a.task_id == task.id && a.is_alive() && is_process_alive(a.pid)
+            });
+            if has_alive_agent {
+                eprintln!(
+                    "[coordinator] Skipping task '{}': alive agent already working on it",
+                    task.id
+                );
+                continue;
+            }
         }
 
         // When auto_assign is enabled, non-system tasks must go through the
@@ -1800,7 +1825,7 @@ fn spawn_agents_for_ready_tasks(
 // ---------------------------------------------------------------------------
 
 /// Check alive agents and trigger auto-checkpoints when turn count or time
-/// thresholds are met. Calls haiku to summarize the agent's recent output.
+/// thresholds are met. Calls triage-role model to summarize the agent's recent output.
 fn auto_checkpoint_agents(dir: &Path, config: &Config) {
     let interval_turns = config.checkpoint.auto_interval_turns;
     let interval_mins = config.checkpoint.auto_interval_mins;
@@ -1945,7 +1970,7 @@ fn try_auto_checkpoint(
     Ok(())
 }
 
-/// Call haiku (or configured triage model) to summarize an agent's recent output log.
+/// Call triage-role model to summarize an agent's recent output log.
 fn generate_checkpoint_summary(
     config: &Config,
     output_file: &str,

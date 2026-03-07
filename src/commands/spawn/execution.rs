@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, mutate_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use workgraph::service::registry::AgentRegistry;
 
@@ -38,7 +38,7 @@ pub(crate) fn spawn_agent_inner(
     }
 
     // Load the graph and get task info
-    let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
+    let graph = load_graph(&graph_path).context("Failed to load graph")?;
 
     let task = graph.get_task_or_err(task_id)?;
 
@@ -255,96 +255,135 @@ pub(crate) fn spawn_agent_inner(
         }
     }
 
-    // Claim the task BEFORE spawning the process to prevent race conditions
-    // where two concurrent spawns both pass the status check.
-    let task = graph.get_task_mut_or_err(task_id)?;
-    task.status = Status::InProgress;
-    task.started_at = Some(Utc::now().to_rfc3339());
-    task.assigned = Some(temp_agent_id.clone());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(temp_agent_id.clone()),
-        message: format!(
-            "Spawned by {} --executor {}{}",
-            spawned_by,
-            executor_name,
-            effective_model
-                .as_ref()
-                .map(|m| format!(" --model {}", m))
-                .unwrap_or_default()
-        ),
-    });
+    // Atomically re-check task status and claim it under the file lock.
+    // This prevents the TOCTOU race where two concurrent spawns both pass
+    // the initial status check (above) and then both try to claim the task.
+    // mutate_graph() holds flock across load→check→claim→save.
+    {
+        let agent_id_for_claim = temp_agent_id.clone();
+        let spawned_by_owned = spawned_by.to_string();
+        let executor_name_owned = executor_name.to_string();
+        let effective_model_owned = effective_model.clone();
+        let task_title_for_audit_c = task_title_for_audit.clone();
+        let task_agent_for_audit_c = task_agent_for_audit.clone();
+        let task_id_owned = task_id.to_string();
 
-    // Create .assign-* audit trail if missing (defense-in-depth).
-    // When auto_assign is enabled, build_auto_assign_tasks creates this via
-    // lightweight LLM call. When disabled or skipped, we still want audit trail.
-    let assign_task_id = format!(".assign-{}", task_id);
-    if !is_system_task(task_id) && graph.get_task(&assign_task_id).is_none() {
-        let now = Utc::now().to_rfc3339();
-        let audit_desc = if let Some(ref agent_id) = task_agent_for_audit {
-            format!(
-                "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
-                agent_id, task_id
-            )
-        } else {
-            format!(
-                "Direct dispatch: '{}'\nNo agent pre-assigned (auto_assign disabled or skipped)",
-                task_id
-            )
-        };
-        graph.add_node(Node::Task(Task {
-            id: assign_task_id,
-            title: format!("Assign agent for: {}", task_title_for_audit),
-            description: Some(audit_desc),
-            status: Status::Done,
-            before: vec![task_id.to_string()],
-            tags: vec!["assignment".to_string(), "agency".to_string()],
-            created_at: Some(now.clone()),
-            started_at: Some(now.clone()),
-            completed_at: Some(now),
-            exec_mode: Some("bare".to_string()),
-            visibility: "internal".to_string(),
-            log: vec![LogEntry {
+        mutate_graph(&graph_path, |g| -> Result<()> {
+            let t = g.get_task_mut_or_err(&task_id_owned)?;
+
+            // Re-check status under the lock — another spawn may have
+            // claimed the task between our initial check and now.
+            match t.status {
+                Status::Open | Status::Blocked => {}
+                Status::InProgress => {
+                    anyhow::bail!(
+                        "Task '{}' was claimed by another agent (TOCTOU avoided)",
+                        task_id_owned
+                    );
+                }
+                other => {
+                    anyhow::bail!(
+                        "Task '{}' changed to {:?} before claim",
+                        task_id_owned,
+                        other
+                    );
+                }
+            }
+            if t.assigned.is_some() {
+                anyhow::bail!(
+                    "Task '{}' already assigned (TOCTOU avoided)",
+                    task_id_owned
+                );
+            }
+
+            t.status = Status::InProgress;
+            t.started_at = Some(Utc::now().to_rfc3339());
+            t.assigned = Some(agent_id_for_claim.clone());
+            t.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
-                actor: Some("coordinator".to_string()),
-                message: "Created at spawn time (no prior .assign-* task existed)".to_string(),
-            }],
-            ..Default::default()
-        }));
-    }
+                actor: Some(agent_id_for_claim.clone()),
+                message: format!(
+                    "Spawned by {} --executor {}{}",
+                    spawned_by_owned,
+                    executor_name_owned,
+                    effective_model_owned
+                        .as_ref()
+                        .map(|m| format!(" --model {}", m))
+                        .unwrap_or_default()
+                ),
+            });
 
-    save_graph(&graph, &graph_path).context("Failed to save graph")?;
+            // Create .assign-* audit trail if missing (defense-in-depth).
+            let assign_task_id = format!(".assign-{}", task_id_owned);
+            if !is_system_task(&task_id_owned)
+                && g.get_task(&assign_task_id).is_none()
+            {
+                let now = Utc::now().to_rfc3339();
+                let audit_desc = if let Some(ref agent_id) = task_agent_for_audit_c {
+                    format!(
+                        "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
+                        agent_id, task_id_owned
+                    )
+                } else {
+                    format!(
+                        "Direct dispatch: '{}'\nNo agent pre-assigned (auto_assign disabled or skipped)",
+                        task_id_owned
+                    )
+                };
+                g.add_node(Node::Task(Task {
+                    id: assign_task_id,
+                    title: format!("Assign agent for: {}", task_title_for_audit_c),
+                    description: Some(audit_desc),
+                    status: Status::Done,
+                    before: vec![task_id_owned.to_string()],
+                    tags: vec!["assignment".to_string(), "agency".to_string()],
+                    created_at: Some(now.clone()),
+                    started_at: Some(now.clone()),
+                    completed_at: Some(now),
+                    exec_mode: Some("bare".to_string()),
+                    visibility: "internal".to_string(),
+                    log: vec![LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        message: "Created at spawn time (no prior .assign-* task existed)"
+                            .to_string(),
+                    }],
+                    ..Default::default()
+                }));
+            }
+
+            Ok(())
+        })
+        .context("Failed to atomically claim task")?;
+    }
 
     // Spawn the process (don't wait). If spawn fails, unclaim the task.
     let child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            // Spawn failed — revert the task claim so it's not stuck
-            match load_graph(&graph_path) {
-                Ok(mut rollback_graph) => {
-                    if let Some(t) = rollback_graph.get_task_mut(task_id) {
+            // Spawn failed — atomically revert the task claim so it's not stuck
+            let rollback_agent = temp_agent_id.clone();
+            let rollback_task = task_id.to_string();
+            let rollback_err_msg = format!("Spawn failed, reverting claim: {}", e);
+            if let Err(rollback_err) =
+                mutate_graph(&graph_path, |g| -> Result<()> {
+                    if let Some(t) = g.get_task_mut(&rollback_task) {
                         t.status = Status::Open;
                         t.started_at = None;
                         t.assigned = None;
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
-                            actor: Some(temp_agent_id.clone()),
-                            message: format!("Spawn failed, reverting claim: {}", e),
+                            actor: Some(rollback_agent.clone()),
+                            message: rollback_err_msg.clone(),
                         });
-                        if let Err(save_err) = save_graph(&rollback_graph, &graph_path) {
-                            eprintln!(
-                                "Warning: failed to save rollback graph for task '{}': {}",
-                                task_id, save_err
-                            );
-                        }
                     }
-                }
-                Err(load_err) => {
-                    eprintln!(
-                        "Warning: failed to load graph for rollback of task '{}': {}",
-                        task_id, load_err
-                    );
-                }
+                    Ok(())
+                })
+            {
+                eprintln!(
+                    "Warning: failed to rollback claim for task '{}': {}",
+                    task_id, rollback_err
+                );
             }
             return Err(anyhow::anyhow!(
                 "Failed to spawn executor '{}' (command: {}): {}",
