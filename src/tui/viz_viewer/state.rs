@@ -4349,30 +4349,29 @@ impl VizApp {
         }
     }
 
-    /// Grow the viz (right) pane by ~5% of panel_percent, wrapping around when at max.
-    /// Steps: 33 → 38 → 43 → ... → 98 → 100 → 33 (wraps back to 1/3).
+    /// Grow the viz (right) pane by 10% of panel_percent, wrapping around when past max.
+    /// Steps: 10 → 20 → 30 → ... → 90 → 100 → 10 (wraps back to minimum).
     pub fn grow_viz_pane(&mut self) {
         if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
             // Open panel at minimum size first
             self.right_panel_visible = true;
             self.layout_mode = LayoutMode::ThirdInspector;
-            self.right_panel_percent = 33;
+            self.right_panel_percent = 10;
             return;
         }
-        let next = self.right_panel_percent + 5;
+        let next = self.right_panel_percent + 10;
         if next > 100 {
             // Wrap around to minimum
-            self.right_panel_percent = 33;
+            self.right_panel_percent = 10;
             self.layout_mode = LayoutMode::ThirdInspector;
         } else {
-            self.right_panel_percent = next.min(100);
-            // Update layout_mode to reflect the closest bracket
+            self.right_panel_percent = next;
             self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
         }
     }
 
-    /// Shrink the viz (right) pane by ~5%, wrapping around when at min.
-    /// Steps: 67 → 62 → ... → 33 → 100 (wraps to max).
+    /// Shrink the viz (right) pane by 10%, wrapping around when at min.
+    /// Steps: 100 → 90 → ... → 20 → 10 → 100 (wraps to max).
     pub fn shrink_viz_pane(&mut self) {
         if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
             // Open panel at max size first
@@ -4382,13 +4381,13 @@ impl VizApp {
             self.focused_panel = FocusedPanel::RightPanel;
             return;
         }
-        if self.right_panel_percent <= 33 {
+        if self.right_panel_percent <= 10 {
             // Wrap around to maximum
             self.right_panel_percent = 100;
             self.layout_mode = LayoutMode::FullInspector;
             self.focused_panel = FocusedPanel::RightPanel;
         } else {
-            self.right_panel_percent = self.right_panel_percent.saturating_sub(5).max(33);
+            self.right_panel_percent = self.right_panel_percent.saturating_sub(10).max(10);
             self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
         }
     }
@@ -8087,17 +8086,29 @@ mod remap_panel_tests {
     // ── Grow viz pane ──
 
     #[test]
-    fn grow_viz_pane_increases_by_5_percent() {
+    fn grow_viz_pane_increases_by_10_percent() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 33;
+        app.right_panel_percent = 10;
 
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 38);
+        assert_eq!(app.right_panel_percent, 20);
 
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 43);
+        assert_eq!(app.right_panel_percent, 30);
+    }
+
+    #[test]
+    fn grow_viz_pane_reaches_full_screen() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::ThirdInspector;
+        app.right_panel_percent = 90;
+
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 100);
+        assert_eq!(app.layout_mode, LayoutMode::FullInspector);
     }
 
     #[test]
@@ -8105,16 +8116,34 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::FullInspector;
-        app.right_panel_percent = 98;
-
-        // 98 + 5 = 103 > 100, wraps to 33
-        app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 33);
-
-        // Verify 100 also wraps
         app.right_panel_percent = 100;
+
+        // 100 + 10 = 110 > 100, wraps to 10
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 33);
+        assert_eq!(app.right_panel_percent, 10);
+    }
+
+    #[test]
+    fn grow_viz_pane_full_roundtrip() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        // First press opens at 10%
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 10);
+        assert!(app.right_panel_visible);
+
+        // 9 more presses: 20, 30, 40, 50, 60, 70, 80, 90, 100
+        for expected in (20..=100).step_by(10) {
+            app.grow_viz_pane();
+            assert_eq!(app.right_panel_percent, expected);
+        }
+        assert_eq!(app.layout_mode, LayoutMode::FullInspector);
+
+        // One more wraps back to 10
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 10);
     }
 
     #[test]
@@ -8126,23 +8155,23 @@ mod remap_panel_tests {
         app.grow_viz_pane();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_percent, 33);
+        assert_eq!(app.right_panel_percent, 10);
     }
 
     // ── Shrink viz pane ──
 
     #[test]
-    fn shrink_viz_pane_decreases_by_5_percent() {
+    fn shrink_viz_pane_decreases_by_10_percent() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::TwoThirdsInspector;
-        app.right_panel_percent = 67;
+        app.right_panel_percent = 70;
 
         app.shrink_viz_pane();
-        assert_eq!(app.right_panel_percent, 62);
+        assert_eq!(app.right_panel_percent, 60);
 
         app.shrink_viz_pane();
-        assert_eq!(app.right_panel_percent, 57);
+        assert_eq!(app.right_panel_percent, 50);
     }
 
     #[test]
@@ -8150,7 +8179,7 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 33;
+        app.right_panel_percent = 10;
 
         // At min → wraps to 100
         app.shrink_viz_pane();
