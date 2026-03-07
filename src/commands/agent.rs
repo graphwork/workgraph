@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
 
 use super::graph_path;
@@ -437,62 +437,60 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
 
 /// Claim a task for the actor
 fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
-    let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::InProgress;
-    task.assigned = Some(actor_id.to_string());
-    task.started_at = Some(Utc::now().to_rfc3339());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        message: "Claimed by autonomous agent".to_string(),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let task_id = task_id.to_string();
+    let actor_id = actor_id.to_string();
+    super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(&task_id)?;
+        task.status = Status::InProgress;
+        task.assigned = Some(actor_id.clone());
+        task.started_at = Some(Utc::now().to_rfc3339());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(actor_id),
+            message: "Claimed by autonomous agent".to_string(),
+        });
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
     Ok(())
 }
 
 /// Mark task as completed
 fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
-    let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::Done;
-    task.completed_at = Some(Utc::now().to_rfc3339());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        message: "Completed by autonomous agent".to_string(),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let task_id = task_id.to_string();
+    let actor_id = actor_id.to_string();
+    super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(&task_id)?;
+        task.status = Status::Done;
+        task.completed_at = Some(Utc::now().to_rfc3339());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(actor_id),
+            message: "Completed by autonomous agent".to_string(),
+        });
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
     Ok(())
 }
 
 /// Mark task as failed
 fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<()> {
-    let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::Failed;
-    task.retry_count += 1;
-    task.failure_reason = Some(reason.to_string());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        message: format!("Failed: {}", reason),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let task_id = task_id.to_string();
+    let actor_id = actor_id.to_string();
+    let reason = reason.to_string();
+    super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(&task_id)?;
+        task.status = Status::Failed;
+        task.retry_count += 1;
+        task.failure_reason = Some(reason.clone());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(actor_id),
+            message: format!("Failed: {}", reason),
+        });
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
     Ok(())
 }

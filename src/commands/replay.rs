@@ -9,7 +9,6 @@ use std::path::Path;
 use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
 use workgraph::config::Config;
 use workgraph::graph::{Status, Task};
-use workgraph::parser::save_graph;
 use workgraph::runs::{self, RunMeta};
 
 /// Options controlling which tasks to reset.
@@ -34,7 +33,7 @@ struct ReplayOutput {
 }
 
 pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
-    let (mut graph, graph_path) = super::load_workgraph_mut(dir)?;
+    let (graph, _graph_path) = super::load_workgraph(dir)?;
     let config = Config::load_or_default(dir);
 
     // Determine keep_done threshold
@@ -205,19 +204,20 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
     };
     runs::snapshot(dir, &run_id, &meta)?;
 
-    // Phase 5: Reset selected tasks
-    for task_id in &reset_ids {
-        if let Some(task) = graph.get_task_mut(task_id) {
-            reset_task(task);
-            // Apply model override
-            if let Some(ref model) = opts.model {
-                task.model = Some(model.clone());
+    // Phase 5+6: Reset selected tasks and save atomically
+    let model_override = opts.model.clone();
+    drop(graph);
+    super::mutate_workgraph(dir, |graph| {
+        for task_id in &reset_ids {
+            if let Some(task) = graph.get_task_mut(task_id) {
+                reset_task(task);
+                if let Some(ref model) = model_override {
+                    task.model = Some(model.clone());
+                }
             }
         }
-    }
-
-    // Phase 6: Save graph
-    save_graph(&graph, &graph_path).context("Failed to save graph after replay")?;
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     // Phase 7: Record provenance

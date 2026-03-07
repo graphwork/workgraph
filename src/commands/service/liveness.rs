@@ -15,7 +15,6 @@ use chrono::Utc;
 
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 use workgraph::stream_event::{self, StreamEvent};
 
@@ -435,8 +434,8 @@ pub fn handle_stuck_agents(
 
     let gp = graph_path(dir);
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
-    let mut graph = load_graph(&gp).context("Failed to load graph for stuck triage")?;
-    let mut graph_modified = false;
+
+    workgraph::parser::mutate_graph(&gp, |graph| -> Result<()> {
 
     for (agent_id, stale_secs, last_tool) in &triage_targets {
         let (task_id, _task_title, pid, output_file) = {
@@ -502,7 +501,6 @@ pub fn handle_stuck_agents(
                                     stale_secs, verdict.reason
                                 ),
                             });
-                            graph_modified = true;
                         }
                     }
                     "kill-done" => {
@@ -531,7 +529,6 @@ pub fn handle_stuck_agents(
                                     agent_id, pid, stale_secs, verdict.reason
                                 ),
                             });
-                            graph_modified = true;
                         }
                         tracker.agent_stale_ticks.remove(agent_id);
                     }
@@ -563,7 +560,6 @@ pub fn handle_stuck_agents(
                                     agent_id, pid, stale_secs, verdict.reason
                                 ),
                             });
-                            graph_modified = true;
                         }
                         tracker.agent_stale_ticks.remove(agent_id);
                     }
@@ -580,10 +576,10 @@ pub fn handle_stuck_agents(
         }
     }
 
+    Ok(())
+    }).context("Failed to save graph after stuck triage")?;
+
     locked_registry.save_ref()?;
-    if graph_modified {
-        save_graph(&graph, &gp).context("Failed to save graph after stuck triage")?;
-    }
 
     Ok(())
 }

@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::load_graph;
 use workgraph::service::registry::AgentRegistry;
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
@@ -640,118 +640,125 @@ fn handle_add_task(
     origin: Option<&str>,
 ) -> IpcResponse {
     let graph_path = graph_path(dir);
-    let mut graph = match load_graph(&graph_path) {
-        Ok(g) => g,
-        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
-    };
+    let title_owned = title.to_string();
+    let description_owned = description.map(String::from);
+    let after_owned = after.to_vec();
+    let tags_owned = tags.to_vec();
+    let skills_owned = skills.to_vec();
+    let deliverables_owned = deliverables.to_vec();
+    let model_owned = model.map(String::from);
+    let verify_owned = verify.map(String::from);
+    let id_owned = id.map(String::from);
 
-    // Generate or validate task ID
-    let task_id = match id {
-        Some(id) => {
-            if graph.get_node(id).is_some() {
-                return IpcResponse::error(&format!("Task with ID '{}' already exists", id));
-            }
-            id.to_string()
-        }
-        None => {
-            // Reuse the same slug generation logic as add.rs
-            let slug: String = title
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                .collect::<String>()
-                .split('-')
-                .filter(|s| !s.is_empty())
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("-");
-            let base_id = if slug.is_empty() {
-                "task".to_string()
-            } else {
-                slug
-            };
-            if graph.get_node(&base_id).is_none() {
-                base_id
-            } else {
-                let mut found = None;
-                for i in 2..1000 {
-                    let candidate = format!("{}-{}", base_id, i);
-                    if graph.get_node(&candidate).is_none() {
-                        found = Some(candidate);
-                        break;
-                    }
+    let task_id = match workgraph::parser::mutate_graph(&graph_path, |graph| -> anyhow::Result<String> {
+        // Generate or validate task ID
+        let task_id = match id_owned {
+            Some(ref id) => {
+                if graph.get_node(id).is_some() {
+                    anyhow::bail!("Task with ID '{}' already exists", id);
                 }
-                found.unwrap_or_else(|| {
-                    format!(
-                        "task-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    )
-                })
+                id.clone()
+            }
+            None => {
+                let slug: String = title_owned
+                    .to_lowercase()
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    .collect::<String>()
+                    .split('-')
+                    .filter(|s| !s.is_empty())
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("-");
+                let base_id = if slug.is_empty() {
+                    "task".to_string()
+                } else {
+                    slug
+                };
+                if graph.get_node(&base_id).is_none() {
+                    base_id
+                } else {
+                    let mut found = None;
+                    for i in 2..1000 {
+                        let candidate = format!("{}-{}", base_id, i);
+                        if graph.get_node(&candidate).is_none() {
+                            found = Some(candidate);
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| {
+                        format!(
+                            "task-{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0)
+                        )
+                    })
+                }
+            }
+        };
+
+        let task = Task {
+            id: task_id.clone(),
+            title: title_owned.clone(),
+            description: description_owned,
+            status: Status::Open,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: after_owned.clone(),
+            requires: vec![],
+            tags: tags_owned,
+            skills: skills_owned,
+            inputs: vec![],
+            deliverables: deliverables_owned,
+            artifacts: vec![],
+            exec: None,
+            not_before: None,
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: None,
+            failure_reason: None,
+            model: model_owned,
+            provider: None,
+            verify: verify_owned,
+            agent: None,
+            loop_iteration: 0,
+            cycle_failure_restarts: 0,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            cycle_config: None,
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+            exec_mode: None,
+        };
+
+        graph.add_node(Node::Task(task));
+
+        // Maintain bidirectional after/blocks consistency
+        for dep in &after_owned {
+            if let Some(blocker) = graph.get_task_mut(dep)
+                && !blocker.before.contains(&task_id)
+            {
+                blocker.before.push(task_id.clone());
             }
         }
+
+        Ok(task_id)
+    }) {
+        Ok(id) => id,
+        Err(e) => return IpcResponse::error(&format!("Failed to add task: {}", e)),
     };
-
-    let task = Task {
-        id: task_id.clone(),
-        title: title.to_string(),
-        description: description.map(String::from),
-        status: Status::Open,
-        assigned: None,
-        estimate: None,
-        before: vec![],
-        after: after.to_vec(),
-        requires: vec![],
-        tags: tags.to_vec(),
-        skills: skills.to_vec(),
-        inputs: vec![],
-        deliverables: deliverables.to_vec(),
-        artifacts: vec![],
-        exec: None,
-        not_before: None,
-        created_at: Some(chrono::Utc::now().to_rfc3339()),
-        started_at: None,
-        completed_at: None,
-        log: vec![],
-        retry_count: 0,
-        max_retries: None,
-        failure_reason: None,
-        model: model.map(String::from),
-        provider: None,
-        verify: verify.map(String::from),
-        agent: None,
-        loop_iteration: 0,
-        cycle_failure_restarts: 0,
-        ready_after: None,
-        paused: false,
-        visibility: "internal".to_string(),
-        context_scope: None,
-        cycle_config: None,
-        token_usage: None,
-        session_id: None,
-        wait_condition: None,
-        checkpoint: None,
-        resurrection_count: 0,
-        last_resurrected_at: None,
-        exec_mode: None,
-    };
-
-    graph.add_node(Node::Task(task));
-
-    // Maintain bidirectional after/blocks consistency
-    for dep in after {
-        if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.before.contains(&task_id)
-        {
-            blocker.before.push(task_id.clone());
-        }
-    }
-
-    if let Err(e) = save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
-    }
 
     // Notify TUI to auto-focus on the new task
     crate::commands::notify_new_task_focus(dir, &task_id);
