@@ -452,8 +452,8 @@ fn main() -> Result<()> {
                 commands::fail::run(&workgraph_dir, &id, reason.as_deref())
             }
         }
-        Commands::Abandon { id, reason } => {
-            commands::abandon::run(&workgraph_dir, &id, reason.as_deref())
+        Commands::Abandon { id, reason, superseded_by } => {
+            commands::abandon::run(&workgraph_dir, &id, reason.as_deref(), &superseded_by)
         }
         Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),
         Commands::Claim { id, actor } => {

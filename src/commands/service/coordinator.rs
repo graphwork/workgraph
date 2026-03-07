@@ -1038,7 +1038,14 @@ fn build_auto_assign_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
             exec_mode: Some("bare".to_string()),
+            superseded_by: vec![],
+            supersedes: None,
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -1257,6 +1264,13 @@ fn build_auto_evaluate_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
         };
 
         graph.add_node(Node::Task(eval_task));
@@ -1461,6 +1475,13 @@ fn build_flip_verification_tasks(
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
         };
 
         graph.add_node(Node::Task(verify_task));
@@ -1722,6 +1743,17 @@ fn spawn_agents_for_ready_tasks(
         // Skip if already claimed
         if task.assigned.is_some() {
             continue;
+        }
+
+        // Skip system tasks whose source task is abandoned (defense-in-depth)
+        if task.id.starts_with('.') {
+            let source_abandoned = task.after.iter().any(|dep_id| {
+                graph.get_task(dep_id).is_some_and(|t| t.status == Status::Abandoned)
+            });
+            if source_abandoned {
+                eprintln!("[coordinator] Skipping '{}': source task is abandoned", task.id);
+                continue;
+            }
         }
 
         // When auto_assign is enabled, non-system tasks must go through the

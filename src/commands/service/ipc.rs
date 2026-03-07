@@ -718,7 +718,14 @@ fn handle_add_task(
         checkpoint: None,
         resurrection_count: 0,
         last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
         exec_mode: None,
+        superseded_by: vec![],
+        supersedes: None,
     };
 
     graph.add_node(Node::Task(task));
