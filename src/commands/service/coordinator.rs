@@ -1245,7 +1245,9 @@ fn build_auto_evaluate_tasks(
                     .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
                     .model,
             ),
-            provider: None,
+            provider: config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
+                .provider,
             verify: None,
             agent: config.agency.evaluator_agent.clone(),
 

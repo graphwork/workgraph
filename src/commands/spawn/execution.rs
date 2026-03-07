@@ -168,10 +168,14 @@ pub(crate) fn spawn_agent_inner(
     let exec_mode = resolved_exec_mode.as_str();
 
     // Resolve per-role provider for native executor.
+    // Priority: task.provider (set on Task struct) > role-based config resolution.
+    let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
     let effective_provider: Option<String> = if settings.executor_type == "native" {
-        config
-            .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
-            .provider
+        task_provider.or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
+                .provider
+        })
     } else {
         None
     };
