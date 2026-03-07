@@ -7773,3 +7773,163 @@ mod remap_panel_tests {
         assert!(offset > 80, "forward offset at start should be near panel_width, got {offset}");
     }
 }
+
+#[cfg(test)]
+mod firehose_tests {
+    use super::*;
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+    use std::collections::{HashMap, HashSet};
+    use std::io::Write;
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::test_helpers::make_task_with_status;
+
+    fn write_registry(workgraph_dir: &std::path::Path, agents_json: &str) {
+        let svc_dir = workgraph_dir.join("service");
+        std::fs::create_dir_all(&svc_dir).unwrap();
+        std::fs::write(
+            svc_dir.join("registry.json"),
+            format!(r#"{{"agents":{{{agents_json}}},"next_agent_id":100}}"#),
+        )
+        .unwrap();
+    }
+
+    fn agent_entry(id: &str, task_id: &str) -> String {
+        format!(
+            r#""{id}":{{"id":"{id}","pid":1,"task_id":"{task_id}","executor":"claude","started_at":"2026-03-07T00:00:00Z","last_heartbeat":"2026-03-07T00:00:00Z","status":"working","output_file":"agents/{id}/output.log"}}"#,
+        )
+    }
+
+    fn build_test_app() -> VizApp {
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a", "Task A", Status::Open);
+        graph.add_node(Node::Task(a));
+        let tmp = tempfile::tempdir().unwrap();
+        let gpath = tmp.path().join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), VizLayoutMode::Tree,
+            &HashSet::new(), "gray", &HashMap::new(),
+        );
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        std::mem::forget(tmp);
+        app
+    }
+
+    #[test]
+    fn firehose_tab_in_panel_cycle() {
+        assert_eq!(RightPanelTab::Firehose.index(), 8);
+        assert_eq!(RightPanelTab::Firehose.label(), "Fire");
+        assert_eq!(RightPanelTab::from_index(8), Some(RightPanelTab::Firehose));
+        assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Firehose);
+        assert_eq!(RightPanelTab::Firehose.next(), RightPanelTab::Chat);
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Firehose);
+    }
+
+    #[test]
+    fn firehose_update_reads_output_logs() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents").join("agent-1234");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        {
+            let mut f = std::fs::File::create(agents_dir.join("output.log")).unwrap();
+            writeln!(f, "Starting task...").unwrap();
+            writeln!(f, "Processing data...").unwrap();
+            writeln!(f, "Done.").unwrap();
+        }
+        write_registry(&app.workgraph_dir, &agent_entry("agent-1234", "test-task"));
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 3);
+        assert_eq!(app.firehose.lines[0].agent_id, "agent-1234");
+        assert_eq!(app.firehose.lines[0].task_id, "test-task");
+        assert_eq!(app.firehose.lines[0].text, "Starting task...");
+        assert_eq!(app.firehose.lines[2].text, "Done.");
+    }
+
+    #[test]
+    fn firehose_incremental_read() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents").join("agent-5678");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("output.log"), "Line 1\n").unwrap();
+        write_registry(&app.workgraph_dir, &agent_entry("agent-5678", "t"));
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 1);
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(agents_dir.join("output.log"))
+                .unwrap();
+            writeln!(f, "Line 2").unwrap();
+            writeln!(f, "Line 3").unwrap();
+        }
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 3);
+        assert_eq!(app.firehose.lines[1].text, "Line 2");
+        assert_eq!(app.firehose.lines[2].text, "Line 3");
+    }
+
+    #[test]
+    fn firehose_buffer_cap() {
+        let mut app = build_test_app();
+        for i in 0..1200 {
+            app.firehose.lines.push(FirehoseLine {
+                agent_id: "agent-0".to_string(),
+                task_id: "t".to_string(),
+                text: format!("line {i}"),
+                color_idx: 0,
+            });
+        }
+        if app.firehose.lines.len() > FIREHOSE_MAX_LINES {
+            let drain = app.firehose.lines.len() - FIREHOSE_MAX_LINES;
+            app.firehose.lines.drain(..drain);
+        }
+        assert_eq!(app.firehose.lines.len(), FIREHOSE_MAX_LINES);
+        assert_eq!(app.firehose.lines[0].text, "line 200");
+    }
+
+    #[test]
+    fn firehose_distinct_colors_per_agent() {
+        let mut app = build_test_app();
+        let c1 = *app.firehose.agent_colors.entry("a1".into()).or_insert_with(|| {
+            let i = app.firehose.next_color; app.firehose.next_color += 1; i
+        });
+        let c2 = *app.firehose.agent_colors.entry("a2".into()).or_insert_with(|| {
+            let i = app.firehose.next_color; app.firehose.next_color += 1; i
+        });
+        let c1b = *app.firehose.agent_colors.entry("a1".into()).or_insert_with(|| {
+            let i = app.firehose.next_color; app.firehose.next_color += 1; i
+        });
+        assert_ne!(c1, c2);
+        assert_eq!(c1, c1b);
+    }
+
+    #[test]
+    fn firehose_multiple_agents_interleaved() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents");
+        let dir_a = agents_dir.join("agent-a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(dir_a.join("output.log"), "A1\nA2\n").unwrap();
+        let dir_b = agents_dir.join("agent-b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_b.join("output.log"), "B1\nB2\n").unwrap();
+        let entries = format!("{},{}", agent_entry("agent-a", "ta"), agent_entry("agent-b", "tb"));
+        write_registry(&app.workgraph_dir, &entries);
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 4);
+        let ids: HashSet<&str> = app.firehose.lines.iter().map(|l| l.agent_id.as_str()).collect();
+        assert!(ids.contains("agent-a"));
+        assert!(ids.contains("agent-b"));
+        let ca = app.firehose.lines.iter().find(|l| l.agent_id == "agent-a").unwrap().color_idx;
+        let cb = app.firehose.lines.iter().find(|l| l.agent_id == "agent-b").unwrap().color_idx;
+        assert_ne!(ca, cb);
+    }
+}
