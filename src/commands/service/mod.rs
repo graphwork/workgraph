@@ -1497,9 +1497,25 @@ pub fn run_daemon(
     anyhow::bail!("Daemon is only supported on Unix systems")
 }
 
+/// Check if the caller is an agent and refuse stop/pause operations.
+/// Returns `Err` if `WG_AGENT_ID` is set, `Ok(())` otherwise.
+fn guard_agent_stop_pause() -> Result<()> {
+    if std::env::var("WG_AGENT_ID").is_ok() {
+        anyhow::bail!("agents cannot stop/pause the service. Use `wg service restart` instead.");
+    }
+    Ok(())
+}
+
 /// Stop the service daemon
 #[cfg(unix)]
 pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
+    guard_agent_stop_pause()?;
+    run_stop_inner(dir, force, kill_agents, json)
+}
+
+/// Inner stop logic (no agent guard) — used by `run_restart` to bypass the guard.
+#[cfg(unix)]
+fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {
@@ -1602,7 +1618,8 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     let prior_config = CoordinatorState::load(dir);
 
     // Stop gracefully — agents continue running independently.
-    run_stop(dir, false, false, json)?;
+    // Use inner variant to bypass the agent guard (agents may restart).
+    run_stop_inner(dir, false, false, json)?;
 
     // Derive start parameters from the previous daemon's state.
     let (max_agents, executor, interval, model) = match &prior_config {
@@ -1896,6 +1913,8 @@ pub fn run_reload(
 /// Pause the coordinator (no new agent spawns, running agents unaffected)
 #[cfg(unix)]
 pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
+    guard_agent_stop_pause()?;
+
     let response = send_request(dir, &IpcRequest::Pause)?;
 
     if !response.ok {
@@ -2295,5 +2314,29 @@ mod tests {
             status_line
         );
         assert!(status_line.contains("0 alive"));
+    }
+
+    #[test]
+    fn test_guard_agent_stop_pause_blocks_when_agent() {
+        // SAFETY: test-only env manipulation; these tests are not parallel-safe
+        // but each test restores the var before returning.
+        unsafe { std::env::set_var("WG_AGENT_ID", "test-agent") };
+        let result = guard_agent_stop_pause();
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("agents cannot stop/pause the service"),
+            "Expected agent guard message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_guard_agent_stop_pause_allows_when_not_agent() {
+        // Ensure WG_AGENT_ID is not set
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+        let result = guard_agent_stop_pause();
+        assert!(result.is_ok());
     }
 }
