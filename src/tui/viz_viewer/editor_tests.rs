@@ -30,6 +30,7 @@ mod tui_editor_tests {
             reverse_edges: HashMap::new(),
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
+            phase_annotations: HashMap::new(),
         };
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_visible = true;

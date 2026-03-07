@@ -457,7 +457,7 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+        let (filtered, annots, _phase_annots) = crate::commands::viz::filter_internal_tasks(
             &graph,
             graph.tasks().collect(),
             &annotations,
@@ -489,7 +489,7 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+        let (filtered, annots, _phase_annots) = crate::commands::viz::filter_internal_tasks(
             &graph,
             graph.tasks().collect(),
             &annotations,

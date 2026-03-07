@@ -10,6 +10,15 @@ use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_li
 // Re-export public API
 pub use graph::{generate_graph, generate_graph_with_overrides};
 
+/// A single lifecycle phase annotation for a parent task.
+#[derive(Debug, Clone)]
+pub struct PhaseAnnotation {
+    /// Short label shown in brackets (e.g., "assigning", "evaluating").
+    pub label: String,
+    /// The dot-task ID for this phase (e.g., ".assign-foo").
+    pub task_id: String,
+}
+
 /// Structured output from viz generation, containing both the rendered string
 /// and metadata needed for interactive features (e.g., TUI task selection).
 pub struct VizOutput {
@@ -33,6 +42,9 @@ pub struct VizOutput {
     /// Cycle membership: task_id → set of all task IDs in the same SCC.
     /// Only populated for tasks that are in non-trivial SCCs (>1 member).
     pub cycle_members: HashMap<String, HashSet<String>>,
+    /// Active lifecycle phase annotations: parent_task_id → list of phases.
+    /// Used by the TUI for click-to-navigate on phase labels.
+    pub phase_annotations: HashMap<String, Vec<PhaseAnnotation>>,
 }
 
 /// Output format for visualization
@@ -144,19 +156,19 @@ fn is_internal_task(task: &Task) -> bool {
 ///
 /// - If an assignment task exists and is not done → "[assigning]"
 /// - If an evaluation task exists and is not done → "[evaluating]"
-fn compute_phase_annotation(internal_task: &Task) -> &'static str {
+fn phase_label_for(internal_task: &Task) -> &'static str {
     let id = &internal_task.id;
     if id.starts_with(".assign-") || id.starts_with("assign-") {
-        "[assigning]"
+        "assigning"
     } else if id.starts_with(".verify-") || id.starts_with("verify-") {
-        "[verifying]"
+        "verifying"
     } else {
-        "[evaluating]"
+        "evaluating"
     }
 }
 
 /// Extract the parent task ID from a system task ID.
-fn system_task_parent_id(id: &str) -> Option<String> {
+pub(crate) fn system_task_parent_id(id: &str) -> Option<String> {
     for prefix in &[".assign-", ".evaluate-", ".verify-flip-", ".respond-to-",
                      "assign-", "evaluate-", "verify-flip-", "respond-to-"] {
         if let Some(rest) = id.strip_prefix(prefix) {
@@ -175,8 +187,8 @@ pub(crate) fn filter_internal_tasks<'a>(
     _graph: &'a WorkGraph,
     tasks: Vec<&'a Task>,
     _existing_annotations: &HashMap<String, String>,
-) -> (Vec<&'a Task>, HashMap<String, String>) {
-    let mut annotations: HashMap<String, String> = HashMap::new();
+) -> (Vec<&'a Task>, HashMap<String, String>, HashMap<String, Vec<PhaseAnnotation>>) {
+    let mut phase_map: HashMap<String, Vec<PhaseAnnotation>> = HashMap::new();
     let mut internal_ids: HashSet<&str> = HashSet::new();
 
     for task in &tasks {
@@ -187,11 +199,24 @@ pub(crate) fn filter_internal_tasks<'a>(
 
         if let Some(pid) = system_task_parent_id(&task.id) {
             if task.status == Status::InProgress {
-                let annotation = compute_phase_annotation(task);
-                annotations.insert(pid, annotation.to_string());
+                let label = phase_label_for(task).to_string();
+                let annotation = PhaseAnnotation {
+                    label,
+                    task_id: task.id.clone(),
+                };
+                phase_map.entry(pid).or_default().push(annotation);
             }
         }
     }
+
+    // Build annotation strings from the structured data
+    let annotations: HashMap<String, String> = phase_map
+        .iter()
+        .map(|(pid, phases)| {
+            let labels: Vec<&str> = phases.iter().map(|p| p.label.as_str()).collect();
+            (pid.clone(), format!("[{}]", labels.join(", ")))
+        })
+        .collect();
 
     // Second pass: filter out internal tasks and fix edges
     // For tasks that were blocked by internal tasks, rewire to the internal task's blockers
@@ -200,7 +225,7 @@ pub(crate) fn filter_internal_tasks<'a>(
         .filter(|t| !internal_ids.contains(t.id.as_str()))
         .collect();
 
-    (filtered, annotations)
+    (filtered, annotations, phase_map)
 }
 
 /// Generate the ASCII viz output string for the given directory and options.
@@ -406,8 +431,8 @@ pub fn generate_viz_output_from_graph(
 
     // Filter out internal tasks (assign-*, evaluate-*) unless --show-internal
     let empty_annotations = HashMap::new();
-    let (tasks_to_show, annotations) = if options.show_internal {
-        (tasks_to_show, empty_annotations)
+    let (tasks_to_show, annotations, phase_annotations) = if options.show_internal {
+        (tasks_to_show, empty_annotations, HashMap::new())
     } else {
         filter_internal_tasks(graph, tasks_to_show, &empty_annotations)
     };
@@ -572,19 +597,23 @@ pub fn generate_viz_output_from_graph(
 
     // Generate output
     let output = match options.format {
-        OutputFormat::Ascii => ascii::generate_ascii(
-            graph,
-            &tasks_to_show,
-            &task_ids,
-            &annotations,
-            &live_token_usage,
-            &assign_token_usage,
-            &eval_token_usage,
-            options.layout,
-            &context_ids,
-            &options.edge_color,
-            &message_stats,
-        ),
+        OutputFormat::Ascii => {
+            let mut viz = ascii::generate_ascii(
+                graph,
+                &tasks_to_show,
+                &task_ids,
+                &annotations,
+                &live_token_usage,
+                &assign_token_usage,
+                &eval_token_usage,
+                options.layout,
+                &context_ids,
+                &options.edge_color,
+                &message_stats,
+            );
+            viz.phase_annotations = phase_annotations.clone();
+            viz
+        }
         _ => {
             let text = match options.format {
                 OutputFormat::Dot => dot::generate_dot(
@@ -621,6 +650,7 @@ pub fn generate_viz_output_from_graph(
                 reverse_edges: HashMap::new(),
                 char_edge_map: HashMap::new(),
                 cycle_members: HashMap::new(),
+                phase_annotations,
             }
         }
     };
@@ -909,7 +939,7 @@ mod tests {
         graph.add_node(Node::Task(task_b));
 
         let annotations = HashMap::new();
-        let (filtered, annots) =
+        let (filtered, annots, _phase_annots) =
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 

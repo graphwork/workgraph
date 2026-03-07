@@ -530,6 +530,39 @@ pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachmen
     })
 }
 
+/// Path to the streaming file (in-progress coordinator response text).
+fn streaming_path(workgraph_dir: &Path) -> PathBuf {
+    chat_dir(workgraph_dir).join(".streaming")
+}
+
+/// Write the current streaming text (overwrites the file each time).
+/// Called by the coordinator agent as text chunks arrive.
+pub fn write_streaming(workgraph_dir: &Path, text: &str) -> Result<()> {
+    let path = streaming_path(workgraph_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Atomic write: write to temp, then rename.
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, text.as_bytes())
+        .with_context(|| format!("Failed to write streaming file: {}", tmp.display()))?;
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("Failed to rename streaming file: {}", path.display()))?;
+    Ok(())
+}
+
+/// Read the current streaming text. Returns None if not streaming.
+pub fn read_streaming(workgraph_dir: &Path) -> Option<String> {
+    let path = streaming_path(workgraph_dir);
+    fs::read_to_string(&path).ok().filter(|s| !s.is_empty())
+}
+
+/// Clear the streaming file (response complete).
+pub fn clear_streaming(workgraph_dir: &Path) {
+    let path = streaming_path(workgraph_dir);
+    let _ = fs::remove_file(&path);
+}
+
 /// Clear all chat data (inbox, outbox, cursors).
 pub fn clear(workgraph_dir: &Path) -> Result<()> {
     let dir = chat_dir(workgraph_dir);

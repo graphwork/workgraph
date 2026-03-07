@@ -498,6 +498,9 @@ fn agent_thread_main(
                 *alive.lock().unwrap_or_else(|e| e.into_inner()) = false;
                 *pid.lock().unwrap_or_else(|e| e.into_inner()) = 0;
 
+                // Clear any in-progress streaming
+                chat::clear_streaming(dir);
+
                 // If there was a pending request, write an error response
                 if let Some(req) = request {
                     let _ = chat::append_outbox(
@@ -546,6 +549,7 @@ fn agent_thread_main(
                             "Coordinator agent: failed to write to stdin: {}",
                             e
                         ));
+                        chat::clear_streaming(dir);
                         let _ = chat::append_outbox(
                             dir,
                             "The coordinator agent encountered an error. Please try again.",
@@ -555,9 +559,16 @@ fn agent_thread_main(
                     }
                 }
 
-                // Wait for the response from the stdout reader
-                let collected =
-                    collect_response(&response_rx, logger, std::time::Duration::from_secs(300));
+                // Wait for the response, streaming partial text to the TUI as it arrives
+                let collected = collect_response_streaming(
+                    &response_rx,
+                    logger,
+                    std::time::Duration::from_secs(300),
+                    dir,
+                );
+
+                // Clear the streaming file now that the response is complete
+                chat::clear_streaming(dir);
 
                 match collected {
                     Some(resp) if !resp.summary.is_empty() => {
@@ -924,6 +935,71 @@ fn collect_response(
                 if !has_text {
                     // Turn complete but no text — this happens when the assistant
                     // only made tool calls. Continue waiting for the next turn.
+                    continue;
+                }
+                return build_collected_response(&parts, has_tool_calls);
+            }
+            Ok(ResponseEvent::StreamEnd) => {
+                logger.warn("Coordinator agent: stdout stream ended during response collection");
+                return build_collected_response(&parts, has_tool_calls);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return build_collected_response(&parts, has_tool_calls);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return build_collected_response(&parts, has_tool_calls);
+            }
+        }
+    }
+}
+
+/// Collect the response while streaming partial text to a file for TUI consumption.
+///
+/// Like `collect_response`, but writes accumulated text/tool-call output to a
+/// `.streaming` file in the chat directory as events arrive. The TUI polls this
+/// file to show incremental response text.
+fn collect_response_streaming(
+    rx: &mpsc::Receiver<ResponseEvent>,
+    logger: &DaemonLogger,
+    timeout: std::time::Duration,
+    dir: &Path,
+) -> Option<CollectedResponse> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut parts: Vec<ResponsePart> = Vec::new();
+    let mut has_tool_calls = false;
+    // Accumulated text for streaming display (includes tool call markers)
+    let mut streaming_text = String::new();
+
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or(std::time::Duration::ZERO);
+        if remaining.is_zero() {
+            logger.warn("Coordinator agent: response collection timed out");
+            return build_collected_response(&parts, has_tool_calls);
+        }
+
+        match rx.recv_timeout(remaining) {
+            Ok(ResponseEvent::Text(text)) => {
+                parts.push(ResponsePart::Text(text.clone()));
+                streaming_text.push_str(&text);
+                let _ = chat::write_streaming(dir, &streaming_text);
+            }
+            Ok(ResponseEvent::ToolUse { name, input }) => {
+                has_tool_calls = true;
+                // Show tool call in streaming output
+                streaming_text.push_str(&format!("\n[Running: {}...]\n", name));
+                let _ = chat::write_streaming(dir, &streaming_text);
+                parts.push(ResponsePart::ToolUse { name, input });
+            }
+            Ok(ResponseEvent::ToolResult(content)) => {
+                has_tool_calls = true;
+                parts.push(ResponsePart::ToolResult(content));
+                // Tool result doesn't update streaming text (too verbose)
+            }
+            Ok(ResponseEvent::TurnComplete) => {
+                let has_text = parts.iter().any(|p| matches!(p, ResponsePart::Text(_)));
+                if !has_text {
                     continue;
                 }
                 return build_collected_response(&parts, has_tool_calls);

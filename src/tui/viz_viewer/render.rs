@@ -20,6 +20,9 @@ use crate::tui::markdown::markdown_to_lines;
 const SIDE_MIN_WIDTH: u16 = 100;
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
+    // Increment frame tick counter (used for animated spinners).
+    app.tick_count = app.tick_count.wrapping_add(1);
+
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target
         && when.elapsed() > std::time::Duration::from_secs(2)
@@ -518,7 +521,17 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
         // Get the ANSI line and parse it.
         let ansi_line = app.lines.get(orig_idx).map(|s| s.as_str()).unwrap_or("");
         let base_line: Line = match ansi_to_tui::IntoText::into_text(&ansi_line) {
-            Ok(text) => text.lines.into_iter().next().unwrap_or_default(),
+            Ok(text) => {
+                let mut line = text.lines.into_iter().next().unwrap_or_default();
+                // Replace ANSI 256-color 177 (lifecycle phase placeholder) with
+                // exact RGB(200,120,220) magenta for consistent rendering.
+                for span in &mut line.spans {
+                    if span.style.fg == Some(Color::Indexed(177)) {
+                        span.style.fg = Some(Color::Rgb(200, 120, 220));
+                    }
+                }
+                line
+            }
             Err(_) => {
                 let plain = app
                     .plain_lines
@@ -1595,7 +1608,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         rendered_lines.push(Line::from(""));
     }
 
-    // Streaming indicator when awaiting response.
+    // Streaming response or thinking indicator when awaiting response.
     if app.chat.awaiting_response {
         rendered_lines.push(Line::from(Span::styled(
             "↯ ...",

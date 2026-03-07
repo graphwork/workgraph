@@ -9,7 +9,7 @@ use std::path::Path;
 use workgraph::agency;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, mutate_graph};
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 use workgraph::stream_event::{self, StreamEvent};
 
@@ -121,109 +121,105 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     let config = Config::load_or_default(dir);
 
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
-    let mut graph = load_graph(graph_path).context("Failed to load graph")?;
-    let mut tasks_modified = false;
-    let mut tasks_completed_by_triage: Vec<String> = Vec::new();
+    // Uses mutate_graph to hold flock across load→modify→save, preventing TOCTOU races.
+    mutate_graph(graph_path, |graph| -> Result<()> {
+        let mut tasks_completed_by_triage: Vec<String> = Vec::new();
 
-    for (agent_id, task_id, pid, output_file, reason) in &dead {
-        if let Some(task) = graph.get_task_mut(task_id) {
-            // Only unclaim if task is still in progress (agent didn't finish it properly)
-            if task.status == Status::InProgress {
-                if config.agency.auto_triage {
-                    // Run synchronous triage to assess progress
-                    match run_triage(&config, task, output_file) {
-                        Ok(verdict) => {
-                            let is_done = verdict.verdict == "done";
-                            apply_triage_verdict(task, &verdict, agent_id, *pid);
-                            eprintln!(
-                                "[coordinator] Triage for '{}': verdict={}, reason={}",
-                                task_id, verdict.verdict, verdict.reason
-                            );
-                            if is_done && task.status == Status::Done {
-                                tasks_completed_by_triage.push(task_id.clone());
+        for (agent_id, task_id, pid, output_file, reason) in &dead {
+            if let Some(task) = graph.get_task_mut(task_id) {
+                // Only unclaim if task is still in progress (agent didn't finish it properly)
+                if task.status == Status::InProgress {
+                    if config.agency.auto_triage {
+                        // Run synchronous triage to assess progress
+                        match run_triage(&config, task, output_file) {
+                            Ok(verdict) => {
+                                let is_done = verdict.verdict == "done";
+                                apply_triage_verdict(task, &verdict, agent_id, *pid);
+                                eprintln!(
+                                    "[coordinator] Triage for '{}': verdict={}, reason={}",
+                                    task_id, verdict.verdict, verdict.reason
+                                );
+                                if is_done && task.status == Status::Done {
+                                    tasks_completed_by_triage.push(task_id.clone());
+                                }
+                            }
+                            Err(e) => {
+                                // Triage failed, fall back to restart behavior
+                                eprintln!(
+                                    "[coordinator] Triage failed for '{}': {}, falling back to restart",
+                                    task_id, e
+                                );
+                                task.status = Status::Open;
+                                task.assigned = None;
+                                task.session_id = None;
+                                task.log.push(LogEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    actor: Some("triage".to_string()),
+                                    message: format!(
+                                        "Triage failed ({}), task reset: agent '{}' (PID {}) process exited",
+                                        e, agent_id, pid
+                                    ),
+                                });
                             }
                         }
-                        Err(e) => {
-                            // Triage failed, fall back to restart behavior
-                            eprintln!(
-                                "[coordinator] Triage failed for '{}': {}, falling back to restart",
-                                task_id, e
-                            );
-                            task.status = Status::Open;
-                            task.assigned = None;
-                            task.session_id = None;
-                            task.log.push(LogEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                actor: Some("triage".to_string()),
-                                message: format!(
-                                    "Triage failed ({}), task reset: agent '{}' (PID {}) process exited",
-                                    e, agent_id, pid
-                                ),
-                            });
-                        }
+                    } else {
+                        // Existing behavior: simple unclaim
+                        task.status = Status::Open;
+                        task.assigned = None;
+                        task.session_id = None;
+                        let reason_msg = match reason {
+                            DeadReason::ProcessExited => format!(
+                                "Task unclaimed: agent '{}' (PID {}) process exited",
+                                agent_id, pid
+                            ),
+                        };
+                        task.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: None,
+                            message: reason_msg,
+                        });
                     }
-                } else {
-                    // Existing behavior: simple unclaim
-                    task.status = Status::Open;
-                    task.assigned = None;
-                    task.session_id = None;
-                    let reason_msg = match reason {
-                        DeadReason::ProcessExited => format!(
-                            "Task unclaimed: agent '{}' (PID {}) process exited",
-                            agent_id, pid
-                        ),
-                    };
-                    task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: None,
-                        message: reason_msg,
-                    });
                 }
-                tasks_modified = true;
             }
         }
-    }
 
-    // Extract token usage and session_id from dead agents' stream files
-    for (agent_id, task_id, _pid, output_file, _reason) in &dead {
-        // Extract session_id from stream events
-        if let Some(agent) = locked_registry.get_agent(agent_id)
-            && let Some(sid) = extract_session_id(agent)
-            && let Some(task) = graph.get_task_mut(task_id)
-            && task.session_id.is_none()
-        {
-            task.session_id = Some(sid);
-            tasks_modified = true;
-        }
+        // Extract token usage and session_id from dead agents' stream files
+        for (agent_id, task_id, _pid, output_file, _reason) in &dead {
+            // Extract session_id from stream events
+            if let Some(agent) = locked_registry.get_agent(agent_id)
+                && let Some(sid) = extract_session_id(agent)
+                && let Some(task) = graph.get_task_mut(task_id)
+                && task.session_id.is_none()
+            {
+                task.session_id = Some(sid);
+            }
 
-        // Extract token usage from output.log
-        if let Some(task) = graph.get_task_mut(task_id)
-            && task.token_usage.is_none()
-        {
-            let output_path = std::path::Path::new(output_file);
-            let abs_path = if output_path.is_absolute() {
-                output_path.to_path_buf()
-            } else {
-                dir.parent().unwrap_or(dir).join(output_path)
-            };
-            if let Some(usage) = parse_token_usage(&abs_path) {
-                task.token_usage = Some(usage);
-                tasks_modified = true;
+            // Extract token usage from output.log
+            if let Some(task) = graph.get_task_mut(task_id)
+                && task.token_usage.is_none()
+            {
+                let output_path = std::path::Path::new(output_file);
+                let abs_path = if output_path.is_absolute() {
+                    output_path.to_path_buf()
+                } else {
+                    dir.parent().unwrap_or(dir).join(output_path)
+                };
+                if let Some(usage) = parse_token_usage(&abs_path) {
+                    task.token_usage = Some(usage);
+                }
             }
         }
-    }
 
-    // Evaluate structural cycle iterations for tasks triaged as done
-    if !tasks_completed_by_triage.is_empty() {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        for task_id in &tasks_completed_by_triage {
-            evaluate_cycle_iteration(&mut graph, task_id, &cycle_analysis);
+        // Evaluate structural cycle iterations for tasks triaged as done
+        if !tasks_completed_by_triage.is_empty() {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            for task_id in &tasks_completed_by_triage {
+                evaluate_cycle_iteration(graph, task_id, &cycle_analysis);
+            }
         }
-    }
 
-    if tasks_modified {
-        save_graph(&graph, graph_path).context("Failed to save graph")?;
-    }
+        Ok(())
+    })?;
 
     // Capture output for completed/failed tasks whose agents just died.
     // done.rs already captures output, but fail.rs does not,

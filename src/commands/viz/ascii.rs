@@ -46,6 +46,7 @@ pub(crate) fn generate_ascii(
             reverse_edges: HashMap::new(),
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
+            phase_annotations: HashMap::new(),
         };
     }
 
@@ -304,17 +305,13 @@ pub(crate) fn generate_ascii(
             .map(|a| format!(" {}", a))
             .unwrap_or_default();
 
-        // Override phase annotation to true pink for agency phases (assigning/evaluating).
-        // Uses ANSI 256-color 219 (light pink) to be visually distinct from magenta/purple
-        // which is used for upstream edge tracing.
-        let is_agency_phase = use_color
-            && annotations
-                .get(id)
-                .is_some_and(|a| a.contains("assigning") || a.contains("evaluating"));
+        // Override phase annotation color: all lifecycle phases use consistent
+        // magenta via RGB(200,120,220) — closest ANSI 256-color is 177.
+        let is_agency_phase = use_color && annotations.contains_key(id);
         let phase_info = if is_agency_phase {
             annotations
                 .get(id)
-                .map(|a| format!(" \x1b[38;5;219m{}\x1b[0m", a))
+                .map(|a| format!(" \x1b[38;5;177m{}\x1b[0m", a))
                 .unwrap_or_default()
         } else {
             phase_info
@@ -792,6 +789,7 @@ pub(crate) fn generate_ascii(
         reverse_edges,
         char_edge_map,
         cycle_members: cycle_members_map,
+        phase_annotations: HashMap::new(),
     }
 }
 
@@ -1714,7 +1712,7 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+        let (filtered, annots, _phase_annots) = crate::commands::viz::filter_internal_tasks(
             &graph,
             graph.tasks().collect(),
             &annotations,
@@ -1758,7 +1756,7 @@ mod tests {
         graph.add_node(Node::Task(eval));
 
         let annotations = HashMap::new();
-        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+        let (filtered, annots, _phase_annots) = crate::commands::viz::filter_internal_tasks(
             &graph,
             graph.tasks().collect(),
             &annotations,
@@ -3395,7 +3393,7 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let tasks: Vec<_> = graph.tasks().collect();
-        let (filtered, annotations) =
+        let (filtered, annotations, _phase_annots) =
             super::super::filter_internal_tasks(&graph, tasks, &HashMap::new());
         let filtered_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(

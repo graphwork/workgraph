@@ -67,6 +67,7 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
 
     loop {
         app.maybe_refresh();
+        app.poll_streaming_fast();
         app.drain_commands();
         terminal.draw(|frame| render::draw(frame, app))?;
 
@@ -1453,8 +1454,32 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                 }
                             })
                             .is_some();
+                        // Check if click is on a lifecycle phase label.
+                        let clicked_phase_task_id: Option<String> = (|| {
+                            let line = app.plain_lines.get(orig_line)?;
+                            let parent_id = app
+                                .node_line_map
+                                .iter()
+                                .find(|&(_, &ln)| ln == orig_line)
+                                .map(|(id, _)| id.as_str())?;
+                            let phases = app.phase_annotations.get(parent_id)?;
+                            for phase in phases {
+                                if let Some(pos) = line.find(phase.label.as_str()) {
+                                    let end = pos + phase.label.chars().count();
+                                    if content_col >= pos && content_col < end {
+                                        return Some(phase.task_id.clone());
+                                    }
+                                }
+                            }
+                            None
+                        })();
                         app.select_task_at_line(orig_line);
-                        if clicked_mail {
+                        if let Some(phase_task_id) = clicked_phase_task_id {
+                            // Navigate to the dot-task's detail view.
+                            app.right_panel_visible = true;
+                            app.load_hud_detail_for_task(&phase_task_id);
+                            app.right_panel_tab = RightPanelTab::Detail;
+                        } else if clicked_mail {
                             // Switch to the Messages tab for this task.
                             app.right_panel_visible = true;
                             app.right_panel_tab = RightPanelTab::Messages;
