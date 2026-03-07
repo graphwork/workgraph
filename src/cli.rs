@@ -807,6 +807,9 @@ pub enum Commands {
         list: bool,
     },
 
+    /// Compact: distill graph state into context.md
+    Compact,
+
     /// Chat with the coordinator agent
     Chat {
         /// Message to send (omit for interactive mode)
@@ -2540,6 +2543,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
         Commands::Checkpoint { .. } => "checkpoint",
+        Commands::Compact => "compact",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
@@ -2608,6 +2612,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Checkpoint { .. }
+            | Commands::Compact
             | Commands::Artifact { .. }
             | Commands::Context { .. }
             | Commands::Next { .. }

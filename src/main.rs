@@ -1212,6 +1212,7 @@ fn main() -> Result<()> {
                 )
             }
         }
+        Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
                 if remove {
