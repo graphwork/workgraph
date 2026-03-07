@@ -663,6 +663,8 @@ mod tests {
                 timestamp: "2025-01-01T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                cost_usd: None,
+                token_usage: None,
             },
             Evaluation {
                 id: "e2".into(),
@@ -677,6 +679,8 @@ mod tests {
                 timestamp: "2025-01-02T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                cost_usd: None,
+                token_usage: None,
             },
         ];
 
@@ -736,6 +740,8 @@ mod tests {
             timestamp: "2025-01-01T00:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         }];
         let mut tags = HashMap::new();
         tags.insert("t1".to_string(), vec!["cli".to_string()]);

@@ -1039,6 +1039,8 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         }
     }
 

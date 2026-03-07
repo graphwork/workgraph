@@ -231,6 +231,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-1".to_string(),
+                cost_usd: None,
             }],
         };
         target.save_role(&target_role).unwrap();
@@ -245,6 +246,7 @@ mod tests {
                 task_id: "task-2".to_string(),
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "mot-2".to_string(),
+                cost_usd: None,
             }],
         };
         source.save_role(&source_role).unwrap();
@@ -318,6 +320,7 @@ mod tests {
                 task_id: "task-x".to_string(),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "mot-x".to_string(),
+                cost_usd: None,
             }],
         };
         source.save_role(&role).unwrap();

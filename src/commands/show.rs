@@ -96,6 +96,8 @@ struct TaskDetails {
     resurrection_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_resurrected_at: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    remediation_count: u32,
 }
 
 fn is_default_visibility(val: &str) -> bool {
@@ -219,6 +221,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         checkpoint: task.checkpoint.clone(),
         resurrection_count: task.resurrection_count,
         last_resurrected_at: task.last_resurrected_at.clone(),
+        remediation_count: task.remediation_count,
     };
 
     if json {
@@ -536,6 +539,8 @@ mod tests {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         let json = serde_json::to_string(&details).unwrap();

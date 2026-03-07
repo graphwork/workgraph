@@ -97,6 +97,8 @@ fn make_evaluation(
         timestamp: "2026-01-15T12:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     }
 }
 
@@ -108,6 +110,7 @@ fn make_perf(evals: Vec<(f64, &str, &str)>) -> PerformanceRecord {
             task_id: task_id.to_string(),
             timestamp: ts.to_string(),
             context_id: String::new(),
+            cost_usd: None,
         })
         .collect();
     let task_count = evaluations.len() as u32;
@@ -1988,6 +1991,7 @@ fn performance_merge_preserves_context_id() {
             task_id: "task-a".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             context_id: "motivation-xyz".to_string(),
+            cost_usd: None,
         }],
     };
     source.save_role(&source_role).unwrap();
@@ -2001,6 +2005,7 @@ fn performance_merge_preserves_context_id() {
             task_id: "task-b".to_string(),
             timestamp: "2026-01-02T00:00:00Z".to_string(),
             context_id: "motivation-abc".to_string(),
+            cost_usd: None,
         }],
     };
     target.save_role(&target_role).unwrap();

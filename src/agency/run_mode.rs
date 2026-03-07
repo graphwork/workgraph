@@ -338,6 +338,7 @@ pub fn process_retrospective_inference(
                     task_id: task_id.to_string(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     context_id: format!("experiment:{}", record.composition_id),
+                    cost_usd: None,
                 };
                 super::eval::update_performance(&mut component.performance, eval_ref);
                 let _ = save_component(&component, &components_dir);
@@ -381,6 +382,7 @@ pub fn process_retrospective_inference(
                                 task_id: task_id.to_string(),
                                 timestamp: chrono::Utc::now().to_rfc3339(),
                                 context_id: format!("experiment:novel:{}", record.composition_id),
+                                cost_usd: None,
                             };
                             super::eval::update_performance(&mut comp.performance, eval_ref);
                             let _ = save_component(&comp, &components_dir);
@@ -404,6 +406,7 @@ pub fn process_retrospective_inference(
                 task_id: task_id.to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 context_id: "experiment:cache-population".to_string(),
+                cost_usd: None,
             };
             super::eval::update_performance(&mut agent.performance, eval_ref);
             let _ = save_agent(&agent, &agents_dir);

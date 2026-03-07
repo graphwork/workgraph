@@ -953,6 +953,18 @@ pub struct AgencyConfig {
     /// Default: "opus" (highest capability for independent verification).
     #[serde(default = "default_flip_verification_model")]
     pub flip_verification_model: String,
+
+    /// Weight of cost in assignment scoring (0.0 = ignore cost, 1.0 = equal to quality).
+    #[serde(default)]
+    pub cost_weight: f64,
+
+    /// Maximum USD budget per task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_per_task: Option<f64>,
+
+    /// Maximum USD budget for the entire project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_budget_usd: Option<f64>,
 }
 
 impl Default for AgencyConfig {
@@ -992,6 +1004,9 @@ impl Default for AgencyConfig {
             flip_comparison_model: None,
             flip_verification_threshold: default_flip_verification_threshold(),
             flip_verification_model: default_flip_verification_model(),
+            cost_weight: 0.0,
+            max_cost_per_task: None,
+            project_budget_usd: None,
         }
     }
 }

@@ -109,6 +109,9 @@ pub struct EvaluationRef {
     pub task_id: String,
     pub timestamp: String,
     pub context_id: String,
+    /// Cost in USD for this evaluation (None if unavailable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// Aggregated performance data for any entity (primitive or cache).
@@ -118,6 +121,16 @@ pub struct PerformanceRecord {
     pub avg_score: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evaluations: Vec<EvaluationRef>,
+    /// Average cost in USD per task execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_cost_usd: Option<f64>,
+    /// Total cost in USD across all evaluations.
+    #[serde(default, skip_serializing_if = "is_f64_zero")]
+    pub total_cost_usd: f64,
+}
+
+fn is_f64_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// Lineage metadata for tracking evolutionary history.
@@ -405,6 +418,13 @@ pub fn classify_rubric_level(score: f64) -> RubricLevel {
 // Evaluation
 // ---------------------------------------------------------------------------
 
+/// Lightweight token usage snapshot stored in evaluations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 /// An evaluation of agent performance on a specific task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evaluation {
@@ -430,6 +450,12 @@ pub struct Evaluation {
     pub model: Option<String>,
     #[serde(default = "default_eval_source")]
     pub source: String,
+    /// Cost in USD for this task execution (from TokenUsage).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// Token counts for this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<EvalTokenUsage>,
 }
 
 fn default_eval_source() -> String {

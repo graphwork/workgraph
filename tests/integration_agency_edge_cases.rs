@@ -89,6 +89,8 @@ fn test_record_evaluation_nonexistent_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Should succeed — evaluation saved, role/motivation updated, agent skipped
@@ -133,6 +135,8 @@ fn test_record_evaluation_empty_agent_id() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
@@ -164,6 +168,8 @@ fn test_record_evaluation_nonexistent_role_and_motivation() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Should succeed — the eval JSON is saved even if role/motivation not found
@@ -242,6 +248,8 @@ fn test_delete_role_referenced_by_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());
@@ -324,6 +332,8 @@ fn test_delete_motivation_referenced_by_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());
@@ -353,6 +363,7 @@ fn test_performance_score_zero() {
             task_id: "t1".to_string(),
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
 
@@ -372,6 +383,7 @@ fn test_performance_score_one() {
             task_id: "t1".to_string(),
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
 
@@ -392,6 +404,7 @@ fn test_performance_score_negative() {
             task_id: "t1".to_string(),
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
 
@@ -411,6 +424,7 @@ fn test_performance_mixed_extreme_scores() {
             task_id: "t1".to_string(),
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
     agency::update_performance(
@@ -420,6 +434,7 @@ fn test_performance_mixed_extreme_scores() {
             task_id: "t2".to_string(),
             timestamp: "2025-01-01T00:00:01Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
 
@@ -449,6 +464,7 @@ fn test_extreme_scores_yaml_roundtrip() {
             task_id: "zero".to_string(),
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
     agency::update_performance(
@@ -458,6 +474,7 @@ fn test_extreme_scores_yaml_roundtrip() {
             task_id: "one".to_string(),
             timestamp: "2025-01-01T00:00:01Z".to_string(),
             context_id: "ctx".to_string(),
+            cost_usd: None,
         },
     );
 

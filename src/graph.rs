@@ -73,12 +73,32 @@ pub fn parse_delay(s: &str) -> Option<u64> {
 }
 
 /// A log entry for tracking progress/notes on a task
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LogEntry {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     pub message: String,
+    /// Which cycle iteration this log entry belongs to (None = pre-cycle or iteration 0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iteration: Option<u32>,
+}
+
+/// Snapshot of a completed cycle iteration, captured before re-activation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IterationSnapshot {
+    /// The iteration number (0-based)
+    pub iteration: u32,
+    /// When this iteration completed
+    pub timestamp: String,
+    /// Task status at snapshot time (e.g. "done")
+    pub status: String,
+    /// Optional summary of what happened in this iteration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Log entries from this iteration
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log_entries: Vec<LogEntry>,
 }
 
 /// Cost/time estimate for a task
@@ -319,6 +339,9 @@ pub struct Task {
     /// Timestamp of last resurrection (for cooldown enforcement)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_resurrected_at: Option<String>,
+    /// Snapshots of completed cycle iterations (populated by reactivate_cycle)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iteration_snapshots: Vec<IterationSnapshot>,
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -733,6 +756,8 @@ struct TaskHelper {
     resurrection_count: u32,
     #[serde(default)]
     last_resurrected_at: Option<String>,
+    #[serde(default)]
+    iteration_snapshots: Vec<IterationSnapshot>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -798,6 +823,7 @@ impl<'de> Deserialize<'de> for Task {
             checkpoint: helper.checkpoint,
             resurrection_count: helper.resurrection_count,
             last_resurrected_at: helper.last_resurrected_at,
+            iteration_snapshots: helper.iteration_snapshots,
         })
     }
 }

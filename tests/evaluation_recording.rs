@@ -115,6 +115,8 @@ impl TestFixture {
             timestamp: "2025-06-01T12:00:00Z".to_string(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         }
     }
 }
@@ -147,6 +149,8 @@ fn test_record_evaluation_json_format() {
         timestamp: "2025-06-15T14:30:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     let eval_path = agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
@@ -248,6 +252,8 @@ fn test_multiple_evaluations_same_agent_avg() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     let eval2 = Evaluation {
         id: "e2".to_string(),
@@ -262,6 +268,8 @@ fn test_multiple_evaluations_same_agent_avg() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     agency::record_evaluation(&eval1, &fix.agency_dir).unwrap();
@@ -303,6 +311,8 @@ fn test_three_evaluations_incremental_avg() {
             timestamp: format!("2025-06-01T{}:00:00Z", 10 + i),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
         agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     }
@@ -343,6 +353,8 @@ fn test_context_ids_tracked_independently() {
         timestamp: "2025-06-01T12:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
 
@@ -409,6 +421,8 @@ fn test_role_tracks_different_motivation_context_ids() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
 
@@ -426,6 +440,8 @@ fn test_role_tracks_different_motivation_context_ids() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
@@ -475,6 +491,8 @@ fn test_motivation_tracks_different_role_context_ids() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     let eval_b = Evaluation {
         id: "e-rb".to_string(),
@@ -489,6 +507,8 @@ fn test_motivation_tracks_different_role_context_ids() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
@@ -557,6 +577,7 @@ fn test_performance_one_evaluation() {
             task_id: "single-task".to_string(),
             timestamp: "2025-06-01T10:00:00Z".to_string(),
             context_id: "ctx-1".to_string(),
+            cost_usd: None,
         },
     );
 
@@ -581,6 +602,7 @@ fn test_performance_ten_plus_evaluations() {
                 task_id: format!("task-{}", i),
                 timestamp: format!("2025-06-{:02}T10:00:00Z", i + 1),
                 context_id: format!("ctx-{}", i),
+                cost_usd: None,
             },
         );
     }
@@ -626,6 +648,8 @@ fn test_twelve_evaluations_end_to_end() {
             timestamp: format!("2025-06-{:02}T10:00:00Z", i + 1),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
         agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     }
@@ -796,6 +820,7 @@ fn test_recalculate_avg_score_single() {
         task_id: "t".to_string(),
         timestamp: "ts".to_string(),
         context_id: "c".to_string(),
+        cost_usd: None,
     }];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
     assert!((avg - 0.73).abs() < 1e-10);
@@ -810,12 +835,14 @@ fn test_recalculate_avg_score_identical_scores() {
             task_id: "t1".to_string(),
             timestamp: "ts1".to_string(),
             context_id: "c1".to_string(),
+            cost_usd: None,
         },
         EvaluationRef {
             score: 0.80,
             task_id: "t2".to_string(),
             timestamp: "ts2".to_string(),
             context_id: "c2".to_string(),
+            cost_usd: None,
         },
     ];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
@@ -831,12 +858,14 @@ fn test_recalculate_avg_score_zero_and_one() {
             task_id: "t1".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
         EvaluationRef {
             score: 1.0,
             task_id: "t2".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     ];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
@@ -852,6 +881,7 @@ fn test_recalculate_avg_score_large_count() {
             task_id: format!("t{}", i),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         })
         .collect();
 
@@ -873,12 +903,14 @@ fn test_recalculate_avg_score_with_negatives() {
             task_id: "t1".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
         EvaluationRef {
             score: 1.0,
             task_id: "t2".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     ];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
@@ -894,6 +926,7 @@ fn test_recalculate_avg_score_all_zeros() {
             task_id: format!("t{}", i),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         })
         .collect();
 
@@ -910,6 +943,7 @@ fn test_recalculate_avg_score_all_ones() {
             task_id: format!("t{}", i),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         })
         .collect();
 
@@ -926,12 +960,14 @@ fn test_recalculate_avg_score_precision() {
             task_id: "t1".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
         EvaluationRef {
             score: 0.666666667,
             task_id: "t2".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     ];
     let avg = agency::recalculate_avg_score(&refs).unwrap();
@@ -951,6 +987,7 @@ fn test_update_performance_sequential_correctness() {
             task_id: "t1".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     );
     assert_eq!(record.task_count, 1);
@@ -964,6 +1001,7 @@ fn test_update_performance_sequential_correctness() {
             task_id: "t2".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     );
     assert_eq!(record.task_count, 2);
@@ -977,6 +1015,7 @@ fn test_update_performance_sequential_correctness() {
             task_id: "t3".to_string(),
             timestamp: "ts".to_string(),
             context_id: "c".to_string(),
+            cost_usd: None,
         },
     );
     assert_eq!(record.task_count, 3);

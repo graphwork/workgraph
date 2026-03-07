@@ -364,6 +364,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 context_id: "ctx-1".to_string(),
+                cost_usd: None,
             }],
         };
         store_a.save_role(&role_a).unwrap();
@@ -377,6 +378,7 @@ mod tests {
                 task_id: "task-2".to_string(),
                 timestamp: "2026-01-02T00:00:00Z".to_string(),
                 context_id: "ctx-2".to_string(),
+                cost_usd: None,
             }],
         };
         store_b.save_role(&role_b).unwrap();

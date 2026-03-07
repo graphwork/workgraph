@@ -488,6 +488,8 @@ fn evaluation_records_update_assigner_agent_performance() {
         timestamp: "2026-02-28T00:00:00Z".to_string(),
         model: Some("test".to_string()),
         source: "test".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Record the evaluation (this updates agent, role, tradeoff, components, outcome)
@@ -554,6 +556,8 @@ fn multiple_evaluations_accumulate_on_assigner_agent() {
             timestamp: format!("2026-02-28T00:0{}:00Z", i),
             model: None,
             source: "test".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
         record_evaluation(&eval, &agency_dir).unwrap();
     }
@@ -604,6 +608,8 @@ fn evaluation_propagates_to_assigner_role_and_components() {
         timestamp: "2026-02-28T01:00:00Z".to_string(),
         model: None,
         source: "test".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     record_evaluation(&eval, &agency_dir).unwrap();
 
@@ -677,6 +683,8 @@ fn evaluation_records_update_evaluator_agent_performance() {
         timestamp: "2026-02-28T02:00:00Z".to_string(),
         model: None,
         source: "test".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     record_evaluation(&eval, &agency_dir).unwrap();
 
@@ -766,6 +774,8 @@ fn end_to_end_init_assign_evaluate_flow() {
         timestamp: "2026-02-28T03:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
     record_evaluation(&eval, &agency_dir).unwrap();
 

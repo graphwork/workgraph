@@ -485,6 +485,11 @@ fn main() -> Result<()> {
             retract,
             dry_run,
         } => commands::reset::run(&workgraph_dir, &id, downstream, retract, dry_run),
+        Commands::CascadeStop { id, hold, dry_run } => {
+            commands::cascade_stop::run(&workgraph_dir, &id, hold, dry_run)
+        }
+        Commands::Hold { id, dry_run } => commands::hold::hold(&workgraph_dir, &id, dry_run),
+        Commands::Unhold { id, dry_run } => commands::hold::unhold(&workgraph_dir, &id, dry_run),
         Commands::Claim { id, actor } => {
             commands::claim::claim(&workgraph_dir, &id, actor.as_deref())
         }

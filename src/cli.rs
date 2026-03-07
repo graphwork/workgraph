@@ -364,6 +364,44 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Abandon a task and all its transitive dependents
+    #[command(name = "cascade-stop")]
+    CascadeStop {
+        /// Task ID (seed of the cascade)
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Pause (hold) instead of abandoning
+        #[arg(long)]
+        hold: bool,
+
+        /// Show what would be affected without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Hold a task and all transitive dependents (atomic subtree pause)
+    Hold {
+        /// Task ID to hold
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Show what would be held without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Unhold: resume exactly the tasks paused by a previous `wg hold`
+    Unhold {
+        /// Task ID that was held (matches the hold provenance record)
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Show what would be resumed without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Claim a task for work (sets status to InProgress)
     Claim {
         /// Task ID to claim
@@ -2593,6 +2631,9 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
         Commands::Reset { .. } => "reset",
+        Commands::CascadeStop { .. } => "cascade-stop",
+        Commands::Hold { .. } => "hold",
+        Commands::Unhold { .. } => "unhold",
         Commands::Reopen { .. } => "reopen",
         Commands::Claim { .. } => "claim",
         Commands::Unclaim { .. } => "unclaim",

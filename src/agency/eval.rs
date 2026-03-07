@@ -27,11 +27,18 @@ pub fn recalculate_avg_score(evaluations: &[EvaluationRef]) -> Option<f64> {
 
 /// Update a PerformanceRecord with a new evaluation reference.
 ///
-/// Increments task_count, appends the EvaluationRef, and recalculates avg_score.
+/// Increments task_count, appends the EvaluationRef, recalculates avg_score,
+/// and accumulates cost data if present.
 pub fn update_performance(record: &mut PerformanceRecord, eval_ref: EvaluationRef) {
+    if let Some(cost) = eval_ref.cost_usd {
+        record.total_cost_usd += cost;
+    }
     record.task_count = record.task_count.saturating_add(1);
     record.evaluations.push(eval_ref);
     record.avg_score = recalculate_avg_score(&record.evaluations);
+    if record.total_cost_usd > 0.0 && record.task_count > 0 {
+        record.avg_cost_usd = Some(record.total_cost_usd / record.task_count as f64);
+    }
 }
 
 /// Record an evaluation: persist the eval JSON, and update agent, role, tradeoff, component,
@@ -73,6 +80,7 @@ pub fn record_evaluation(
             task_id: evaluation.task_id.clone(),
             timestamp: evaluation.timestamp.clone(),
             context_id: evaluation.role_id.clone(),
+            cost_usd: evaluation.cost_usd,
         };
         update_performance(&mut agent.performance, agent_eval_ref);
         save_agent(&agent, &agents_dir)?;
@@ -89,6 +97,7 @@ pub fn record_evaluation(
             task_id: evaluation.task_id.clone(),
             timestamp: evaluation.timestamp.clone(),
             context_id: evaluation.tradeoff_id.clone(),
+            cost_usd: evaluation.cost_usd,
         };
         update_performance(&mut role.performance, role_eval_ref);
         save_role(&role, &roles_dir)?;
@@ -101,6 +110,7 @@ pub fn record_evaluation(
             task_id: evaluation.task_id.clone(),
             timestamp: evaluation.timestamp.clone(),
             context_id: evaluation.role_id.clone(),
+            cost_usd: evaluation.cost_usd,
         };
         update_performance(&mut tradeoff.performance, tradeoff_eval_ref);
         save_tradeoff(&tradeoff, &tradeoffs_dir)?;
@@ -119,6 +129,7 @@ pub fn record_evaluation(
                     task_id: evaluation.task_id.clone(),
                     timestamp: evaluation.timestamp.clone(),
                     context_id: evaluation.role_id.clone(),
+                    cost_usd: evaluation.cost_usd,
                 };
                 update_performance(&mut component.performance, comp_eval_ref);
                 save_component(&component, &components_dir)?;
@@ -142,6 +153,7 @@ pub fn record_evaluation(
                     task_id: evaluation.task_id.clone(),
                     timestamp: evaluation.timestamp.clone(),
                     context_id: evaluation.agent_id.clone(),
+                    cost_usd: evaluation.cost_usd,
                 };
                 update_performance(&mut outcome.performance, outcome_eval_ref);
                 save_outcome(&outcome, &outcomes_dir)?;
@@ -185,6 +197,19 @@ pub fn record_evaluation_with_inference(
     }
 
     Ok(eval_path)
+}
+
+// ---------------------------------------------------------------------------
+// Cost-efficiency scoring
+// ---------------------------------------------------------------------------
+
+/// Compute cost-efficiency score: `score / (1 + cost_weight * normalized_cost)`.
+pub fn cost_efficiency(score: f64, avg_cost: Option<f64>, max_cost: f64, cost_weight: f64) -> f64 {
+    if cost_weight <= 0.0 || max_cost <= 0.0 {
+        return score;
+    }
+    let normalized_cost = avg_cost.unwrap_or(max_cost) / max_cost;
+    score / (1.0 + cost_weight * normalized_cost)
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +433,7 @@ mod tests {
             task_id: task_id.into(),
             timestamp: "2025-05-01T12:00:00Z".into(),
             context_id: context_id.into(),
+            cost_usd: None,
         }
     }
 
@@ -547,6 +573,8 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         let eval_path = record_evaluation(&eval, &agency_dir).unwrap();
@@ -611,6 +639,8 @@ mod tests {
             timestamp: "2025-05-01T10:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         let eval2 = Evaluation {
@@ -626,6 +656,8 @@ mod tests {
             timestamp: "2025-05-01T11:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         record_evaluation(&eval1, &agency_dir).unwrap();
@@ -670,6 +702,8 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         let result = record_evaluation(&eval, &agency_dir);
@@ -691,6 +725,7 @@ mod tests {
             task_id: "task-abc".into(),
             timestamp: "2025-05-01T12:00:00Z".into(),
             context_id: "motivation-xyz".into(),
+            cost_usd: None,
         });
         role.performance.task_count = 1;
         role.performance.avg_score = Some(0.75);
@@ -763,6 +798,8 @@ mod tests {
             timestamp: "2025-06-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         record_evaluation(&eval, &agency_dir).unwrap();
@@ -816,6 +853,8 @@ mod tests {
             timestamp: "2025-06-01T13:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         record_evaluation(&eval, &agency_dir).unwrap();
@@ -864,6 +903,8 @@ mod tests {
             timestamp: "2025-06-01T14:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            cost_usd: None,
+            token_usage: None,
         };
 
         // Should not error — missing components/outcomes are warned, not failed
@@ -921,6 +962,8 @@ mod tests {
                 timestamp: format!("2025-06-01T1{}:00:00Z", i),
                 model: None,
                 source: "llm".to_string(),
+                cost_usd: None,
+                token_usage: None,
             };
             record_evaluation(&eval, &agency_dir).unwrap();
         }

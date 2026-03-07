@@ -264,6 +264,8 @@ fn build_assign_subgraph(dir: &Path) {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            iteration_snapshots: vec![],
+            remediation_count: 0,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));
@@ -788,6 +790,8 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
             task_count: 5,
             avg_score: Some(0.85),
             evaluations: vec![],
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
         },
         lineage: Lineage::default(),
         capabilities: Vec::new(),

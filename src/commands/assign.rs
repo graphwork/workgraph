@@ -58,6 +58,8 @@ fn record_assigner_evaluation(
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
         source: "system".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     if let Err(e) = agency::record_evaluation(&eval, agency_dir) {

@@ -341,6 +341,8 @@ pub fn run(
         timestamp,
         model: task_model.clone(),
         source: "llm".to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Step 8: Save evaluation, update performance records, and trigger retrospective inference
@@ -486,6 +488,8 @@ pub fn run(
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: None,
                 source: eval_source::LLM.to_string(),
+                cost_usd: None,
+                token_usage: None,
             };
 
             if let Err(e) = record_evaluation(&eval_of_evaluator, &agency_dir) {
@@ -721,6 +725,8 @@ pub fn run_flip(
         timestamp,
         model: task_model.clone(),
         source: eval_source::FLIP.to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Save evaluation
@@ -932,6 +938,8 @@ pub fn run_record(
         timestamp,
         model: None,
         source: source.to_string(),
+        cost_usd: None,
+        token_usage: None,
     };
 
     // Save evaluation and trigger retrospective inference for learning assignments

@@ -1095,10 +1095,18 @@ fn merge_performance(target: &PerformanceRecord, source: &PerformanceRecord) -> 
         Some(sum / merged_evals.len() as f64)
     };
 
+    let total_cost_usd = target.total_cost_usd + source.total_cost_usd;
+    let avg_cost_usd = if task_count > 0 && total_cost_usd > 0.0 {
+        Some(total_cost_usd / task_count as f64)
+    } else {
+        None
+    };
     PerformanceRecord {
         task_count,
         avg_score,
         evaluations: merged_evals,
+        avg_cost_usd,
+        total_cost_usd,
     }
 }
 
@@ -1345,6 +1353,7 @@ mod tests {
             task_id: "task-a".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             context_id: String::new(),
+            cost_usd: None,
         });
         role_source.performance.task_count = 1;
         role_source.performance.avg_score = Some(0.9);
@@ -1355,6 +1364,7 @@ mod tests {
             task_id: "task-b".to_string(),
             timestamp: "2026-01-02T00:00:00Z".to_string(),
             context_id: String::new(),
+            cost_usd: None,
         });
         role_target.performance.task_count = 1;
         role_target.performance.avg_score = Some(0.8);
@@ -1500,6 +1510,7 @@ mod tests {
                 task_id: "t1".to_string(),
                 timestamp: "2026-01-01".to_string(),
                 context_id: String::new(),
+                cost_usd: None,
             }],
         };
         let b = PerformanceRecord {
@@ -1511,12 +1522,14 @@ mod tests {
                     task_id: "t1".to_string(),
                     timestamp: "2026-01-01".to_string(),
                     context_id: String::new(),
+                    cost_usd: None,
                 },
                 EvaluationRef {
                     score: 0.8,
                     task_id: "t2".to_string(),
                     timestamp: "2026-01-02".to_string(),
                     context_id: String::new(),
+                    cost_usd: None,
                 },
             ],
         };
@@ -1949,6 +1962,7 @@ mod tests {
             task_id: "t1".into(),
             timestamp: "2025-01-01T00:00:00Z".into(),
             context_id: "ctx1".into(),
+            cost_usd: None,
         });
         source.save_component(&comp_src).unwrap();
 
@@ -1960,6 +1974,7 @@ mod tests {
             task_id: "t0".into(),
             timestamp: "2024-12-01T00:00:00Z".into(),
             context_id: "ctx0".into(),
+            cost_usd: None,
         });
         target.save_component(&comp_tgt).unwrap();
 
