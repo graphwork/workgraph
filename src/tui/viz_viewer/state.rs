@@ -46,6 +46,21 @@ pub fn editor_clear(state: &mut EditorState) {
     *state = new_emacs_editor();
 }
 
+/// Insert-mode paste: inserts text at cursor and leaves cursor after the
+/// inserted text.  This replaces edtui's `on_paste_event` which uses Vim
+/// Normal-mode semantics (`append_str`) and leaves the cursor one position
+/// short.
+pub fn paste_insert_mode(text: &str, state: &mut EditorState) {
+    use edtui::actions::{Execute, insert::{InsertChar, LineBreak}};
+    for ch in text.chars() {
+        if ch == '\n' {
+            LineBreak(1).execute(state);
+        } else {
+            InsertChar(ch).execute(state);
+        }
+    }
+}
+
 pub fn create_editor_handler() -> EditorEventHandler {
     use edtui::actions::delete::DeleteToEndOfLine;
     use edtui::actions::{

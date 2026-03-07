@@ -149,8 +149,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     match &app.input_mode {
         InputMode::ChatInput => {
             // Insert pasted text at cursor position, preserving newlines.
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.chat.editor);
+            super::state::paste_insert_mode(text, &mut app.chat.editor);
         }
         InputMode::Search => {
             // Strip newlines for search — it's single-line.
@@ -159,8 +158,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             app.update_search();
         }
         InputMode::TextPrompt(_action) => {
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.text_prompt.editor);
+            super::state::paste_insert_mode(text, &mut app.text_prompt.editor);
         }
         InputMode::TaskForm => {
             if let Some(form) = app.task_form.as_mut() {
@@ -189,8 +187,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         }
         InputMode::MessageInput => {
             // Insert pasted text at cursor position, preserving newlines (like chat).
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.messages_panel.editor);
+            super::state::paste_insert_mode(text, &mut app.messages_panel.editor);
         }
         InputMode::ConfigEdit => {
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
