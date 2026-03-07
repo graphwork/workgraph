@@ -1192,6 +1192,10 @@ pub enum Commands {
         #[arg(long, name = "chat-history-max")]
         chat_history_max: Option<usize>,
 
+        /// TUI time counters (comma-separated: uptime,cumulative,active,session)
+        #[arg(long, name = "tui-counters")]
+        tui_counters: Option<String>,
+
         /// Show all model routing assignments (per-role model+provider)
         #[arg(long = "models")]
         show_models: bool,
@@ -1301,6 +1305,9 @@ pub enum Commands {
 
     /// Quick one-screen status overview
     Status,
+
+    /// Show time counters and agent statistics
+    Stats,
 
     /// Send task notification to Matrix room
     #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -2563,6 +2570,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Setup => "setup",
         Commands::Quickstart => "quickstart",
         Commands::Status => "status",
+        Commands::Stats => "stats",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify { .. } => "notify",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -2631,6 +2639,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Cycles
             | Commands::Quickstart
             | Commands::Status
+            | Commands::Stats
             | Commands::Chat { .. }
             | Commands::Telegram { .. }
     ) || {

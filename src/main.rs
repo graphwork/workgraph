@@ -1452,6 +1452,7 @@ fn main() -> Result<()> {
             flip_verification_model,
             chat_history,
             chat_history_max,
+            tui_counters,
             show_models,
             set_model,
             set_provider,
@@ -1570,7 +1571,8 @@ fn main() -> Result<()> {
                     && flip_verification_threshold.is_none()
                     && flip_verification_model.is_none()
                     && chat_history.is_none()
-                    && chat_history_max.is_none())
+                    && chat_history_max.is_none()
+                    && tui_counters.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -1613,6 +1615,7 @@ fn main() -> Result<()> {
                     flip_verification_model.as_deref(),
                     chat_history,
                     chat_history_max,
+                    tui_counters.as_deref(),
                 )
             }
         }
@@ -1758,6 +1761,7 @@ fn main() -> Result<()> {
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
+        Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify {
             task,

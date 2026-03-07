@@ -82,6 +82,7 @@ pub mod setup;
 pub mod show;
 pub mod skills;
 pub mod spawn;
+pub mod stats;
 pub mod status;
 pub mod structure;
 pub mod telegram;
