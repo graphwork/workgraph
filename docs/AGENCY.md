@@ -101,7 +101,7 @@ wg service start
 wg evaluate run my-task
 
 # 4. Evolve
-wg evolve
+wg evolve run
 ```
 
 ### Automated loop
@@ -116,7 +116,7 @@ wg service start
 wg add "Implement feature X" --skill rust
 
 # Evolution is still manual (run when you have enough evaluations):
-wg evolve
+wg evolve run
 ```
 
 ## Lifecycle
@@ -358,10 +358,10 @@ Phase 4.6: Auto-evolve (if enabled)
 Use performance data to improve the agency:
 
 ```bash
-wg evolve                                     # full cycle, all strategies
-wg evolve --strategy mutation --budget 3      # targeted changes
-wg evolve --model opus                        # use specific model
-wg evolve --dry-run                           # preview without applying
+wg evolve run                                     # full cycle, all strategies
+wg evolve run --strategy mutation --budget 3      # targeted changes
+wg evolve run --model opus                        # use specific model
+wg evolve run --dry-run                           # preview without applying
 ```
 
 ## CLI Reference
@@ -436,7 +436,7 @@ wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
 ### `wg evolve`
 
 ```bash
-wg evolve [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
+wg evolve run [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
 ```
 
 ### `wg agency stats`
@@ -510,7 +510,7 @@ The evolution system improves agency performance by analyzing evaluation data an
 | `crossover` | Combine traits from two high-performing roles into a new one |
 | `gap-analysis` | Create entirely new roles/tradeoffs for unmet needs |
 | `retirement` | Remove consistently poor-performing roles/tradeoffs |
-| `motivation-tuning` | Adjust trade-offs and constraints on existing tradeoffs |
+| `tradeoff-tuning` | Adjust trade-offs and constraints on existing tradeoffs |
 | `component-mutation` | Mutate individual components (skills, outcomes, tradeoffs) at the primitive level |
 | `randomisation` | Randomly compose new roles or agents from existing primitives |
 | `bizarre-ideation` | Generate novel primitives via creative/divergent prompting |
@@ -571,9 +571,9 @@ Some operations are too impactful to apply immediately. The evolver automaticall
 Deferred operations are saved to `.workgraph/agency/deferred-ops/` and can be managed with:
 
 ```bash
-wg evolve deferred list              # view pending deferred operations
-wg evolve deferred approve <id>      # approve and apply a deferred operation
-wg evolve deferred reject <id>       # reject and discard
+wg evolve review list              # view pending deferred operations
+wg evolve review approve <id>      # approve and apply a deferred operation
+wg evolve review reject <id>       # reject and discard
 ```
 
 ### Coordinator prompt evolution
@@ -602,7 +602,7 @@ When enabled, the coordinator's Phase 4.6 checks two triggers:
 1. **Threshold trigger**: New evaluations since last evolution exceed `evolution_threshold` (default: 10)
 2. **Reactive trigger**: Performance has dropped below `evolution_reactive_threshold`
 
-The coordinator creates a `.evolve-*` meta-task that runs `wg evolve` with the configured budget. A minimum interval (`evolution_interval`, default: 7200 seconds / 2 hours) prevents evolution from running too frequently.
+The coordinator creates a `.evolve-*` meta-task that runs `wg evolve run` with the configured budget. A minimum interval (`evolution_interval`, default: 7200 seconds / 2 hours) prevents evolution from running too frequently.
 
 Configuration:
 

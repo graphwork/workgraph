@@ -182,9 +182,9 @@ wg role add "Implementer" --outcome "Working, tested code for assigned module" -
 wg role add "Integrator" --outcome "Cohesive merged output with conflicts resolved" --skill integration
 
 # Create agents from roles
-wg agent create "Planner" --role <architect-hash> --motivation <motivation-hash>
-wg agent create "Worker" --role <implementer-hash> --motivation <motivation-hash>
-wg agent create "Synthesizer" --role <integrator-hash> --motivation <motivation-hash>
+wg agent create "Planner" --role <architect-hash> --tradeoff <tradeoff-hash>
+wg agent create "Worker" --role <implementer-hash> --tradeoff <tradeoff-hash>
+wg agent create "Synthesizer" --role <integrator-hash> --tradeoff <tradeoff-hash>
 
 # Assign agents to tasks
 wg assign planner <planner-agent>
@@ -223,8 +223,8 @@ wg assign integrate <integrator-agent>
 
 | Violation | Symptom | Fix |
 |-----------|---------|-----|
-| Too few roles | Low scores on specialized tasks | `wg evolve --strategy gap-analysis` |
-| Too many roles | Roles with zero assignments | `wg evolve --strategy retirement` |
+| Too few roles | Low scores on specialized tasks | `wg evolve run --strategy gap-analysis` |
+| Too many roles | Roles with zero assignments | `wg evolve run --strategy retirement` |
 
 Check coverage:
 ```bash
@@ -390,14 +390,14 @@ wg evaluate record --task my-task --score 0.85 --source "manual"
 wg evaluate show --task my-task
 
 # Preview evolution proposals
-wg evolve --dry-run
+wg evolve run --dry-run
 
 # Apply evolution
-wg evolve --strategy all
+wg evolve run --strategy all
 ```
 
 **Single-loop learning:** task failed → retry with different agent (`wg retry`).
-**Double-loop learning:** task type keeps failing → change the role itself (`wg evolve --strategy mutation`).
+**Double-loop learning:** task type keeps failing → change the role itself (`wg evolve run --strategy mutation`).
 
 Escalate from single to double loop when the same task type fails repeatedly.
 
@@ -413,8 +413,8 @@ Escalate from single to double loop when the same task type fails repeatedly.
 | **Missing loop-back on refine** | Review identifies issues but there's no path back to fix them | Add a revise task in the cycle with a back-edge to the cycle header |
 | **Unbounded loop** | Cycle without `--max-iterations` → runs forever | Always set `--max-iterations` on cycle headers |
 | **Monolithic task** | One giant task with no decomposition → no parallelism, no feedback | Break into diamond or pipeline |
-| **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve --strategy retirement` |
-| **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve --strategy gap-analysis` |
+| **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve run --strategy retirement` |
+| **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve run --strategy gap-analysis` |
 | **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate run` manually |
 
 ---

@@ -538,16 +538,16 @@ wg service status
 
 ## Agency system
 
-The agency system gives agents composable identities — a **role** (what it does) paired with a **motivation** (why it acts that way). Instead of every spawned agent being a generic assistant, the agency system lets you define specialized agents that are evaluated and evolved over time.
+The agency system gives agents composable identities — a **role** (what it does) paired with a **tradeoff** (why it acts that way). Instead of every spawned agent being a generic assistant, the agency system lets you define specialized agents that are evaluated and evolved over time.
 
 ### Quick start
 
 ```bash
-# Seed built-in starter roles and motivations
+# Seed built-in starter roles and tradeoffs
 wg agency init
 
 # Create an agent pairing
-wg agent create "Careful Coder" --role <role-hash> --motivation <motivation-hash>
+wg agent create "Careful Coder" --role <role-hash> --tradeoff <tradeoff-hash>
 
 # Assign the agent identity to a task
 wg assign my-task <agent-hash>
@@ -558,14 +558,14 @@ wg assign my-task <agent-hash>
 ### What it does
 
 1. **Roles** define skills and desired outcomes ("Programmer" → working, tested code)
-2. **Motivations** define trade-offs and constraints ("Careful" → prioritizes reliability, rejects untested code)
-3. **Agents** pair one role + one motivation into a named identity
+2. **Tradeoffs** define trade-offs and constraints ("Careful" → prioritizes reliability, rejects untested code)
+3. **Agents** pair one role + one tradeoff into a named identity
 4. **Assignment** binds an agent to a task — its identity is injected at spawn time
 5. **Evaluation** scores completed tasks across four dimensions:
    - `wg evaluate run <task>` — trigger LLM-based evaluation
    - `wg evaluate record --task <id> --score <n> --source <tag>` — record external signals (CI, peer review)
    - `wg evaluate show` — view evaluation history
-6. **Evolution** uses performance data to create new roles/motivations and retire weak ones
+6. **Evolution** uses performance data to create new roles/tradeoffs and retire weak ones
 
 ### FLIP pipeline
 
@@ -602,7 +602,7 @@ Share agency entities across projects:
 ```bash
 wg agency remote add partner /path/to/other/project/.workgraph/agency
 wg agency scan partner              # see what they have
-wg agency pull partner              # import their roles, motivations, agents
+wg agency pull partner              # import their roles, tradeoffs, agents
 wg agency push partner              # export yours to them
 ```
 
@@ -815,7 +815,7 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 **Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`, `pending-validation`, `waiting`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
 
-**Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
+**Agents** are humans or AIs that do work. They can be AI agents (with a role and tradeoff that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 
 **The graph** is tasks connected by dependency edges (the `after` field). A task is waiting until all its dependencies reach a terminal status. Concurrent writes are protected by flock-based file locking.
 
@@ -823,7 +823,7 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 **Trajectories**: For AI agents, `wg trajectory <task>` suggests the best order to claim related tasks, minimizing context switches.
 
-**Agency**: Composable agent identities (role + motivation) that are assigned to tasks, evaluated after completion, and evolved over time based on performance data.
+**Agency**: Composable agent identities (role + tradeoff) that are assigned to tasks, evaluated after completion, and evolved over time based on performance data.
 
 ## Query and analysis
 
@@ -941,7 +941,7 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Complete command reference
 - [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) - Deep dive on agent operation
 - [docs/AGENT-SERVICE.md](docs/AGENT-SERVICE.md) - Service architecture and coordinator lifecycle
-- [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, motivations, evaluation, evolution
+- [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, tradeoffs, evaluation, evolution
 - [docs/LOGGING.md](docs/LOGGING.md) - Provenance logging and the operations log
 - [docs/DEV.md](docs/DEV.md) - Developer notes
 - [docs/KEY_DOCS.md](docs/KEY_DOCS.md) - Documentation inventory and status
