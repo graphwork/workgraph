@@ -257,6 +257,21 @@ pub enum Commands {
         /// Absolute timestamp before which task won't be dispatched (ISO 8601)
         #[arg(long = "not-before")]
         not_before: Option<String>,
+
+        /// Suppress auto-reopen when adding deps to a Done task
+        #[arg(long = "no-reopen")]
+        no_reopen: bool,
+    },
+
+    /// Reopen a done task (transition from Done back to Open)
+    Reopen {
+        /// Task ID to reopen
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Also reopen downstream Done tasks transitively
+        #[arg(long)]
+        cascade: bool,
     },
 
     /// Mark a task as done
@@ -2496,6 +2511,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Fail { .. } => "fail",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Reopen { .. } => "reopen",
         Commands::Claim { .. } => "claim",
         Commands::Unclaim { .. } => "unclaim",
         Commands::Pause { .. } => "pause",

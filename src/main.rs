@@ -417,6 +417,7 @@ fn main() -> Result<()> {
             exec_mode,
             delay,
             not_before,
+            no_reopen,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -441,7 +442,11 @@ fn main() -> Result<()> {
             exec_mode.as_deref(),
             delay.as_deref(),
             not_before.as_deref(),
+            no_reopen,
         ),
+        Commands::Reopen { id, cascade } => {
+            commands::reopen::run(&workgraph_dir, &id, cascade)
+        }
         Commands::Done {
             id,
             converged,

@@ -35,6 +35,7 @@ pub fn run(
     exec_mode: Option<&str>,
     delay: Option<&str>,
     not_before: Option<&str>,
+    no_reopen: bool,
 ) -> Result<()> {
     // Validate self-blocking (no graph needed)
     for dep in add_after {
@@ -423,10 +424,61 @@ pub fn run(
             }
         }
 
-        Ok((changed, field_changes))
+        // Auto-reopen: if a Done task gained a new dependency that isn't Done,
+        // reopen the task and cascade downstream.
+        let mut auto_reopened = Vec::new();
+        if !no_reopen && !add_after.is_empty() {
+            let task_is_done = graph
+                .get_task(task_id)
+                .map(|t| t.status == workgraph::graph::Status::Done)
+                .unwrap_or(false);
+            if task_is_done {
+                let has_unmet_dep = add_after.iter().any(|dep| {
+                    graph
+                        .get_task(dep)
+                        .map(|t| t.status != workgraph::graph::Status::Done)
+                        .unwrap_or(true)
+                });
+                if has_unmet_dep {
+                    let unmet: Vec<&str> = add_after
+                        .iter()
+                        .filter(|dep| {
+                            graph
+                                .get_task(dep)
+                                .map(|t| t.status != workgraph::graph::Status::Done)
+                                .unwrap_or(true)
+                        })
+                        .map(|s| s.as_str())
+                        .collect();
+                    let reason = format!(
+                        "Reopened: new dependency [{}] is not yet complete",
+                        unmet.join(", ")
+                    );
+                    super::reopen::reopen_task(graph, task_id, &reason);
+                    auto_reopened.push(task_id.to_string());
+
+                    // Cascade: reopen downstream Done tasks
+                    let downstream =
+                        super::reopen::collect_done_downstream(graph, task_id);
+                    for did in &downstream {
+                        super::reopen::reopen_task(
+                            graph,
+                            did,
+                            &format!(
+                                "Reopened: upstream '{}' was reopened (new dep cascade)",
+                                task_id
+                            ),
+                        );
+                        auto_reopened.push(did.clone());
+                    }
+                }
+            }
+        }
+
+        Ok((changed, field_changes, auto_reopened))
     })?;
 
-    let (changed, field_changes) = result;
+    let (changed, field_changes, auto_reopened) = result;
 
     if changed {
         super::notify_graph_changed(dir);
@@ -443,6 +495,15 @@ pub fn run(
         );
 
         println!("\nTask '{}' updated successfully", task_id);
+        if !auto_reopened.is_empty() {
+            for rid in &auto_reopened {
+                if rid == task_id {
+                    eprintln!("Reopened '{}' (new dependency not yet complete)", rid);
+                } else {
+                    eprintln!("  cascaded → reopened '{}'", rid);
+                }
+            }
+        }
     } else {
         println!("No changes made to task '{}'", task_id);
     }
@@ -599,6 +660,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -637,6 +699,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -675,6 +738,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -714,6 +778,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -752,6 +817,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -791,6 +857,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -829,6 +896,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -867,6 +935,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -906,6 +975,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -944,6 +1014,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -978,6 +1049,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
     }
@@ -1011,6 +1083,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_err());
         assert!(
@@ -1051,6 +1124,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -1095,6 +1169,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1123,6 +1198,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -1176,6 +1252,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1237,6 +1314,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1279,6 +1357,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1316,6 +1395,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1368,6 +1448,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1431,6 +1512,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1474,6 +1556,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1485,5 +1568,246 @@ mod tests {
             workgraph::graph::Status::Open,
             "Open task should NOT be paused by live dep enforcement"
         );
+    }
+
+    #[test]
+    fn test_auto_reopen_done_task_with_unmet_dep() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // Set test-task to Done
+        let path = graph_path(temp_dir.path());
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let task = graph.get_task_mut("test-task").unwrap();
+            task.status = workgraph::graph::Status::Done;
+            task.completed_at = Some("2025-01-01T01:00:00Z".to_string());
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // blocker-task is Open (not Done), so adding it as dep should reopen test-task
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::Open,
+            "Done task with unmet dep should be reopened"
+        );
+        assert!(task.completed_at.is_none(), "completed_at should be cleared");
+        assert!(
+            task.log.iter().any(|e| e.message.contains("Reopened")),
+            "should have a reopen log entry"
+        );
+    }
+
+    #[test]
+    fn test_auto_reopen_done_task_with_done_dep_stays_done() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // Set both tasks to Done
+        let path = graph_path(temp_dir.path());
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let task = graph.get_task_mut("test-task").unwrap();
+            task.status = workgraph::graph::Status::Done;
+            let blocker = graph.get_task_mut("blocker-task").unwrap();
+            blocker.status = workgraph::graph::Status::Done;
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // blocker-task is Done, so adding it should NOT reopen test-task
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::Done,
+            "Done task with Done dep should stay Done"
+        );
+    }
+
+    #[test]
+    fn test_no_reopen_flag_suppresses_auto_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // Set test-task to Done
+        let path = graph_path(temp_dir.path());
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let task = graph.get_task_mut("test-task").unwrap();
+            task.status = workgraph::graph::Status::Done;
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // blocker-task is Open, but --no-reopen is set
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true, // no_reopen = true
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::Done,
+            "--no-reopen should suppress auto-reopen"
+        );
+    }
+
+    #[test]
+    fn test_auto_reopen_cascades_downstream() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let path = graph_path(dir);
+        fs::write(&path, "").unwrap();
+
+        // Create: new-dep -> target -> downstream (all Done except new-dep)
+        crate::commands::add::run(
+            dir, "New dep", Some("new-dep"), None, &[], None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            false, false, None, "internal", None, None, false, None, None,
+        ).unwrap();
+
+        crate::commands::add::run(
+            dir, "Target", Some("target"), None, &[], None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            false, false, None, "internal", None, None, false, None, None,
+        ).unwrap();
+
+        crate::commands::add::run(
+            dir, "Downstream", Some("downstream"), None,
+            &["target".to_string()], None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            false, false, None, "internal", None, None, false, None, None,
+        ).unwrap();
+
+        // Mark target and downstream as Done
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let t = graph.get_task_mut("target").unwrap();
+            t.status = workgraph::graph::Status::Done;
+            t.completed_at = Some("2025-01-01T01:00:00Z".to_string());
+            let d = graph.get_task_mut("downstream").unwrap();
+            d.status = workgraph::graph::Status::Done;
+            d.completed_at = Some("2025-01-01T02:00:00Z".to_string());
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // Add new-dep (which is Open) as dependency of target
+        run(
+            dir,
+            "target",
+            None,
+            None,
+            &["new-dep".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let target = graph.get_task("target").unwrap();
+        assert_eq!(target.status, workgraph::graph::Status::Open, "target should be reopened");
+
+        let downstream = graph.get_task("downstream").unwrap();
+        assert_eq!(downstream.status, workgraph::graph::Status::Open, "downstream Done task should be cascaded");
     }
 }

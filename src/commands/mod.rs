@@ -68,6 +68,7 @@ pub mod plan;
 pub mod quickstart;
 pub mod ready;
 pub mod reclaim;
+pub mod reopen;
 pub mod replay;
 pub mod reschedule;
 pub mod resource;
@@ -319,6 +320,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -794,6 +796,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         // pause
