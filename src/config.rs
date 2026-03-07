@@ -1012,6 +1012,22 @@ pub struct AgentConfig {
     /// Heartbeat timeout in minutes (for detecting dead agents)
     #[serde(default = "default_heartbeat_timeout")]
     pub heartbeat_timeout: u64,
+
+    /// Minutes of awake-time with no stream activity before counting as stale (default: 10)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_threshold: Option<u64>,
+
+    /// Seconds after system wake before checking liveness (default: 120)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_grace_period: Option<u64>,
+
+    /// Seconds of wall-vs-monotonic divergence to detect sleep (default: 30)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleep_gap_threshold: Option<u64>,
+
+    /// Consecutive stale ticks before triggering triage (default: 2)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_tick_threshold: Option<u32>,
 }
 
 /// Coordinator-specific configuration
@@ -1153,6 +1169,10 @@ impl Default for AgentConfig {
             command_template: default_command_template(),
             max_tasks: None,
             heartbeat_timeout: default_heartbeat_timeout(),
+            stale_threshold: None,
+            wake_grace_period: None,
+            sleep_gap_threshold: None,
+            stale_tick_threshold: None,
         }
     }
 }

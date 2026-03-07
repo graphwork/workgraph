@@ -366,11 +366,51 @@ pub fn run(
             }
         }
 
+        // Live dependency enforcement: check if task is in-progress with unmet new deps
+        let task_was_in_progress = graph
+            .get_task(task_id)
+            .map(|t| t.status == workgraph::graph::Status::InProgress)
+            .unwrap_or(false);
+        let unmet_deps: Vec<&String> = if task_was_in_progress {
+            add_after
+                .iter()
+                .filter(|dep| {
+                    graph
+                        .get_task(dep)
+                        .map(|t| t.status != workgraph::graph::Status::Done)
+                        .unwrap_or(true)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
         // Clear the agent field so the task gets re-assigned when actually ready
         let task = graph.get_task_mut_or_err(task_id)?;
         if task.agent.is_some() {
             task.agent = None;
             println!("Cleared agent assignment (dependencies changed, will re-assign when ready)");
+        }
+
+        // Pause in-progress task whose new deps are not yet done (TOCTOU prevention)
+        if !unmet_deps.is_empty() {
+            task.status = workgraph::graph::Status::Blocked;
+            task.assigned = None;
+            let dep_names: Vec<&str> = unmet_deps.iter().map(|s| s.as_str()).collect();
+            let recall_msg = format!(
+                "Recall: task paused — new dep(s) [{}] not done while task was in-progress",
+                dep_names.join(", ")
+            );
+            task.log.push(workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: None,
+                message: recall_msg.clone(),
+            });
+            eprintln!(
+                "WARNING: Task '{}' was in-progress but new dep(s) [{}] not done — task paused (blocked).",
+                task_id,
+                dep_names.join(", ")
+            );
         }
     }
 
@@ -1288,6 +1328,165 @@ mod tests {
         assert!(
             task.agent.is_some(),
             "agent should NOT be cleared when no new deps are actually added"
+        );
+    }
+
+    #[test]
+    fn test_live_dep_enforcement_pauses_in_progress_task() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // Set test-task to InProgress
+        let path = graph_path(temp_dir.path());
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let task = graph.get_task_mut("test-task").unwrap();
+            task.status = workgraph::graph::Status::InProgress;
+            task.assigned = Some("agent-123".to_string());
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // blocker-task is Open (not Done), so adding it as a dep should pause test-task
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::Blocked,
+            "in-progress task with unmet dep should be paused (blocked)"
+        );
+        assert!(
+            task.assigned.is_none(),
+            "assigned should be cleared on recall"
+        );
+        // Check that a recall log entry was recorded
+        assert!(
+            task.log.iter().any(|e| e.message.contains("Recall")),
+            "should have a recall log entry"
+        );
+    }
+
+    #[test]
+    fn test_live_dep_enforcement_does_not_pause_with_done_dep() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // Set both tasks: test-task to InProgress, blocker-task to Done
+        let path = graph_path(temp_dir.path());
+        {
+            let mut graph = load_graph(&path).unwrap();
+            let task = graph.get_task_mut("test-task").unwrap();
+            task.status = workgraph::graph::Status::InProgress;
+            task.assigned = Some("agent-456".to_string());
+            let blocker = graph.get_task_mut("blocker-task").unwrap();
+            blocker.status = workgraph::graph::Status::Done;
+            save_graph(&graph, &path).unwrap();
+        }
+
+        // blocker-task is Done, so adding it as a dep should NOT pause test-task
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::InProgress,
+            "in-progress task with Done dep should NOT be paused"
+        );
+    }
+
+    #[test]
+    fn test_live_dep_enforcement_skips_open_task() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
+
+        // test-task is Open (default), blocker-task is Open
+        // Adding unmet dep to an Open task should NOT pause it
+        run(
+            temp_dir.path(),
+            "test-task",
+            None,
+            None,
+            &["blocker-task".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let path = graph_path(temp_dir.path());
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("test-task").unwrap();
+        assert_eq!(
+            task.status,
+            workgraph::graph::Status::Open,
+            "Open task should NOT be paused by live dep enforcement"
         );
     }
 }
