@@ -1781,7 +1781,7 @@ mod tests {
 
         assert!(!result.text.contains("evaluate-my-task"));
         assert!(result.text.contains("my-task"));
-        assert!(result.text.contains("[evaluating]"));
+        assert!(result.text.contains("[∴ evaluating]"));
     }
 
     #[test]
