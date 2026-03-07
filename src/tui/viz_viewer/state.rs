@@ -4961,37 +4961,11 @@ impl VizApp {
                                             .get("name")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("?");
-                                        // For Bash/Edit/Write, show a brief input summary.
-                                        let detail = match name {
-                                            "Bash" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("command"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|c| {
-                                                    let c = c.trim();
-                                                    if c.len() > 80 {
-                                                        format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
-                                                    } else {
-                                                        format!("{name}: {c}")
-                                                    }
-                                                }),
-                                            "Read" | "Write" | "Edit" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("file_path"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            "Grep" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("pattern"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            "Glob" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("pattern"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            _ => None,
-                                        };
+                                        let detail = block
+                                            .get("input")
+                                            .and_then(|input| {
+                                                workgraph::stream_event::extract_tool_detail(name, input)
+                                            });
                                         info.latest_snippet =
                                             Some(detail.unwrap_or_else(|| name.to_string()));
                                         info.latest_is_tool = true;

@@ -5,7 +5,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use workgraph::graph::{format_tokens, parse_token_usage_live, TokenUsage};
+use workgraph::graph::{format_tokens, TokenUsage};
 use workgraph::service::AgentRegistry;
 use workgraph::stream_event;
 
@@ -36,13 +36,13 @@ pub fn gather_activities(dir: &Path) -> Result<Vec<AgentActivity>> {
     for agent in &alive {
         let uptime = agent.uptime_human();
 
-        // Get token usage from the output.log (works for both live and completed)
         let output_path = Path::new(&agent.output_file);
-        let token_usage = parse_token_usage_live(output_path);
-        let tokens_display = format_token_summary(&token_usage);
-
-        // Get latest activity from raw_stream.jsonl or stream.jsonl
         let agent_dir = output_path.parent();
+
+        // Get token usage from stream.jsonl (canonical source)
+        let token_usage = agent_dir
+            .and_then(|d| stream_event::parse_token_usage_from_stream(d));
+        let tokens_display = format_token_summary(&token_usage);
         let latest_activity = agent_dir
             .and_then(|d| extract_latest_activity(d))
             .unwrap_or_else(|| "-".to_string());

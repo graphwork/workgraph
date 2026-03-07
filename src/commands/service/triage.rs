@@ -8,7 +8,7 @@ use std::path::Path;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage};
+use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration};
 use workgraph::parser::{load_graph, mutate_graph};
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 use workgraph::stream_event::{self, StreamEvent};
@@ -194,18 +194,20 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 task.session_id = Some(sid);
             }
 
-            // Extract token usage from output.log
+            // Extract token usage from stream.jsonl (canonical source)
             if let Some(task) = graph.get_task_mut(task_id)
                 && task.token_usage.is_none()
             {
                 let output_path = std::path::Path::new(output_file);
-                let abs_path = if output_path.is_absolute() {
-                    output_path.to_path_buf()
+                let agent_dir = if output_path.is_absolute() {
+                    output_path.parent().map(|p| p.to_path_buf())
                 } else {
-                    dir.parent().unwrap_or(dir).join(output_path)
+                    output_path.parent().map(|p| dir.parent().unwrap_or(dir).join(p))
                 };
-                if let Some(usage) = parse_token_usage(&abs_path) {
-                    task.token_usage = Some(usage);
+                if let Some(agent_dir) = agent_dir {
+                    if let Some(usage) = stream_event::parse_token_usage_from_stream(&agent_dir) {
+                        task.token_usage = Some(usage);
+                    }
                 }
             }
         }
@@ -653,7 +655,7 @@ mod tests {
             title: "Test".to_string(),
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
-            verify: Some("Check tests pass".to_string()),
+            verify_cmd: Some("Check tests pass".to_string()),
             ..Default::default()
         };
         let verdict = TriageVerdict {

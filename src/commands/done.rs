@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage};
+use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration};
 use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
 
@@ -268,19 +268,21 @@ fn run_inner(
             },
         });
 
-        // Extract token usage from agent output.log if available
+        // Extract token usage from stream.jsonl (canonical source)
         if task.token_usage.is_none()
             && let Ok(registry) = AgentRegistry::load(dir)
             && let Some(agent) = registry.get_agent_by_task(id)
         {
             let output_path = std::path::Path::new(&agent.output_file);
-            let abs_path = if output_path.is_absolute() {
-                output_path.to_path_buf()
+            let agent_dir = if output_path.is_absolute() {
+                output_path.parent().map(|p| p.to_path_buf())
             } else {
-                dir.parent().unwrap_or(dir).join(output_path)
+                output_path.parent().map(|p| dir.parent().unwrap_or(dir).join(p))
             };
-            if let Some(usage) = parse_token_usage(&abs_path) {
-                task.token_usage = Some(usage);
+            if let Some(agent_dir) = agent_dir {
+                if let Some(usage) = workgraph::stream_event::parse_token_usage_from_stream(&agent_dir) {
+                    task.token_usage = Some(usage);
+                }
             }
         }
 
