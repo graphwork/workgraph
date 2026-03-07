@@ -8,8 +8,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::{
     ConfigEditKind, ConfigSection, ConfirmAction, FocusedPanel, InputMode, LayoutMode,
-    RightPanelTab, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
-    extract_section_name,
+    RightPanelTab, ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction,
+    VizApp, extract_section_name, format_duration_compact,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -261,6 +261,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Top status bar
     draw_status_bar(frame, app, status_area);
 
+    // Service health badge — right-aligned pill on the status bar.
+    draw_service_health_badge(frame, app, status_area);
+
     // Bottom action hints
     draw_action_hints(frame, app, hints_area);
 
@@ -287,6 +290,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         && let Some(ref form) = app.task_form
     {
         draw_task_form(frame, form);
+    }
+
+    // Service health detail popup
+    if app.service_health.detail_open {
+        draw_service_health_detail(frame, app);
     }
 }
 
@@ -4305,6 +4313,65 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         render_token_breakdown(&mut spans, usage, label);
     }
 
+    // Time counters (compact display)
+    {
+        let tc = &app.time_counters;
+        let mut counter_parts: Vec<Span> = Vec::new();
+
+        if tc.show_uptime {
+            let uptime_str = match tc.service_uptime_secs {
+                Some(s) => format!("\u{2191}{}", format_duration_compact(s)),
+                None => "\u{2191}-".to_string(),
+            };
+            counter_parts.push(Span::styled(
+                uptime_str,
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+
+        if tc.show_cumulative {
+            let cum_str = format!("\u{03A3}{}", format_duration_compact(tc.cumulative_secs));
+            counter_parts.push(Span::styled(
+                cum_str,
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+
+        if tc.show_active && tc.active_agent_count > 0 {
+            let active_str = format!(
+                "\u{26A1}{}({})",
+                format_duration_compact(tc.active_secs),
+                tc.active_agent_count,
+            );
+            counter_parts.push(Span::styled(
+                active_str,
+                Style::default().fg(Color::Green),
+            ));
+        }
+
+        if tc.show_session {
+            let session_str = format!(
+                "\u{25F7}{}",
+                format_duration_compact(tc.session_start.elapsed().as_secs()),
+            );
+            counter_parts.push(Span::styled(
+                session_str,
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        if !counter_parts.is_empty() {
+            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+            for (i, part) in counter_parts.into_iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" ", Style::default()));
+                }
+                spans.push(part);
+            }
+            spans.push(Span::styled(" ", Style::default()));
+        }
+    }
+
     // Scroll position
     spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
     spans.push(Span::styled(
@@ -4415,6 +4482,186 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         Color::DarkGray,
         Color::Rgb(40, 40, 40),
     );
+}
+
+/// Render the service health badge at the right end of the status bar.
+fn draw_service_health_badge(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let health = &app.service_health;
+    let (dot_color, bg_color) = match health.level {
+        ServiceHealthLevel::Green => (Color::Green, Color::Rgb(20, 50, 20)),
+        ServiceHealthLevel::Yellow => (Color::Yellow, Color::Rgb(50, 50, 10)),
+        ServiceHealthLevel::Red => (Color::Red, Color::Rgb(50, 20, 20)),
+    };
+
+    let badge_text = format!(" \u{25CF} {} ", health.label);
+    let badge_width = UnicodeWidthStr::width(badge_text.as_str()) as u16;
+
+    if area.width < badge_width + 1 {
+        app.last_service_badge_area = Rect::default();
+        return;
+    }
+
+    let badge_x = area.x + area.width - badge_width;
+    let badge_area = Rect::new(badge_x, area.y, badge_width, 1);
+    app.last_service_badge_area = badge_area;
+
+    let badge = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!(" \u{25CF}"),
+            Style::default().fg(dot_color).bg(bg_color),
+        ),
+        Span::styled(
+            format!(" {} ", health.label),
+            Style::default().fg(Color::White).bg(bg_color),
+        ),
+    ]));
+    frame.render_widget(badge, badge_area);
+}
+
+/// Draw the service health detail popup — anchored below the badge.
+fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
+    let size = frame.area();
+    let health = &app.service_health;
+
+    let width = 50.min(size.width.saturating_sub(4));
+    let height = 22.min(size.height.saturating_sub(4));
+
+    // Anchor to top-right, below the status bar.
+    let x = size.width.saturating_sub(width + 1);
+    let y = 1.min(size.height.saturating_sub(height));
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let (border_color, title_dot) = match health.level {
+        ServiceHealthLevel::Green => (Color::Green, "\u{25CF}"),
+        ServiceHealthLevel::Yellow => (Color::Yellow, "\u{25CF}"),
+        ServiceHealthLevel::Red => (Color::Red, "\u{25CF}"),
+    };
+
+    let block = Block::default()
+        .title(format!(" {} Service Health ", title_dot))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let label_style = Style::default().fg(Color::Cyan);
+    let value_style = Style::default().fg(Color::White);
+    let dim_style = Style::default().fg(Color::DarkGray);
+
+    // PID & uptime
+    lines.push(Line::from(vec![
+        Span::styled("  PID: ", label_style),
+        Span::styled(
+            health.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+            value_style,
+        ),
+        Span::styled("    Uptime: ", label_style),
+        Span::styled(health.uptime.as_deref().unwrap_or("N/A"), value_style),
+    ]));
+
+    // Socket
+    lines.push(Line::from(vec![
+        Span::styled("  Socket: ", label_style),
+        Span::styled(health.socket_path.as_deref().unwrap_or("N/A"), dim_style),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Agents
+    lines.push(Line::from(vec![
+        Span::styled("  Agents: ", label_style),
+        Span::styled(
+            format!("{} alive / {} max", health.agents_alive, health.agents_max),
+            value_style,
+        ),
+        Span::styled(format!("  ({} total)", health.agents_total), dim_style),
+    ]));
+
+    // Paused
+    if health.paused {
+        lines.push(Line::from(vec![
+            Span::styled("  Status: ", label_style),
+            Span::styled(
+                "PAUSED",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" (agent spawning disabled)", dim_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Stuck tasks
+    if health.stuck_tasks.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck tasks: ", label_style),
+            Span::styled("none", Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck tasks: ", label_style),
+            Span::styled(
+                format!("{}", health.stuck_tasks.len()),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for st in &health.stuck_tasks {
+            let title_display = if st.task_title.len() > 30 {
+                format!("{}...", &st.task_title[..st.task_title.floor_char_boundary(27)])
+            } else {
+                st.task_title.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    ", dim_style),
+                Span::styled(&st.task_id, Style::default().fg(Color::Yellow)),
+                Span::styled(format!(" ({})", title_display), dim_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // Recent errors
+    if health.recent_errors.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Recent errors: ", label_style),
+            Span::styled("none", Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![Span::styled("  Recent errors:", label_style)]));
+        for err in &health.recent_errors {
+            let max_w = width as usize - 6;
+            let truncated = if err.len() > max_w {
+                format!("{}...", &err[..err.floor_char_boundary(max_w.saturating_sub(3))])
+            } else {
+                err.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    ", dim_style),
+                Span::styled(truncated, Style::default().fg(Color::Red)),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Press ", dim_style),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" or click badge to close", dim_style),
+    ]));
+
+    // Apply scroll
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(health.detail_scroll)
+        .take(inner.height as usize)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), inner);
 }
 
 fn draw_help_overlay(frame: &mut Frame) {
@@ -4891,6 +5138,7 @@ fn draw_add_endpoint_form(frame: &mut Frame, app: &VizApp, area: Rect) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -6484,7 +6732,7 @@ mod tests {
         let task2 = make_task_with_status("eval-task", "Eval Task", Status::Done);
         graph2.add_node(Node::Task(task2));
         let mut annotations2 = HashMap::new();
-        annotations2.insert("eval-task".to_string(), "[evaluating]".to_string());
+        annotations2.insert("eval-task".to_string(), "[∴ evaluating]".to_string());
 
         let tasks2: Vec<_> = graph2.tasks().collect();
         let task_ids2: HashSet<&str> = tasks2.iter().map(|t| t.id.as_str()).collect();
@@ -6505,8 +6753,8 @@ mod tests {
         let task_line_idx2 = viz2.node_line_map["eval-task"];
         let ansi_line2 = viz2.text.lines().nth(task_line_idx2).unwrap();
         assert!(
-            ansi_line2.contains("[evaluating]"),
-            "Evaluating phase should show [evaluating] annotation.\nLine: {:?}",
+            ansi_line2.contains("[∴ evaluating]"),
+            "Evaluating phase should show [∴ evaluating] annotation.\nLine: {:?}",
             ansi_line2
         );
         if ansi_line2.contains("\x1b[") {
@@ -6517,8 +6765,70 @@ mod tests {
             );
         }
 
+        // Test validating phase
+        let mut graph3 = WorkGraph::new();
+        let task3 = make_task_with_status("val-task", "Val Task", Status::InProgress);
+        graph3.add_node(Node::Task(task3));
+        let mut annotations3 = HashMap::new();
+        annotations3.insert("val-task".to_string(), "[✓ validating]".to_string());
+
+        let tasks3: Vec<_> = graph3.tasks().collect();
+        let task_ids3: HashSet<&str> = tasks3.iter().map(|t| t.id.as_str()).collect();
+        let viz3 = generate_ascii(
+            &graph3,
+            &tasks3,
+            &task_ids3,
+            &annotations3,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let task_line_idx3 = viz3.node_line_map["val-task"];
+        let ansi_line3 = viz3.text.lines().nth(task_line_idx3).unwrap();
+        assert!(
+            ansi_line3.contains("[✓ validating]"),
+            "Validating phase should show [✓ validating] annotation.\nLine: {:?}",
+            ansi_line3
+        );
+
+        // Test both simultaneously
+        let mut graph4 = WorkGraph::new();
+        let task4 = make_task_with_status("both-task", "Both Task", Status::InProgress);
+        graph4.add_node(Node::Task(task4));
+        let mut annotations4 = HashMap::new();
+        annotations4.insert("both-task".to_string(), "[∴ evaluating] [✓ validating]".to_string());
+
+        let tasks4: Vec<_> = graph4.tasks().collect();
+        let task_ids4: HashSet<&str> = tasks4.iter().map(|t| t.id.as_str()).collect();
+        let viz4 = generate_ascii(
+            &graph4,
+            &tasks4,
+            &task_ids4,
+            &annotations4,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let task_line_idx4 = viz4.node_line_map["both-task"];
+        let ansi_line4 = viz4.text.lines().nth(task_line_idx4).unwrap();
+        assert!(
+            ansi_line4.contains("[∴ evaluating]") && ansi_line4.contains("[✓ validating]"),
+            "Both phases should appear simultaneously.\nLine: {:?}",
+            ansi_line4
+        );
+
         // Verify the code logic: in ascii.rs, the agency phase detection checks:
-        //   is_agency_phase = use_color && annotations.get(id).map_or(false, |a| a.contains("assigning") || a.contains("evaluating"))
+        //   is_agency_phase = use_color && annotations.get(id).map_or(false, |a| a.contains("assigning") || a.contains("evaluating") || a.contains("validating") || a.contains("verifying"))
         // When true, the phase annotation is wrapped in \x1b[38;5;219m..\x1b[0m (ANSI 256-color 219, true pink).
         // The task text itself keeps its status color (e.g., green for done).
         // We've verified the annotation appears; the color logic is deterministic given use_color.

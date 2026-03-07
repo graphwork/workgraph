@@ -148,10 +148,12 @@ fn compute_phase_annotation(internal_task: &Task) -> &'static str {
     let id = &internal_task.id;
     if id.starts_with(".assign-") || id.starts_with("assign-") {
         "[assigning]"
+    } else if id.starts_with(".verify-flip-") || id.starts_with("verify-flip-") {
+        "[✓ validating]"
     } else if id.starts_with(".verify-") || id.starts_with("verify-") {
         "[verifying]"
     } else {
-        "[evaluating]"
+        "[∴ evaluating]"
     }
 }
 
@@ -188,7 +190,13 @@ pub(crate) fn filter_internal_tasks<'a>(
         if let Some(pid) = system_task_parent_id(&task.id) {
             if task.status == Status::InProgress {
                 let annotation = compute_phase_annotation(task);
-                annotations.insert(pid, annotation.to_string());
+                annotations
+                    .entry(pid)
+                    .and_modify(|existing| {
+                        existing.push(' ');
+                        existing.push_str(annotation);
+                    })
+                    .or_insert_with(|| annotation.to_string());
             }
         }
     }
