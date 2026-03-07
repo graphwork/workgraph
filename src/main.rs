@@ -1527,6 +1527,9 @@ fn main() -> Result<()> {
             flip_verification_model,
             chat_history,
             chat_history_max,
+            auto_remediate,
+            max_remediation_attempts,
+            remediation_budget_multiplier,
             show_models,
             set_model,
             set_provider,
@@ -1646,7 +1649,10 @@ fn main() -> Result<()> {
                     && flip_verification_threshold.is_none()
                     && flip_verification_model.is_none()
                     && chat_history.is_none()
-                    && chat_history_max.is_none())
+                    && chat_history_max.is_none()
+                    && auto_remediate.is_none()
+                    && max_remediation_attempts.is_none()
+                    && remediation_budget_multiplier.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -1690,6 +1696,9 @@ fn main() -> Result<()> {
                     flip_verification_model.as_deref(),
                     chat_history,
                     chat_history_max,
+                    auto_remediate,
+                    max_remediation_attempts,
+                    remediation_budget_multiplier,
                 )
             }
         }

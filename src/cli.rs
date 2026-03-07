@@ -402,6 +402,44 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Abandon a task and all its transitive dependents
+    #[command(name = "cascade-stop")]
+    CascadeStop {
+        /// Task ID (seed of the cascade)
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Pause (hold) instead of abandoning
+        #[arg(long)]
+        hold: bool,
+
+        /// Show what would be affected without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Hold a task and all transitive dependents (atomic subtree pause)
+    Hold {
+        /// Task ID to hold
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Show what would be held without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Unhold: resume exactly the tasks paused by a previous `wg hold`
+    Unhold {
+        /// Task ID that was held (matches the hold provenance record)
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Show what would be resumed without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Claim a task for work (sets status to InProgress)
     Claim {
         /// Task ID to claim
@@ -1272,6 +1310,15 @@ pub enum Commands {
         /// Maximum number of chat messages to persist (default: 1000)
         #[arg(long, name = "chat-history-max")]
         chat_history_max: Option<usize>,
+
+        #[arg(long, name = "auto-remediate")]
+        auto_remediate: Option<bool>,
+
+        #[arg(long, name = "max-remediation-attempts")]
+        max_remediation_attempts: Option<u32>,
+
+        #[arg(long, name = "remediation-budget-multiplier")]
+        remediation_budget_multiplier: Option<f64>,
 
         /// Show all model routing assignments (per-role model+provider)
         #[arg(long = "models")]
