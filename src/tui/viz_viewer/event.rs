@@ -679,12 +679,16 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Cycle inspector size: 1/3 → 1/2 → 2/3 → full → off
-        KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
+        KeyCode::Char('=') | KeyCode::BackTab => {
             app.cycle_layout_mode();
         }
-        // Cycle inspector size in reverse: off → full → 2/3 → 1/2 → 1/3
+        // Cycle inspector views forward: closed → Chat → Detail → ... → CoordLog → closed
+        KeyCode::Char('i') => {
+            app.cycle_inspector_view_forward();
+        }
+        // Cycle inspector views backward: closed → CoordLog → ... → Chat → closed
         KeyCode::Char('I') => {
-            app.cycle_layout_mode_reverse();
+            app.cycle_inspector_view_backward();
         }
 
         // Navigate between matches
@@ -906,10 +910,9 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.kill_focused_agent();
                 }
                 KeyCode::Char('\\') => app.toggle_right_panel(),
-                KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
-                    app.cycle_layout_mode()
-                }
-                KeyCode::Char('I') => app.cycle_layout_mode_reverse(),
+                KeyCode::Char('=') | KeyCode::BackTab => app.cycle_layout_mode(),
+                KeyCode::Char('i') => app.cycle_inspector_view_forward(),
+                KeyCode::Char('I') => app.cycle_inspector_view_backward(),
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
                 }
@@ -945,11 +948,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Cycle inspector size: 1/3 → 1/2 → 2/3 → full → off
-        KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
+        KeyCode::Char('=') | KeyCode::BackTab => {
             app.cycle_layout_mode();
         }
+        // Cycle inspector views forward/backward
+        KeyCode::Char('i') => {
+            app.cycle_inspector_view_forward();
+        }
         KeyCode::Char('I') => {
-            app.cycle_layout_mode_reverse();
+            app.cycle_inspector_view_backward();
         }
 
         // Esc: go back to graph focus

@@ -218,6 +218,54 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
     }
 }
 
+/// Direction of an inspector panel slide animation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlideDirection {
+    /// New view slides in from the right (forward cycling with I).
+    Forward,
+    /// New view slides in from the left (backward cycling with Shift-I).
+    Backward,
+}
+
+/// Active slide animation on the inspector panel.
+#[derive(Clone)]
+pub struct SlideAnimation {
+    /// When the animation started.
+    pub start: Instant,
+    /// Direction of the slide.
+    pub direction: SlideDirection,
+}
+
+impl SlideAnimation {
+    /// Duration of the slide animation in seconds.
+    const DURATION_SECS: f64 = 0.15;
+
+    /// Returns the animation progress (0.0 = start, 1.0 = done).
+    pub fn progress(&self) -> f64 {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        (elapsed / Self::DURATION_SECS).min(1.0)
+    }
+
+    /// Whether the animation has completed.
+    pub fn is_done(&self) -> bool {
+        self.progress() >= 1.0
+    }
+
+    /// Returns the x-offset in columns for the panel content.
+    /// Starts at +/- panel_width and eases to 0.
+    pub fn x_offset(&self, panel_width: u16) -> i16 {
+        let t = self.progress();
+        // Ease-out quadratic: 1 - (1-t)^2
+        let eased = 1.0 - (1.0 - t) * (1.0 - t);
+        let full = panel_width as f64;
+        let remaining = full * (1.0 - eased);
+        match self.direction {
+            SlideDirection::Forward => remaining as i16,   // slides from right to center
+            SlideDirection::Backward => -(remaining as i16), // slides from left to center
+        }
+    }
+}
+
 /// Lightweight snapshot of per-task state for change detection.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TaskSnapshot {
@@ -431,6 +479,7 @@ impl LayoutMode {
         }
     }
 
+    #[allow(dead_code)]
     pub fn cycle_reverse(&self) -> Self {
         match self {
             Self::ThirdInspector => Self::Off,
@@ -1405,6 +1454,8 @@ pub struct VizApp {
     pub task_snapshots: HashMap<String, TaskSnapshot>,
     /// Animation mode (from config: normal/fast/slow/reduced/off).
     pub animation_mode: AnimationMode,
+    /// Active slide animation on the inspector panel (for I/Shift-I view cycling).
+    pub slide_animation: Option<SlideAnimation>,
     /// Cached: name length threshold for inline vs above-line display.
     pub message_name_threshold: u16,
     /// Cached: indent for message body when name is on its own line.
@@ -1583,6 +1634,7 @@ impl VizApp {
             splash_animations: HashMap::new(),
             task_snapshots: HashMap::new(),
             animation_mode,
+            slide_animation: None,
             message_name_threshold: config.tui.message_name_threshold,
             message_indent: config.tui.message_indent,
             graph_scroll_activity: None,
@@ -3889,6 +3941,7 @@ impl VizApp {
             splash_animations: HashMap::new(),
             task_snapshots: HashMap::new(),
             animation_mode: AnimationMode::Normal,
+            slide_animation: None,
             message_name_threshold: 8,
             message_indent: 2,
             graph_scroll_activity: None,
@@ -3985,6 +4038,7 @@ impl VizApp {
     }
 
     /// Cycle layout mode in reverse: off → full → 2/3 → 1/2 → 1/3 → off.
+    #[allow(dead_code)]
     pub fn cycle_layout_mode_reverse(&mut self) {
         self.apply_layout_mode(self.layout_mode.cycle_reverse());
     }
@@ -4008,6 +4062,64 @@ impl VizApp {
                 self.right_panel_visible = false;
                 self.focused_panel = FocusedPanel::Graph;
             }
+        }
+    }
+
+    /// Cycle inspector view forward: closed → Chat → Detail → ... → CoordLog → closed.
+    /// Opens the panel (if closed) and advances to the next tab, or closes if on the last tab.
+    pub fn cycle_inspector_view_forward(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Panel is closed → open with first tab
+            self.right_panel_tab = RightPanelTab::ALL[0];
+            if self.layout_mode == LayoutMode::Off {
+                self.apply_layout_mode(LayoutMode::TwoThirdsInspector);
+            } else {
+                self.right_panel_visible = true;
+            }
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Forward,
+            });
+        } else if self.right_panel_tab == *RightPanelTab::ALL.last().unwrap() {
+            // On last tab → close
+            self.apply_layout_mode(LayoutMode::Off);
+            self.slide_animation = None; // no slide on close
+        } else {
+            // Advance to next tab
+            self.right_panel_tab = self.right_panel_tab.next();
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Forward,
+            });
+        }
+    }
+
+    /// Cycle inspector view backward: closed → CoordLog → ... → Detail → Chat → closed.
+    /// Opens the panel (if closed) with the last tab, or moves to the previous tab, or closes if on the first.
+    pub fn cycle_inspector_view_backward(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Panel is closed → open with last tab
+            self.right_panel_tab = *RightPanelTab::ALL.last().unwrap();
+            if self.layout_mode == LayoutMode::Off {
+                self.apply_layout_mode(LayoutMode::TwoThirdsInspector);
+            } else {
+                self.right_panel_visible = true;
+            }
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Backward,
+            });
+        } else if self.right_panel_tab == RightPanelTab::ALL[0] {
+            // On first tab → close
+            self.apply_layout_mode(LayoutMode::Off);
+            self.slide_animation = None; // no slide on close
+        } else {
+            // Move to previous tab
+            self.right_panel_tab = self.right_panel_tab.prev();
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Backward,
+            });
         }
     }
 
