@@ -380,6 +380,25 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Retract a task: undo side effects by tracing provenance lineage
+    Retract {
+        /// Task ID to retract
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Abandon the original task too (instead of resetting to open)
+        #[arg(long)]
+        abandon: bool,
+
+        /// Show retraction plan without modifying
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Let running agents finish instead of killing them
+        #[arg(long)]
+        no_kill: bool,
+    },
+
     /// Hold a task and all transitive dependents (atomic subtree pause)
     Hold {
         /// Task ID to hold
@@ -886,6 +905,9 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
     },
+
+    /// Compact: distill graph state into context.md
+    Compact,
 
     /// Chat with the coordinator agent
     Chat {
@@ -2641,6 +2663,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Retry { .. } => "retry",
         Commands::Reset { .. } => "reset",
         Commands::CascadeStop { .. } => "cascade-stop",
+        Commands::Retract { .. } => "retract",
         Commands::Hold { .. } => "hold",
         Commands::Unhold { .. } => "unhold",
         Commands::Reopen { .. } => "reopen",
@@ -2696,6 +2719,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
         Commands::Checkpoint { .. } => "checkpoint",
+        Commands::Compact => "compact",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
@@ -2766,6 +2790,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Checkpoint { .. }
+            | Commands::Compact
             | Commands::Artifact { .. }
             | Commands::Context { .. }
             | Commands::Next { .. }

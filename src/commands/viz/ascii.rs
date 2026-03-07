@@ -743,11 +743,66 @@ pub(crate) fn generate_ascii(
         ));
     }
 
+    // Detect dangling dependencies: tasks whose --after targets don't exist in the graph
+    let mut dangling_targets: HashSet<String> = HashSet::new();
+    let mut dangling_edges: HashSet<(String, String)> = HashSet::new();
+    for task in tasks {
+        for after in &task.after {
+            if !task_ids.contains(after.as_str()) && graph.get_node(after).is_none() {
+                dangling_targets.insert(after.clone());
+                dangling_edges.insert((after.clone(), task.id.clone()));
+            }
+        }
+    }
+
+    // Render phantom nodes for dangling dependencies and create arcs to dependents
+    let mut phantom_node_lines: HashMap<String, usize> = HashMap::new();
+    if !dangling_targets.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        let red = if use_color { "\x1b[31m" } else { "" };
+        let mut phantom_arcs: Vec<BackEdgeArc> = Vec::new();
+        for target in &dangling_targets {
+            let phantom_label = format!("{}⚠ {} (missing){}", red, target, reset);
+            lines.push(phantom_label);
+            let phantom_line = lines.len() - 1;
+            phantom_node_lines.insert(target.clone(), phantom_line);
+
+            // Add arcs from phantom node to each dependent task
+            for task in tasks {
+                if task.after.contains(target) {
+                    if let Some(&dep_line) = node_line_map.get(task.id.as_str()) {
+                        phantom_arcs.push(BackEdgeArc {
+                            blocker_line: phantom_line,
+                            dependent_line: dep_line,
+                            from_id: target.clone(),
+                            to_id: task.id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Draw arcs for phantom edges with red coloring
+        if !phantom_arcs.is_empty() {
+            draw_back_edge_arcs(
+                &mut lines,
+                &phantom_arcs,
+                use_color,
+                if use_color { "\x1b[31m" } else { "" },
+                &mut char_edge_map,
+            );
+        }
+    }
+
     // Build owned node_line_map and task_order (sorted by line number)
-    let owned_node_line_map: HashMap<String, usize> = node_line_map
+    let mut owned_node_line_map: HashMap<String, usize> = node_line_map
         .iter()
         .map(|(&id, &line)| (id.to_string(), line))
         .collect();
+    // Merge phantom node lines into the owned map
+    owned_node_line_map.extend(phantom_node_lines);
     let mut task_order: Vec<(String, usize)> = owned_node_line_map
         .iter()
         .map(|(id, &line)| (id.clone(), line))
@@ -789,7 +844,7 @@ pub(crate) fn generate_ascii(
         forward_edges,
         reverse_edges,
         char_edge_map,
-        dangling_edges: HashSet::new(),
+        dangling_edges,
         cycle_members: cycle_members_map,
         phase_annotations: HashMap::new(),
     }
@@ -4367,5 +4422,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Dangling dependency (phantom node) tests ──
+
+    #[test]
+    fn test_dangling_dep_phantom_node_rendered() {
+        // Task "a" depends on "nonexistent" which is not in the graph
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["nonexistent".to_string()];
+        graph.add_node(Node::Task(a));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+
+        // Phantom node should appear
+        assert!(
+            plain.contains("⚠ nonexistent (missing)"),
+            "Phantom node should be rendered. Got:\n{}",
+            plain
+        );
+
+        // Dangling edges should be populated
+        assert!(
+            viz.dangling_edges.contains(&("nonexistent".to_string(), "a".to_string())),
+            "dangling_edges should contain (nonexistent, a). Got: {:?}",
+            viz.dangling_edges
+        );
+
+        // Phantom node should be in node_line_map
+        assert!(
+            viz.node_line_map.contains_key("nonexistent"),
+            "Phantom node should be in node_line_map"
+        );
+    }
+
+    #[test]
+    fn test_no_phantom_when_dep_exists() {
+        // Normal graph — no phantom nodes
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+
+        assert!(
+            !plain.contains("(missing)"),
+            "No phantom nodes for valid deps. Got:\n{}",
+            plain
+        );
+        assert!(
+            viz.dangling_edges.is_empty(),
+            "dangling_edges should be empty for valid graph"
+        );
+    }
+
+    #[test]
+    fn test_multiple_dangling_deps() {
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["ghost1".to_string(), "ghost2".to_string()];
+        graph.add_node(Node::Task(a));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+
+        assert!(plain.contains("⚠ ghost1 (missing)"), "ghost1 phantom missing");
+        assert!(plain.contains("⚠ ghost2 (missing)"), "ghost2 phantom missing");
+        assert_eq!(viz.dangling_edges.len(), 2, "Should have 2 dangling edges");
+    }
+
+    #[test]
+    fn test_dangling_dep_edge_in_char_edge_map() {
+        // Verify that the dangling edge arcs are recorded in char_edge_map
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["phantom".to_string()];
+        graph.add_node(Node::Task(a));
+
+        let viz = render_graph(&graph);
+
+        // There should be at least one entry in char_edge_map with the dangling edge
+        let has_dangling_edge_chars = viz
+            .char_edge_map
+            .values()
+            .any(|edges| edges.iter().any(|(src, tgt)| src == "phantom" && tgt == "a"));
+        assert!(
+            has_dangling_edge_chars,
+            "char_edge_map should contain phantom→a edge characters. Map: {:?}",
+            viz.char_edge_map
+        );
     }
 }

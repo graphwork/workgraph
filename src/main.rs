@@ -488,6 +488,12 @@ fn main() -> Result<()> {
         Commands::CascadeStop { id, hold, dry_run } => {
             commands::cascade_stop::run(&workgraph_dir, &id, hold, dry_run)
         }
+        Commands::Retract {
+            id,
+            abandon,
+            dry_run,
+            no_kill,
+        } => commands::retract::run(&workgraph_dir, &id, abandon, dry_run, no_kill),
         Commands::Hold { id, dry_run } => commands::hold::hold(&workgraph_dir, &id, dry_run),
         Commands::Unhold { id, dry_run } => commands::hold::unhold(&workgraph_dir, &id, dry_run),
         Commands::Claim { id, actor } => {
@@ -1287,6 +1293,7 @@ fn main() -> Result<()> {
                 )
             }
         }
+        Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
                 if remove {

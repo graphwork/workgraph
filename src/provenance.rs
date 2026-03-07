@@ -175,6 +175,61 @@ pub fn read_all_operations(workgraph_dir: &Path) -> Result<Vec<OperationEntry>> 
     Ok(entries)
 }
 
+/// Find all task IDs that were created by any of the given agent IDs,
+/// by scanning the provenance log for `add_task` operations with a matching
+/// `agent_id` in the detail field.
+pub fn find_tasks_created_by_agents(
+    workgraph_dir: &Path,
+    agent_ids: &std::collections::HashSet<String>,
+) -> Result<Vec<String>> {
+    let entries = read_all_operations(workgraph_dir)?;
+    let mut created = Vec::new();
+    for entry in &entries {
+        if entry.op == "add_task" {
+            if let Some(aid) = entry.detail.get("agent_id").and_then(|v| v.as_str()) {
+                if agent_ids.contains(aid) {
+                    if let Some(ref tid) = entry.task_id {
+                        created.push(tid.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(created)
+}
+
+/// Find all agent IDs that claimed a given set of task IDs,
+/// by scanning the provenance log for `claim` operations.
+pub fn find_agents_for_tasks(
+    workgraph_dir: &Path,
+    task_ids: &std::collections::HashSet<String>,
+) -> Result<std::collections::HashSet<String>> {
+    let entries = read_all_operations(workgraph_dir)?;
+    let mut agent_ids = std::collections::HashSet::new();
+    for entry in &entries {
+        if entry.op == "claim" {
+            if let Some(ref tid) = entry.task_id {
+                if task_ids.contains(tid.as_str()) {
+                    if let Some(ref actor) = entry.actor {
+                        agent_ids.insert(actor.clone());
+                    }
+                }
+            }
+        }
+        // Also check add_task with agent_id (agent that created a task also "worked" on it)
+        if entry.op == "add_task" {
+            if let Some(ref tid) = entry.task_id {
+                if task_ids.contains(tid.as_str()) {
+                    if let Some(aid) = entry.detail.get("agent_id").and_then(|v| v.as_str()) {
+                        agent_ids.insert(aid.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(agent_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
