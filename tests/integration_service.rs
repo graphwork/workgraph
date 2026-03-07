@@ -89,7 +89,7 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     // can't handle.  Without this, a global ~/.workgraph/config.toml with
     // auto_assign = true would cause every test task to be blocked behind an
     // unexecutable assign-* task.
-    let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\n";
+    let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\nauto_assign_grace_seconds = 0\n";
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 
     let executors_dir = wg_dir.join("executors");
@@ -122,24 +122,22 @@ fn socket_path_for(tmp_root: &Path) -> String {
 
 /// Helper: add a task with a shell exec command.
 fn add_shell_task(wg_dir: &Path, task_id: &str, title: &str, exec_cmd: &str) {
-    // wg add doesn't support --exec directly, so we add the task then patch the JSONL
+    // wg add doesn't support --exec directly, so we add the task then patch via
+    // mutate_graph to avoid TOCTOU races with the coordinator's flock-protected
+    // graph mutations.
     wg_ok(wg_dir, &["add", title, "--id", task_id, "--immediate"]);
 
-    // Patch the graph to add exec field
+    // Patch the graph to add exec field using mutate_graph (flock-protected)
     let graph_path = wg_dir.join("graph.jsonl");
-    let content = fs::read_to_string(&graph_path).unwrap();
-    let mut new_lines = Vec::new();
-    for line in content.lines() {
-        if line.contains(&format!("\"id\":\"{}\"", task_id)) {
-            // Parse, add exec, re-serialize
-            let mut val: serde_json::Value = serde_json::from_str(line).unwrap();
-            val["exec"] = serde_json::Value::String(exec_cmd.to_string());
-            new_lines.push(serde_json::to_string(&val).unwrap());
-        } else {
-            new_lines.push(line.to_string());
+    let exec = exec_cmd.to_string();
+    let tid = task_id.to_string();
+    workgraph::parser::mutate_graph(&graph_path, |graph| -> Result<(), workgraph::parser::ParseError> {
+        if let Some(task) = graph.get_task_mut(&tid) {
+            task.exec = Some(exec.clone());
         }
-    }
-    fs::write(&graph_path, new_lines.join("\n") + "\n").unwrap();
+        Ok(())
+    })
+    .unwrap();
 }
 
 /// Helper: read task status from graph using `wg show --json`.
@@ -486,6 +484,7 @@ executor = "shell"
 [agency]
 auto_assign = false
 auto_evaluate = false
+auto_assign_grace_seconds = 0
 "#;
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 

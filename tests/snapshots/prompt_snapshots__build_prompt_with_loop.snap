@@ -1,5 +1,6 @@
 ---
 source: tests/prompt_snapshots.rs
+assertion_line: 364
 expression: output
 ---
 # Task Assignment
@@ -173,6 +174,27 @@ Add POST /auth/token endpoint.
 - You can create up to **10** subtasks per session (configurable via `wg config`)
 - Task chains have a maximum depth of **8** levels
 - Always include an integrator at join points — don't leave parallel work unmerged
+
+### Self-Decomposition (blocking yourself on subtasks)
+
+If your task is too large, you can atomically decompose it into subtasks that block your own task:
+
+```bash
+# Create subtasks and block yourself on them (atomic operation)
+wg decompose test-task-123 \
+  --subtask "Part 1: migrate file_a.rs" \
+  --subtask "Part 2: migrate file_b.rs"
+
+# Log what you did and exit
+wg log test-task-123 "Decomposed into subtasks, exiting for finalization pass"
+```
+
+After `wg decompose`, your task becomes blocked. **Exit immediately** — the coordinator will dispatch agents for each subtask. When all subtasks complete, your task becomes ready again and a new agent will do the finalization pass (integrating results, running final tests).
+
+**Signs you should self-decompose:**
+- Task involves 3+ independent files or modules
+- You're worried about context window limits
+- The work has clearly separable phases with no file overlap
 
 ### When NOT to decompose
 - The task is small and well-scoped (just do it)
