@@ -336,6 +336,24 @@ pub struct EndpointsConfig {
     pub endpoints: Vec<EndpointConfig>,
 }
 
+impl EndpointsConfig {
+    /// Find the best endpoint for a given provider name.
+    pub fn find_for_provider(&self, provider: &str) -> Option<&EndpointConfig> {
+        let mut first_match: Option<&EndpointConfig> = None;
+        for ep in &self.endpoints {
+            if ep.provider == provider {
+                if ep.is_default {
+                    return Some(ep);
+                }
+                if first_match.is_none() {
+                    first_match = Some(ep);
+                }
+            }
+        }
+        first_match
+    }
+}
+
 /// Checkpoint configuration for agent context preservation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointConfig {
@@ -403,6 +421,8 @@ pub enum DispatchRole {
     Triage,
     /// Agent creator
     Creator,
+    /// Compactor: distills graph state into context.md
+    Compactor,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -418,6 +438,7 @@ impl std::fmt::Display for DispatchRole {
             Self::Verification => write!(f, "verification"),
             Self::Triage => write!(f, "triage"),
             Self::Creator => write!(f, "creator"),
+            Self::Compactor => write!(f, "compactor"),
         }
     }
 }
@@ -437,9 +458,10 @@ impl std::str::FromStr for DispatchRole {
             "verification" => Ok(Self::Verification),
             "triage" => Ok(Self::Triage),
             "creator" => Ok(Self::Creator),
+            "compactor" => Ok(Self::Compactor),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
-                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator",
+                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator, compactor",
                 s
             )),
         }
@@ -458,6 +480,7 @@ impl DispatchRole {
         Self::Verification,
         Self::Triage,
         Self::Creator,
+        Self::Compactor,
     ];
 }
 
@@ -507,6 +530,9 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compactor: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -523,6 +549,7 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => self.verification.as_ref(),
             DispatchRole::Triage => self.triage.as_ref(),
             DispatchRole::Creator => self.creator.as_ref(),
+            DispatchRole::Compactor => self.compactor.as_ref(),
         }
     }
 
@@ -539,6 +566,7 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => &mut self.verification,
             DispatchRole::Triage => &mut self.triage,
             DispatchRole::Creator => &mut self.creator,
+            DispatchRole::Compactor => &mut self.compactor,
         }
     }
 
@@ -631,6 +659,7 @@ impl Config {
         // even without explicit config, while keeping defaults in one place.
         let tier_default = match role {
             DispatchRole::Triage => Some("haiku"),
+            DispatchRole::Compactor => Some("haiku"),
             DispatchRole::FlipComparison => Some("haiku"),
             DispatchRole::FlipInference => Some("sonnet"),
             DispatchRole::Verification => Some("opus"),
@@ -1060,6 +1089,14 @@ pub struct CoordinatorConfig {
     /// Default: true.
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
+
+    /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
+    #[serde(default = "default_compactor_interval")]
+    pub compactor_interval: u32,
+
+    /// Provenance ops growth threshold that triggers compaction (default: 100)
+    #[serde(default = "default_compactor_ops_threshold")]
+    pub compactor_ops_threshold: usize,
 }
 
 fn default_max_agents() -> usize {
@@ -1082,6 +1119,14 @@ fn default_poll_interval() -> u64 {
     60
 }
 
+fn default_compactor_interval() -> u32 {
+    5
+}
+
+fn default_compactor_ops_threshold() -> usize {
+    100
+}
+
 fn default_agent_timeout() -> String {
     "30m".to_string()
 }
@@ -1098,6 +1143,8 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
+            compactor_interval: default_compactor_interval(),
+            compactor_ops_threshold: default_compactor_ops_threshold(),
         }
     }
 }

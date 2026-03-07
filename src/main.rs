@@ -1795,6 +1795,7 @@ fn main() -> Result<()> {
             exec_mode,
             task_id,
             model,
+            provider,
             max_turns,
         } => commands::native_exec::run(
             &workgraph_dir,
@@ -1802,6 +1803,7 @@ fn main() -> Result<()> {
             &exec_mode,
             &task_id,
             model.as_deref(),
+            provider.as_deref(),
             max_turns,
         ),
     }

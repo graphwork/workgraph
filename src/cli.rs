@@ -1359,6 +1359,10 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// LLM provider (e.g., anthropic, openai)
+        #[arg(long)]
+        provider: Option<String>,
+
         /// Maximum agent turns before stopping
         #[arg(long, default_value = "100")]
         max_turns: usize,
