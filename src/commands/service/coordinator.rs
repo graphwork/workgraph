@@ -1312,6 +1312,14 @@ fn build_auto_evaluate_tasks(
             task_id, task_id, task_id, task_id,
         ));
 
+        // Use opus-tier SystemEvaluator for system/meta-tasks (dot-prefixed)
+        let eval_role = if workgraph::graph::is_system_task(task_id) {
+            workgraph::config::DispatchRole::SystemEvaluator
+        } else {
+            workgraph::config::DispatchRole::Evaluator
+        };
+        let eval_resolved = config.resolve_model_for_role(eval_role);
+
         let eval_task = Task {
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),
@@ -1336,14 +1344,8 @@ fn build_auto_evaluate_tasks(
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
-            model: Some(
-                config
-                    .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
-                    .model,
-            ),
-            provider: config
-                .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
-                .provider,
+            model: Some(eval_resolved.model),
+            provider: eval_resolved.provider,
             verify_cmd: None,
             verify_prompt: None,
             agent: config.agency.evaluator_agent.clone(),

@@ -72,6 +72,7 @@ pub mod reclaim;
 pub mod reopen;
 pub mod replay;
 pub mod reschedule;
+pub mod reset;
 pub mod resource;
 pub mod resources;
 pub mod resume;

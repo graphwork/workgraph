@@ -479,6 +479,12 @@ fn main() -> Result<()> {
             commands::abandon::run(&workgraph_dir, &id, reason.as_deref())
         }
         Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),
+        Commands::Reset {
+            id,
+            downstream,
+            retract,
+            dry_run,
+        } => commands::reset::run(&workgraph_dir, &id, downstream, retract, dry_run),
         Commands::Claim { id, actor } => {
             commands::claim::claim(&workgraph_dir, &id, actor.as_deref())
         }

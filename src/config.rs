@@ -389,6 +389,8 @@ pub enum DispatchRole {
     TaskAgent,
     /// Evaluation agents (post-task scoring)
     Evaluator,
+    /// Evaluation agents for system/meta-tasks (dot-prefixed) — opus-tier default
+    SystemEvaluator,
     /// FLIP inference phase (reconstructing prompt from output)
     FlipInference,
     /// FLIP comparison phase (scoring similarity)
@@ -411,6 +413,7 @@ impl std::fmt::Display for DispatchRole {
             Self::Default => write!(f, "default"),
             Self::TaskAgent => write!(f, "task_agent"),
             Self::Evaluator => write!(f, "evaluator"),
+            Self::SystemEvaluator => write!(f, "system_evaluator"),
             Self::FlipInference => write!(f, "flip_inference"),
             Self::FlipComparison => write!(f, "flip_comparison"),
             Self::Assigner => write!(f, "assigner"),
@@ -430,6 +433,7 @@ impl std::str::FromStr for DispatchRole {
             "default" => Ok(Self::Default),
             "task_agent" => Ok(Self::TaskAgent),
             "evaluator" => Ok(Self::Evaluator),
+            "system_evaluator" => Ok(Self::SystemEvaluator),
             "flip_inference" => Ok(Self::FlipInference),
             "flip_comparison" => Ok(Self::FlipComparison),
             "assigner" => Ok(Self::Assigner),
@@ -438,7 +442,7 @@ impl std::str::FromStr for DispatchRole {
             "triage" => Ok(Self::Triage),
             "creator" => Ok(Self::Creator),
             _ => Err(anyhow::anyhow!(
-                "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
+                "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, system_evaluator, \
                  flip_inference, flip_comparison, assigner, evolver, verification, triage, creator",
                 s
             )),
@@ -451,6 +455,7 @@ impl DispatchRole {
     pub const ALL: &'static [DispatchRole] = &[
         Self::TaskAgent,
         Self::Evaluator,
+        Self::SystemEvaluator,
         Self::FlipInference,
         Self::FlipComparison,
         Self::Assigner,
@@ -488,6 +493,9 @@ pub struct ModelRoutingConfig {
     pub evaluator: Option<RoleModelConfig>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_evaluator: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flip_inference: Option<RoleModelConfig>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -516,6 +524,7 @@ impl ModelRoutingConfig {
             DispatchRole::Default => self.default.as_ref(),
             DispatchRole::TaskAgent => self.task_agent.as_ref(),
             DispatchRole::Evaluator => self.evaluator.as_ref(),
+            DispatchRole::SystemEvaluator => self.system_evaluator.as_ref(),
             DispatchRole::FlipInference => self.flip_inference.as_ref(),
             DispatchRole::FlipComparison => self.flip_comparison.as_ref(),
             DispatchRole::Assigner => self.assigner.as_ref(),
@@ -532,6 +541,7 @@ impl ModelRoutingConfig {
             DispatchRole::Default => &mut self.default,
             DispatchRole::TaskAgent => &mut self.task_agent,
             DispatchRole::Evaluator => &mut self.evaluator,
+            DispatchRole::SystemEvaluator => &mut self.system_evaluator,
             DispatchRole::FlipInference => &mut self.flip_inference,
             DispatchRole::FlipComparison => &mut self.flip_comparison,
             DispatchRole::Assigner => &mut self.assigner,
@@ -634,6 +644,7 @@ impl Config {
             DispatchRole::FlipComparison => Some("haiku"),
             DispatchRole::FlipInference => Some("sonnet"),
             DispatchRole::Verification => Some("opus"),
+            DispatchRole::SystemEvaluator => Some("opus"),
             _ => None,
         };
         if let Some(default_model) = tier_default {
@@ -2000,6 +2011,14 @@ model = "haiku"
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, config.agent.model);
     }
+
+    #[test]
+    fn test_resolve_system_evaluator_defaults_to_opus() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::SystemEvaluator);
+        assert_eq!(resolved.model, "opus");
+    }
+
 
     #[test]
     fn test_deprecation_no_warnings_on_default() {

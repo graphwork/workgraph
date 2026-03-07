@@ -344,6 +344,26 @@ pub enum Commands {
         id: String,
     },
 
+    /// Reset a task to clean open state (any status)
+    #[command(hide = true)]
+    Reset {
+        /// Task ID to reset
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Also reset all transitive dependents
+        #[arg(long)]
+        downstream: bool,
+
+        /// Abandon tasks created by agents working on this task
+        #[arg(long)]
+        retract: bool,
+
+        /// Show what would be reset without modifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Claim a task for work (sets status to InProgress)
     Claim {
         /// Task ID to claim
@@ -2572,6 +2592,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Fail { .. } => "fail",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Reset { .. } => "reset",
         Commands::Reopen { .. } => "reopen",
         Commands::Claim { .. } => "claim",
         Commands::Unclaim { .. } => "unclaim",
