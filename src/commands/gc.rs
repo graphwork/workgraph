@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
 use workgraph::graph::Status;
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::load_graph;
 
 use super::graph_path;
 
@@ -231,12 +231,13 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
         })
         .collect();
 
-    let mut modified_graph = graph;
-    for id in &gc_list {
-        modified_graph.remove_node(id);
-    }
-
-    save_graph(&modified_graph, &path).context("Failed to save graph")?;
+    drop(graph);
+    workgraph::parser::mutate_graph(&path, |graph| -> Result<()> {
+        for id in &gc_list {
+            graph.remove_node(id);
+        }
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -264,6 +265,7 @@ mod tests {
     use chrono::Duration;
     use tempfile::tempdir;
     use workgraph::graph::{LogEntry, Node, WorkGraph};
+    use workgraph::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> workgraph::graph::Task {
         workgraph::graph::Task {

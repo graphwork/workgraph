@@ -261,12 +261,12 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
 
 /// Triage verdict returned by the LLM
 #[derive(Debug, serde::Deserialize)]
-struct TriageVerdict {
+pub(crate) struct TriageVerdict {
     /// One of "done", "continue", "restart"
-    verdict: String,
+    pub(crate) verdict: String,
     /// Brief explanation of the verdict
     #[serde(default)]
-    reason: String,
+    pub(crate) reason: String,
     /// Summary of work accomplished (used for "continue" context)
     #[serde(default)]
     summary: String,

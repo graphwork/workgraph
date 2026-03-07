@@ -578,7 +578,7 @@ fn add_task_directly(
 
 /// Count how many tasks the given agent has created, by scanning the provenance log
 /// for `add_task` operations with a matching `agent_id` in the detail.
-fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
+pub(crate) fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
     let entries = match workgraph::provenance::read_all_operations(dir) {
         Ok(entries) => entries,
         Err(_) => return 0,
@@ -592,7 +592,7 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
         .count() as u32
 }
 
-fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
+pub(crate) fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
     // Generate a slug from the title: take up to 3 non-numeric words,
     // plus any trailing numeric tokens (so "task 1" -> "task-1", not "task").
     let normalized: String = title

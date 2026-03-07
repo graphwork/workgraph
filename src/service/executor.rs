@@ -212,6 +212,30 @@ Add POST /auth/token endpoint.
 - Task chains have a maximum depth of **{{max_task_depth}}** levels
 - Always include an integrator at join points — don't leave parallel work unmerged
 
+### Self-Decomposition (blocking yourself on subtasks)
+
+If your task is too large, you can atomically decompose it into subtasks that block your own task:
+
+```bash
+# Create subtasks and block yourself on them (atomic operation)
+wg decompose {{task_id}} \\
+  --subtask \"Part 1: migrate file_a.rs\" \\
+  --subtask \"Part 2: migrate file_b.rs\"
+
+# Log what you did and exit
+wg log {{task_id}} \"Decomposed into subtasks, exiting for finalization pass\"
+```
+
+After `wg decompose`, your task becomes blocked. **Exit immediately** — the coordinator \
+will dispatch agents for each subtask. When all subtasks complete, your task becomes \
+ready again and a new agent will do the finalization pass (integrating results, running \
+final tests).
+
+**Signs you should self-decompose:**
+- Task involves 3+ independent files or modules
+- You're worried about context window limits
+- The work has clearly separable phases with no file overlap
+
 ### When NOT to decompose
 - The task is small and well-scoped (just do it)
 - Decomposition overhead exceeds the work itself
@@ -280,6 +304,21 @@ Your task description uses organizational pattern vocabulary. Here is what each 
 
 For detailed pattern descriptions, see docs/research/organizational-patterns.md\n";
 
+/// Finalization pass section: injected when a task has the `decomposed` tag,
+/// meaning it was previously decomposed and subtasks have now completed.
+pub const FINALIZATION_SECTION: &str = "\
+## Finalization Pass
+
+This task was previously decomposed into subtasks. You are now doing the **finalization pass**.
+Your job is NOT to redo the work — it's to:
+1. Review subtask artifacts and logs (included in context below)
+2. Integrate results (resolve conflicts, verify consistency)
+3. Run final validation (cargo build, cargo test)
+4. Mark the task done
+
+The subtasks already completed the heavy lifting. Focus on integration, not reimplementation.
+If any subtask failed, decide whether to retry it (`wg retry <id>`), work around it, or fail the parent.\n";
+
 /// Check whether a task description contains any pattern trigger keywords.
 /// Uses case-insensitive matching.
 pub fn description_has_pattern_keywords(description: &str) -> bool {
@@ -306,6 +345,8 @@ pub struct ScopeContext {
     pub claude_md_content: String,
     /// Queued messages for this task (task+ scope)
     pub queued_messages: String,
+    /// Whether this task was previously decomposed and is now in a finalization pass
+    pub is_finalization: bool,
 }
 
 /// Build a scope-aware prompt for built-in executors.
@@ -344,6 +385,11 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
         vars.task_id, vars.task_title, vars.task_description
     ));
+
+    // All scopes: finalization pass detection (task was previously decomposed)
+    if ctx.is_finalization {
+        parts.push(FINALIZATION_SECTION.to_string());
+    }
 
     // All scopes: pattern keywords glossary (conditional on description content)
     if description_has_pattern_keywords(&vars.task_description) {
@@ -1860,6 +1906,7 @@ args = ["--custom-flag"]
             full_graph_summary: "## Full Graph Summary\n\n- task-a [done]".to_string(),
             claude_md_content: "Always use bun.".to_string(),
             queued_messages: String::new(),
+            is_finalization: false,
         };
         let prompt = build_prompt(&vars, ContextScope::Full, &ctx);
 

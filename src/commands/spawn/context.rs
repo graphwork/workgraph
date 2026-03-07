@@ -110,6 +110,9 @@ pub(crate) fn build_scope_context(
         }
     }
 
+    // Finalization detection: task has `decomposed` tag → it's a finalization pass
+    ctx.is_finalization = task.tags.contains(&"decomposed".to_string());
+
     // Graph+ scope: project description
     if scope >= ContextScope::Graph
         && let Some(ref desc) = config.project.description

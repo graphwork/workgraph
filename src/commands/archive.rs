@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::load_graph;
 
 use super::graph_path;
 
@@ -214,16 +214,18 @@ pub fn restore(dir: &Path, task_id: &str, reopen: bool) -> Result<()> {
         restored_task.assigned = None;
     }
 
-    // Add back to graph
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-    if graph.get_task(&restored_task.id).is_some() {
-        anyhow::bail!(
-            "Task '{}' already exists in the active graph",
-            restored_task.id
-        );
-    }
-    graph.add_node(Node::Task(restored_task.clone()));
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    // Add back to graph atomically
+    let restored_clone = restored_task.clone();
+    workgraph::parser::mutate_graph(&path, |graph| -> Result<()> {
+        if graph.get_task(&restored_clone.id).is_some() {
+            anyhow::bail!(
+                "Task '{}' already exists in the active graph",
+                restored_clone.id
+            );
+        }
+        graph.add_node(Node::Task(restored_clone));
+        Ok(())
+    })?;
 
     // Remove from archive
     remove_from_archive(&arch_path, task_id)?;
@@ -308,14 +310,15 @@ pub fn run(dir: &Path, dry_run: bool, older: Option<&str>, list: bool, json: boo
     // 1. Append tasks to archive file
     append_to_archive(&tasks_to_archive, &arch_path)?;
 
-    // 2. Remove archived tasks from the main graph
-    let mut modified_graph = graph;
-    for task in &tasks_to_archive {
-        modified_graph.remove_node(&task.id);
-    }
-
-    // 3. Save the modified graph
-    save_graph(&modified_graph, &path).context("Failed to save graph")?;
+    // 2. Remove archived tasks from the main graph atomically
+    let archive_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    drop(graph);
+    workgraph::parser::mutate_graph(&path, |graph| -> Result<()> {
+        for id in &archive_ids {
+            graph.remove_node(id);
+        }
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -344,6 +347,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use workgraph::graph::WorkGraph;
+    use workgraph::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status, completed_at: Option<&str>) -> Task {
         Task {

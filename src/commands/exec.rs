@@ -3,7 +3,6 @@ use chrono::Utc;
 use std::path::Path;
 use std::process::Command;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
 
 #[cfg(test)]
 use super::graph_path;
@@ -15,17 +14,15 @@ use super::graph_path;
 /// - Runs the task's exec command
 /// - Marks done on success (exit 0), fail on error
 pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
+    // Read-only check: verify task exists, has exec command, and isn't done
+    let (graph, _path) = super::load_workgraph(dir)?;
     let task = graph.get_task_or_err(task_id)?;
 
-    // Check task has an exec command
     let exec_cmd = task
         .exec
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Task '{}' has no exec command defined", task_id))?;
 
-    // Check task status
     if task.status == Status::Done {
         anyhow::bail!("Task '{}' is already done", task_id);
     }
@@ -37,23 +34,28 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         return Ok(());
     }
 
-    // Claim the task if not already in progress
-    // Re-acquire mutable reference after immutable borrow above
-    let task = graph.get_task_mut_or_err(task_id)?;
     let was_open = task.status == Status::Open;
+    drop(graph);
 
+    // Claim the task atomically if it was open
     if was_open {
-        task.status = Status::InProgress;
-        task.started_at = Some(Utc::now().to_rfc3339());
-        if let Some(actor_id) = actor {
-            task.assigned = Some(actor_id.to_string());
-        }
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: actor.map(String::from),
-            message: format!("Started execution: {}", exec_cmd),
-        });
-        save_graph(&graph, &path).context("Failed to save graph")?;
+        let actor_owned = actor.map(String::from);
+        let exec_cmd_clone = exec_cmd.clone();
+        let task_id_owned = task_id.to_string();
+        super::mutate_workgraph(dir, |graph| {
+            let task = graph.get_task_mut_or_err(&task_id_owned)?;
+            task.status = Status::InProgress;
+            task.started_at = Some(Utc::now().to_rfc3339());
+            if let Some(ref actor_id) = actor_owned {
+                task.assigned = Some(actor_id.clone());
+            }
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: actor_owned,
+                message: format!("Started execution: {}", exec_cmd_clone),
+            });
+            Ok(())
+        })?;
         super::notify_graph_changed(dir);
         println!("Claimed task '{}' for execution", task_id);
     }
@@ -70,7 +72,6 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Print output
     if !stdout.is_empty() {
         println!("{}", stdout);
     }
@@ -78,32 +79,37 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         eprintln!("{}", stderr);
     }
 
-    // Reload graph and update status (task may have been modified by exec command)
-    let mut graph = load_graph(&path).context("Failed to reload graph")?;
-    let task = graph.get_task_mut_or_err(task_id)?;
-
+    // Atomically update status (task may have been modified by exec command)
+    let task_id_owned = task_id.to_string();
+    let actor_owned = actor.map(String::from);
     if success {
-        task.status = Status::Done;
-        task.completed_at = Some(Utc::now().to_rfc3339());
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: actor.map(String::from),
-            message: "Execution completed successfully".to_string(),
-        });
-        save_graph(&graph, &path).context("Failed to save graph")?;
+        super::mutate_workgraph(dir, |graph| {
+            let task = graph.get_task_mut_or_err(&task_id_owned)?;
+            task.status = Status::Done;
+            task.completed_at = Some(Utc::now().to_rfc3339());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: actor_owned,
+                message: "Execution completed successfully".to_string(),
+            });
+            Ok(())
+        })?;
         super::notify_graph_changed(dir);
         println!("Task '{}' completed successfully", task_id);
     } else {
         let exit_code = output.status.code().unwrap_or(-1);
-        task.status = Status::Failed;
-        task.retry_count += 1;
-        task.failure_reason = Some(format!("Command exited with code {}", exit_code));
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: actor.map(String::from),
-            message: format!("Execution failed with exit code {}", exit_code),
-        });
-        save_graph(&graph, &path).context("Failed to save graph")?;
+        super::mutate_workgraph(dir, |graph| {
+            let task = graph.get_task_mut_or_err(&task_id_owned)?;
+            task.status = Status::Failed;
+            task.retry_count += 1;
+            task.failure_reason = Some(format!("Command exited with code {}", exit_code));
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: actor_owned,
+                message: format!("Execution failed with exit code {}", exit_code),
+            });
+            Ok(())
+        })?;
         super::notify_graph_changed(dir);
         anyhow::bail!("Task '{}' failed with exit code {}", task_id, exit_code);
     }
@@ -113,13 +119,13 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
 
 /// Set the exec command for a task
 pub fn set_exec(dir: &Path, task_id: &str, command: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.exec = Some(command.to_string());
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let task_id = task_id.to_string();
+    let command = command.to_string();
+    super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(&task_id)?;
+        task.exec = Some(command.clone());
+        Ok(())
+    })?;
     super::notify_graph_changed(dir);
 
     println!("Set exec command for '{}': {}", task_id, command);
@@ -128,21 +134,22 @@ pub fn set_exec(dir: &Path, task_id: &str, command: &str) -> Result<()> {
 
 /// Clear the exec command for a task
 pub fn clear_exec(dir: &Path, task_id: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
+    let task_id = task_id.to_string();
+    let cleared = super::mutate_workgraph(dir, |graph| {
+        let task = graph.get_task_mut_or_err(&task_id)?;
+        if task.exec.is_none() {
+            return Ok(false);
+        }
+        task.exec = None;
+        Ok(true)
+    })?;
 
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    if task.exec.is_none() {
+    if cleared {
+        super::notify_graph_changed(dir);
+        println!("Cleared exec command for '{}'", task_id);
+    } else {
         println!("Task '{}' has no exec command to clear", task_id);
-        return Ok(());
     }
-
-    task.exec = None;
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
-    super::notify_graph_changed(dir);
-
-    println!("Cleared exec command for '{}'", task_id);
     Ok(())
 }
 
@@ -151,7 +158,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use workgraph::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
