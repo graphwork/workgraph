@@ -484,6 +484,17 @@ fn build_inner_command(
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
 ) -> Result<String> {
+    // Always write prompt.txt when a prompt template exists, regardless of executor type.
+    // This is useful for debugging and allows any executor to read it.
+    let prompt_file = output_dir.join("prompt.txt");
+    let has_prompt = if let Some(ref pt) = settings.prompt_template {
+        fs::write(&prompt_file, &pt.template)
+            .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+        true
+    } else {
+        false
+    };
+
     let inner_command = match settings.executor_type.as_str() {
         "claude" if resume_session_id.is_some() && exec_mode != "bare" => {
             // Resume mode: use --resume <session_id> with checkpoint as follow-up message
@@ -516,14 +527,12 @@ fn build_inner_command(
             // Bare mode: lightweight execution with --system-prompt and no tools.
             // Used for pure-reasoning tasks (synthesis, triage, summarization).
             // The prompt is passed via --system-prompt and stdin provides the task input.
-            let prompt_file = output_dir.join("prompt.txt");
+            // prompt.txt already written at the top of this function.
             let prompt_content = settings
                 .prompt_template
                 .as_ref()
                 .map(|pt| pt.template.clone())
                 .unwrap_or_default();
-            fs::write(&prompt_file, &prompt_content)
-                .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
 
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             cmd_parts.push("--print".to_string());
@@ -579,11 +588,8 @@ fn build_inner_command(
             }
             let claude_cmd = cmd_parts.join(" ");
 
-            if let Some(ref prompt_template) = settings.prompt_template {
-                // Write prompt to file for safe passing
-                let prompt_file = output_dir.join("prompt.txt");
-                fs::write(&prompt_file, &prompt_template.template)
-                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+            if has_prompt {
+                // prompt.txt already written at the top of this function
                 prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
             } else {
                 claude_cmd
@@ -608,11 +614,8 @@ fn build_inner_command(
             }
             let claude_cmd = cmd_parts.join(" ");
 
-            if let Some(ref prompt_template) = settings.prompt_template {
-                // Write prompt to file for safe passing
-                let prompt_file = output_dir.join("prompt.txt");
-                fs::write(&prompt_file, &prompt_template.template)
-                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+            if has_prompt {
+                // prompt.txt already written at the top of this function
                 prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
             } else {
                 claude_cmd
@@ -641,10 +644,8 @@ fn build_inner_command(
             }
             let amplifier_cmd = cmd_parts.join(" ");
 
-            if let Some(ref prompt_template) = settings.prompt_template {
-                let prompt_file = output_dir.join("prompt.txt");
-                fs::write(&prompt_file, &prompt_template.template)
-                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+            if has_prompt {
+                // prompt.txt already written at the top of this function
                 prompt_file_command(&prompt_file.to_string_lossy(), &amplifier_cmd)
             } else {
                 amplifier_cmd
@@ -654,15 +655,7 @@ fn build_inner_command(
             // Native executor: runs the agent loop in-process via `wg native-exec`.
             // Prompt is written to a file and passed as an argument. The bundle is
             // resolved from exec_mode by the native-exec subcommand.
-            let prompt_content = settings
-                .prompt_template
-                .as_ref()
-                .map(|pt| pt.template.clone())
-                .unwrap_or_default();
-            let prompt_file = output_dir.join("prompt.txt");
-            fs::write(&prompt_file, &prompt_content)
-                .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
-
+            // prompt.txt already written at the top of this function.
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             cmd_parts.push("native-exec".to_string());
             cmd_parts.push("--prompt-file".to_string());
@@ -691,7 +684,16 @@ fn build_inner_command(
             for arg in &settings.args {
                 parts.push(shell_escape(arg));
             }
-            parts.join(" ")
+            let cmd = parts.join(" ");
+
+            // Use prompt_mode to decide prompt delivery for custom executors.
+            // This decouples stdin piping from executor type.
+            let prompt_mode = settings.prompt_mode.as_deref().unwrap_or("none");
+            if has_prompt && prompt_mode == "stdin" {
+                prompt_file_command(&prompt_file.to_string_lossy(), &cmd)
+            } else {
+                cmd
+            }
         }
     };
     Ok(inner_command)

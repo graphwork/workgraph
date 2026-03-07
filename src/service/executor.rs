@@ -739,6 +739,13 @@ pub struct ExecutorSettings {
     /// Hierarchy: task.model > executor.model > coordinator.model > 'default'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+
+    /// How the prompt is delivered to the executor process.
+    /// - "stdin": pipe prompt.txt via stdin (default for claude/amplifier)
+    /// - "file": write prompt.txt, executor reads it (default for native)
+    /// - "none": no prompt delivery (default for shell/custom)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_mode: Option<String>,
 }
 
 /// Prompt template for injecting task context.
@@ -858,6 +865,7 @@ impl ExecutorRegistry {
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: None,
                     model: None,
+                    prompt_mode: Some("stdin".to_string()),
                 },
             }),
             "shell" => Ok(ExecutorConfig {
@@ -875,6 +883,7 @@ impl ExecutorRegistry {
                     working_dir: None,
                     timeout: None,
                     model: None,
+                    prompt_mode: Some("none".to_string()),
                 },
             }),
             "amplifier" => Ok(ExecutorConfig {
@@ -898,6 +907,7 @@ impl ExecutorRegistry {
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: Some(600),
                     model: None,
+                    prompt_mode: Some("stdin".to_string()),
                 },
             }),
             "native" => Ok(ExecutorConfig {
@@ -915,6 +925,7 @@ impl ExecutorRegistry {
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: None,
                     model: None,
+                    prompt_mode: Some("file".to_string()),
                 },
             }),
             "default" => Ok(ExecutorConfig {
@@ -927,6 +938,7 @@ impl ExecutorRegistry {
                     working_dir: None,
                     timeout: None,
                     model: None,
+                    prompt_mode: Some("none".to_string()),
                 },
             }),
             _ => Err(anyhow!(
@@ -1084,6 +1096,7 @@ template = "Work on {{task_id}}"
                 working_dir: Some("/work/{{task_id}}".to_string()),
                 timeout: None,
                 model: None,
+                prompt_mode: None,
             },
         };
 
@@ -1548,6 +1561,7 @@ args = ["--custom-flag"]
                 working_dir: None,
                 timeout: None,
                 model: None,
+                prompt_mode: None,
             },
         };
 
@@ -1571,6 +1585,7 @@ args = ["--custom-flag"]
                 working_dir: None,
                 timeout: None,
                 model: None,
+                prompt_mode: None,
             },
         };
 
@@ -1600,6 +1615,7 @@ args = ["--custom-flag"]
                 working_dir: None,
                 timeout: None,
                 model: None,
+                prompt_mode: None,
             },
         };
 
