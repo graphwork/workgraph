@@ -2334,6 +2334,20 @@ pub enum ServiceCommands {
     /// Show service status
     Status,
 
+    /// Restart the service daemon (atomic stop + start)
+    ///
+    /// Stops the current daemon, waits for clean shutdown, then starts a new
+    /// daemon preserving the current config (max_agents, executor, model).
+    Restart {
+        /// Force stop (SIGKILL the daemon immediately)
+        #[arg(long)]
+        force: bool,
+
+        /// Also kill running agents during stop
+        #[arg(long)]
+        kill_agents: bool,
+    },
+
     /// Reload daemon configuration without restarting
     ///
     /// With flags: applies the specified overrides to the running daemon.

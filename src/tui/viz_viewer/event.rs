@@ -1021,10 +1021,14 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             right_panel_scroll_to_bottom(app);
         }
 
-        // Enter: in chat tab, enter chat input mode; in messages tab, enter message input mode;
-        // in config tab, start editing the selected setting.
+        // Enter: in detail tab, navigate to related task; in chat tab, enter chat input mode;
+        // in messages tab, enter message input mode; in config tab, start editing the setting.
         KeyCode::Enter => {
-            if app.right_panel_tab == RightPanelTab::Chat {
+            if app.right_panel_tab == RightPanelTab::Detail {
+                if let Some(task_id) = app.related_task_at_scroll() {
+                    app.navigate_to_related_task(&task_id);
+                }
+            } else if app.right_panel_tab == RightPanelTab::Chat {
                 app.chat_input_dismissed = false;
                 app.input_mode = InputMode::ChatInput;
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
@@ -1084,13 +1088,6 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.load_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
-        }
-
-        // Detail tab: 'R' toggles raw JSON display
-        KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
-            app.detail_raw_json = !app.detail_raw_json;
-            app.hud_detail = None; // force reload with new format
-            app.load_hud_detail();
         }
 
         // Detail tab: Space toggles section collapse at current scroll position

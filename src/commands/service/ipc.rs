@@ -49,6 +49,12 @@ pub enum IpcRequest {
         /// Whether to also kill running agents (default: false, agents continue independently)
         #[serde(default)]
         kill_agents: bool,
+        /// Agent ID that triggered the shutdown (from WG_AGENT_ID env var)
+        #[serde(default)]
+        triggered_by_agent: Option<String>,
+        /// Task ID that triggered the shutdown (from WG_TASK_ID env var)
+        #[serde(default)]
+        triggered_by_task: Option<String>,
     },
     /// Notify that the graph has changed; triggers an immediate coordinator tick
     GraphChanged,
@@ -262,10 +268,21 @@ fn handle_request(
         }
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),
         IpcRequest::Status => handle_status(dir),
-        IpcRequest::Shutdown { force, kill_agents } => {
+        IpcRequest::Shutdown {
+            force,
+            kill_agents,
+            triggered_by_agent,
+            triggered_by_task,
+        } => {
+            let caller = match (&triggered_by_agent, &triggered_by_task) {
+                (Some(agent), Some(task)) => format!(", triggered_by={} (task: {})", agent, task),
+                (Some(agent), None) => format!(", triggered_by={}", agent),
+                (None, Some(task)) => format!(", triggered_by_task={}", task),
+                (None, None) => String::new(),
+            };
             logger.info(&format!(
-                "IPC Shutdown: force={}, kill_agents={}",
-                force, kill_agents
+                "IPC Shutdown: force={}, kill_agents={}{}",
+                force, kill_agents, caller
             ));
             *running = false;
             handle_shutdown(dir, kill_agents, logger)

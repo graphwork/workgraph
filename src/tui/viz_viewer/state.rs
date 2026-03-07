@@ -1229,6 +1229,22 @@ pub fn extract_section_name(line: &str) -> Option<String> {
     }
 }
 
+/// Parse a related task ID from a detail line.
+/// Related task lines have the format: `  ⊳ .assign-foo  [done]  agent-1234`
+/// Returns the task ID (e.g., ".assign-foo") if the line matches.
+pub fn parse_related_task_id(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    for prefix in &["⊳ ", "∴ ", "✓ ", "↩ ", "· ", "← ", "→ "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let task_id = rest.split("  [").next()?.trim();
+            if !task_id.is_empty() {
+                return Some(task_id.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Task status counts for the status bar.
 #[derive(Default)]
 pub struct TaskCounts {
@@ -1638,7 +1654,7 @@ impl VizApp {
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
-            detail_collapsed_sections: ["Output", "Output (raw)", "Prompt"]
+            detail_collapsed_sections: ["Description", "Output (raw)", "Prompt"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -2982,6 +2998,210 @@ impl VizApp {
         }
     }
 
+    /// Build the "Related Tasks" section lines for a given task.
+    /// Shows dot-tasks (system tasks) first, then upstream/downstream deps.
+    fn build_related_tasks_lines(
+        graph: &workgraph::WorkGraph,
+        task_id: &str,
+        workgraph_dir: &std::path::Path,
+    ) -> Vec<String> {
+        let status_label = |s: &Status| -> &'static str {
+            match s {
+                Status::Open => "open",
+                Status::InProgress => "in-progress",
+                Status::Waiting => "waiting",
+                Status::Done => "done",
+                Status::Blocked => "blocked",
+                Status::Failed => "failed",
+                Status::Abandoned => "abandoned",
+            }
+        };
+
+        let known_prefixes = [
+            (format!(".assign-{}", task_id), "⊳"),
+            (format!(".evaluate-{}", task_id), "∴"),
+            (format!(".verify-flip-{}", task_id), "✓"),
+            (format!(".respond-to-{}", task_id), "↩"),
+        ];
+        let legacy_prefixes = [
+            (format!("assign-{}", task_id), "⊳"),
+            (format!("evaluate-{}", task_id), "∴"),
+            (format!("verify-flip-{}", task_id), "✓"),
+            (format!("respond-to-{}", task_id), "↩"),
+        ];
+
+        // Collect dot-tasks (system tasks)
+        let mut dot_tasks: Vec<(String, String, &workgraph::graph::Task)> = Vec::new();
+
+        for (sys_id, icon) in &known_prefixes {
+            if let Some(t) = graph.get_task(sys_id) {
+                dot_tasks.push((sys_id.clone(), icon.to_string(), t));
+            }
+        }
+        for (sys_id, icon) in &legacy_prefixes {
+            if let Some(t) = graph.get_task(sys_id) {
+                if !dot_tasks.iter().any(|(id, _, _)| id == sys_id) {
+                    dot_tasks.push((sys_id.clone(), icon.to_string(), t));
+                }
+            }
+        }
+
+        // Other dot-tasks referencing this task
+        for t in graph.tasks() {
+            if !t.id.starts_with('.') {
+                continue;
+            }
+            if dot_tasks.iter().any(|(id, _, _)| *id == t.id) {
+                continue;
+            }
+            let refs_task = t.after.iter().any(|d| d == task_id)
+                || t.before.iter().any(|d| d == task_id);
+            if refs_task {
+                dot_tasks.push((t.id.clone(), "·".to_string(), t));
+            }
+        }
+
+        // Collect upstream (after) and downstream (before) deps
+        let task = match graph.get_task(task_id) {
+            Some(t) => t,
+            None => {
+                if dot_tasks.is_empty() {
+                    return Vec::new();
+                }
+                // Fall through with no deps
+                let mut lines = Vec::new();
+                lines.push("── Related Tasks ──".to_string());
+                let evals_dir = workgraph_dir.join("agency").join("evaluations");
+                for (id, icon, t) in &dot_tasks {
+                    let mut detail =
+                        format!("  {} {}  [{}]", icon, id, status_label(&t.status));
+                    if id.contains("evaluate-") {
+                        if let Some(score) = Self::read_eval_score(&evals_dir, task_id) {
+                            detail.push_str(&format!("  score: {:.2}", score));
+                        }
+                    }
+                    if let Some(ref agent) = t.assigned {
+                        detail.push_str(&format!("  {}", agent));
+                    }
+                    lines.push(detail);
+                }
+                lines.push(String::new());
+                return lines;
+            }
+        };
+
+        // Upstream deps (tasks this task depends on)
+        let mut upstream: Vec<(&str, &workgraph::graph::Task)> = Vec::new();
+        for dep_id in &task.after {
+            // Skip dot-tasks already shown above
+            if dot_tasks.iter().any(|(id, _, _)| id == dep_id) {
+                continue;
+            }
+            if let Some(dep_task) = graph.get_task(dep_id) {
+                upstream.push((dep_id, dep_task));
+            }
+        }
+
+        // Downstream deps (tasks that depend on this task, via before edges)
+        let mut downstream: Vec<(&str, &workgraph::graph::Task)> = Vec::new();
+        for dep_id in &task.before {
+            if dot_tasks.iter().any(|(id, _, _)| id == dep_id) {
+                continue;
+            }
+            if let Some(dep_task) = graph.get_task(dep_id) {
+                downstream.push((dep_id, dep_task));
+            }
+        }
+        // Also find tasks whose `after` includes this task (reverse lookup)
+        for t in graph.tasks() {
+            if t.id == task_id {
+                continue;
+            }
+            if t.id.starts_with('.') {
+                continue; // dot-tasks handled above
+            }
+            if downstream.iter().any(|(id, _)| *id == t.id) {
+                continue;
+            }
+            if t.after.iter().any(|d| d == task_id) {
+                downstream.push((&t.id, t));
+            }
+        }
+
+        let has_content =
+            !dot_tasks.is_empty() || !upstream.is_empty() || !downstream.is_empty();
+        if !has_content {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push("── Related Tasks ──".to_string());
+
+        let evals_dir = workgraph_dir.join("agency").join("evaluations");
+
+        // Dot-tasks first (system tasks)
+        for (id, icon, t) in &dot_tasks {
+            let mut detail = format!("  {} {}  [{}]", icon, id, status_label(&t.status));
+            if id.contains("evaluate-") {
+                if let Some(score) = Self::read_eval_score(&evals_dir, task_id) {
+                    detail.push_str(&format!("  score: {:.2}", score));
+                }
+            }
+            if let Some(ref agent) = t.assigned {
+                detail.push_str(&format!("  {}", agent));
+            }
+            lines.push(detail);
+        }
+
+        // Upstream deps
+        if !upstream.is_empty() {
+            for (id, t) in &upstream {
+                let detail = format!("  ← {}  [{}]", id, status_label(&t.status));
+                lines.push(detail);
+            }
+        }
+
+        // Downstream deps
+        if !downstream.is_empty() {
+            for (id, t) in &downstream {
+                let detail = format!("  → {}  [{}]", id, status_label(&t.status));
+                lines.push(detail);
+            }
+        }
+
+        lines.push(String::new());
+        lines
+    }
+
+    fn read_eval_score(evals_dir: &std::path::Path, task_id: &str) -> Option<f64> {
+        if !evals_dir.exists() {
+            return None;
+        }
+        let prefix = format!("eval-{}-", task_id);
+        let entries = std::fs::read_dir(evals_dir).ok()?;
+        let mut eval_files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .collect();
+        eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+        let entry = eval_files.first()?;
+        let content = std::fs::read_to_string(entry.path()).ok()?;
+        let eval: serde_json::Value = serde_json::from_str(&content).ok()?;
+        eval.get("score").and_then(|v| v.as_f64())
+    }
+
+    /// Extract the related task ID from the line at the current scroll position.
+    pub fn related_task_at_scroll(&self) -> Option<String> {
+        let detail = self.hud_detail.as_ref()?;
+        let line = detail.rendered_lines.get(self.hud_scroll)?;
+        parse_related_task_id(line)
+    }
+
+    /// Navigate to a related task's detail view.
+    pub fn navigate_to_related_task(&mut self, task_id: &str) {
+        self.load_hud_detail_for_task(task_id);
+    }
+
     /// Load HUD detail for the currently selected task.
     /// Called when selection changes or trace is toggled on.
     pub fn load_hud_detail(&mut self) {
@@ -3037,6 +3257,11 @@ impl VizApp {
         }
         lines.push(String::new());
 
+        // ── Related Tasks ──
+        let related_lines =
+            Self::build_related_tasks_lines(&graph, &task_id, &self.workgraph_dir);
+        lines.extend(related_lines);
+
         // ── Description ──
         if let Some(ref desc) = task.description {
             lines.push("── Description ──".to_string());
@@ -3081,10 +3306,10 @@ impl VizApp {
                 .join("raw_stream.jsonl")
         });
 
-        if is_live && !self.detail_raw_json {
+        if is_live {
             if let Some(ref rsp) = raw_stream_path {
                 if rsp.exists() {
-                    lines.push("── Output (live) ── [R: raw JSON]".to_string());
+                    lines.push("── Output (live) ──".to_string());
                     let output_insert_idx = lines.len();
                     let (chat_lines, new_offset) =
                         extract_chat_lines_from_raw_stream(rsp, 0);
@@ -3097,6 +3322,7 @@ impl VizApp {
                     self.live_stream_output_insert_idx = output_insert_idx;
                     self.live_stream_auto_scroll = true;
                 }
+                lines.push(String::new());
             }
         } else {
             // Reset live stream state when not live-streaming.
@@ -3115,30 +3341,13 @@ impl VizApp {
                 .filter(|p| p.exists())
                 .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
             if let Some(output_path) = output_path {
-                if self.detail_raw_json {
-                    lines.push("── Output (raw) ── [R: human-readable]".to_string());
-                } else {
-                    lines.push("── Output ── [R: raw JSON]".to_string());
-                }
+                lines.push("── Output ──".to_string());
                 if let Ok(content) = std::fs::read_to_string(&output_path) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                            && let Ok(val) =
-                                serde_json::from_str::<serde_json::Value>(trimmed)
-                        {
-                            if self.detail_raw_json {
-                                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                                    for pline in pretty.lines() {
-                                        lines.push(format!("  {}", pline));
-                                    }
-                                } else {
-                                    lines.push(format!("  {}", line));
-                                }
-                            } else {
-                                flatten_json_to_lines(&val, "  ", &mut lines);
-                            }
-                        } else {
+                    let blocks = extract_chat_transcript(&content);
+                    if !blocks.is_empty() {
+                        render_chat_blocks(&blocks, &mut lines);
+                    } else {
+                        for line in content.lines() {
                             lines.push(format!("  {}", line));
                         }
                     }
@@ -3472,6 +3681,11 @@ impl VizApp {
         }
         lines.push(String::new());
 
+        // ── Related Tasks ──
+        let related_lines =
+            Self::build_related_tasks_lines(&graph, target_task_id, &self.workgraph_dir);
+        lines.extend(related_lines);
+
         // ── Description ──
         if let Some(ref desc) = task.description {
             lines.push("── Description ──".to_string());
@@ -3494,8 +3708,17 @@ impl VizApp {
             .filter(|p| p.exists())
             .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
         if let Some(output_path) = output_path {
-            lines.push("── Output ──".to_string());
             if let Ok(content) = std::fs::read_to_string(&output_path) {
+                // ── Output ── (readable chat transcript)
+                let blocks = extract_chat_transcript(&content);
+                if !blocks.is_empty() {
+                    lines.push("── Output ──".to_string());
+                    render_chat_blocks(&blocks, &mut lines);
+                    lines.push(String::new());
+                }
+
+                // ── Output (raw) ── (pretty-printed JSON)
+                lines.push("── Output (raw) ──".to_string());
                 for line in content.lines() {
                     let trimmed = line.trim();
                     if (trimmed.starts_with('{') || trimmed.starts_with('['))
@@ -3512,8 +3735,8 @@ impl VizApp {
                         lines.push(format!("  {}", line));
                     }
                 }
+                lines.push(String::new());
             }
-            lines.push(String::new());
         }
 
         // ── Token usage ──
@@ -6606,10 +6829,203 @@ fn find_latest_archive(
     None
 }
 
-/// Format an ISO 8601 timestamp for HUD display (shorter, local time).
-/// Flatten a JSON value into human-readable key/value lines.
-/// Strings are displayed directly, objects show "Key: Value", arrays are listed.
-/// Nested objects recurse with increased indent.
+/// Represents a block in the extracted chat transcript from stream-json output.
+enum ChatBlock {
+    /// Model-generated text content.
+    Text(String),
+    /// A tool invocation: name + condensed input summary.
+    ToolUse { name: String, input_summary: String },
+    /// Final result message from the CLI.
+    Result(String),
+}
+
+/// Parse Claude CLI stream-json output and extract a clean chat transcript.
+///
+/// Deduplicates partial assistant messages (keeps the last/longest per message ID)
+/// and extracts text blocks, tool-use summaries, and the final result.
+fn extract_chat_transcript(content: &str) -> Vec<ChatBlock> {
+    use std::collections::HashMap;
+
+    // First pass: collect all assistant messages, keeping only the last per ID
+    // (Claude CLI emits partial messages that grow over time).
+    let mut assistant_msgs: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut assistant_order: Vec<String> = Vec::new();
+    let mut result_block: Option<serde_json::Value> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !(trimmed.starts_with('{')) {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match msg_type {
+            "assistant" => {
+                if let Some(id) = val
+                    .get("message")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let id = id.to_string();
+                    if !assistant_msgs.contains_key(&id) {
+                        assistant_order.push(id.clone());
+                    }
+                    assistant_msgs.insert(id, val);
+                }
+            }
+            "result" => {
+                result_block = Some(val);
+            }
+            _ => {} // skip system, user, rate_limit_event, etc.
+        }
+    }
+
+    let mut blocks: Vec<ChatBlock> = Vec::new();
+
+    // Second pass: extract content from deduplicated assistant messages in order.
+    for id in &assistant_order {
+        let val = match assistant_msgs.get(id) {
+            Some(v) => v,
+            None => continue,
+        };
+        let content_arr = match val
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for item in content_arr {
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match item_type {
+                "text" => {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        if !text.is_empty() {
+                            blocks.push(ChatBlock::Text(text.to_string()));
+                        }
+                    }
+                }
+                "tool_use" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let input_summary = if let Some(input) = item.get("input") {
+                        summarize_tool_input(input)
+                    } else {
+                        String::new()
+                    };
+                    blocks.push(ChatBlock::ToolUse {
+                        name,
+                        input_summary,
+                    });
+                }
+                // Skip "thinking" blocks — internal model reasoning
+                _ => {}
+            }
+        }
+    }
+
+    // Append the final result if present.
+    if let Some(ref result) = result_block {
+        if let Some(text) = result.get("result").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                // Only add if it's different from the last text block
+                let dominated = blocks.iter().rev().any(|b| {
+                    if let ChatBlock::Text(t) = b {
+                        t.contains(text) || text.len() < 20
+                    } else {
+                        false
+                    }
+                });
+                if !dominated {
+                    blocks.push(ChatBlock::Result(text.to_string()));
+                }
+            }
+        }
+    }
+
+    blocks
+}
+
+/// Produce a condensed summary of a tool's input object (for display in tool-use lines).
+fn summarize_tool_input(input: &serde_json::Value) -> String {
+    match input {
+        serde_json::Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .filter_map(|(k, v)| {
+                    let val_str = match v {
+                        serde_json::Value::String(s) => {
+                            if s.len() > 80 {
+                                format!("{}…", &s[..80])
+                            } else {
+                                s.clone()
+                            }
+                        }
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => return None, // skip complex nested values
+                    };
+                    Some(format!("{}={}", k, val_str))
+                })
+                .collect();
+            parts.join(", ")
+        }
+        _ => format!("{}", input),
+    }
+}
+
+/// Render extracted chat blocks into display lines for the Detail panel.
+fn render_chat_blocks(blocks: &[ChatBlock], lines: &mut Vec<String>) {
+    for block in blocks {
+        match block {
+            ChatBlock::Text(text) => {
+                for line in text.lines() {
+                    lines.push(format!("  {}", line));
+                }
+                lines.push(String::new());
+            }
+            ChatBlock::ToolUse {
+                name,
+                input_summary,
+            } => {
+                if input_summary.is_empty() {
+                    lines.push(format!("  ⚙ {}", name));
+                } else {
+                    // Truncate total line to ~120 chars
+                    let prefix = format!("  ⚙ {}(", name);
+                    let max_input = 120usize.saturating_sub(prefix.len() + 1);
+                    if input_summary.len() > max_input {
+                        lines.push(format!("{}{}…)", prefix, &input_summary[..max_input]));
+                    } else {
+                        lines.push(format!("{}{})", prefix, input_summary));
+                    }
+                }
+            }
+            ChatBlock::Result(text) => {
+                lines.push("  ── Result ──".to_string());
+                // Show first ~5 lines of result
+                for (i, line) in text.lines().enumerate() {
+                    if i >= 5 {
+                        lines.push("  …".to_string());
+                        break;
+                    }
+                    lines.push(format!("  {}", line));
+                }
+                lines.push(String::new());
+            }
+        }
+    }
+}
+
+
 fn flatten_json_to_lines(val: &serde_json::Value, indent: &str, lines: &mut Vec<String>) {
     match val {
         serde_json::Value::Object(map) => {
