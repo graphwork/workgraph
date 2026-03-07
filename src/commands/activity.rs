@@ -12,16 +12,16 @@ use workgraph::stream_event;
 use super::is_process_alive;
 
 /// Info gathered for a single active agent.
-struct AgentActivity {
-    agent_id: String,
-    task_id: String,
-    uptime: String,
-    tokens_display: String,
-    latest_activity: String,
+pub struct AgentActivity {
+    pub agent_id: String,
+    pub task_id: String,
+    pub uptime: String,
+    pub tokens_display: String,
+    pub latest_activity: String,
 }
 
-/// Run the activity command.
-pub fn run(dir: &Path, json: bool) -> Result<()> {
+/// Gather activity data for all active agents (reusable by TUI).
+pub fn gather_activities(dir: &Path) -> Result<Vec<AgentActivity>> {
     let registry = AgentRegistry::load(dir)?;
     let agents = registry.list_agents();
 
@@ -55,6 +55,13 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             latest_activity,
         });
     }
+
+    Ok(activities)
+}
+
+/// Run the activity command.
+pub fn run(dir: &Path, json: bool) -> Result<()> {
+    let activities = gather_activities(dir)?;
 
     if json {
         output_json(&activities)

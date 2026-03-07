@@ -878,7 +878,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Digit keys 0-7: switch right panel tab
-        KeyCode::Char(d @ '0'..='7') => {
+        KeyCode::Char(d @ '0'..='8') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_visible = true;
@@ -917,7 +917,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
                 }
-                KeyCode::Char(d @ '0'..='7') => {
+                KeyCode::Char(d @ '0'..='8') => {
                     let idx = (d as u8 - b'0') as usize;
                     if let Some(tab) = RightPanelTab::from_index(idx) {
                         app.right_panel_tab = tab;
@@ -966,7 +966,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Number keys 0-6 switch tabs
-        KeyCode::Char(d @ '0'..='7') => {
+        KeyCode::Char(d @ '0'..='8') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_tab = tab;
@@ -1038,6 +1038,8 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.input_mode = InputMode::MessageInput;
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
+            } else if app.right_panel_tab == RightPanelTab::Activity {
+                app.navigate_activity_to_task();
             }
         }
 
@@ -1131,6 +1133,17 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_up(amount);
         }
+        RightPanelTab::Activity => {
+            app.activity_dashboard.selected =
+                app.activity_dashboard.selected.saturating_sub(amount);
+            // Auto-scroll to keep selected visible
+            let lines_per_entry = 3;
+            let header_lines = 2;
+            let selected_start = header_lines + app.activity_dashboard.selected * lines_per_entry;
+            if selected_start < app.activity_dashboard.scroll {
+                app.activity_dashboard.scroll = selected_start;
+            }
+        }
     }
 }
 
@@ -1169,6 +1182,20 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_down(amount);
         }
+        RightPanelTab::Activity => {
+            let max = app.activity_dashboard.entries.len().saturating_sub(1);
+            app.activity_dashboard.selected =
+                (app.activity_dashboard.selected + amount).min(max);
+            // Auto-scroll to keep selected visible
+            let lines_per_entry = 3;
+            let header_lines = 2;
+            let selected_end =
+                header_lines + (app.activity_dashboard.selected + 1) * lines_per_entry;
+            let vp = app.activity_dashboard.viewport_height;
+            if selected_end > app.activity_dashboard.scroll + vp {
+                app.activity_dashboard.scroll = selected_end.saturating_sub(vp);
+            }
+        }
     }
 }
 
@@ -1201,6 +1228,10 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_to_top();
         }
+        RightPanelTab::Activity => {
+            app.activity_dashboard.selected = 0;
+            app.activity_dashboard.scroll = 0;
+        }
     }
 }
 
@@ -1232,6 +1263,11 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         RightPanelTab::Files => {}
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_to_bottom();
+        }
+        RightPanelTab::Activity => {
+            app.activity_dashboard.selected =
+                app.activity_dashboard.entries.len().saturating_sub(1);
+            app.activity_dashboard.scroll = usize::MAX;
         }
     }
 }

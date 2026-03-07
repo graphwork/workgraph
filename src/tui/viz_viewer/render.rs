@@ -79,6 +79,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     if app.right_panel_tab == RightPanelTab::CoordLog && app.coord_log.rendered_lines.is_empty() {
         app.load_coord_log();
     }
+    // Lazy-load activity dashboard on first switch to Activity tab.
+    if app.right_panel_tab == RightPanelTab::Activity && app.activity_dashboard.entries.is_empty() {
+        app.load_activity_dashboard();
+    }
     // Lazy-init file browser on first switch to Files tab.
     if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
         app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
@@ -1119,6 +1123,9 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
         RightPanelTab::CoordLog => {
             draw_coord_log_tab(frame, app, content_area);
+        }
+        RightPanelTab::Activity => {
+            draw_activity_tab(frame, app, content_area);
         }
     }
 }
@@ -2161,6 +2168,121 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 /// Draw the Coordinator Log tab (panel 7) — daemon activity log.
+fn draw_activity_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let entries = &app.activity_dashboard.entries;
+
+    if entries.is_empty() {
+        let msg = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "── Agent Activity ──",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "No active agents.",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Start the coordinator with: wg service start",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let selected = app.activity_dashboard.selected;
+    let scroll = app.activity_dashboard.scroll;
+
+    // Each entry: 3 lines (header + detail + blank), plus 1 header line + 1 blank
+    let header_lines = 2; // title + blank
+    let lines_per_entry = 3;
+    let total_lines = header_lines + entries.len() * lines_per_entry;
+
+    app.activity_dashboard.total_rendered_lines = total_lines;
+    app.activity_dashboard.viewport_height = area.height as usize;
+
+    let mut lines: Vec<Line> = Vec::with_capacity(total_lines);
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("── Agent Activity ({}) ──", entries.len()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  ↑↓ navigate  Enter select",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    for (i, entry) in entries.iter().enumerate() {
+        let is_selected = i == selected;
+
+        // Row 1: status indicator + agent ID + task ID
+        let indicator = if is_selected {
+            Span::styled("▸ ", Style::default().fg(Color::Yellow))
+        } else {
+            Span::styled("● ", Style::default().fg(Color::Green))
+        };
+
+        let agent_style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+
+        let mut header_spans = vec![
+            indicator,
+            Span::styled(&entry.agent_id, agent_style),
+            Span::styled(
+                format!(" [{}]", entry.task_id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+
+        // Uptime and tokens inline
+        header_spans.push(Span::styled(
+            format!("  {} {}", entry.uptime, entry.tokens_display),
+            Style::default().fg(Color::Cyan),
+        ));
+
+        lines.push(Line::from(header_spans));
+
+        // Row 2: latest activity summary (indented)
+        let activity_text = if entry.latest_activity == "-" {
+            "(no activity yet)".to_string()
+        } else {
+            entry.latest_activity.clone()
+        };
+        let activity_style = if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("    {}", activity_text),
+            activity_style,
+        )));
+
+        // Blank separator between entries
+        lines.push(Line::from(""));
+    }
+
+    // Apply scroll
+    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).collect();
+
+    let content = Paragraph::new(visible_lines);
+    frame.render_widget(content, area);
+}
+
 fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if app.coord_log.rendered_lines.is_empty() {
         let msg = Paragraph::new(vec![
@@ -3908,6 +4030,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     RightPanelTab::Config => "5:Config",
                     RightPanelTab::Files => "6:Files",
                     RightPanelTab::CoordLog => "7:Coord",
+                    RightPanelTab::Activity => "8:Live",
                 };
                 let mut hints: Vec<(&str, &str)> = Vec::new();
                 match tab {
@@ -3938,6 +4061,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("↑↓", "select"));
                         hints.push(("Enter", "open"));
                         hints.push(("Esc", "back"));
+                    }
+                    RightPanelTab::Activity => {
+                        hints.push(("↑↓", "select"));
+                        hints.push(("Enter", "view task"));
                     }
                 }
                 // Common hints for all right-panel tabs.

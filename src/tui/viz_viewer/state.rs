@@ -329,6 +329,7 @@ pub enum RightPanelTab {
     Config,   // 5
     Files,    // 6
     CoordLog, // 7
+    Activity, // 8
 }
 
 impl RightPanelTab {
@@ -342,6 +343,7 @@ impl RightPanelTab {
             Self::Config => "Config",
             Self::Files => "Files",
             Self::CoordLog => "Coord",
+            Self::Activity => "Live",
         }
     }
 
@@ -355,6 +357,7 @@ impl RightPanelTab {
             Self::Config => 5,
             Self::Files => 6,
             Self::CoordLog => 7,
+            Self::Activity => 8,
         }
     }
 
@@ -368,19 +371,20 @@ impl RightPanelTab {
             5 => Some(Self::Config),
             6 => Some(Self::Files),
             7 => Some(Self::CoordLog),
+            8 => Some(Self::Activity),
             _ => None,
         }
     }
 
     pub fn next(&self) -> Self {
-        Self::from_index((self.index() + 1) % 8).unwrap()
+        Self::from_index((self.index() + 1) % 9).unwrap()
     }
 
     pub fn prev(&self) -> Self {
-        Self::from_index((self.index() + 7) % 8).unwrap()
+        Self::from_index((self.index() + 8) % 9).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 8] = [
+    pub const ALL: [RightPanelTab; 9] = [
         Self::Chat,
         Self::Detail,
         Self::Log,
@@ -389,6 +393,7 @@ impl RightPanelTab {
         Self::Config,
         Self::Files,
         Self::CoordLog,
+        Self::Activity,
     ];
 }
 
@@ -896,6 +901,32 @@ pub struct AgentStreamInfo {
     pub latest_snippet: Option<String>,
     /// Whether the latest event was a tool use (vs text).
     pub latest_is_tool: bool,
+}
+
+/// State for the Activity dashboard tab — live overview of all active agents.
+pub struct ActivityDashboardState {
+    /// Cached activity entries from `gather_activities`.
+    pub entries: Vec<crate::commands::activity::AgentActivity>,
+    /// Currently selected row index (for keyboard navigation).
+    pub selected: usize,
+    /// Scroll offset (for when there are many agents).
+    pub scroll: usize,
+    /// Total rendered lines (set by renderer each frame).
+    pub total_rendered_lines: usize,
+    /// Viewport height (set by renderer each frame).
+    pub viewport_height: usize,
+}
+
+impl Default for ActivityDashboardState {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            total_rendered_lines: 0,
+            viewport_height: 0,
+        }
+    }
 }
 
 /// A single phase in the agency lifecycle (assignment, execution, or evaluation).
@@ -1460,6 +1491,9 @@ pub struct VizApp {
     /// Per-agent JSONL stream state for live activity feed.
     pub agent_streams: HashMap<String, AgentStreamInfo>,
 
+    // ── Activity dashboard (all-agent live overview) ──
+    pub activity_dashboard: ActivityDashboardState,
+
     // ── Agency lifecycle for selected task ──
     pub agency_lifecycle: Option<AgencyLifecycle>,
 
@@ -1684,6 +1718,7 @@ impl VizApp {
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            activity_dashboard: ActivityDashboardState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
@@ -2816,6 +2851,10 @@ impl VizApp {
                 self.invalidate_agency_lifecycle();
                 self.load_agency_lifecycle();
             }
+            // Reload activity dashboard if Activity tab is active.
+            if self.right_panel_tab == RightPanelTab::Activity {
+                self.load_activity_dashboard();
+            }
             // Refresh file browser tree if Files tab is active.
             if self.right_panel_tab == RightPanelTab::Files
                 && let Some(ref mut fb) = self.file_browser
@@ -3200,6 +3239,23 @@ impl VizApp {
     /// Navigate to a related task's detail view.
     pub fn navigate_to_related_task(&mut self, task_id: &str) {
         self.load_hud_detail_for_task(task_id);
+    }
+
+    /// Navigate from the Activity dashboard to the selected agent's task.
+    pub fn navigate_activity_to_task(&mut self) {
+        let selected = self.activity_dashboard.selected;
+        if let Some(entry) = self.activity_dashboard.entries.get(selected) {
+            let task_id = entry.task_id.clone();
+            // Select the task in the graph (if visible)
+            if let Some(idx) = self.task_order.iter().position(|id| *id == task_id) {
+                self.selected_task_idx = Some(idx);
+                self.recompute_trace();
+                self.needs_scroll_into_view = true;
+            }
+            // Load detail and switch to Detail tab
+            self.load_hud_detail_for_task(&task_id);
+            self.right_panel_tab = RightPanelTab::Detail;
+        }
     }
 
     /// Load HUD detail for the currently selected task.
@@ -4399,6 +4455,7 @@ impl VizApp {
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            activity_dashboard: ActivityDashboardState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
@@ -4949,6 +5006,25 @@ impl VizApp {
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    /// Load the activity dashboard (all active agents with live summaries).
+    pub fn load_activity_dashboard(&mut self) {
+        match crate::commands::activity::gather_activities(&self.workgraph_dir) {
+            Ok(activities) => {
+                self.activity_dashboard.entries = activities;
+                // Clamp selection to valid range
+                if self.activity_dashboard.entries.is_empty() {
+                    self.activity_dashboard.selected = 0;
+                } else if self.activity_dashboard.selected >= self.activity_dashboard.entries.len() {
+                    self.activity_dashboard.selected =
+                        self.activity_dashboard.entries.len().saturating_sub(1);
+                }
+            }
+            Err(_) => {
+                self.activity_dashboard.entries.clear();
             }
         }
     }
