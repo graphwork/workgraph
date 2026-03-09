@@ -1525,9 +1525,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 let mut clicked_coord: Option<u32> = None;
                 let mut clicked_close = false;
                 for &cid in &coordinator_ids {
-                    let is_active = cid == app.active_coordinator_id;
                     let dot_len = 1; // ◉ or ● (1 column wide)
-                    let close_len: usize = if cid != 0 && is_active { 1 } else { 0 }; // "x"
+                    let close_len: usize = if cid != 0 { 1 } else { 0 }; // "×"
                     let sep_len = 1; // trailing space
                     let entry_len = dot_len + close_len + sep_len;
                     if col >= offset && col < offset + entry_len {

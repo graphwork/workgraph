@@ -1623,20 +1623,16 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 // Inactive: regular dot ●
                 spans.push(Span::styled("●", Style::default().fg(color)));
             }
-            // Show [x] close indicator for active non-zero coordinators
-            if cid != 0 && is_active {
+            // Show close indicator for all non-zero coordinators
+            if cid != 0 {
                 spans.push(Span::styled(
-                    "x",
+                    "×",
                     Style::default().fg(Color::Red),
                 ));
             }
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
-        // Show close hint when a non-zero coordinator is active
-        if app.active_coordinator_id != 0 {
-            spans.push(Span::styled("  [-] close", Style::default().fg(Color::DarkGray)));
-        }
         let tab_line = Line::from(spans);
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }

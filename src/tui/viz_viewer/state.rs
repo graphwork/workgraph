@@ -1462,6 +1462,8 @@ pub enum CommandEffect {
     ChatResponse(String),
     /// A new coordinator was created. Triggers switching to the new coordinator.
     CreateCoordinator,
+    /// A coordinator was deleted. On success, clean up local state and switch to coordinator 0.
+    DeleteCoordinator(u32),
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -4687,6 +4689,31 @@ impl VizApp {
                     }
                     self.force_refresh();
                 }
+                CommandEffect::DeleteCoordinator(cid) => {
+                    if result.success {
+                        // Switch to coordinator 0 if we deleted the active one
+                        if cid == self.active_coordinator_id {
+                            self.switch_coordinator(0);
+                        }
+                        // Remove stored chat state for this coordinator
+                        self.coordinator_chats.remove(&cid);
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Closed coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to delete coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
             }
         }
         // Clear expired notifications (after 3 seconds).
@@ -5909,22 +5936,19 @@ impl VizApp {
         self.exec_command(args, CommandEffect::CreateCoordinator);
     }
 
-    /// Delete a coordinator session. Coordinator 0 cannot be deleted.
-    /// Removes the coordinator's chat state and switches to coordinator 0.
+    /// Delete a coordinator session via IPC. Coordinator 0 cannot be deleted.
+    /// Sends the delete command to the backend; on success the effect handler
+    /// cleans up local chat state, switches to coordinator 0, and refreshes.
     pub fn delete_coordinator(&mut self, cid: u32) {
         if cid == 0 {
             return;
         }
-        // If we're deleting the active coordinator, switch to 0 first
-        if cid == self.active_coordinator_id {
-            self.switch_coordinator(0);
-        }
-        // Remove stored chat state for this coordinator
-        self.coordinator_chats.remove(&cid);
-        self.notification = Some((
-            format!("Closed coordinator {}", cid),
-            std::time::Instant::now(),
-        ));
+        let args = vec![
+            "service".to_string(),
+            "delete-coordinator".to_string(),
+            cid.to_string(),
+        ];
+        self.exec_command(args, CommandEffect::DeleteCoordinator(cid));
     }
 
     /// Get a list of known coordinator IDs from the graph.
