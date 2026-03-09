@@ -12,9 +12,71 @@ use workgraph::graph::{Node, Status, Task, WorkGraph};
 
 /// Tags that mark tasks as part of the evaluation/assignment infrastructure.
 /// Tasks with these tags do not get their own eval tasks (no meta-evaluation).
-const DOMINATED_TAGS: &[&str] = &["evaluation", "assignment", "evolution"];
+const DOMINATED_TAGS: &[&str] = &["evaluation", "assignment", "evolution", "flip"];
+
+/// Returns true if FLIP should run for a given task, based on global config
+/// and the task's `flip-eval` tag.
+fn should_run_flip(graph: &WorkGraph, task_id: &str, config: &Config) -> bool {
+    let source_has_flip_tag = graph
+        .get_task(task_id)
+        .map(|t| t.tags.iter().any(|tag| tag == "flip-eval"))
+        .unwrap_or(false);
+    config.agency.flip_enabled || source_has_flip_tag
+}
+
+/// Create a `.flip-<task_id>` task in `graph`, blocked by `task_id`.
+///
+/// Returns `true` if the graph was modified (i.e. the flip task was created).
+/// Idempotent: returns `false` if the flip task already exists.
+pub fn scaffold_flip_task(
+    graph: &mut WorkGraph,
+    task_id: &str,
+    config: &Config,
+) -> bool {
+    let flip_task_id = format!(".flip-{}", task_id);
+
+    // Idempotency: skip if flip task already exists
+    if graph.get_task(&flip_task_id).is_some() {
+        return false;
+    }
+
+    let flip_resolved =
+        config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
+
+    let flip_task = Task {
+        id: flip_task_id.clone(),
+        title: format!("FLIP: {}", task_id),
+        description: Some(format!(
+            "Run FLIP (Fidelity via Latent Intent Probing) evaluation for task '{}'.",
+            task_id,
+        )),
+        status: Status::Open,
+        after: vec![task_id.to_string()],
+        tags: vec!["flip".to_string(), "agency".to_string()],
+        exec: Some(format!("wg evaluate run {} --flip", task_id)),
+        model: Some(flip_resolved.model),
+        provider: flip_resolved.provider,
+        exec_mode: Some("bare".to_string()),
+        visibility: "internal".to_string(),
+        created_at: Some(Utc::now().to_rfc3339()),
+        ..Task::default()
+    };
+
+    graph.add_node(Node::Task(flip_task));
+
+    eprintln!(
+        "[eval-scaffold] Created FLIP task '{}' blocked by '{}'",
+        flip_task_id, task_id,
+    );
+
+    true
+}
 
 /// Create a `.evaluate-<task_id>` task in `graph`, blocked by `task_id`.
+///
+/// When FLIP is enabled (globally or via `flip-eval` tag on the source task),
+/// also creates `.flip-<task_id>` and makes `.evaluate-<task_id>` depend on
+/// the flip task instead of the source task directly.
 ///
 /// Returns `true` if the graph was modified (i.e. the eval task was created).
 /// Idempotent: returns `false` if the eval task already exists or the source
@@ -48,6 +110,16 @@ pub fn scaffold_eval_task(
         }
     }
 
+    // When FLIP is enabled, scaffold the flip task and make eval depend on it
+    let run_flip = should_run_flip(graph, task_id, config);
+    let eval_after = if run_flip {
+        scaffold_flip_task(graph, task_id, config);
+        let flip_task_id = format!(".flip-{}", task_id);
+        vec![flip_task_id]
+    } else {
+        vec![task_id.to_string()]
+    };
+
     // Resolve evaluator agent identity (if configured)
     let evaluator_identity = resolve_evaluator_identity(dir, config);
 
@@ -71,7 +143,7 @@ pub fn scaffold_eval_task(
         title: format!("Evaluate: {}", task_title),
         description: Some(desc),
         status: Status::Open,
-        after: vec![task_id.to_string()],
+        after: eval_after,
         tags: vec!["evaluation".to_string(), "agency".to_string()],
         exec: Some(format!("wg evaluate run {}", task_id)),
         model: Some(eval_resolved.model),
@@ -283,5 +355,116 @@ mod tests {
         assert!(graph.get_task(".evaluate-a").is_some());
         assert!(graph.get_task(".evaluate-b").is_some());
         assert!(graph.get_task(".evaluate-c").is_none());
+    }
+
+    // --- FLIP scaffolding tests ---
+
+    #[test]
+    fn test_scaffold_flip_creates_flip_task() {
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        let modified = scaffold_flip_task(&mut graph, "my-task", &config);
+        assert!(modified);
+
+        let flip = graph.get_task(".flip-my-task").unwrap();
+        assert_eq!(flip.title, "FLIP: my-task");
+        assert_eq!(flip.after, vec!["my-task".to_string()]);
+        assert!(flip.tags.contains(&"flip".to_string()));
+        assert!(flip.tags.contains(&"agency".to_string()));
+        assert_eq!(
+            flip.exec,
+            Some("wg evaluate run my-task --flip".to_string())
+        );
+        assert_eq!(flip.exec_mode, Some("bare".to_string()));
+        assert_eq!(flip.visibility, "internal");
+    }
+
+    #[test]
+    fn test_scaffold_flip_idempotent() {
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        assert!(scaffold_flip_task(&mut graph, "my-task", &config));
+        // Second call should be a no-op
+        assert!(!scaffold_flip_task(&mut graph, "my-task", &config));
+    }
+
+    #[test]
+    fn test_scaffold_eval_depends_on_flip_when_enabled() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        scaffold_eval_task(dir.path(), &mut graph, "my-task", "My Task", &config);
+
+        // .flip-my-task should exist and depend on my-task
+        let flip = graph.get_task(".flip-my-task").unwrap();
+        assert_eq!(flip.after, vec!["my-task".to_string()]);
+
+        // .evaluate-my-task should depend on .flip-my-task, NOT my-task
+        let eval = graph.get_task(".evaluate-my-task").unwrap();
+        assert_eq!(eval.after, vec![".flip-my-task".to_string()]);
+    }
+
+    #[test]
+    fn test_scaffold_eval_depends_on_source_when_flip_disabled() {
+        let dir = tempdir().unwrap();
+        let config = Config::default(); // flip_enabled = false
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        scaffold_eval_task(dir.path(), &mut graph, "my-task", "My Task", &config);
+
+        // No .flip-my-task should exist
+        assert!(graph.get_task(".flip-my-task").is_none());
+
+        // .evaluate-my-task should depend on my-task directly
+        let eval = graph.get_task(".evaluate-my-task").unwrap();
+        assert_eq!(eval.after, vec!["my-task".to_string()]);
+    }
+
+    #[test]
+    fn test_scaffold_flip_via_task_tag() {
+        let dir = tempdir().unwrap();
+        let config = Config::default(); // flip_enabled = false globally
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("my-task", "My Task");
+        task.tags = vec!["flip-eval".to_string()]; // per-task opt-in
+        graph.add_node(Node::Task(task));
+
+        scaffold_eval_task(dir.path(), &mut graph, "my-task", "My Task", &config);
+
+        // FLIP should have been created via the flip-eval tag
+        let flip = graph.get_task(".flip-my-task").unwrap();
+        assert_eq!(flip.after, vec!["my-task".to_string()]);
+
+        let eval = graph.get_task(".evaluate-my-task").unwrap();
+        assert_eq!(eval.after, vec![".flip-my-task".to_string()]);
+    }
+
+    #[test]
+    fn test_scaffold_skips_flip_tagged_tasks() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("flip-infra", "Flip Infra");
+        task.tags = vec!["flip".to_string()];
+        graph.add_node(Node::Task(task));
+
+        assert!(!scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            "flip-infra",
+            "Flip Infra",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-flip-infra").is_none());
     }
 }
