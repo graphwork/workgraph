@@ -472,8 +472,16 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         for (title, status, desc) in input.downstream_tasks {
             let _ = write!(out, "- **{}** ({})", title, status);
             if let Some(d) = desc {
-                // Truncate long descriptions to save tokens
-                let snippet = if d.len() > 120 { &d[..120] } else { d.as_str() };
+                // Truncate long descriptions to save tokens (char-boundary safe)
+                let snippet = if d.len() > 120 {
+                    let mut end = 120;
+                    while !d.is_char_boundary(end) && end > 0 {
+                        end -= 1;
+                    }
+                    &d[..end]
+                } else {
+                    d.as_str()
+                };
                 let _ = write!(out, " — {}", snippet);
             }
             out.push('\n');
