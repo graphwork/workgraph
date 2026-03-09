@@ -1462,6 +1462,7 @@ fn main() -> Result<()> {
             role_model,
             role_provider,
             retry_context_tokens,
+            check_key,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -1471,6 +1472,11 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --check-key
+            if check_key {
+                return commands::config_cmd::check_key(&workgraph_dir, cli.json);
+            }
 
             // Handle Matrix configuration
             if matrix

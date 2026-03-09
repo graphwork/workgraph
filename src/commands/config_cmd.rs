@@ -907,6 +907,119 @@ pub fn update_model_routing(
     Ok(())
 }
 
+/// Check OpenRouter API key validity and credit status
+pub fn check_key(dir: &Path, json: bool) -> Result<()> {
+    use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
+
+    let key = match resolve_openai_api_key_from_dir(dir) {
+        Ok(k) => k,
+        Err(_) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": "No API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY."})
+                );
+            } else {
+                eprintln!("Error: No API key found.");
+                eprintln!(
+                    "Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable,"
+                );
+                eprintln!("or add [native_executor] api_key to .workgraph/config.toml");
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get("https://openrouter.ai/api/v1/key")
+        .header("Authorization", format!("Bearer {}", key))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json()?;
+            let data = body.get("data").unwrap_or(&body);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(data)?);
+            } else {
+                println!("OpenRouter API Key Status");
+                println!("========================");
+                println!();
+                println!("  Key: {}", mask_token(&key));
+
+                if let Some(limit) = data.get("limit") {
+                    if limit.is_null() {
+                        println!("  Credit limit: unlimited");
+                    } else {
+                        println!("  Credit limit: ${}", limit);
+                    }
+                }
+
+                if let Some(remaining) = data.get("limit_remaining") {
+                    if remaining.is_null() {
+                        println!("  Remaining: unlimited");
+                    } else {
+                        println!("  Remaining: ${}", remaining);
+                    }
+                }
+
+                if let Some(usage) = data.get("usage") {
+                    println!("  Usage (all-time): ${}", usage);
+                }
+
+                if let Some(is_free) = data.get("is_free_tier") {
+                    println!(
+                        "  Tier: {}",
+                        if is_free.as_bool().unwrap_or(false) {
+                            "free"
+                        } else {
+                            "paid"
+                        }
+                    );
+                }
+
+                if let Some(daily) = data.get("usage_daily") {
+                    println!("  Usage (today): ${}", daily);
+                }
+
+                println!();
+                println!("Status: Valid");
+            }
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().unwrap_or_default();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": format!("HTTP {}", status), "body": body})
+                );
+            } else {
+                eprintln!("Error: API key check failed (HTTP {})", status);
+                if !body.is_empty() {
+                    eprintln!("  {}", body);
+                }
+            }
+            std::process::exit(1);
+        }
+        Err(e) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": format!("Request failed: {}", e)})
+                );
+            } else {
+                eprintln!("Error: Could not reach OpenRouter API: {}", e);
+            }
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
 /// Mask a token for display (show first and last 4 chars)
 fn mask_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
