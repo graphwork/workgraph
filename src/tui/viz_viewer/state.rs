@@ -5953,7 +5953,7 @@ impl VizApp {
 
     /// Get a list of known coordinator IDs from the graph.
     pub fn list_coordinator_ids(&self) -> Vec<u32> {
-        let graph_path = self.workgraph_dir.join("graph.md");
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match workgraph::parser::load_graph(&graph_path) {
             Ok(g) => g,
             Err(_) => return vec![0],
