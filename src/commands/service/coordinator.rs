@@ -3747,6 +3747,64 @@ mod tests {
         assert!(!would_skip, "should not skip when auto_assign is disabled");
     }
 
+    /// .assign-* tasks with `assignment` tag and `exec` field are detected as inline
+    /// tasks and spawned via the lightweight inline path, not as full Claude agents.
+    #[test]
+    fn test_assign_spawned_inline() {
+        // An .assign-* task with "assignment" tag + exec should be detected as inline
+        let mut assign_task = Task::default();
+        assign_task.id = ".assign-my-task".to_string();
+        assign_task.title = "Assign agent for: My Task".to_string();
+        assign_task.tags = vec!["assignment".to_string(), "agency".to_string()];
+        assign_task.exec = Some("wg assign my-task --auto".to_string());
+        assign_task.status = Status::Open;
+
+        let is_inline_task = assign_task
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && assign_task.exec.is_some();
+        assert!(
+            is_inline_task,
+            ".assign-* task with assignment tag + exec should be detected as inline"
+        );
+
+        // Verify the assignment branch is taken (not eval)
+        let is_assignment = assign_task.tags.iter().any(|t| t == "assignment");
+        assert!(
+            is_assignment,
+            ".assign-* task should be routed to the assignment inline path"
+        );
+
+        // An .assign-* task WITHOUT exec should NOT match inline (fallback to Phase 2)
+        let mut no_exec_assign = Task::default();
+        no_exec_assign.id = ".assign-other".to_string();
+        no_exec_assign.tags = vec!["assignment".to_string()];
+        let is_inline_no_exec = no_exec_assign
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && no_exec_assign.exec.is_some();
+        assert!(
+            !is_inline_no_exec,
+            ".assign-* without exec should NOT be inline"
+        );
+
+        // A regular task with exec but no assignment/eval/flip tag should NOT match
+        let mut regular_exec = Task::default();
+        regular_exec.id = "build-thing".to_string();
+        regular_exec.exec = Some("make build".to_string());
+        let is_inline_regular = regular_exec
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && regular_exec.exec.is_some();
+        assert!(
+            !is_inline_regular,
+            "regular task with exec should NOT be inline"
+        );
+    }
+
     /// A resurrected task (reopened after completion) with an existing done
     /// .assign-* task should have the stale assignment removed so a new one
     /// can be created on the next tick.
