@@ -231,6 +231,9 @@ pub struct TuiConfig {
     /// Comma-separated time counters to display: "uptime", "cumulative", "active"
     #[serde(default = "default_counters")]
     pub counters: String,
+    /// Show only running (in-progress/open) system tasks by default
+    #[serde(default)]
+    pub show_running_system_tasks: bool,
 }
 
 fn default_tui_layout() -> String {
@@ -279,6 +282,7 @@ impl Default for TuiConfig {
             chat_history: true,
             chat_history_max: default_chat_history_max(),
             counters: default_counters(),
+            show_running_system_tasks: false,
         }
     }
 }

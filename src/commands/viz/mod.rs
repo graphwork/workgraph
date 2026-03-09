@@ -103,6 +103,8 @@ pub struct VizOptions {
     pub output: Option<String>,
     /// Show internal tasks (assign-*, evaluate-*) that are normally hidden
     pub show_internal: bool,
+    /// Show only internal tasks that are currently running (in-progress/open)
+    pub show_internal_running_only: bool,
     /// Focus on specific task IDs — show only their containing subgraphs
     pub focus: Vec<String>,
     /// TUI mode: sort subgraphs by most-recently-updated first (LRU ordering)
@@ -125,6 +127,7 @@ impl Default for VizOptions {
             format: OutputFormat::Ascii,
             output: None,
             show_internal: false,
+            show_internal_running_only: false,
             focus: Vec::new(),
             tui_mode: false,
             layout: LayoutMode::default(),
@@ -226,6 +229,29 @@ pub(crate) fn filter_internal_tasks<'a>(
     let filtered: Vec<&'a Task> = tasks
         .into_iter()
         .filter(|t| !internal_ids.contains(t.id.as_str()))
+        .collect();
+
+    (filtered, annotations)
+}
+
+/// Like `filter_internal_tasks`, but keeps internal tasks that are currently running
+/// (in-progress or open). Non-running internal tasks are still filtered out.
+pub(crate) fn filter_internal_tasks_running_only<'a>(
+    _graph: &'a WorkGraph,
+    tasks: Vec<&'a Task>,
+    _existing_annotations: &HashMap<String, String>,
+) -> (Vec<&'a Task>, HashMap<String, String>) {
+    let annotations: HashMap<String, String> = HashMap::new();
+
+    let filtered: Vec<&'a Task> = tasks
+        .into_iter()
+        .filter(|t| {
+            if !is_internal_task(t) {
+                return true;
+            }
+            // Keep only running internal tasks
+            matches!(t.status, Status::InProgress | Status::Open)
+        })
         .collect();
 
     (filtered, annotations)
@@ -436,6 +462,8 @@ pub fn generate_viz_output_from_graph(
     let empty_annotations = HashMap::new();
     let (tasks_to_show, annotations) = if options.show_internal {
         (tasks_to_show, empty_annotations)
+    } else if options.show_internal_running_only {
+        filter_internal_tasks_running_only(graph, tasks_to_show, &empty_annotations)
     } else {
         filter_internal_tasks(graph, tasks_to_show, &empty_annotations)
     };
@@ -988,6 +1016,7 @@ mod tests {
             format: OutputFormat::Ascii,
             output: None,
             show_internal: true,
+            show_internal_running_only: false,
             critical_path: false,
             focus: Vec::new(),
             tui_mode: false,
