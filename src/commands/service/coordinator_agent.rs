@@ -303,6 +303,7 @@ impl CoordinatorAgent {
     /// Returns an error if the Claude CLI is not available.
     pub fn spawn(
         dir: &Path,
+        coordinator_id: u32,
         model: Option<&str>,
         logger: &DaemonLogger,
         event_log: SharedEventLog,
@@ -324,10 +325,11 @@ impl CoordinatorAgent {
         let event_log_clone = event_log.clone();
 
         let agent_thread = thread::Builder::new()
-            .name("coordinator-agent".to_string())
+            .name(format!("coordinator-agent-{}", coordinator_id))
             .spawn(move || {
                 agent_thread_main(
                     &dir,
+                    coordinator_id,
                     model.as_deref(),
                     rx,
                     alive_clone,
@@ -408,6 +410,7 @@ impl CoordinatorAgent {
 /// - Chat history rotation to prevent unbounded growth
 fn agent_thread_main(
     dir: &Path,
+    coordinator_id: u32,
     model: Option<&str>,
     rx: mpsc::Receiver<ChatRequest>,
     alive: Arc<Mutex<bool>>,
@@ -461,7 +464,7 @@ fn agent_thread_main(
         let is_restart = !restart_timestamps.is_empty();
 
         // Rotate old chat history on restart to prevent unbounded growth
-        if is_restart && let Err(e) = chat::rotate_history(dir, HISTORY_ROTATION_KEEP) {
+        if is_restart && let Err(e) = chat::rotate_history_for(dir, coordinator_id, HISTORY_ROTATION_KEEP) {
             logger.warn(&format!(
                 "Coordinator agent: failed to rotate chat history: {}",
                 e
@@ -504,7 +507,7 @@ fn agent_thread_main(
         // If this is a restart, inject crash recovery context
         if is_restart {
             logger.info("Coordinator agent: injecting crash recovery context");
-            if let Err(e) = inject_crash_recovery_context(dir, &mut stdin, &response_rx, logger) {
+            if let Err(e) = inject_crash_recovery_context(dir, coordinator_id, &mut stdin, &response_rx, logger) {
                 logger.warn(&format!(
                     "Coordinator agent: failed to inject crash recovery context: {}",
                     e
@@ -546,8 +549,9 @@ fn agent_thread_main(
 
                 // If there was a pending request, write an error response
                 if let Some(req) = request {
-                    let _ = chat::append_outbox(
+                    let _ = chat::append_outbox_for(
                         dir,
+                        coordinator_id,
                         "The coordinator agent crashed and is being restarted. Please try again in a moment.",
                         &req.request_id,
                     );
@@ -593,8 +597,9 @@ fn agent_thread_main(
                             "Coordinator agent: failed to write to stdin: {}",
                             e
                         ));
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator agent encountered an error. Please try again.",
                             &req.request_id,
                         );
@@ -620,8 +625,9 @@ fn agent_thread_main(
                             },
                             req.request_id
                         ));
-                        if let Err(e) = chat::append_outbox_full(
+                        if let Err(e) = chat::append_outbox_full_for(
                             dir,
+                            coordinator_id,
                             &resp.summary,
                             resp.full_text,
                             &req.request_id,
@@ -635,8 +641,9 @@ fn agent_thread_main(
                     }
                     Some(_) => {
                         logger.warn("Coordinator agent: empty response from Claude CLI");
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator processed your message but produced no response text.",
                             &req.request_id,
                         );
@@ -644,8 +651,9 @@ fn agent_thread_main(
                     }
                     None => {
                         logger.warn("Coordinator agent: response timeout");
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator agent timed out processing your message. It may be performing a long-running operation.",
                             &req.request_id,
                         );
@@ -656,7 +664,7 @@ fn agent_thread_main(
                 // Record this turn as a cycle iteration on the .coordinator task
                 if let Some((resp_len, ref resp_summary)) = response_info {
                     turn_count += 1;
-                    record_coordinator_turn(dir, &req.message, resp_len, turn_start);
+                    record_coordinator_turn(dir, coordinator_id, &req.message, resp_len, turn_start);
 
                     // Inline evaluation (runs in background thread, non-blocking)
                     let eval_config = workgraph::config::Config::load_or_default(dir);
@@ -704,11 +712,12 @@ fn agent_thread_main(
 /// Waits for the agent's acknowledgment response (with a shorter timeout).
 fn inject_crash_recovery_context(
     dir: &Path,
+    coordinator_id: u32,
     stdin: &mut std::process::ChildStdin,
     response_rx: &mpsc::Receiver<ResponseEvent>,
     logger: &DaemonLogger,
 ) -> Result<()> {
-    let summary = build_crash_recovery_summary(dir)?;
+    let summary = build_crash_recovery_summary(dir, coordinator_id)?;
 
     // Send as a user message
     let user_msg = format_stream_json_user_message(&summary);
@@ -735,14 +744,14 @@ fn inject_crash_recovery_context(
 }
 
 /// Build the crash recovery summary string from chat history and graph state.
-fn build_crash_recovery_summary(dir: &Path) -> Result<String> {
+fn build_crash_recovery_summary(dir: &Path, coordinator_id: u32) -> Result<String> {
     let mut parts = Vec::new();
 
     parts.push("You were restarted after a crash. Previous conversation summary:".to_string());
     parts.push(String::new());
 
     // Load recent conversation history from chat inbox/outbox
-    let history = chat::read_history(dir).unwrap_or_default();
+    let history = chat::read_history_for(dir, coordinator_id).unwrap_or_default();
 
     if history.is_empty() {
         parts.push("(No previous conversation history.)".to_string());
@@ -1268,6 +1277,7 @@ fn build_system_prompt_fallback() -> String {
 /// Logs turn metadata (response length, latency) and increments `loop_iteration`.
 fn record_coordinator_turn(
     dir: &Path,
+    coordinator_id: u32,
     user_message: &str,
     response_len: usize,
     turn_start: std::time::Instant,
@@ -1281,10 +1291,16 @@ fn record_coordinator_turn(
         Err(_) => return,
     };
 
-    let task = match graph.get_task_mut(".coordinator") {
-        Some(t) => t,
-        None => return,
+    // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let coordinator_task_id = if graph.get_task(&task_id).is_some() {
+        task_id.as_str()
+    } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+        ".coordinator"
+    } else {
+        return;
     };
+    let task = graph.get_task_mut(coordinator_task_id).unwrap();
 
     let latency = turn_start.elapsed();
     let iteration = task.loop_iteration;

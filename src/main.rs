@@ -959,18 +959,19 @@ fn main() -> Result<()> {
             clear,
             timeout,
             attachment,
+            coordinator,
         } => {
             if clear {
-                commands::chat::run_clear(&workgraph_dir)
+                commands::chat::run_clear(&workgraph_dir, coordinator)
             } else if history {
-                commands::chat::run_history(&workgraph_dir, cli.json)
+                commands::chat::run_history(&workgraph_dir, cli.json, coordinator)
             } else if interactive {
-                commands::chat::run_interactive(&workgraph_dir, timeout)
+                commands::chat::run_interactive(&workgraph_dir, timeout, coordinator)
             } else if let Some(msg) = message {
-                commands::chat::run_send(&workgraph_dir, &msg, timeout, &attachment)
+                commands::chat::run_send(&workgraph_dir, &msg, timeout, &attachment, coordinator)
             } else {
                 // No message and no flags → default to interactive
-                commands::chat::run_interactive(&workgraph_dir, timeout)
+                commands::chat::run_interactive(&workgraph_dir, timeout, coordinator)
             }
         }
         Commands::Resource { command } => match command {
@@ -1461,6 +1462,7 @@ fn main() -> Result<()> {
             role_model,
             role_provider,
             retry_context_tokens,
+            check_key,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -1470,6 +1472,11 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --check-key
+            if check_key {
+                return commands::config_cmd::check_key(&workgraph_dir, cli.json);
+            }
 
             // Handle Matrix configuration
             if matrix

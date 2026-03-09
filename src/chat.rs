@@ -1,10 +1,13 @@
 //! Chat inbox/outbox storage for user↔coordinator communication.
 //!
-//! Messages are stored as JSONL files in `.workgraph/chat/`:
+//! Messages are stored as JSONL files in `.workgraph/chat/{coordinator_id}/`:
 //! - `inbox.jsonl`  — user → coordinator messages
 //! - `outbox.jsonl` — coordinator → user responses
 //! - `.cursor`      — CLI/TUI read cursor (last-read outbox message ID)
 //! - `.coordinator-cursor` — coordinator read cursor (last-processed inbox message ID)
+//!
+//! Each coordinator gets its own subdirectory for isolated chat channels.
+//! Coordinator 0 is the default; backward-compatible API functions use coordinator 0.
 //!
 //! Follows the same concurrency model as `src/messages.rs`:
 //! writers use `O_APPEND` + `flock()` for safe ID assignment,
@@ -53,29 +56,59 @@ pub struct ChatMessage {
     pub full_response: Option<String>,
 }
 
-/// Directory for chat files.
+/// Directory for chat files for a specific coordinator.
+fn chat_dir_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    workgraph_dir.join("chat").join(coordinator_id.to_string())
+}
+
+/// Directory for chat files (backward compat: coordinator 0).
+#[cfg(test)]
 fn chat_dir(workgraph_dir: &Path) -> PathBuf {
-    workgraph_dir.join("chat")
+    chat_dir_for(workgraph_dir, 0)
 }
 
-/// Path to the inbox JSONL file (user → coordinator).
+/// Path to the inbox JSONL file for a specific coordinator.
+fn inbox_path_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join("inbox.jsonl")
+}
+
+/// Path to the inbox JSONL file (coordinator 0).
+#[cfg(test)]
 fn inbox_path(workgraph_dir: &Path) -> PathBuf {
-    chat_dir(workgraph_dir).join("inbox.jsonl")
+    inbox_path_for(workgraph_dir, 0)
 }
 
-/// Path to the outbox JSONL file (coordinator → user).
+/// Path to the outbox JSONL file for a specific coordinator.
+fn outbox_path_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join("outbox.jsonl")
+}
+
+/// Path to the outbox JSONL file (coordinator 0).
+#[allow(dead_code)]
 fn outbox_path(workgraph_dir: &Path) -> PathBuf {
-    chat_dir(workgraph_dir).join("outbox.jsonl")
+    outbox_path_for(workgraph_dir, 0)
 }
 
-/// Path to the CLI/TUI cursor file (last-read outbox message ID).
+/// Path to the CLI/TUI cursor file for a specific coordinator.
+fn cursor_path_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join(".cursor")
+}
+
+/// Path to the CLI/TUI cursor file (coordinator 0).
+#[allow(dead_code)]
 fn cursor_path(workgraph_dir: &Path) -> PathBuf {
-    chat_dir(workgraph_dir).join(".cursor")
+    cursor_path_for(workgraph_dir, 0)
 }
 
-/// Path to the coordinator cursor file (last-processed inbox message ID).
+/// Path to the coordinator cursor file for a specific coordinator.
+fn coordinator_cursor_path_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join(".coordinator-cursor")
+}
+
+/// Path to the coordinator cursor file (coordinator 0).
+#[allow(dead_code)]
 fn coordinator_cursor_path(workgraph_dir: &Path) -> PathBuf {
-    chat_dir(workgraph_dir).join(".coordinator-cursor")
+    coordinator_cursor_path_for(workgraph_dir, 0)
 }
 
 /// Append a message to a JSONL file with flock-based ID assignment.
@@ -218,48 +251,51 @@ fn write_cursor_file(path: &Path, cursor: u64) -> Result<()> {
     Ok(())
 }
 
-// --- Public API ---
+// --- Public API: coordinator_id-aware versions ---
 
-/// Append a user message to the inbox.
-///
-/// Returns the assigned inbox message ID.
-pub fn append_inbox(workgraph_dir: &Path, content: &str, request_id: &str) -> Result<u64> {
-    let path = inbox_path(workgraph_dir);
+/// Append a user message to a specific coordinator's inbox.
+pub fn append_inbox_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = inbox_path_for(workgraph_dir, coordinator_id);
     append_message(&path, "user", content, request_id, vec![], None)
 }
 
-/// Append a user message with attachments to the inbox.
-///
-/// Returns the assigned inbox message ID.
-pub fn append_inbox_with_attachments(
+/// Append a user message with attachments to a specific coordinator's inbox.
+pub fn append_inbox_with_attachments_for(
     workgraph_dir: &Path,
+    coordinator_id: u32,
     content: &str,
     request_id: &str,
     attachments: Vec<Attachment>,
 ) -> Result<u64> {
-    let path = inbox_path(workgraph_dir);
+    let path = inbox_path_for(workgraph_dir, coordinator_id);
     append_message(&path, "user", content, request_id, attachments, None)
 }
 
-/// Append a coordinator response to the outbox.
-///
-/// Returns the assigned outbox message ID.
-pub fn append_outbox(workgraph_dir: &Path, content: &str, request_id: &str) -> Result<u64> {
-    let path = outbox_path(workgraph_dir);
+/// Append a coordinator response to a specific coordinator's outbox.
+pub fn append_outbox_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = outbox_path_for(workgraph_dir, coordinator_id);
     append_message(&path, "coordinator", content, request_id, vec![], None)
 }
 
-/// Append a coordinator response with full response text to the outbox.
-///
-/// `content` is the summary (last text block), shown in collapsed view.
-/// `full_response` is the complete response including tool calls, shown in expanded view.
-pub fn append_outbox_full(
+/// Append a coordinator response with full response text to a specific coordinator's outbox.
+pub fn append_outbox_full_for(
     workgraph_dir: &Path,
+    coordinator_id: u32,
     content: &str,
     full_response: Option<String>,
     request_id: &str,
 ) -> Result<u64> {
-    let path = outbox_path(workgraph_dir);
+    let path = outbox_path_for(workgraph_dir, coordinator_id);
     append_message(
         &path,
         "coordinator",
@@ -270,32 +306,35 @@ pub fn append_outbox_full(
     )
 }
 
-/// Read all inbox messages (user → coordinator).
-pub fn read_inbox(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
-    read_messages(&inbox_path(workgraph_dir))
+/// Read all inbox messages for a specific coordinator.
+pub fn read_inbox_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<Vec<ChatMessage>> {
+    read_messages(&inbox_path_for(workgraph_dir, coordinator_id))
 }
 
-/// Read inbox messages with ID > cursor.
-pub fn read_inbox_since(workgraph_dir: &Path, cursor: u64) -> Result<Vec<ChatMessage>> {
-    let all = read_messages(&inbox_path(workgraph_dir))?;
-    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
-}
-
-/// Read outbox messages with ID > cursor.
-///
-/// Does not advance the cursor (caller decides when to advance).
-pub fn read_outbox_since(workgraph_dir: &Path, cursor: u64) -> Result<Vec<ChatMessage>> {
-    let all = read_messages(&outbox_path(workgraph_dir))?;
-    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
-}
-
-/// Block until a response with the given request_id appears in the outbox,
-/// or timeout expires.
-///
-/// Polls outbox.jsonl every 200ms, checking for a message whose request_id
-/// matches. Returns the first matching response, or None on timeout.
-pub fn wait_for_response(
+/// Read inbox messages with ID > cursor for a specific coordinator.
+pub fn read_inbox_since_for(
     workgraph_dir: &Path,
+    coordinator_id: u32,
+    cursor: u64,
+) -> Result<Vec<ChatMessage>> {
+    let all = read_messages(&inbox_path_for(workgraph_dir, coordinator_id))?;
+    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
+}
+
+/// Read outbox messages with ID > cursor for a specific coordinator.
+pub fn read_outbox_since_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    cursor: u64,
+) -> Result<Vec<ChatMessage>> {
+    let all = read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?;
+    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
+}
+
+/// Block until a response appears in a specific coordinator's outbox, or timeout.
+pub fn wait_for_response_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
     request_id: &str,
     timeout: Duration,
 ) -> Result<Option<ChatMessage>> {
@@ -303,7 +342,7 @@ pub fn wait_for_response(
     let poll_interval = Duration::from_millis(200);
 
     loop {
-        let messages = read_messages(&outbox_path(workgraph_dir))?;
+        let messages = read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?;
         if let Some(msg) = messages.into_iter().find(|m| m.request_id == request_id) {
             return Ok(Some(msg));
         }
@@ -316,58 +355,157 @@ pub fn wait_for_response(
     }
 }
 
-/// Read the CLI/TUI cursor (last-read outbox message ID).
-pub fn read_cursor(workgraph_dir: &Path) -> Result<u64> {
-    read_cursor_file(&cursor_path(workgraph_dir))
+/// Read the CLI/TUI cursor for a specific coordinator.
+pub fn read_cursor_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<u64> {
+    read_cursor_file(&cursor_path_for(workgraph_dir, coordinator_id))
 }
 
-/// Write the CLI/TUI cursor.
-pub fn write_cursor(workgraph_dir: &Path, cursor: u64) -> Result<()> {
-    write_cursor_file(&cursor_path(workgraph_dir), cursor)
+/// Write the CLI/TUI cursor for a specific coordinator.
+pub fn write_cursor_for(workgraph_dir: &Path, coordinator_id: u32, cursor: u64) -> Result<()> {
+    write_cursor_file(&cursor_path_for(workgraph_dir, coordinator_id), cursor)
 }
 
-/// Read and advance the CLI/TUI cursor.
-///
-/// Returns (new_cursor_value, messages_since_old_cursor).
-pub fn read_and_advance_cursor(workgraph_dir: &Path) -> Result<(u64, Vec<ChatMessage>)> {
-    let old_cursor = read_cursor(workgraph_dir)?;
-    let new_messages = read_outbox_since(workgraph_dir, old_cursor)?;
+/// Read and advance the CLI/TUI cursor for a specific coordinator.
+pub fn read_and_advance_cursor_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+) -> Result<(u64, Vec<ChatMessage>)> {
+    let old_cursor = read_cursor_for(workgraph_dir, coordinator_id)?;
+    let new_messages = read_outbox_since_for(workgraph_dir, coordinator_id, old_cursor)?;
 
     let new_cursor = new_messages.last().map(|m| m.id).unwrap_or(old_cursor);
     if new_cursor > old_cursor {
-        write_cursor(workgraph_dir, new_cursor)?;
+        write_cursor_for(workgraph_dir, coordinator_id, new_cursor)?;
     }
 
     Ok((new_cursor, new_messages))
 }
 
-/// Read the coordinator cursor (last-processed inbox message ID).
-pub fn read_coordinator_cursor(workgraph_dir: &Path) -> Result<u64> {
-    read_cursor_file(&coordinator_cursor_path(workgraph_dir))
+/// Read the coordinator cursor for a specific coordinator.
+pub fn read_coordinator_cursor_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<u64> {
+    read_cursor_file(&coordinator_cursor_path_for(workgraph_dir, coordinator_id))
 }
 
-/// Write the coordinator cursor.
-pub fn write_coordinator_cursor(workgraph_dir: &Path, cursor: u64) -> Result<()> {
-    write_cursor_file(&coordinator_cursor_path(workgraph_dir), cursor)
+/// Write the coordinator cursor for a specific coordinator.
+pub fn write_coordinator_cursor_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    cursor: u64,
+) -> Result<()> {
+    write_cursor_file(
+        &coordinator_cursor_path_for(workgraph_dir, coordinator_id),
+        cursor,
+    )
 }
 
-/// Read all inbox and outbox messages interleaved by timestamp for history display.
-pub fn read_history(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
-    let mut all = read_messages(&inbox_path(workgraph_dir))?;
-    all.extend(read_messages(&outbox_path(workgraph_dir))?);
+/// Read all inbox and outbox messages interleaved by timestamp for a specific coordinator.
+pub fn read_history_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<Vec<ChatMessage>> {
+    let mut all = read_messages(&inbox_path_for(workgraph_dir, coordinator_id))?;
+    all.extend(read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?);
     all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
     Ok(all)
 }
 
-/// Rotate old chat history, keeping only the last `keep_count` messages per file.
-///
-/// This prevents inbox.jsonl and outbox.jsonl from growing unboundedly.
-/// Old messages are discarded. The cursor files are NOT adjusted — callers
-/// should only rotate at natural boundaries (e.g., on coordinator restart).
-pub fn rotate_history(workgraph_dir: &Path, keep_count: usize) -> Result<()> {
-    rotate_file(&inbox_path(workgraph_dir), keep_count)?;
-    rotate_file(&outbox_path(workgraph_dir), keep_count)?;
+/// Rotate old chat history for a specific coordinator.
+pub fn rotate_history_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    keep_count: usize,
+) -> Result<()> {
+    rotate_file(&inbox_path_for(workgraph_dir, coordinator_id), keep_count)?;
+    rotate_file(&outbox_path_for(workgraph_dir, coordinator_id), keep_count)?;
     Ok(())
+}
+
+// --- Public API: backward-compatible wrappers (coordinator 0) ---
+
+/// Append a user message to the inbox (coordinator 0).
+pub fn append_inbox(workgraph_dir: &Path, content: &str, request_id: &str) -> Result<u64> {
+    append_inbox_for(workgraph_dir, 0, content, request_id)
+}
+
+/// Append a user message with attachments to the inbox (coordinator 0).
+pub fn append_inbox_with_attachments(
+    workgraph_dir: &Path,
+    content: &str,
+    request_id: &str,
+    attachments: Vec<Attachment>,
+) -> Result<u64> {
+    append_inbox_with_attachments_for(workgraph_dir, 0, content, request_id, attachments)
+}
+
+/// Append a coordinator response to the outbox (coordinator 0).
+pub fn append_outbox(workgraph_dir: &Path, content: &str, request_id: &str) -> Result<u64> {
+    append_outbox_for(workgraph_dir, 0, content, request_id)
+}
+
+/// Append a coordinator response with full response text to the outbox (coordinator 0).
+pub fn append_outbox_full(
+    workgraph_dir: &Path,
+    content: &str,
+    full_response: Option<String>,
+    request_id: &str,
+) -> Result<u64> {
+    append_outbox_full_for(workgraph_dir, 0, content, full_response, request_id)
+}
+
+/// Read all inbox messages (coordinator 0).
+pub fn read_inbox(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
+    read_inbox_for(workgraph_dir, 0)
+}
+
+/// Read inbox messages with ID > cursor (coordinator 0).
+pub fn read_inbox_since(workgraph_dir: &Path, cursor: u64) -> Result<Vec<ChatMessage>> {
+    read_inbox_since_for(workgraph_dir, 0, cursor)
+}
+
+/// Read outbox messages with ID > cursor (coordinator 0).
+pub fn read_outbox_since(workgraph_dir: &Path, cursor: u64) -> Result<Vec<ChatMessage>> {
+    read_outbox_since_for(workgraph_dir, 0, cursor)
+}
+
+/// Block until a response with the given request_id appears in the outbox (coordinator 0).
+pub fn wait_for_response(
+    workgraph_dir: &Path,
+    request_id: &str,
+    timeout: Duration,
+) -> Result<Option<ChatMessage>> {
+    wait_for_response_for(workgraph_dir, 0, request_id, timeout)
+}
+
+/// Read the CLI/TUI cursor (coordinator 0).
+pub fn read_cursor(workgraph_dir: &Path) -> Result<u64> {
+    read_cursor_for(workgraph_dir, 0)
+}
+
+/// Write the CLI/TUI cursor (coordinator 0).
+pub fn write_cursor(workgraph_dir: &Path, cursor: u64) -> Result<()> {
+    write_cursor_for(workgraph_dir, 0, cursor)
+}
+
+/// Read and advance the CLI/TUI cursor (coordinator 0).
+pub fn read_and_advance_cursor(workgraph_dir: &Path) -> Result<(u64, Vec<ChatMessage>)> {
+    read_and_advance_cursor_for(workgraph_dir, 0)
+}
+
+/// Read the coordinator cursor (coordinator 0).
+pub fn read_coordinator_cursor(workgraph_dir: &Path) -> Result<u64> {
+    read_coordinator_cursor_for(workgraph_dir, 0)
+}
+
+/// Write the coordinator cursor (coordinator 0).
+pub fn write_coordinator_cursor(workgraph_dir: &Path, cursor: u64) -> Result<()> {
+    write_coordinator_cursor_for(workgraph_dir, 0, cursor)
+}
+
+/// Read all inbox and outbox messages interleaved by timestamp (coordinator 0).
+pub fn read_history(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
+    read_history_for(workgraph_dir, 0)
+}
+
+/// Rotate old chat history (coordinator 0).
+pub fn rotate_history(workgraph_dir: &Path, keep_count: usize) -> Result<()> {
+    rotate_history_for(workgraph_dir, 0, keep_count)
 }
 
 /// Rotate a single JSONL file, keeping only the last `keep_count` messages.
@@ -530,9 +668,19 @@ pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachmen
     })
 }
 
-/// Clear all chat data (inbox, outbox, cursors).
+/// Clear chat data for a specific coordinator.
+pub fn clear_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<()> {
+    let dir = chat_dir_for(workgraph_dir, coordinator_id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .with_context(|| format!("Failed to clear chat directory: {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Clear all chat data for all coordinators.
 pub fn clear(workgraph_dir: &Path) -> Result<()> {
-    let dir = chat_dir(workgraph_dir);
+    let dir = workgraph_dir.join("chat");
     if dir.exists() {
         fs::remove_dir_all(&dir)
             .with_context(|| format!("Failed to clear chat directory: {}", dir.display()))?;
@@ -952,5 +1100,157 @@ mod tests {
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].request_id, "req-7");
         assert!(!msgs[0].timestamp.is_empty());
+    }
+
+    // --- Multi-coordinator isolation tests ---
+
+    #[test]
+    fn test_multi_coordinator_inbox_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write to coordinator 0 and coordinator 1
+        append_inbox_for(&wg_dir, 0, "msg for coord 0", "req-0").unwrap();
+        append_inbox_for(&wg_dir, 1, "msg for coord 1", "req-1").unwrap();
+        append_inbox_for(&wg_dir, 0, "second msg for coord 0", "req-2").unwrap();
+
+        // Each coordinator sees only its own messages
+        let msgs0 = read_inbox_for(&wg_dir, 0).unwrap();
+        assert_eq!(msgs0.len(), 2);
+        assert_eq!(msgs0[0].content, "msg for coord 0");
+        assert_eq!(msgs0[1].content, "second msg for coord 0");
+
+        let msgs1 = read_inbox_for(&wg_dir, 1).unwrap();
+        assert_eq!(msgs1.len(), 1);
+        assert_eq!(msgs1[0].content, "msg for coord 1");
+
+        // Coordinator 2 has no messages
+        let msgs2 = read_inbox_for(&wg_dir, 2).unwrap();
+        assert!(msgs2.is_empty());
+    }
+
+    #[test]
+    fn test_multi_coordinator_outbox_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        append_outbox_for(&wg_dir, 0, "resp from coord 0", "req-0").unwrap();
+        append_outbox_for(&wg_dir, 1, "resp from coord 1", "req-1").unwrap();
+
+        let msgs0 = read_outbox_since_for(&wg_dir, 0, 0).unwrap();
+        assert_eq!(msgs0.len(), 1);
+        assert_eq!(msgs0[0].content, "resp from coord 0");
+
+        let msgs1 = read_outbox_since_for(&wg_dir, 1, 0).unwrap();
+        assert_eq!(msgs1.len(), 1);
+        assert_eq!(msgs1[0].content, "resp from coord 1");
+    }
+
+    #[test]
+    fn test_multi_coordinator_cursor_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        write_cursor_for(&wg_dir, 0, 5).unwrap();
+        write_cursor_for(&wg_dir, 1, 10).unwrap();
+
+        assert_eq!(read_cursor_for(&wg_dir, 0).unwrap(), 5);
+        assert_eq!(read_cursor_for(&wg_dir, 1).unwrap(), 10);
+        assert_eq!(read_cursor_for(&wg_dir, 2).unwrap(), 0); // non-existent
+    }
+
+    #[test]
+    fn test_multi_coordinator_coordinator_cursor_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        write_coordinator_cursor_for(&wg_dir, 0, 3).unwrap();
+        write_coordinator_cursor_for(&wg_dir, 1, 7).unwrap();
+
+        assert_eq!(read_coordinator_cursor_for(&wg_dir, 0).unwrap(), 3);
+        assert_eq!(read_coordinator_cursor_for(&wg_dir, 1).unwrap(), 7);
+    }
+
+    #[test]
+    fn test_multi_coordinator_history_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        append_inbox_for(&wg_dir, 0, "user to coord 0", "req-0").unwrap();
+        append_outbox_for(&wg_dir, 0, "coord 0 reply", "req-0").unwrap();
+        append_inbox_for(&wg_dir, 1, "user to coord 1", "req-1").unwrap();
+        append_outbox_for(&wg_dir, 1, "coord 1 reply", "req-1").unwrap();
+
+        let hist0 = read_history_for(&wg_dir, 0).unwrap();
+        assert_eq!(hist0.len(), 2);
+        assert_eq!(hist0[0].content, "user to coord 0");
+        assert_eq!(hist0[1].content, "coord 0 reply");
+
+        let hist1 = read_history_for(&wg_dir, 1).unwrap();
+        assert_eq!(hist1.len(), 2);
+        assert_eq!(hist1[0].content, "user to coord 1");
+        assert_eq!(hist1[1].content, "coord 1 reply");
+    }
+
+    #[test]
+    fn test_multi_coordinator_clear_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        append_inbox_for(&wg_dir, 0, "msg 0", "req-0").unwrap();
+        append_inbox_for(&wg_dir, 1, "msg 1", "req-1").unwrap();
+
+        // Clear only coordinator 0
+        clear_for(&wg_dir, 0).unwrap();
+
+        // Coordinator 0 is empty, coordinator 1 still has data
+        let msgs0 = read_inbox_for(&wg_dir, 0).unwrap();
+        assert!(msgs0.is_empty());
+
+        let msgs1 = read_inbox_for(&wg_dir, 1).unwrap();
+        assert_eq!(msgs1.len(), 1);
+    }
+
+    #[test]
+    fn test_multi_coordinator_backward_compat() {
+        let (_tmp, wg_dir) = setup();
+
+        // The default API should work with coordinator 0
+        append_inbox(&wg_dir, "default msg", "req-default").unwrap();
+
+        // Should be visible via coordinator 0 API
+        let msgs = read_inbox_for(&wg_dir, 0).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "default msg");
+
+        // And via the backward-compat API
+        let msgs = read_inbox(&wg_dir).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "default msg");
+    }
+
+    #[test]
+    fn test_multi_coordinator_independent_id_sequences() {
+        let (_tmp, wg_dir) = setup();
+
+        let id0 = append_inbox_for(&wg_dir, 0, "coord 0 msg", "req-0").unwrap();
+        let id1 = append_inbox_for(&wg_dir, 1, "coord 1 msg", "req-1").unwrap();
+
+        // Each coordinator starts its own ID sequence at 1
+        assert_eq!(id0, 1);
+        assert_eq!(id1, 1);
+    }
+
+    #[test]
+    fn test_multi_coordinator_wait_for_response() {
+        let (_tmp, wg_dir) = setup();
+
+        // Put response in coordinator 1's outbox
+        append_outbox_for(&wg_dir, 1, "response from coord 1", "target-req").unwrap();
+
+        // Searching coordinator 0 should not find it
+        let result = wait_for_response_for(&wg_dir, 0, "target-req", Duration::from_millis(100))
+            .unwrap();
+        assert!(result.is_none());
+
+        // Searching coordinator 1 should find it
+        let result = wait_for_response_for(&wg_dir, 1, "target-req", Duration::from_secs(1))
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "response from coord 1");
     }
 }

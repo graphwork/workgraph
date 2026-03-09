@@ -834,6 +834,10 @@ pub enum Commands {
         /// Attach a file (copied to .workgraph/attachments/)
         #[arg(long)]
         attachment: Vec<String>,
+
+        /// Target coordinator ID (default: 0)
+        #[arg(long, default_value = "0")]
+        coordinator: u32,
     },
 
     /// Manage resources
@@ -1223,6 +1227,10 @@ pub enum Commands {
         /// Max tokens of previous-attempt context to inject on retry (default: 2000, 0 = disabled)
         #[arg(long, name = "retry-context-tokens")]
         retry_context_tokens: Option<u32>,
+
+        /// Check OpenRouter API key validity and credit status
+        #[arg(long, name = "check-key")]
+        check_key: bool,
     },
 
     /// Detect and clean up dead agents

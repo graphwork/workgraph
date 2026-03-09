@@ -792,7 +792,7 @@ pub(crate) struct DaemonConfig {
     settling_delay: Duration,
 }
 
-/// Route new chat inbox messages to the persistent coordinator agent.
+/// Route new chat inbox messages to the persistent coordinator agent for a specific coordinator.
 ///
 /// Reads the inbox since the coordinator cursor, sends each message to the
 /// agent thread, and advances the cursor. The agent thread handles context
@@ -801,16 +801,17 @@ pub(crate) struct DaemonConfig {
 /// Returns the number of messages routed.
 fn route_chat_to_agent(
     dir: &Path,
+    coordinator_id: u32,
     agent: &coordinator_agent::CoordinatorAgent,
     logger: &DaemonLogger,
 ) -> Result<usize> {
-    let chat_dir = dir.join("chat");
+    let chat_dir = dir.join("chat").join(coordinator_id.to_string());
     if !chat_dir.exists() {
         return Ok(0);
     }
 
-    let inbox_cursor = workgraph::chat::read_coordinator_cursor(dir)?;
-    let new_messages = workgraph::chat::read_inbox_since(dir, inbox_cursor)?;
+    let inbox_cursor = workgraph::chat::read_coordinator_cursor_for(dir, coordinator_id)?;
+    let new_messages = workgraph::chat::read_inbox_since_for(dir, coordinator_id, inbox_cursor)?;
 
     if new_messages.is_empty() {
         return Ok(0);
@@ -820,12 +821,13 @@ fn route_chat_to_agent(
     for msg in &new_messages {
         if let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone()) {
             logger.error(&format!(
-                "Failed to send chat message to coordinator agent: {}",
-                e
+                "Failed to send chat message to coordinator agent {}: {}",
+                coordinator_id, e
             ));
             // Write an error response so the user isn't left hanging
-            let _ = workgraph::chat::append_outbox(
+            let _ = workgraph::chat::append_outbox_for(
                 dir,
+                coordinator_id,
                 "The coordinator agent is not available. Please try again.",
                 &msg.request_id,
             );
@@ -834,10 +836,33 @@ fn route_chat_to_agent(
 
     // Advance the coordinator cursor past these messages
     if let Some(last) = new_messages.last() {
-        workgraph::chat::write_coordinator_cursor(dir, last.id)?;
+        workgraph::chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)?;
     }
 
     Ok(count)
+}
+
+/// Route chat messages to all active coordinator agents.
+/// Checks each coordinator's inbox and routes pending messages.
+/// Returns total number of messages routed across all coordinators.
+fn route_chat_to_all_agents(
+    dir: &Path,
+    agents: &std::collections::HashMap<u32, coordinator_agent::CoordinatorAgent>,
+    logger: &DaemonLogger,
+) -> Result<usize> {
+    let mut total = 0;
+    for (&cid, agent) in agents {
+        match route_chat_to_agent(dir, cid, agent, logger) {
+            Ok(count) => total += count,
+            Err(e) => {
+                logger.error(&format!(
+                    "Failed to route chat to coordinator {}: {}",
+                    cid, e
+                ));
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Record events from the latest coordinator tick into the event log.
@@ -1085,42 +1110,56 @@ fn ensure_coordinator_task(dir: &Path) {
         Err(_) => return, // No graph yet — nothing to do
     };
 
-    if graph.get_task(".coordinator").is_some() {
-        return; // Already exists
+    let mut modified = false;
+
+    // Migrate legacy .coordinator to .coordinator-0
+    if graph.get_task(".coordinator").is_some() && graph.get_task(".coordinator-0").is_none() {
+        if let Some(task) = graph.get_task_mut(".coordinator") {
+            task.id = ".coordinator-0".to_string();
+            task.title = "Coordinator 0".to_string();
+            modified = true;
+        }
     }
 
-    let task = Task {
-        id: ".coordinator".to_string(),
-        title: "Coordinator".to_string(),
-        description: Some(
-            "Persistent coordinator agent — each turn is a cycle iteration.".to_string(),
-        ),
-        status: workgraph::graph::Status::InProgress,
-        tags: vec!["coordinator-loop".to_string()],
-        cycle_config: Some(CycleConfig {
-            max_iterations: 0, // unlimited
-            guard: None,
-            delay: None,
-            no_converge: true,
-            restart_on_failure: true,
-            max_failure_restarts: None,
-        }),
-        created_at: Some(Utc::now().to_rfc3339()),
-        started_at: Some(Utc::now().to_rfc3339()),
-        log: vec![LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("daemon".to_string()),
-            message: "Coordinator task created by daemon".to_string(),
-        }],
-        ..Default::default()
-    };
+    // Ensure .coordinator-0 exists
+    if graph.get_task(".coordinator-0").is_none() {
+        let task = Task {
+            id: ".coordinator-0".to_string(),
+            title: "Coordinator 0".to_string(),
+            description: Some(
+                "Persistent coordinator agent — each turn is a cycle iteration.".to_string(),
+            ),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["coordinator-loop".to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0, // unlimited
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Coordinator 0 task created by daemon".to_string(),
+            }],
+            ..Default::default()
+        };
 
-    graph.add_node(Node::Task(task));
-    if let Err(e) = save_graph(&graph, &gp) {
-        eprintln!(
-            "[daemon] Failed to save graph after creating .coordinator task: {}",
-            e
-        );
+        graph.add_node(Node::Task(task));
+        modified = true;
+    }
+
+    if modified {
+        if let Err(e) = save_graph(&graph, &gp) {
+            eprintln!(
+                "[daemon] Failed to save graph after creating .coordinator-0 task: {}",
+                e
+            );
+        }
     }
 }
 
@@ -1273,29 +1312,32 @@ pub fn run_daemon(
     // coordinator agent reads them when building context for each interaction.
     let event_log = coordinator_agent::new_event_log();
 
-    // Spawn the persistent coordinator agent (LLM session for chat).
-    // The coordinator agent is a long-lived Claude CLI session that interprets
-    // user intent, replacing the simple stub responses.
+    // Spawn the persistent coordinator agent(s) (LLM sessions for chat).
+    // Each coordinator gets its own Claude CLI session. Coordinator 0 is
+    // spawned at startup; additional coordinators are created on-demand via
+    // the CreateCoordinator IPC request.
     // Enabled by default; disable with --no-coordinator-agent or
     // coordinator.coordinator_agent = false in config.toml.
     let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
-    let coordinator_agent = if enable_coordinator_agent {
+    let mut coordinator_agents: std::collections::HashMap<u32, coordinator_agent::CoordinatorAgent> =
+        std::collections::HashMap::new();
+    if enable_coordinator_agent {
         match coordinator_agent::CoordinatorAgent::spawn(
             &dir,
+            0, // coordinator ID
             daemon_cfg.model.as_deref(),
             &logger,
             event_log.clone(),
         ) {
             Ok(agent) => {
-                logger.info("Coordinator agent spawned successfully");
-                Some(agent)
+                logger.info("Coordinator agent 0 spawned successfully");
+                coordinator_agents.insert(0, agent);
             }
             Err(e) => {
                 logger.warn(&format!(
-                    "Failed to spawn coordinator agent: {}. Chat will use stub responses.",
+                    "Failed to spawn coordinator agent 0: {}. Chat will use stub responses.",
                     e
                 ));
-                None
             }
         }
     } else {
@@ -1306,7 +1348,6 @@ pub fn run_daemon(
                 "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
             );
         }
-        None
     };
 
     // Track last coordinator tick time - run immediately on start
@@ -1388,28 +1429,28 @@ pub fn run_daemon(
         if urgent_wake {
             urgent_wake = false;
 
-            if let Some(ref agent) = coordinator_agent {
-                // Route chat messages to the persistent coordinator agent.
-                // Read new inbox messages and send them to the agent thread.
-                match route_chat_to_agent(&dir, agent, &logger) {
+            if !coordinator_agents.is_empty() {
+                // Route chat messages to all active coordinator agents.
+                // Each coordinator checks its own inbox for pending messages.
+                match route_chat_to_all_agents(&dir, &coordinator_agents, &logger) {
                     Ok(count) if count > 0 => {
                         logger.info(&format!(
-                            "Routed {} chat message(s) to coordinator agent",
+                            "Routed {} chat message(s) to coordinator agent(s)",
                             count
                         ));
                     }
                     Ok(_) => {} // No new messages
                     Err(e) => {
-                        logger.error(&format!("Failed to route chat to agent: {}", e));
+                        logger.error(&format!("Failed to route chat to agents: {}", e));
                         // Fall through to tick for stub response
                         should_tick = true;
                     }
                 }
             } else {
-                // No coordinator agent — fall through to coordinator tick
+                // No coordinator agents — fall through to coordinator tick
                 // which will use the stub response via process_chat_inbox.
                 should_tick = true;
-                logger.info("Urgent wake (no coordinator agent): running coordinator tick");
+                logger.info("Urgent wake (no coordinator agents): running coordinator tick");
             }
         }
 
@@ -1510,10 +1551,14 @@ pub fn run_daemon(
 
     logger.info("Daemon shutting down");
 
-    // Shut down the coordinator agent
-    if let Some(agent) = coordinator_agent {
-        logger.info("Shutting down coordinator agent");
+    // Shut down all coordinator agents
+    let agent_count = coordinator_agents.len();
+    for (cid, agent) in coordinator_agents {
+        logger.info(&format!("Shutting down coordinator agent {}", cid));
         agent.shutdown();
+    }
+    if agent_count > 0 {
+        logger.info(&format!("Shut down {} coordinator agent(s)", agent_count));
     }
 
     // Cleanup
