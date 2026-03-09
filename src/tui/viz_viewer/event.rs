@@ -1159,6 +1159,28 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
 
+        // Chat tab: '[' / ']' cycle between coordinator tabs
+        KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Chat => {
+            let ids = app.list_coordinator_ids();
+            if ids.len() > 1 {
+                let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
+                app.switch_coordinator(ids[prev]);
+            }
+        }
+        KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Chat => {
+            let ids = app.list_coordinator_ids();
+            if ids.len() > 1 {
+                let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                let next = (pos + 1) % ids.len();
+                app.switch_coordinator(ids[next]);
+            }
+        }
+        // Chat tab: '+' creates a new coordinator session
+        KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
+            app.create_coordinator(None);
+        }
+
         // Detail tab: 'R' toggles raw JSON display
         KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
             app.detail_raw_json = !app.detail_raw_json;

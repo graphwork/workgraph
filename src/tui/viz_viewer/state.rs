@@ -1431,6 +1431,8 @@ pub enum CommandEffect {
     /// A chat response arrived from `wg chat` — output is the coordinator's response text.
     /// The String is the request_id for correlation.
     ChatResponse(String),
+    /// A new coordinator was created. Triggers switching to the new coordinator.
+    CreateCoordinator,
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -1665,6 +1667,12 @@ pub struct VizApp {
     pub text_prompt: TextPromptState,
 
     // ── Chat state ──
+    /// Active coordinator ID (the chat tab currently being viewed).
+    pub active_coordinator_id: u32,
+    /// Per-coordinator chat states. Coordinator 0 is always present.
+    pub coordinator_chats: HashMap<u32, ChatState>,
+    /// Backward-compatible accessor: mutable reference to the active coordinator's chat state.
+    /// This field is kept in sync with `coordinator_chats[active_coordinator_id]`.
     pub chat: ChatState,
 
     // ── Agent monitor state ──
@@ -1900,6 +1908,8 @@ impl VizApp {
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
+            active_coordinator_id: 0,
+            coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
@@ -2338,6 +2348,18 @@ impl VizApp {
         // Compute cycle membership for the selected task.
         if let Some(members) = self.cycle_members.get(&selected_id) {
             self.cycle_set = members.clone();
+        }
+
+        // Selection sync: if a coordinator task is selected, switch chat to that coordinator.
+        if let Some(cid) = selected_id
+            .strip_prefix(".coordinator-")
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            if cid != self.active_coordinator_id {
+                self.switch_coordinator(cid);
+            }
+        } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
+            self.switch_coordinator(0);
         }
 
         // Invalidate HUD, lifecycle, and messages panel so they reload for the new selection.
@@ -4212,6 +4234,8 @@ impl VizApp {
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
+            active_coordinator_id: 0,
+            coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
@@ -4573,6 +4597,37 @@ impl VizApp {
                     // Auto-scroll to bottom.
                     self.chat.scroll = 0;
                     // Refresh graph in case coordinator created tasks.
+                    self.force_refresh();
+                }
+                CommandEffect::CreateCoordinator => {
+                    if result.success {
+                        // Parse the new coordinator ID from the output
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output) {
+                            if let Some(cid) = data["coordinator_id"].as_u64() {
+                                self.switch_coordinator(cid as u32);
+                                self.notification = Some((
+                                    format!("Coordinator {} created", cid),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        } else {
+                            // Non-JSON output — look for coordinator ID in the last line
+                            self.notification = Some((
+                                "New coordinator created".to_string(),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to create coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
                     self.force_refresh();
                 }
             }
@@ -5400,8 +5455,9 @@ impl VizApp {
     /// Poll for new coordinator responses in the outbox.
     /// Called during refresh ticks.
     pub fn poll_chat_messages(&mut self) {
-        let new_msgs = match workgraph::chat::read_outbox_since(
+        let new_msgs = match workgraph::chat::read_outbox_since_for(
             &self.workgraph_dir,
+            self.active_coordinator_id,
             self.chat.outbox_cursor,
         ) {
             Ok(msgs) => msgs,
@@ -5495,8 +5551,12 @@ impl VizApp {
         self.chat.awaiting_response = true;
         self.chat.last_request_id = Some(request_id.clone());
 
-        // Build `wg chat` command args, including --attachment flags.
+        // Build `wg chat` command args, including --attachment and --coordinator flags.
         let mut args = vec!["chat".to_string(), text];
+        if self.active_coordinator_id != 0 {
+            args.push("--coordinator".to_string());
+            args.push(self.active_coordinator_id.to_string());
+        }
         for att in &self.chat.pending_attachments {
             args.push("--attachment".to_string());
             args.push(att.stored_path.clone());
@@ -5538,6 +5598,74 @@ impl VizApp {
                     Some((format!("Attach failed: {}", e), std::time::Instant::now()));
             }
         }
+    }
+
+    /// Switch to a different coordinator session.
+    /// Saves the current chat state to the coordinator_chats map and loads the target.
+    pub fn switch_coordinator(&mut self, target_id: u32) {
+        if target_id == self.active_coordinator_id {
+            return;
+        }
+        // Save current chat state
+        let current = std::mem::take(&mut self.chat);
+        self.coordinator_chats
+            .insert(self.active_coordinator_id, current);
+
+        // Load target chat state (or create new default)
+        self.chat = self
+            .coordinator_chats
+            .remove(&target_id)
+            .unwrap_or_default();
+        self.active_coordinator_id = target_id;
+
+        // Sync: highlight the corresponding coordinator task in the graph.
+        let coord_task_id = if target_id == 0 {
+            ".coordinator".to_string()
+        } else {
+            format!(".coordinator-{}", target_id)
+        };
+        if let Some(idx) = self.task_order.iter().position(|id| *id == coord_task_id) {
+            self.selected_task_idx = Some(idx);
+            // Don't call recompute_trace() here to avoid infinite recursion
+            // (recompute_trace calls switch_coordinator for coordinator tasks).
+            // Just update the selection visually.
+            self.scroll_to_selected_task();
+        }
+    }
+
+    /// Create a new coordinator session via IPC and switch to it.
+    pub fn create_coordinator(&mut self, name: Option<String>) {
+        // Send CreateCoordinator IPC in background; the response will contain the new ID.
+        let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
+        if let Some(ref n) = name {
+            args.push("--name".to_string());
+            args.push(n.clone());
+        }
+        self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Get a list of known coordinator IDs from the graph.
+    pub fn list_coordinator_ids(&self) -> Vec<u32> {
+        let graph_path = self.workgraph_dir.join("graph.md");
+        let graph = match workgraph::parser::load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return vec![0],
+        };
+        let mut ids: Vec<u32> = graph
+            .tasks()
+            .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+            .filter_map(|t| {
+                t.id.strip_prefix(".coordinator-")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .or_else(|| if t.id == ".coordinator" { Some(0) } else { None })
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            ids.push(0);
+        }
+        ids
     }
 
     /// Try to paste an image from the system clipboard.

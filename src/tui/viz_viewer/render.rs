@@ -1579,15 +1579,60 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     };
     let msg_area_height = area.height.saturating_sub(input_height);
 
+    // Coordinator tab bar (only shown when multiple coordinators exist)
+    let coordinator_ids = app.list_coordinator_ids();
+    let has_multi_coordinators = coordinator_ids.len() > 1;
+    let tab_bar_height: u16 = if has_multi_coordinators { 1 } else { 0 };
+
+    // Draw coordinator tab bar if multiple coordinators
+    if has_multi_coordinators {
+        let tab_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        };
+        // Determine which coordinator is selected in the graph (for ● indicator).
+        let graph_selected_coordinator: Option<u32> = app
+            .selected_task_id()
+            .and_then(|id| {
+                id.strip_prefix(".coordinator-")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .or_else(|| if id == ".coordinator" { Some(0) } else { None })
+            });
+        let mut spans = Vec::new();
+        for &cid in &coordinator_ids {
+            let indicator = if graph_selected_coordinator == Some(cid) { "●" } else { " " };
+            if cid == app.active_coordinator_id {
+                spans.push(Span::styled(
+                    format!("{}{}  ", indicator, cid),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("{}{} ", indicator, cid),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
+        let tab_line = Line::from(spans);
+        frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
+    }
+
     let msg_area = Rect {
         x: area.x,
-        y: area.y,
+        y: area.y + tab_bar_height,
         width: area.width,
-        height: msg_area_height,
+        height: msg_area_height.saturating_sub(tab_bar_height),
     };
     let input_area = Rect {
         x: area.x,
-        y: area.y + msg_area_height,
+        y: area.y + tab_bar_height + msg_area.height,
         width: area.width,
         height: input_height,
     };
