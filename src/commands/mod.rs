@@ -672,7 +672,7 @@ mod provenance_coverage_tests {
         .unwrap();
         super::done::run(dir, "prov-archive", false, false).unwrap();
 
-        super::archive::run(dir, false, None, false, false).unwrap();
+        super::archive::run(dir, false, None, false, true, &[], false).unwrap();
         let entries = ops_with_type(dir, "archive");
         assert_eq!(entries.len(), 1);
         let task_ids = entries[0].detail["task_ids"].as_array().unwrap();

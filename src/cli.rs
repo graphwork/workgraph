@@ -657,6 +657,18 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
+        /// Skip confirmation prompt for bulk archive operations
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Undo the last archive operation (restore all tasks from the last batch)
+        #[arg(long)]
+        undo: bool,
+
+        /// Specific task IDs to archive
+        #[arg(value_name = "IDS")]
+        ids: Vec<String>,
+
         #[command(subcommand)]
         command: Option<ArchiveCommands>,
     },

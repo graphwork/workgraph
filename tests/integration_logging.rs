@@ -243,7 +243,7 @@ fn archive_produces_operation_log_entry() {
     task.completed_at = Some("2024-01-01T00:00:00Z".to_string());
     let (_dir, wg_dir) = setup_wg(vec![task, make_task("t2", "Open task", Status::Open)]);
 
-    wg_ok(&wg_dir, &["archive"]);
+    wg_ok(&wg_dir, &["archive", "--yes"]);
 
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     let archive_ops = ops_with_op(&entries, "archive");
@@ -815,7 +815,7 @@ fn coherency_after_archive_and_gc() {
     wg_ok(&wg_dir, &["abandon", "abandon-task"]);
 
     // Archive done tasks
-    wg_ok(&wg_dir, &["archive"]);
+    wg_ok(&wg_dir, &["archive", "--yes"]);
 
     // GC abandoned tasks
     wg_ok(&wg_dir, &["gc"]);
@@ -925,7 +925,7 @@ fn multiple_tasks_archive_produces_multiple_entries() {
     wg_ok(&wg_dir, &["add", "Done B", "--id", "done-b", "--immediate"]);
     wg_ok(&wg_dir, &["done", "done-a"]);
     wg_ok(&wg_dir, &["done", "done-b"]);
-    wg_ok(&wg_dir, &["archive"]);
+    wg_ok(&wg_dir, &["archive", "--yes"]);
 
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     let archive_ops = ops_with_op(&entries, "archive");

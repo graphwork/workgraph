@@ -470,7 +470,7 @@ fn test_archive_removes_done_tasks() {
         ],
     );
 
-    wg_ok(&wg_dir, &["archive"]);
+    wg_ok(&wg_dir, &["archive", "--yes"]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task("open1").is_some());

@@ -593,6 +593,9 @@ fn main() -> Result<()> {
             dry_run,
             older,
             list,
+            yes,
+            undo,
+            ids,
             command,
         } => match command {
             Some(cli::ArchiveCommands::Search { query, limit }) => {
@@ -602,7 +605,19 @@ fn main() -> Result<()> {
                 commands::archive::restore(&workgraph_dir, &task_id, reopen)
             }
             None => {
-                commands::archive::run(&workgraph_dir, dry_run, older.as_deref(), list, cli.json)
+                if undo {
+                    commands::archive::undo(&workgraph_dir)
+                } else {
+                    commands::archive::run(
+                        &workgraph_dir,
+                        dry_run,
+                        older.as_deref(),
+                        list,
+                        yes,
+                        &ids,
+                        cli.json,
+                    )
+                }
             }
         },
         Commands::Gc {
