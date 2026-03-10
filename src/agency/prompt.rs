@@ -561,7 +561,9 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
          - style_adherence: 10%\n\
          - downstream_usability: 15%\n\
          - coordination_overhead: 10%\n\
-         - blocking_impact: 5%\n\n",
+         - blocking_impact: 5%\n\n\
+         Note: `intent_fidelity` is mechanically injected from the FLIP score and does not \
+         need to be scored by the evaluator. Do not include it in your output dimensions.\n\n",
     );
 
     // -- Rubric spectrum --

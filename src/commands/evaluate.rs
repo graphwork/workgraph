@@ -390,6 +390,11 @@ pub fn run(
     let timestamp = chrono::Utc::now().to_rfc3339();
     let eval_id = format!("eval-{}-{}", task_id, timestamp.replace(':', "-"));
 
+    let mut dimensions = parsed.dimensions;
+    if let Some(fs) = flip_score {
+        dimensions.insert("intent_fidelity".to_string(), fs);
+    }
+
     let evaluation = Evaluation {
         id: eval_id,
         task_id: task_id.to_string(),
@@ -397,7 +402,7 @@ pub fn run(
         role_id: role_id.clone(),
         tradeoff_id: tradeoff_id.clone(),
         score: parsed.score,
-        dimensions: parsed.dimensions,
+        dimensions,
         notes: parsed.notes,
         evaluator: format!("claude:{}", model),
         timestamp,
@@ -451,6 +456,9 @@ pub fn run(
             }
             if let Some(b) = evaluation.dimensions.get("blocking_impact") {
                 println!("  blocking_impact:        {:.2}", b);
+            }
+            if let Some(f) = evaluation.dimensions.get("intent_fidelity") {
+                println!("  intent_fidelity:        {:.2}", f);
             }
             println!("Notes:      {}", evaluation.notes);
             println!("Evaluator:  {}", evaluation.evaluator);
@@ -1430,5 +1438,50 @@ mod tests {
         assert!((parsed.score - 0.82).abs() < f64::EPSILON);
         assert_eq!(parsed.dimensions.len(), 4);
         assert_eq!(parsed.notes, "Well implemented but could be more efficient");
+    }
+
+    #[test]
+    fn flip_score_injected_as_intent_fidelity() {
+        let parsed = EvalOutput {
+            score: 0.80,
+            dimensions: {
+                let mut d = HashMap::new();
+                d.insert("correctness".to_string(), 0.9);
+                d
+            },
+            notes: "good".to_string(),
+        };
+        let flip_score: Option<f64> = Some(0.75);
+
+        let mut dimensions = parsed.dimensions;
+        if let Some(fs) = flip_score {
+            dimensions.insert("intent_fidelity".to_string(), fs);
+        }
+
+        assert_eq!(dimensions.get("intent_fidelity"), Some(&0.75));
+        assert_eq!(dimensions.get("correctness"), Some(&0.9));
+        assert_eq!(dimensions.len(), 2);
+    }
+
+    #[test]
+    fn no_intent_fidelity_when_flip_score_none() {
+        let parsed = EvalOutput {
+            score: 0.80,
+            dimensions: {
+                let mut d = HashMap::new();
+                d.insert("correctness".to_string(), 0.9);
+                d
+            },
+            notes: "good".to_string(),
+        };
+        let flip_score: Option<f64> = None;
+
+        let mut dimensions = parsed.dimensions;
+        if let Some(fs) = flip_score {
+            dimensions.insert("intent_fidelity".to_string(), fs);
+        }
+
+        assert!(dimensions.get("intent_fidelity").is_none());
+        assert_eq!(dimensions.len(), 1);
     }
 }
