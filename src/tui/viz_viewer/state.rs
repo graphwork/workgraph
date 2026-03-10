@@ -2980,9 +2980,10 @@ impl VizApp {
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
-    pub fn maybe_refresh(&mut self) {
+    /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
+    pub fn maybe_refresh(&mut self) -> bool {
         if self.last_refresh.elapsed() < self.refresh_interval {
-            return;
+            return false;
         }
 
         let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
@@ -3069,6 +3070,96 @@ impl VizApp {
         }
 
         self.last_refresh = Instant::now();
+        true
+    }
+
+    /// Whether a refresh tick is due (enough time has elapsed since last refresh).
+    pub fn is_refresh_due(&self) -> bool {
+        self.last_refresh.elapsed() >= self.refresh_interval
+    }
+
+    /// Whether any time-based UI elements are active and need periodic redraws
+    /// (animations, fading notifications, scrollbar timeouts, etc.).
+    pub fn has_timed_ui_elements(&self) -> bool {
+        // Active splash animations (flash-and-fade on tasks)
+        if self.has_active_animations() {
+            return true;
+        }
+        // Slide animation on inspector panel
+        if self
+            .slide_animation
+            .as_ref()
+            .is_some_and(|a| !a.is_done())
+        {
+            return true;
+        }
+        // Jump target highlight (fades after 2s)
+        if self.jump_target.is_some() {
+            return true;
+        }
+        // Notification (cleared after 3s in drain_commands)
+        if self.notification.is_some() {
+            return true;
+        }
+        // Scrollbar fade timers (visible for 2s after scroll activity)
+        let scroll_active = |when: Option<Instant>| {
+            when.is_some_and(|w| w.elapsed() < std::time::Duration::from_secs(3))
+        };
+        if scroll_active(self.graph_scroll_activity)
+            || scroll_active(self.panel_scroll_activity)
+            || scroll_active(self.graph_hscroll_activity)
+            || scroll_active(self.panel_hscroll_activity)
+        {
+            return true;
+        }
+        // Config save notification (shown for 2s)
+        if self
+            .config_panel
+            .save_notification
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
+        {
+            return true;
+        }
+        // Service health feedback (shown for 5s)
+        if self
+            .service_health
+            .feedback
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() < std::time::Duration::from_secs(6))
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Compute the ideal poll timeout based on current UI activity.
+    /// Short (50ms) during animations for smooth rendering, longer when idle.
+    pub fn next_poll_timeout(&self) -> std::time::Duration {
+        // During animations, keep frame rate high for smooth visuals
+        if self.has_active_animations()
+            || self
+                .slide_animation
+                .as_ref()
+                .is_some_and(|a| !a.is_done())
+        {
+            return std::time::Duration::from_millis(50);
+        }
+
+        // When time-based UI elements are active (notifications, scrollbar fades),
+        // use a moderate rate — they don't need 20fps but should update reasonably
+        if self.has_timed_ui_elements() {
+            return std::time::Duration::from_millis(200);
+        }
+
+        // When time counters are displayed (session timer, uptime), update ~1/sec
+        if self.time_counters.any_enabled() {
+            let until_refresh = self.refresh_interval.saturating_sub(self.last_refresh.elapsed());
+            return until_refresh.min(std::time::Duration::from_secs(1));
+        }
+
+        // Fully idle: wait until next refresh is due, capped at 1 second
+        let until_refresh = self.refresh_interval.saturating_sub(self.last_refresh.elapsed());
+        until_refresh.min(std::time::Duration::from_secs(1))
     }
 
     /// Cycle through layout modes (tree ↔ diamond).
@@ -4610,8 +4701,11 @@ impl VizApp {
     }
 
     /// Drain any completed background commands and apply their effects.
-    pub fn drain_commands(&mut self) {
+    /// Returns `true` if any commands were processed.
+    pub fn drain_commands(&mut self) -> bool {
+        let mut drained = false;
         while let Ok(result) = self.cmd_rx.try_recv() {
+            drained = true;
             match result.effect {
                 CommandEffect::Refresh => {
                     self.force_refresh();
@@ -4742,7 +4836,9 @@ impl VizApp {
             && when.elapsed() > std::time::Duration::from_secs(3)
         {
             self.notification = None;
+            drained = true; // need redraw to remove the notification
         }
+        drained
     }
 
     /// Load agent monitor data from the agent registry.

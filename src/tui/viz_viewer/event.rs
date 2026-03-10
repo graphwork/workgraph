@@ -1,6 +1,5 @@
 use std::io;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
@@ -14,9 +13,6 @@ use super::state::{
     CommandEffect, ConfigEditKind, ConfirmAction, ControlPanelFocus, FocusedPanel, InputMode,
     InspectorSubFocus, RightPanelTab, TaskFormField, TextPromptAction, VizApp,
 };
-
-/// Input poll timeout — short for responsive scrolling.
-const INPUT_POLL: Duration = Duration::from_millis(50);
 
 /// Apply the current mouse capture state to the terminal.
 ///
@@ -79,17 +75,29 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
         }
     });
 
-    loop {
-        app.maybe_refresh();
-        app.drain_commands();
-        terminal.draw(|frame| render::draw(frame, app))?;
+    // Always draw the first frame.
+    let mut needs_redraw = true;
 
-        // Wait for the first event (up to INPUT_POLL), then drain all
+    loop {
+        let refreshed = app.maybe_refresh();
+        let drained = app.drain_commands();
+
+        if needs_redraw || refreshed || drained {
+            terminal.draw(|frame| render::draw(frame, app))?;
+            needs_redraw = false;
+        }
+
+        // Adaptive poll timeout: short during animations for smooth rendering,
+        // longer when idle to reduce CPU usage (from ~50% to <5%).
+        let poll_timeout = app.next_poll_timeout();
+
+        // Wait for the first event (up to poll_timeout), then drain all
         // immediately queued events before redrawing — same batching
         // strategy as before, but via the channel instead of raw polling.
-        match rx.recv_timeout(INPUT_POLL) {
+        match rx.recv_timeout(poll_timeout) {
             Ok(ev) => {
                 dispatch_event(app, ev);
+                needs_redraw = true;
                 // Drain remaining queued events so we only redraw once
                 // for a rapid burst (e.g. pasted text arriving as
                 // individual KeyEvents when bracketed paste is absent).
@@ -100,7 +108,14 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {} // no events — just redraw
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Timeout: redraw if timed UI elements changed (animation
+                // progress, notification expiry, scrollbar fade) or if a
+                // data refresh tick is due.
+                if app.has_timed_ui_elements() || app.is_refresh_due() {
+                    needs_redraw = true;
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 anyhow::bail!("terminal event reader thread exited unexpectedly");
             }
