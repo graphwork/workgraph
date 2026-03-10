@@ -343,6 +343,10 @@ pub struct Task {
     /// Task that this task replaces (set on new tasks created as replacements)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    /// When true, task was created with --no-place and should skip automatic placement.
+    /// The placement system will not create a .place-* task for this task.
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub unplaced: bool,
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -793,6 +797,8 @@ struct TaskHelper {
     superseded_by: Vec<String>,
     #[serde(default)]
     supersedes: Option<String>,
+    #[serde(default)]
+    unplaced: bool,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -864,6 +870,7 @@ impl<'de> Deserialize<'de> for Task {
             max_rejections: helper.max_rejections,
             superseded_by: helper.superseded_by,
             supersedes: helper.supersedes,
+            unplaced: helper.unplaced,
         })
     }
 }

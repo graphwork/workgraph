@@ -727,6 +727,241 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
     modified
 }
 
+/// Build placement tasks for draft tasks needing automatic placement.
+///
+/// Detects tasks in draft state (paused=true, not unplaced, not system task)
+/// and either auto-places them (fast path) or creates `.place-*` system tasks
+/// for agent-based placement.
+///
+/// **Auto-place fast path:** If a draft task has `--after` deps AND no file
+/// overlap with active tasks' artifacts, publish it immediately (no agent needed).
+///
+/// **Agent placement:** Creates a `.place-<task-id>` system task with placement
+/// context (active tasks, artifacts, integration gates, file mentions).
+///
+/// Returns `true` if the graph was modified.
+fn build_placement_tasks(
+    graph: &mut workgraph::graph::WorkGraph,
+    _config: &Config,
+    dir: &Path,
+) -> bool {
+    use workgraph::graph::is_system_task;
+
+    let mut modified = false;
+
+    // Collect draft tasks needing placement
+    let tasks_needing_placement: Vec<(String, Vec<String>, Option<String>)> = graph
+        .tasks()
+        .filter(|t| {
+            t.paused
+                && !t.unplaced
+                && !is_system_task(&t.id)
+                && !t.tags.iter().any(|tag| tag == "placed")
+        })
+        .map(|t| (t.id.clone(), t.after.clone(), t.description.clone()))
+        .collect();
+
+    for (task_id, after_deps, description) in tasks_needing_placement {
+        let place_task_id = format!(".place-{}", task_id);
+
+        // Idempotent: skip if placement task already exists
+        if graph.get_task(&place_task_id).is_some() {
+            continue;
+        }
+
+        // Auto-place fast path: task has --after deps AND no file overlap with active tasks
+        if !after_deps.is_empty() {
+            let mentioned_files = extract_file_paths(description.as_deref().unwrap_or(""));
+            let has_overlap = if mentioned_files.is_empty() {
+                false
+            } else {
+                graph
+                    .tasks()
+                    .filter(|t| {
+                        t.id != task_id
+                            && !t.status.is_terminal()
+                            && !t.paused
+                            && !is_system_task(&t.id)
+                    })
+                    .any(|t| {
+                        t.artifacts
+                            .iter()
+                            .any(|a| mentioned_files.iter().any(|f| a.contains(f)))
+                    })
+            };
+
+            if !has_overlap {
+                if let Some(task) = graph.get_task_mut(&task_id) {
+                    task.paused = false;
+                    if !task.tags.contains(&"placed".to_string()) {
+                        task.tags.push("placed".to_string());
+                    }
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        message: "Auto-placed: user deps sufficient, no file conflicts detected"
+                            .to_string(),
+                    });
+                }
+                eprintln!(
+                    "[coordinator] Auto-placed draft task '{}' (deps provided, no file conflicts)",
+                    task_id
+                );
+                super::super::notify_graph_changed(dir);
+                modified = true;
+                continue;
+            }
+        }
+
+        // Agent placement: create .place-<task-id> system task
+        let placement_context = build_placement_context(graph, &task_id);
+        let place_task = Task {
+            id: place_task_id.clone(),
+            title: format!("Place: {}", task_id),
+            description: Some(placement_context),
+            status: Status::Open,
+            after: vec![],
+            tags: vec!["placement".to_string(), "agency".to_string()],
+            exec_mode: Some("bare".to_string()),
+            visibility: "internal".to_string(),
+            created_at: Some(Utc::now().to_rfc3339()),
+            ..Task::default()
+        };
+
+        graph.add_node(Node::Task(place_task));
+        eprintln!(
+            "[coordinator] Created placement task '{}' for draft task '{}'",
+            place_task_id, task_id
+        );
+        modified = true;
+    }
+
+    modified
+}
+
+/// Extract file paths from a task description using heuristics.
+fn extract_file_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for word in text.split_whitespace() {
+        let word = word.trim_matches(|c: char| {
+            !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-'
+        });
+        if word.contains('/')
+            && (word.ends_with(".rs")
+                || word.ends_with(".ts")
+                || word.ends_with(".js")
+                || word.ends_with(".py")
+                || word.ends_with(".go")
+                || word.ends_with(".toml")
+                || word.ends_with(".md")
+                || word.ends_with(".yaml")
+                || word.ends_with(".yml")
+                || word.ends_with(".json"))
+        {
+            paths.push(word.to_string());
+        }
+    }
+    paths
+}
+
+/// Build placement context string for a `.place-*` task description.
+fn build_placement_context(graph: &workgraph::graph::WorkGraph, task_id: &str) -> String {
+    use workgraph::graph::is_system_task;
+
+    let mut ctx = String::new();
+
+    if let Some(task) = graph.get_task(task_id) {
+        let mentioned_files = extract_file_paths(task.description.as_deref().unwrap_or(""));
+        ctx.push_str("## Task to place\n");
+        ctx.push_str(&format!("ID: {}\n", task.id));
+        ctx.push_str(&format!("Title: {}\n", task.title));
+        if let Some(ref desc) = task.description {
+            ctx.push_str(&format!("Description: {}\n", desc));
+        }
+        if !mentioned_files.is_empty() {
+            ctx.push_str(&format!("Files mentioned: {}\n", mentioned_files.join(", ")));
+        }
+        if !task.after.is_empty() {
+            ctx.push_str(&format!("Existing deps: {}\n", task.after.join(", ")));
+        }
+        ctx.push('\n');
+    }
+
+    ctx.push_str("## Active tasks (non-terminal)\n");
+    let active_tasks: Vec<_> = graph
+        .tasks()
+        .filter(|t| {
+            !t.status.is_terminal() && !t.paused && !is_system_task(&t.id) && t.id != task_id
+        })
+        .collect();
+    if active_tasks.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &active_tasks {
+            let arts = if t.artifacts.is_empty() {
+                "[]".to_string()
+            } else {
+                format!("[{}]", t.artifacts.join(", "))
+            };
+            ctx.push_str(&format!("- {} ({}): artifacts={}\n", t.id, t.status, arts));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Recently completed tasks (last 10)\n");
+    let mut completed: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.status == Status::Done && !is_system_task(&t.id))
+        .collect();
+    completed.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+    completed.truncate(10);
+    if completed.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &completed {
+            let arts = if t.artifacts.is_empty() {
+                "[]".to_string()
+            } else {
+                format!("[{}]", t.artifacts.join(", "))
+            };
+            ctx.push_str(&format!("- {} (done): artifacts={}\n", t.id, arts));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Integration gates\n");
+    let gates: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.after.len() >= 5 && !t.status.is_terminal())
+        .collect();
+    if gates.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &gates {
+            ctx.push_str(&format!("- {}: {} deps\n", t.id, t.after.len()));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Instructions\n");
+    ctx.push_str("1. Analyze file overlap between the new task and active tasks\n");
+    ctx.push_str(&format!(
+        "2. Add dependency edges using: wg edit {} --add-after <dep-id>\n",
+        task_id
+    ));
+    ctx.push_str("3. If the task belongs before an integration gate, add it:\n");
+    ctx.push_str(&format!("   wg edit <gate-id> --add-after {}\n", task_id));
+    ctx.push_str(&format!(
+        "4. When done, publish the task: wg publish {}\n",
+        task_id
+    ));
+    ctx.push_str(
+        "5. If placement is ambiguous, publish anyway — some placement is better than none\n",
+    );
+
+    ctx
+}
+
 /// Auto-assign: scaffold `.assign-*` tasks and run lightweight LLM assignment.
 ///
 /// Phase 1 — Scaffold: For ready unassigned non-system tasks without an
@@ -1041,6 +1276,93 @@ fn build_auto_assign_tasks(
             agency::short_hash(&resolved_agent.id),
             assignment_path,
         );
+
+        // If the assigner signals that no good match was found, trigger the
+        // creator agent to expand the primitive store (self-healing).
+        if verdict.create_needed && config.agency.auto_create {
+            let has_pending_create = graph.tasks().any(|t| {
+                t.id.starts_with(".create-")
+                    && matches!(t.status, Status::Open | Status::InProgress)
+            });
+            if !has_pending_create {
+                let ts = Utc::now().format("%Y%m%d-%H%M%S");
+                let create_task_id = format!(".create-needed-{}", ts);
+                let creator_resolved = config
+                    .resolve_model_for_role(workgraph::config::DispatchRole::Creator);
+
+                let desc = format!(
+                    "## Creator Triggered by Assigner\n\n\
+                     The assigner could not find a good agent match for task '{}' ({}).\n\
+                     Reason: {}\n\n\
+                     Run `wg agency create` to expand the primitive store.\n",
+                    source_id,
+                    graph
+                        .get_task(&source_id)
+                        .map(|t| t.title.as_str())
+                        .unwrap_or("?"),
+                    verdict.reason,
+                );
+
+                let create_task = Task {
+                    id: create_task_id.clone(),
+                    title: format!("Create agents: poor match for '{}'", source_id),
+                    description: Some(desc),
+                    status: Status::Open,
+                    assigned: None,
+                    estimate: None,
+                    before: vec![],
+                    after: vec![],
+                    requires: vec![],
+                    tags: vec!["creation".to_string(), "agency".to_string()],
+                    skills: vec![],
+                    inputs: vec![],
+                    deliverables: vec![],
+                    artifacts: vec![],
+                    exec: Some("wg agency create".to_string()),
+                    not_before: None,
+                    created_at: Some(Utc::now().to_rfc3339()),
+                    started_at: None,
+                    completed_at: None,
+                    log: vec![],
+                    retry_count: 0,
+                    max_retries: Some(1),
+                    failure_reason: None,
+                    model: Some(creator_resolved.model),
+                    provider: creator_resolved.provider,
+                    verify: None,
+                    agent: config.agency.creator_agent.clone(),
+                    loop_iteration: 0,
+                    cycle_failure_restarts: 0,
+                    ready_after: None,
+                    paused: false,
+                    visibility: "internal".to_string(),
+                    context_scope: None,
+                    cycle_config: None,
+                    exec_mode: Some("bare".to_string()),
+                    token_usage: None,
+                    session_id: None,
+                    wait_condition: None,
+                    checkpoint: None,
+                    resurrection_count: 0,
+                    last_resurrected_at: None,
+                    validation: None,
+                    validation_commands: vec![],
+                    test_required: false,
+                    rejection_count: 0,
+                    max_rejections: None,
+                    superseded_by: vec![],
+                    supersedes: None,
+                    unplaced: false,
+                };
+
+                graph.add_node(Node::Task(create_task));
+                eprintln!(
+                    "[coordinator] Assigner flagged create_needed for '{}' — created '{}'",
+                    source_id, create_task_id,
+                );
+            }
+        }
+
         modified = true;
     }
 
@@ -1313,6 +1635,7 @@ fn build_flip_verification_tasks(
             max_rejections: None,
             superseded_by: vec![],
             supersedes: None,
+            unplaced: false,
         };
 
         graph.add_node(Node::Task(verify_task));
@@ -1481,6 +1804,7 @@ fn build_auto_evolve_task(
         max_rejections: None,
         superseded_by: vec![],
         supersedes: None,
+        unplaced: false,
     };
 
     graph.add_node(Node::Task(evolve_task));
@@ -1517,6 +1841,149 @@ fn build_auto_evolve_task(
     eprintln!(
         "[coordinator] Created auto-evolve task '{}' — {}",
         evolve_task_id, trigger_reason,
+    );
+
+    true
+}
+
+/// Auto-create: trigger the creator agent when enough tasks have completed
+/// since the last creation run.
+///
+/// Checks `config.agency.auto_create` and `auto_create_threshold`. When the
+/// number of completed tasks since the last creator invocation exceeds the
+/// threshold, creates a `.create-<timestamp>` system task that runs
+/// `wg agency create`.
+///
+/// Returns `true` if the graph was modified.
+fn build_auto_create_task(
+    dir: &Path,
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let agency_dir = dir.join("agency");
+
+    // Don't create if agency isn't initialized
+    if !agency_dir.join("cache/roles").exists() {
+        return false;
+    }
+
+    // Check that no .create-* task is already in-progress or open
+    let has_active_create = graph.tasks().any(|t| {
+        t.id.starts_with(".create-") && matches!(t.status, Status::Open | Status::InProgress)
+    });
+    if has_active_create {
+        return false;
+    }
+
+    // Count completed (Done) non-system tasks
+    let completed_count = graph
+        .tasks()
+        .filter(|t| t.status == Status::Done && !workgraph::graph::is_system_task(&t.id))
+        .count() as u32;
+
+    // Load last creator invocation count from state file
+    let state_path = agency_dir.join("creator_state.json");
+    let last_count: u32 = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("last_completed_count")?.as_u64())
+        .unwrap_or(0) as u32;
+
+    let since_last = completed_count.saturating_sub(last_count);
+
+    if since_last < config.agency.auto_create_threshold {
+        return false;
+    }
+
+    // Generate create task ID
+    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+    let create_task_id = format!(".create-{}", ts);
+
+    let creator_resolved =
+        config.resolve_model_for_role(workgraph::config::DispatchRole::Creator);
+
+    let desc = format!(
+        "## Auto-Creator Cycle\n\n\
+         **Trigger:** {} completed tasks since last creation (threshold: {})\n\n\
+         Run `wg agency create` to expand the primitive store with new role components,\n\
+         desired outcomes, and tradeoff configurations.\n\n\
+         ### Instructions\n\
+         1. Run `wg agency create`\n\
+         2. Log the results\n\
+         3. Mark this task done\n",
+        since_last, config.agency.auto_create_threshold,
+    );
+
+    let create_task = Task {
+        id: create_task_id.clone(),
+        title: format!(
+            "Auto-create: {} tasks since last creation",
+            since_last
+        ),
+        description: Some(desc),
+        status: Status::Open,
+        assigned: None,
+        estimate: None,
+        before: vec![],
+        after: vec![],
+        requires: vec![],
+        tags: vec!["creation".to_string(), "agency".to_string()],
+        skills: vec![],
+        inputs: vec![],
+        deliverables: vec![],
+        artifacts: vec![],
+        exec: Some("wg agency create".to_string()),
+        not_before: None,
+        created_at: Some(Utc::now().to_rfc3339()),
+        started_at: None,
+        completed_at: None,
+        log: vec![],
+        retry_count: 0,
+        max_retries: Some(1),
+        failure_reason: None,
+        model: Some(creator_resolved.model),
+        provider: creator_resolved.provider,
+        verify: None,
+        agent: config.agency.creator_agent.clone(),
+        loop_iteration: 0,
+        cycle_failure_restarts: 0,
+        ready_after: None,
+        paused: false,
+        visibility: "internal".to_string(),
+        context_scope: None,
+        cycle_config: None,
+        exec_mode: Some("bare".to_string()),
+        token_usage: None,
+        session_id: None,
+        wait_condition: None,
+        checkpoint: None,
+        resurrection_count: 0,
+        last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+    };
+
+    graph.add_node(Node::Task(create_task));
+
+    // Save state: record current completed count
+    let state = serde_json::json!({
+        "last_completed_count": completed_count,
+        "last_created_at": Utc::now().to_rfc3339(),
+        "task_id": create_task_id,
+    });
+    if let Err(e) = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap_or_default()) {
+        eprintln!("[coordinator] Warning: failed to save creator state: {}", e);
+    }
+
+    eprintln!(
+        "[coordinator] Created auto-create task '{}' — {} completed tasks since last creation",
+        create_task_id, since_last,
     );
 
     true
@@ -2385,6 +2852,16 @@ pub fn coordinator_tick(
         }
     }
 
+    // Phase 2.9: Build placement tasks for draft tasks needing automatic placement.
+    // Must run BEFORE auto-assign (Phase 3) so placed tasks become eligible.
+    {
+        let placement_modified = build_placement_tasks(&mut graph, &config, dir);
+        if placement_modified {
+            save_graph(&graph, &graph_path)
+                .context("Failed to save graph after placement")?;
+        }
+    }
+
     // Phase 3: Auto-assign unassigned ready tasks
     // NOTE: These must run BEFORE the early-return check, because they may
     // create new ready tasks (e.g. evaluate-* tasks) that weren't there before.
@@ -2405,6 +2882,11 @@ pub fn coordinator_tick(
     // Phase 4.6: Auto-evolve — trigger evolution when evaluation data warrants it.
     if config.agency.auto_evolve {
         graph_modified |= build_auto_evolve_task(dir, &mut graph, &config);
+    }
+
+    // Phase 4.7: Auto-create — trigger creator when enough tasks completed.
+    if config.agency.auto_create {
+        graph_modified |= build_auto_create_task(dir, &mut graph, &config);
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate.
