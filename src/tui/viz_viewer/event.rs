@@ -754,6 +754,12 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 }
 
 fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    // When the archive browser is active, intercept keys for archive navigation.
+    if app.archive_browser.active {
+        handle_archive_key(app, code, modifiers);
+        return;
+    }
+
     match code {
         // Help overlay
         KeyCode::Char('?') => app.show_help = true,
@@ -1013,6 +1019,11 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.inspector_sub_focus = InspectorSubFocus::TextEntry;
         }
 
+        // A: toggle archive browser
+        KeyCode::Char('A') => {
+            app.toggle_archive_browser();
+        }
+
         // Digit keys 0-7: switch right panel tab
         KeyCode::Char(d @ '0'..='7') => {
             let idx = (d as u8 - b'0') as usize;
@@ -1020,6 +1031,99 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 app.right_panel_visible = true;
                 app.right_panel_tab = tab;
             }
+        }
+
+        _ => {}
+    }
+}
+
+fn handle_archive_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers) {
+    if app.archive_browser.filter_active {
+        // Filter input mode: typing characters into the filter
+        match code {
+            KeyCode::Esc => {
+                app.archive_browser.filter_active = false;
+                app.archive_browser.filter.clear();
+                app.archive_browser.apply_filter();
+            }
+            KeyCode::Enter => {
+                app.archive_browser.filter_active = false;
+            }
+            KeyCode::Backspace => {
+                app.archive_browser.filter.pop();
+                app.archive_browser.apply_filter();
+            }
+            KeyCode::Char(c) => {
+                app.archive_browser.filter.push(c);
+                app.archive_browser.apply_filter();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        // Close archive browser
+        KeyCode::Esc | KeyCode::Char('A') => {
+            app.archive_browser.active = false;
+            app.archive_browser.filter_active = false;
+        }
+        KeyCode::Char('q') => {
+            app.archive_browser.active = false;
+            app.archive_browser.filter_active = false;
+        }
+
+        // Navigation
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.archive_browser.selected > 0 {
+                app.archive_browser.selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 && app.archive_browser.selected < count - 1 {
+                app.archive_browser.selected += 1;
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            app.archive_browser.selected = 0;
+            app.archive_browser.scroll = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 {
+                app.archive_browser.selected = count - 1;
+            }
+        }
+        KeyCode::PageUp => {
+            app.archive_browser.selected = app.archive_browser.selected.saturating_sub(20);
+        }
+        KeyCode::PageDown => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 {
+                app.archive_browser.selected =
+                    (app.archive_browser.selected + 20).min(count - 1);
+            }
+        }
+
+        // Search/filter
+        KeyCode::Char('/') => {
+            app.archive_browser.filter.clear();
+            app.archive_browser.filter_active = true;
+        }
+
+        // Restore selected task
+        KeyCode::Char('r') => {
+            app.restore_archive_entry();
+            // Reload after restore
+            let dir = app.workgraph_dir.clone();
+            app.archive_browser.load(&dir);
+        }
+
+        // Refresh archive list
+        KeyCode::Char('R') => {
+            let dir = app.workgraph_dir.clone();
+            app.archive_browser.load(&dir);
         }
 
         _ => {}

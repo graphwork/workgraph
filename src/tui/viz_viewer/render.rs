@@ -664,7 +664,13 @@ fn is_selected_task_line(app: &VizApp, orig_idx: usize) -> bool {
     false
 }
 
-fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // When the archive browser is active, render it instead of the graph.
+    if app.archive_browser.active {
+        draw_archive_browser(frame, app, area);
+        return;
+    }
+
     let visible_count = app.visible_line_count();
     let start = app.scroll.offset_y;
     let end = (start + area.height as usize).min(visible_count);
@@ -1132,6 +1138,102 @@ fn highlight_fuzzy_match<'a>(
     }
 
     Line::from(new_spans)
+}
+
+fn draw_archive_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let ab = &app.archive_browser;
+    let visible = ab.visible_count();
+    let viewport_h = area.height.saturating_sub(2) as usize; // 1 for header, 1 for footer
+
+    // Auto-scroll to keep selection visible
+    let scroll = if ab.selected < ab.scroll {
+        ab.selected
+    } else if ab.selected >= ab.scroll + viewport_h {
+        ab.selected.saturating_sub(viewport_h - 1)
+    } else {
+        ab.scroll
+    };
+    // Update scroll in app (needs mut)
+    app.archive_browser.scroll = scroll;
+
+    let ab = &app.archive_browser;
+
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+    // Header line
+    let header_text = if ab.filter_active {
+        format!(
+            " Archive ({} entries) — filter: /{}▌",
+            ab.entries.len(),
+            ab.filter
+        )
+    } else if !ab.filter.is_empty() {
+        format!(
+            " Archive ({}/{} entries) — filter: /{} ",
+            visible,
+            ab.entries.len(),
+            ab.filter
+        )
+    } else {
+        format!(" Archive ({} entries) ", ab.entries.len())
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            header_text,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " [A/Esc:close  /:filter  r:restore  R:refresh]",
+            Style::default().fg(Color::Rgb(100, 100, 100)),
+        ),
+    ]));
+
+    // Entry rows
+    let end = (scroll + viewport_h).min(visible);
+    for vi in scroll..end {
+        let idx = ab.filtered_indices[vi];
+        let entry = &ab.entries[idx];
+        let is_selected = vi == ab.selected;
+
+        let completed = entry
+            .completed_at
+            .as_deref()
+            .and_then(|s| s.get(..10)) // YYYY-MM-DD
+            .unwrap_or("????-??-??");
+
+        let tags_str = if entry.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", entry.tags.join(", "))
+        };
+
+        let line_text = format!("  {} │ {} │ {}{}", completed, entry.id, entry.title, tags_str);
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(50, 50, 80))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(180, 180, 180))
+        };
+
+        lines.push(Line::from(Span::styled(line_text, style)));
+    }
+
+    // Fill remaining rows
+    while lines.len() < area.height as usize {
+        lines.push(Line::from(""));
+    }
+
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 20, 20)));
+    frame.render_widget(paragraph, area);
+
+    // Store the area for graph pane compatibility
+    app.last_graph_area = area;
 }
 
 fn draw_scrollbar(frame: &mut Frame, app: &mut VizApp, area: Rect) {
@@ -4366,6 +4468,29 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             vec![("Enter", "save"), ("Esc", "cancel")],
         ),
         InputMode::Normal => match app.focused_panel {
+            FocusedPanel::Graph if app.archive_browser.active => {
+                if app.archive_browser.filter_active {
+                    (
+                        "Archive",
+                        "FILTER",
+                        Color::Cyan,
+                        vec![("Enter", "accept"), ("Esc", "clear")],
+                    )
+                } else {
+                    (
+                        "Archive",
+                        "NAV",
+                        Color::Yellow,
+                        vec![
+                            ("↑↓", "select"),
+                            ("/", "filter"),
+                            ("r", "restore"),
+                            ("R", "refresh"),
+                            ("A/Esc", "close"),
+                        ],
+                    )
+                }
+            }
             FocusedPanel::Graph => (
                 "Graph",
                 "NAV",
@@ -4545,6 +4670,13 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     }
 
     spans.push(Span::styled(") ", Style::default().fg(Color::White)));
+
+    if c.archived > 0 {
+        spans.push(Span::styled(
+            format!("{} archived ", c.archived),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     // Token breakdown: input/output/cache with view/total toggle
     let visible_usage;
@@ -5248,6 +5380,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("f", "Mark selected task failed"),
         binding("x", "Retry selected task"),
         binding("e", "Edit task description"),
+        binding("A", "Toggle archive browser"),
         binding("c", "Open chat input"),
         binding("Ctrl-C", "Kill agent on focused task"),
         blank(),

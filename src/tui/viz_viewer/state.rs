@@ -1122,6 +1122,134 @@ pub fn format_duration_compact(secs: u64) -> String {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Archive browser
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A single entry in the archive browser.
+pub struct ArchiveEntry {
+    pub id: String,
+    pub title: String,
+    pub completed_at: Option<String>,
+    pub tags: Vec<String>,
+}
+
+/// State for the archive browser panel (toggled with 'A').
+pub struct ArchiveBrowserState {
+    /// Whether the archive browser is currently open/visible.
+    pub active: bool,
+    /// All archived entries loaded from archive.jsonl.
+    pub entries: Vec<ArchiveEntry>,
+    /// Currently selected index in the (filtered) list.
+    pub selected: usize,
+    /// Scroll offset (first visible row).
+    pub scroll: usize,
+    /// Search/filter query (empty = show all).
+    pub filter: String,
+    /// Whether the user is typing a filter query.
+    pub filter_active: bool,
+    /// Indices into `entries` that match the current filter.
+    pub filtered_indices: Vec<usize>,
+}
+
+impl Default for ArchiveBrowserState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            entries: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            filter: String::new(),
+            filter_active: false,
+            filtered_indices: Vec::new(),
+        }
+    }
+}
+
+impl ArchiveBrowserState {
+    /// Reload entries from the archive.jsonl file.
+    pub fn load(&mut self, workgraph_dir: &std::path::Path) {
+        let archive_path = workgraph_dir.join("archive.jsonl");
+        self.entries.clear();
+        if let Ok(file) = std::fs::File::open(&archive_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                // Parse as JSON, extract task fields
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    // The archive stores Node::Task — the outer object has "kind":"task"
+                    // and the task fields at the top level.
+                    let id = val["id"].as_str().unwrap_or("").to_string();
+                    let title = val["title"].as_str().unwrap_or("").to_string();
+                    let completed_at = val["completed_at"].as_str().map(String::from);
+                    let tags: Vec<String> = val["tags"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !id.is_empty() {
+                        self.entries.push(ArchiveEntry {
+                            id,
+                            title,
+                            completed_at,
+                            tags,
+                        });
+                    }
+                }
+            }
+        }
+        self.apply_filter();
+    }
+
+    /// Apply the current filter to entries, updating filtered_indices.
+    pub fn apply_filter(&mut self) {
+        if self.filter.is_empty() {
+            self.filtered_indices = (0..self.entries.len()).collect();
+        } else {
+            let query = self.filter.to_lowercase();
+            self.filtered_indices = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.id.to_lowercase().contains(&query)
+                        || e.title.to_lowercase().contains(&query)
+                        || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        // Clamp selection
+        if self.filtered_indices.is_empty() {
+            self.selected = 0;
+        } else if self.selected >= self.filtered_indices.len() {
+            self.selected = self.filtered_indices.len() - 1;
+        }
+    }
+
+    /// Get the currently selected entry (if any).
+    pub fn selected_entry(&self) -> Option<&ArchiveEntry> {
+        self.filtered_indices
+            .get(self.selected)
+            .and_then(|&idx| self.entries.get(idx))
+    }
+
+    /// Number of visible (filtered) entries.
+    pub fn visible_count(&self) -> usize {
+        self.filtered_indices.len()
+    }
+}
+
 /// Live JSONL stream state for a single agent.
 pub struct AgentStreamInfo {
     /// File position (byte offset) — resume reading from here.
@@ -1531,6 +1659,7 @@ pub struct TaskCounts {
     pub in_progress: usize,
     pub failed: usize,
     pub blocked: usize,
+    pub archived: usize,
 }
 
 /// A single fuzzy match result for a line.
@@ -1772,6 +1901,9 @@ pub struct VizApp {
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
 
+    // ── Archive browser state ──
+    pub archive_browser: ArchiveBrowserState,
+
     // ── File browser state (panel 6) ──
     pub file_browser: Option<super::file_browser::FileBrowser>,
 
@@ -1992,6 +2124,7 @@ impl VizApp {
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             config_panel: ConfigPanelState::default(),
+            archive_browser: ArchiveBrowserState::default(),
             file_browser: None,
             cmd_rx,
             cmd_tx,
@@ -2969,6 +3102,21 @@ impl VizApp {
 
             new_snapshots.insert(task.id.clone(), snapshot);
         }
+
+        // Count archived tasks
+        let archive_path = self.workgraph_dir.join("archive.jsonl");
+        counts.archived = if archive_path.exists() {
+            std::fs::File::open(&archive_path)
+                .map(|f| {
+                    BufReader::new(f)
+                        .lines()
+                        .filter(|l| l.as_ref().is_ok_and(|s| !s.trim().is_empty()))
+                        .count()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         self.task_snapshots = new_snapshots;
         self.task_counts = counts;
@@ -4442,6 +4590,7 @@ impl VizApp {
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
             refresh_interval: std::time::Duration::from_secs(3600),
+            archive_browser: ArchiveBrowserState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
         }
@@ -4725,6 +4874,9 @@ impl VizApp {
                 }
                 CommandEffect::RefreshAndNotify(msg) => {
                     self.force_refresh();
+                    if self.archive_browser.active {
+                        self.archive_browser.load(&self.workgraph_dir);
+                    }
                     let msg = if result.success {
                         msg
                     } else {
@@ -6157,6 +6309,35 @@ impl VizApp {
     pub fn close_task_form(&mut self) {
         self.task_form = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Toggle the archive browser view.
+    pub fn toggle_archive_browser(&mut self) {
+        if self.archive_browser.active {
+            self.archive_browser.active = false;
+            self.archive_browser.filter_active = false;
+        } else {
+            self.archive_browser.load(&self.workgraph_dir);
+            self.archive_browser.active = true;
+            self.archive_browser.filter_active = false;
+        }
+    }
+
+    /// Restore the currently selected archived task back into the graph.
+    pub fn restore_archive_entry(&mut self) {
+        let task_id = match self.archive_browser.selected_entry() {
+            Some(e) => e.id.clone(),
+            None => return,
+        };
+        self.exec_command(
+            vec![
+                "archive".to_string(),
+                "restore".to_string(),
+                task_id.clone(),
+                "--reopen".to_string(),
+            ],
+            CommandEffect::RefreshAndNotify(format!("Restored '{}'", task_id)),
+        );
     }
 
     /// Submit the task creation form — runs `wg add` in background.
@@ -9986,5 +10167,157 @@ mod tui_config_panel_tests {
         let config = Config::load(&app.workgraph_dir).unwrap();
         let default_model = config.models.default.as_ref().and_then(|c| c.model.clone());
         assert_eq!(default_model, None);
+    }
+}
+
+#[cfg(test)]
+mod archive_browser_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn create_archive(dir: &std::path::Path, entries: &[(&str, &str, &str, &[&str])]) {
+        let archive_path = dir.join("archive.jsonl");
+        let mut file = std::fs::File::create(&archive_path).unwrap();
+        for (id, title, completed, tags) in entries {
+            let tags_json: Vec<String> = tags.iter().map(|t| format!("\"{}\"", t)).collect();
+            writeln!(
+                file,
+                r#"{{"kind":"task","id":"{}","title":"{}","status":"done","completed_at":"{}","tags":[{}]}}"#,
+                id, title, completed, tags_json.join(",")
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_tui_archive_load_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("task-1", "First task", "2026-01-15T00:00:00Z", &["bug"]),
+                ("task-2", "Second task", "2026-02-20T00:00:00Z", &["feature", "ui"]),
+                ("task-3", "Third task", "2026-03-01T00:00:00Z", &[]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.entries.len(), 3);
+        assert_eq!(ab.entries[0].id, "task-1");
+        assert_eq!(ab.entries[0].title, "First task");
+        assert_eq!(ab.entries[0].tags, vec!["bug"]);
+        assert_eq!(ab.entries[1].id, "task-2");
+        assert_eq!(ab.entries[2].id, "task-3");
+        assert_eq!(ab.visible_count(), 3);
+    }
+
+    #[test]
+    fn test_tui_archive_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("task-1", "Fix login bug", "2026-01-15T00:00:00Z", &["bug"]),
+                ("task-2", "Add dashboard", "2026-02-20T00:00:00Z", &["feature"]),
+                ("task-3", "Fix signup bug", "2026-03-01T00:00:00Z", &["bug"]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        // Filter by title
+        ab.filter = "Fix".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 2);
+        assert_eq!(ab.filtered_indices, vec![0, 2]);
+
+        // Filter by tag
+        ab.filter = "feature".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 1);
+        assert_eq!(ab.filtered_indices, vec![1]);
+
+        // Filter by id
+        ab.filter = "task-3".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 1);
+        assert_eq!(ab.filtered_indices, vec![2]);
+
+        // No matches
+        ab.filter = "nonexistent".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 0);
+
+        // Clear filter
+        ab.filter.clear();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 3);
+    }
+
+    #[test]
+    fn test_tui_archive_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("a", "Alpha", "2026-01-01T00:00:00Z", &[]),
+                ("b", "Beta", "2026-02-01T00:00:00Z", &[]),
+                ("c", "Gamma", "2026-03-01T00:00:00Z", &[]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.selected, 0);
+        assert_eq!(ab.selected_entry().unwrap().id, "a");
+
+        ab.selected = 2;
+        assert_eq!(ab.selected_entry().unwrap().id, "c");
+
+        // With filter active
+        ab.filter = "Beta".to_string();
+        ab.apply_filter();
+        // selected gets clamped to 0 (only 1 result)
+        assert_eq!(ab.selected, 0);
+        assert_eq!(ab.selected_entry().unwrap().id, "b");
+    }
+
+    #[test]
+    fn test_tui_archive_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No archive file exists
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.entries.len(), 0);
+        assert_eq!(ab.visible_count(), 0);
+        assert!(ab.selected_entry().is_none());
+    }
+
+    #[test]
+    fn test_tui_archive_toggle() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[("x", "Test", "2026-01-01T00:00:00Z", &[])],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        assert!(!ab.active);
+
+        // Simulate toggle on
+        ab.load(tmp.path());
+        ab.active = true;
+        assert!(ab.active);
+        assert_eq!(ab.entries.len(), 1);
+
+        // Toggle off
+        ab.active = false;
+        ab.filter_active = false;
+        assert!(!ab.active);
     }
 }
