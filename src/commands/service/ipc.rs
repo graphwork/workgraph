@@ -1096,10 +1096,10 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     let mut coordinators = Vec::new();
     for task in graph.tasks() {
         if task.tags.iter().any(|t| t == "coordinator-loop") {
-            // Skip abandoned/done coordinators
+            // Skip abandoned coordinators (Done is allowed — coordinators cycle through Done between iterations)
             if matches!(
                 task.status,
-                workgraph::graph::Status::Abandoned | workgraph::graph::Status::Done
+                workgraph::graph::Status::Abandoned
             ) {
                 continue;
             }
@@ -1701,7 +1701,7 @@ poll_interval = 120
     }
 
     #[test]
-    fn test_handle_list_coordinators_excludes_abandoned_and_done() {
+    fn test_handle_list_coordinators_excludes_abandoned_but_keeps_done() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
@@ -1740,9 +1740,11 @@ poll_interval = 120
         let data = resp.data.unwrap();
         let coordinators = data["coordinators"].as_array().unwrap();
 
-        // Only the active (InProgress) coordinator should be listed
-        assert_eq!(coordinators.len(), 1);
-        assert_eq!(coordinators[0]["coordinator_id"], 0);
-        assert_eq!(coordinators[0]["task_id"], ".coordinator-0");
+        // Active and Done coordinators should be listed; Abandoned should be excluded
+        assert_eq!(coordinators.len(), 2);
+        let ids: Vec<_> = coordinators.iter().map(|c| c["coordinator_id"].as_u64().unwrap()).collect();
+        assert!(ids.contains(&0), "Active coordinator should be listed");
+        assert!(ids.contains(&2), "Done coordinator should be listed");
+        assert!(!ids.contains(&1), "Abandoned coordinator should not be listed");
     }
 }

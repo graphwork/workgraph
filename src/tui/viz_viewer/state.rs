@@ -6325,7 +6325,7 @@ impl VizApp {
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
             .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
-            .filter(|t| !matches!(t.status, Status::Abandoned | Status::Done))
+            .filter(|t| !matches!(t.status, Status::Abandoned))
             .filter_map(|t| {
                 let cid =
                     t.id.strip_prefix(".coordinator-")
