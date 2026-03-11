@@ -606,13 +606,10 @@ pub fn format_token_display(
     if let Some(a) = agency_usage {
         let novel_in = a.input_tokens;
         let novel_out = a.output_tokens;
-        if novel_in + novel_out > 0 {
-            // § agency marker for aggregated agency token usage (novel only)
-            s.push_str(&format!(
-                " §→{} ←{}",
-                format_tokens(novel_in),
-                format_tokens(novel_out)
-            ));
+        let total = novel_in + novel_out;
+        if total > 0 {
+            // ☀ agency overhead (sum of input + output)
+            s.push_str(&format!(" ☀{}", format_tokens(total)));
         }
     }
 
@@ -2187,10 +2184,10 @@ mod tests {
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
         };
-        // →novel_in ←out ◎cached §→agency_in ←agency_out
+        // →novel_in ←out ◎cached ☀agency_total
         assert_eq!(
             format_token_display(Some(&usage), Some(&agency)),
-            Some("→4.6k ←3.9k ◎105k §→1.3k ←600".to_string())
+            Some("→4.6k ←3.9k ◎105k ☀1.9k".to_string())
         );
         assert_eq!(
             format_token_display(Some(&usage), None),
@@ -2199,11 +2196,11 @@ mod tests {
         // Only agency, no task usage
         assert_eq!(
             format_token_display(None, Some(&agency)),
-            Some(" §→1.3k ←600".to_string())
+            Some(" ☀1.9k".to_string())
         );
         assert_eq!(format_token_display(None, None), None);
 
-        // Zero agency tokens should not show § section
+        // Zero agency tokens should not show ☀ section
         let zero_val = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,

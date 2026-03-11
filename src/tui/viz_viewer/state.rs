@@ -3690,7 +3690,7 @@ impl VizApp {
             }
 
             if !phase_entries.is_empty() {
-                lines.push("── § Agency Costs ──".to_string());
+                lines.push("── ☀ Agency Costs ──".to_string());
                 for (label, u) in &phase_entries {
                     let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                     let mut detail = format!(
@@ -3708,10 +3708,10 @@ impl VizApp {
                     lines.push(detail);
                 }
                 // Show aggregated agency total (novel only)
+                let agency_overhead = agency_total.input_tokens + agency_total.output_tokens;
                 lines.push(format!(
-                    "  § Total: →{} ←{}",
-                    format_tokens(agency_total.input_tokens),
-                    format_tokens(agency_total.output_tokens)
+                    "  ☀ Total: {}",
+                    format_tokens(agency_overhead)
                 ));
                 // Show combined total cost (execution + agency)
                 let exec_cost = task.token_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
