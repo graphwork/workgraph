@@ -161,12 +161,21 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
 
     // Default assign/eval to haiku — these are lightweight tasks that don't need
     // a full reasoning model. Using haiku reduces cost and rate limit pressure.
-    if config.agency.assigner_model.is_none() {
-        config.agency.assigner_model = Some("haiku".to_string());
+    // Use [models.*] table format instead of deprecated agency.*_model fields.
+    if config.models.assigner.is_none() {
+        config.models.assigner = Some(workgraph::config::RoleModelConfig {
+            model: Some("haiku".to_string()),
+            provider: None,
+            tier: None,
+        });
         config_changed = true;
     }
-    if config.agency.evaluator_model.is_none() {
-        config.agency.evaluator_model = Some("haiku".to_string());
+    if config.models.evaluator.is_none() {
+        config.models.evaluator = Some(workgraph::config::RoleModelConfig {
+            model: Some("haiku".to_string()),
+            provider: None,
+            tier: None,
+        });
         config_changed = true;
     }
 
