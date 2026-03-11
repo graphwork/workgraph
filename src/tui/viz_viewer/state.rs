@@ -586,6 +586,8 @@ pub enum InputMode {
     Confirm(ConfirmAction),
     /// Text prompt dialog (e.g., fail reason, message text).
     TextPrompt(TextPromptAction),
+    /// Choice dialog (e.g., coordinator removal options).
+    ChoiceDialog(ChoiceDialogState),
     /// Config panel text editing mode.
     ConfigEdit,
 }
@@ -606,6 +608,23 @@ pub enum TextPromptAction {
     EditDescription(String), // task_id
     AttachFile,          // attach a file to the next chat message
     CreateCoordinator,   // prompt for optional coordinator name
+}
+
+/// What action a choice dialog will perform when an option is selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChoiceDialogAction {
+    /// Remove/archive/stop a coordinator by its ID.
+    RemoveCoordinator(u32),
+}
+
+/// State for a choice dialog with multiple selectable options.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChoiceDialogState {
+    pub action: ChoiceDialogAction,
+    /// Index of the currently highlighted option.
+    pub selected: usize,
+    /// Each option: (hotkey, label, description).
+    pub options: Vec<(char, String, String)>,
 }
 
 /// Hit area for a single coordinator tab in the tab bar.
@@ -1600,6 +1619,10 @@ pub enum CommandEffect {
     CreateCoordinator,
     /// A coordinator was deleted. On success, clean up local state and switch to coordinator 0.
     DeleteCoordinator(u32),
+    /// A coordinator was archived (marked done). On success, clean up like delete.
+    ArchiveCoordinator(u32),
+    /// A coordinator's agent was stopped. On success, show notification.
+    StopCoordinator(u32),
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -4957,6 +4980,48 @@ impl VizApp {
                             .unwrap_or("unknown");
                         self.notification = Some((
                             format!("Failed to delete coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                CommandEffect::ArchiveCoordinator(cid) => {
+                    if result.success {
+                        if cid == self.active_coordinator_id {
+                            self.switch_coordinator(0);
+                        }
+                        self.coordinator_chats.remove(&cid);
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Archived coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to archive coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                CommandEffect::StopCoordinator(cid) => {
+                    if result.success {
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Stopped coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to stop coordinator: {}", err),
                             std::time::Instant::now(),
                         ));
                     }

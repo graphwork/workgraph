@@ -7,10 +7,10 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus, CoordinatorPlusHit,
-    CoordinatorTabHit, FocusedPanel, InputMode, LayoutMode, RightPanelTab, ServiceHealthLevel,
-    SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp, extract_section_name,
-    format_duration_compact,
+    ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus,
+    CoordinatorPlusHit, CoordinatorTabHit, FocusedPanel, InputMode, LayoutMode, RightPanelTab,
+    ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
+    extract_section_name, format_duration_compact,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -284,6 +284,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.last_text_prompt_area = draw_text_prompt(frame, action, &mut app.text_prompt.editor);
     } else {
         app.last_text_prompt_area = Rect::default();
+    }
+
+    // Choice dialog overlay
+    if let InputMode::ChoiceDialog(ref state) = app.input_mode {
+        draw_choice_dialog(frame, state);
     }
 
     // Task creation form overlay
@@ -3992,6 +3997,72 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Draw a choice dialog overlay with multiple selectable options.
+fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) {
+    use super::state::ChoiceDialogAction;
+
+    let title = match &state.action {
+        ChoiceDialogAction::RemoveCoordinator(cid) => format!(" Close Coordinator {} ", cid),
+    };
+
+    let size = frame.area();
+    let width: u16 = 45;
+    let height: u16 = 3 + state.options.len() as u16 + 2; // border + options + footer + border
+    let x = (size.width.saturating_sub(width)) / 2;
+    let y = (size.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (hotkey, label, desc)) in state.options.iter().enumerate() {
+        let is_selected = i == state.selected;
+        let style = if is_selected {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        } else {
+            Style::default()
+        };
+        let hotkey_style = if is_selected {
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" [{}] ", hotkey), hotkey_style),
+            Span::styled(format!("{:<8}", label), style.add_modifier(Modifier::BOLD)),
+            Span::styled(format!("— {}", desc), style),
+        ]));
+    }
+    // Empty line + footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" [↑↓]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Navigate  "),
+        Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Select  "),
+        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Cancel"),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// Draw a text prompt overlay (fail reason, message, edit description).
 /// Returns the overlay area for mouse hit-testing.
 fn draw_text_prompt(
@@ -4471,6 +4542,12 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             "EDIT",
             Color::Yellow,
             vec![("Enter", "save"), ("Esc", "cancel")],
+        ),
+        InputMode::ChoiceDialog(_) => (
+            "Choice",
+            "EDIT",
+            Color::Yellow,
+            vec![("↑↓", "navigate"), ("Enter", "select"), ("Esc", "cancel")],
         ),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::Graph if app.archive_browser.active => {

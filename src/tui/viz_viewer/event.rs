@@ -10,8 +10,9 @@ use ratatui::layout::Position;
 
 use super::render;
 use super::state::{
-    CommandEffect, ConfigEditKind, ConfirmAction, ControlPanelFocus, FocusedPanel, InputMode,
-    InspectorSubFocus, RightPanelTab, TaskFormField, TextPromptAction, VizApp,
+    ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
+    ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, RightPanelTab, TaskFormField,
+    TextPromptAction, VizApp,
 };
 
 /// Apply the current mouse capture state to the terminal.
@@ -183,6 +184,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::TaskForm => handle_task_form_input(app, code, modifiers),
         InputMode::Confirm(_) => handle_confirm_input(app, code),
         InputMode::TextPrompt(_) => handle_text_prompt_input(app, code, modifiers),
+        InputMode::ChoiceDialog(_) => handle_choice_dialog_input(app, code),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
@@ -330,6 +332,82 @@ fn handle_confirm_input(app: &mut VizApp, code: KeyCode) {
             app.input_mode = InputMode::Normal;
         }
         _ => {}
+    }
+}
+
+fn handle_choice_dialog_input(app: &mut VizApp, code: KeyCode) {
+    let state = match &app.input_mode {
+        InputMode::ChoiceDialog(s) => s.clone(),
+        _ => return,
+    };
+
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let InputMode::ChoiceDialog(ref mut s) = app.input_mode {
+                if s.selected > 0 {
+                    s.selected -= 1;
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let InputMode::ChoiceDialog(ref mut s) = app.input_mode {
+                if s.selected + 1 < s.options.len() {
+                    s.selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            execute_choice_dialog_option(app, &state.action, state.selected);
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            // Check if the char matches a hotkey
+            if let Some(idx) = state.options.iter().position(|(h, _, _)| *h == c) {
+                execute_choice_dialog_option(app, &state.action, idx);
+                app.input_mode = InputMode::Normal;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn execute_choice_dialog_option(app: &mut VizApp, action: &ChoiceDialogAction, idx: usize) {
+    match action {
+        ChoiceDialogAction::RemoveCoordinator(cid) => {
+            let cid = *cid;
+            match idx {
+                0 => {
+                    // Archive
+                    app.exec_command(
+                        vec![
+                            "service".to_string(),
+                            "archive-coordinator".to_string(),
+                            cid.to_string(),
+                        ],
+                        CommandEffect::ArchiveCoordinator(cid),
+                    );
+                }
+                1 => {
+                    // Stop
+                    app.exec_command(
+                        vec![
+                            "service".to_string(),
+                            "stop-coordinator".to_string(),
+                            cid.to_string(),
+                        ],
+                        CommandEffect::StopCoordinator(cid),
+                    );
+                }
+                2 => {
+                    // Abandon (existing delete behavior)
+                    app.delete_coordinator(cid);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -1400,11 +1478,20 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.text_prompt.editor = edtui::EditorState::default();
             app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
         }
-        // Chat tab: '-' closes the current coordinator (except coordinator 0)
+        // Chat tab: '-' opens choice dialog for coordinator removal (except coordinator 0)
         KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Chat => {
             let cid = app.active_coordinator_id;
             if cid != 0 {
-                app.delete_coordinator(cid);
+                let options = vec![
+                    ('a', "Archive".into(), "Mark as done — work complete".into()),
+                    ('s', "Stop".into(), "Pause coordinator — resume later".into()),
+                    ('x', "Abandon".into(), "Permanently discard".into()),
+                ];
+                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                    action: ChoiceDialogAction::RemoveCoordinator(cid),
+                    selected: 0,
+                    options,
+                });
             }
         }
 
@@ -1696,12 +1783,24 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Check each tab's hit area
                 for hit in &app.coordinator_tab_hits {
                     if column >= hit.tab_start && column < hit.tab_end {
-                        // Check if click is on the close button
+                        // Check if click is on the close button — open choice dialog
                         if hit.close_start != hit.close_end
                             && column >= hit.close_start
                             && column < hit.close_end
                         {
-                            app.delete_coordinator(hit.cid);
+                            let cid = hit.cid;
+                            if cid != 0 {
+                                let options = vec![
+                                    ('a', "Archive".into(), "Mark as done — work complete".into()),
+                                    ('s', "Stop".into(), "Pause coordinator — resume later".into()),
+                                    ('x', "Abandon".into(), "Permanently discard".into()),
+                                ];
+                                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                                    action: ChoiceDialogAction::RemoveCoordinator(cid),
+                                    selected: 0,
+                                    options,
+                                });
+                            }
                         } else {
                             app.switch_coordinator(hit.cid);
                         }
