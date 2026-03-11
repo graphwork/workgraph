@@ -317,6 +317,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None, // verify
         )
         .unwrap();
 
@@ -822,6 +823,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None, // verify
         )
         .unwrap();
         // pause

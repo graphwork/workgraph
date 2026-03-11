@@ -422,6 +422,7 @@ fn main() -> Result<()> {
             exec_mode,
             delay,
             not_before,
+            verify,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -446,6 +447,7 @@ fn main() -> Result<()> {
             exec_mode.as_deref(),
             delay.as_deref(),
             not_before.as_deref(),
+            verify.as_deref(),
         ),
         Commands::Done {
             id,

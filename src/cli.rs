@@ -261,6 +261,10 @@ pub enum Commands {
         /// Absolute timestamp before which task won't be dispatched (ISO 8601)
         #[arg(long = "not-before")]
         not_before: Option<String>,
+
+        /// Set or update the verify command (shell command that must pass before done)
+        #[arg(long)]
+        verify: Option<String>,
     },
 
     /// Mark a task as done
