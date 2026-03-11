@@ -92,7 +92,7 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
         .arg(model)
         .arg("--print")
         .arg("--output-format")
-        .arg("stream-json")
+        .arg("json")
         .arg("--dangerously-skip-permissions")
         .arg(prompt)
         .output()
@@ -108,7 +108,15 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let (text, token_usage) = parse_stream_json_output(&stdout);
+    let val: serde_json::Value =
+        serde_json::from_str(stdout.trim()).context("Failed to parse JSON output from claude CLI")?;
+    let text = val
+        .get("result")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let token_usage = extract_json_usage(&val);
 
     if text.is_empty() {
         anyhow::bail!("Empty response from claude CLI");
@@ -119,6 +127,8 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 /// Parse stream-json output from Claude CLI to extract text content and token usage.
 ///
 /// Stream-json lines include `type=assistant` (with content) and `type=result` (with usage).
+/// Retained for potential future use with --output-format stream-json.
+#[cfg(test)]
 fn parse_stream_json_output(stdout: &str) -> (String, Option<TokenUsage>) {
     let mut text_parts: Vec<String> = Vec::new();
     let mut token_usage: Option<TokenUsage> = None;
@@ -198,6 +208,46 @@ fn parse_stream_json_output(stdout: &str) -> (String, Option<TokenUsage>) {
     }
 
     (text_parts.join("").trim().to_string(), token_usage)
+}
+
+/// Extract token usage from a `--output-format json` result object.
+fn extract_json_usage(val: &serde_json::Value) -> Option<TokenUsage> {
+    let cost_usd = val
+        .get("total_cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let usage = val.get("usage");
+
+    let input_tokens = usage
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|u| u.get("output_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_read = usage
+        .and_then(|u| {
+            u.get("cache_read_input_tokens")
+                .or_else(|| u.get("cacheReadInputTokens"))
+        })
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_creation = usage
+        .and_then(|u| {
+            u.get("cache_creation_input_tokens")
+                .or_else(|| u.get("cacheCreationInputTokens"))
+        })
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Some(TokenUsage {
+        cost_usd,
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens: cache_read,
+        cache_creation_input_tokens: cache_creation,
+    })
 }
 
 fn call_anthropic_native(
@@ -482,6 +532,59 @@ mod tests {
             expected,
             cost
         );
+    }
+
+    #[test]
+    fn test_call_claude_cli_json_parsing() {
+        // Simulates the --output-format json output from Claude CLI
+        let json_output = r#"{
+            "type": "result",
+            "result": "The answer is 42.",
+            "total_cost_usd": 0.0012,
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 50,
+                "cache_creation_input_tokens": 10
+            }
+        }"#;
+
+        let val: serde_json::Value = serde_json::from_str(json_output).unwrap();
+        let text = val
+            .get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let token_usage = extract_json_usage(&val);
+
+        assert_eq!(text, "The answer is 42.");
+        let usage = token_usage.expect("should have token usage");
+        assert!((usage.cost_usd - 0.0012).abs() < f64::EPSILON);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.cache_read_input_tokens, 50);
+        assert_eq!(usage.cache_creation_input_tokens, 10);
+    }
+
+    #[test]
+    fn test_call_claude_cli_json_no_usage() {
+        // JSON result with no usage data
+        let json_output = r#"{"type": "result", "result": "hello world"}"#;
+        let val: serde_json::Value = serde_json::from_str(json_output).unwrap();
+        let text = val
+            .get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let token_usage = extract_json_usage(&val);
+
+        assert_eq!(text, "hello world");
+        // No usage block → should still return Some with zeroed fields and cost
+        let usage = token_usage.expect("should have token usage with defaults");
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
     }
 
     #[test]
