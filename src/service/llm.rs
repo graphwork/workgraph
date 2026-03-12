@@ -286,8 +286,7 @@ fn call_anthropic_native(
     let endpoint = endpoint_name
         .and_then(|name| config.llm_endpoints.find_by_name(name))
         .or_else(|| config.llm_endpoints.find_for_provider(provider_name));
-    let endpoint_key = endpoint
-        .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
+    let endpoint_key = endpoint.and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
     // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
@@ -385,8 +384,7 @@ fn call_openai_native(
     let endpoint = endpoint_name
         .and_then(|name| config.llm_endpoints.find_by_name(name))
         .or_else(|| config.llm_endpoints.find_for_provider(provider_name));
-    let endpoint_key = endpoint
-        .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
+    let endpoint_key = endpoint.and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
     // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
@@ -400,8 +398,7 @@ fn call_openai_native(
             .context("Failed to create OpenAI client for lightweight call")?
     } else if provider_name == "local" {
         // Local providers don't require auth
-        OpenAiClient::new("local".to_string(), model, None)
-            .expect("infallible with static args")
+        OpenAiClient::new("local".to_string(), model, None).expect("infallible with static args")
     } else {
         // Legacy fallback
         OpenAiClient::from_env(model)

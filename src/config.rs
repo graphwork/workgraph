@@ -359,11 +359,7 @@ impl EndpointConfig {
                 expanded
             };
             let contents = fs::read_to_string(&path).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to read API key from {}: {}",
-                    path.display(),
-                    e
-                )
+                anyhow::anyhow!("Failed to read API key from {}: {}", path.display(), e)
             })?;
             let key = contents.trim().to_string();
             if key.is_empty() {
@@ -3358,7 +3354,9 @@ model = "haiku"
     #[test]
     fn test_set_endpoint() {
         let mut config = Config::default();
-        config.models.set_endpoint(DispatchRole::Evaluator, "openrouter");
+        config
+            .models
+            .set_endpoint(DispatchRole::Evaluator, "openrouter");
         let role_cfg = config.models.evaluator.unwrap();
         assert_eq!(role_cfg.endpoint.as_deref(), Some("openrouter"));
         assert!(role_cfg.model.is_none()); // Didn't touch model

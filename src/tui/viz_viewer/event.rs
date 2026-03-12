@@ -1980,20 +1980,19 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             app.right_panel_visible = true;
                             app.right_panel_tab = RightPanelTab::Detail;
                             // Trigger annotation flash.
-                            app.annotation_click_flash =
-                                Some(super::state::AnnotationClickFlash {
-                                    orig_line: region.orig_line,
-                                    col_start: region.col_start,
-                                    col_end: region.col_end,
-                                    start: std::time::Instant::now(),
-                                });
+                            app.annotation_click_flash = Some(super::state::AnnotationClickFlash {
+                                orig_line: region.orig_line,
+                                col_start: region.col_start,
+                                col_end: region.col_end,
+                                start: std::time::Instant::now(),
+                            });
                         } else {
-                        // Only select a task when clicking on actual text content
-                        // (task name, status, log snippet, mail indicator), not on
-                        // tree-drawing chars, indentation, or empty space past the
-                        // end of the line.  This prevents accidental selection
-                        // changes when click-dragging to pan.
-                        let on_text = app
+                            // Only select a task when clicking on actual text content
+                            // (task name, status, log snippet, mail indicator), not on
+                            // tree-drawing chars, indentation, or empty space past the
+                            // end of the line.  This prevents accidental selection
+                            // changes when click-dragging to pan.
+                            let on_text = app
                             .plain_lines
                             .get(orig_line)
                             .map(|line| {
@@ -2009,59 +2008,60 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             })
                             .unwrap_or(false);
 
-                        if on_text {
-                            // Check if the click is on the mail indicator (✉) region.
-                            let clicked_mail = app
-                                .plain_lines
-                                .get(orig_line)
-                                .and_then(|line| {
-                                    let envelope_char_col =
-                                        line.char_indices().position(|(_, c)| c == '✉')?;
-                                    let after_envelope: String = line
-                                        .chars()
-                                        .skip(envelope_char_col + 1)
-                                        .take_while(|c| !c.is_whitespace())
-                                        .collect();
-                                    let end_col =
-                                        envelope_char_col + 1 + after_envelope.chars().count();
-                                    if content_col >= envelope_char_col && content_col < end_col {
-                                        Some(())
-                                    } else {
-                                        None
+                            if on_text {
+                                // Check if the click is on the mail indicator (✉) region.
+                                let clicked_mail = app
+                                    .plain_lines
+                                    .get(orig_line)
+                                    .and_then(|line| {
+                                        let envelope_char_col =
+                                            line.char_indices().position(|(_, c)| c == '✉')?;
+                                        let after_envelope: String = line
+                                            .chars()
+                                            .skip(envelope_char_col + 1)
+                                            .take_while(|c| !c.is_whitespace())
+                                            .collect();
+                                        let end_col =
+                                            envelope_char_col + 1 + after_envelope.chars().count();
+                                        if content_col >= envelope_char_col && content_col < end_col
+                                        {
+                                            Some(())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .is_some();
+                                app.select_task_at_line(orig_line);
+                                if clicked_mail {
+                                    // Switch to the Messages tab for this task.
+                                    app.right_panel_visible = true;
+                                    app.right_panel_tab = RightPanelTab::Messages;
+                                    app.invalidate_messages_panel();
+                                    app.load_messages_panel();
+                                } else if let Some(line) = app.plain_lines.get(orig_line) {
+                                    // Determine click region for tab switching.
+                                    let chars: Vec<char> = line.chars().collect();
+                                    let text_start = chars.iter().position(|c| c.is_alphanumeric());
+                                    // Find the "  (" separator between task ID and status.
+                                    let paren_start = text_start.and_then(|ts| {
+                                        (ts..chars.len().saturating_sub(1))
+                                            .find(|&i| chars[i] == ' ' && chars[i + 1] == '(')
+                                    });
+                                    if let (Some(ts), Some(ps)) = (text_start, paren_start)
+                                        && app.right_panel_visible
+                                    {
+                                        // Inspector already open — update which tab is shown.
+                                        if content_col >= ts && content_col < ps {
+                                            app.right_panel_tab = RightPanelTab::Detail;
+                                        } else if content_col >= ps {
+                                            app.right_panel_tab = RightPanelTab::Log;
+                                            app.invalidate_log_pane();
+                                            app.load_log_pane();
+                                        }
                                     }
-                                })
-                                .is_some();
-                            app.select_task_at_line(orig_line);
-                            if clicked_mail {
-                                // Switch to the Messages tab for this task.
-                                app.right_panel_visible = true;
-                                app.right_panel_tab = RightPanelTab::Messages;
-                                app.invalidate_messages_panel();
-                                app.load_messages_panel();
-                            } else if let Some(line) = app.plain_lines.get(orig_line) {
-                                // Determine click region for tab switching.
-                                let chars: Vec<char> = line.chars().collect();
-                                let text_start = chars.iter().position(|c| c.is_alphanumeric());
-                                // Find the "  (" separator between task ID and status.
-                                let paren_start = text_start.and_then(|ts| {
-                                    (ts..chars.len().saturating_sub(1))
-                                        .find(|&i| chars[i] == ' ' && chars[i + 1] == '(')
-                                });
-                                if let (Some(ts), Some(ps)) = (text_start, paren_start)
-                                    && app.right_panel_visible
-                                {
-                                    // Inspector already open — update which tab is shown.
-                                    if content_col >= ts && content_col < ps {
-                                        app.right_panel_tab = RightPanelTab::Detail;
-                                    } else if content_col >= ps {
-                                        app.right_panel_tab = RightPanelTab::Log;
-                                        app.invalidate_log_pane();
-                                        app.load_log_pane();
-                                    }
+                                    // If inspector is closed, just select — don't auto-open.
                                 }
-                                // If inspector is closed, just select — don't auto-open.
                             }
-                        }
                         } // end else (not annotation click)
                     }
                 }

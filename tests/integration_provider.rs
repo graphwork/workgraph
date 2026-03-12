@@ -264,7 +264,8 @@ api_key = "test-openai-key"
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
     // Even though "my-custom-model" has no slash, forcing openai provider
-    let provider = create_provider_ext(tmp.path(), "my-custom-model", Some("openai"), None).unwrap();
+    let provider =
+        create_provider_ext(tmp.path(), "my-custom-model", Some("openai"), None).unwrap();
     assert_eq!(provider.name(), "openai");
 }
 
@@ -451,7 +452,8 @@ provider = "openai"
     assert_eq!(eval_provider.name(), "anthropic");
 
     // The triage should route to OpenAI
-    let triage_provider = create_provider_ext(tmp.path(), "gpt-4o-mini", Some("openai"), None).unwrap();
+    let triage_provider =
+        create_provider_ext(tmp.path(), "gpt-4o-mini", Some("openai"), None).unwrap();
     assert_eq!(triage_provider.name(), "openai");
 
     // Verify they actually hit different API endpoints

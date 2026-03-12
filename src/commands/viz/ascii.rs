@@ -1773,12 +1773,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Open;
-        let mut place = make_internal_task(
-            ".place-my-task",
-            "Place my-task",
-            "assignment",
-            vec![],
-        );
+        let mut place = make_internal_task(".place-my-task", "Place my-task", "assignment", vec![]);
         place.status = Status::InProgress;
         parent.after = vec![".place-my-task".to_string()];
         graph.add_node(Node::Task(parent));
@@ -3443,8 +3438,7 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let empty: HashMap<String, crate::commands::viz::AnnotationInfo> = HashMap::new();
-        let (filtered, annotations) =
-            super::super::filter_internal_tasks(&graph, tasks, &empty);
+        let (filtered, annotations) = super::super::filter_internal_tasks(&graph, tasks, &empty);
         let filtered_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
             &graph,

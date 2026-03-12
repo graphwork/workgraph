@@ -1388,8 +1388,7 @@ fn build_auto_assign_tasks(
                 let causal_edge: Vec<String> = graph
                     .tasks()
                     .filter(|t| {
-                        t.status == Status::Done
-                            && !workgraph::graph::is_system_task(&t.id)
+                        t.status == Status::Done && !workgraph::graph::is_system_task(&t.id)
                     })
                     .max_by(|a, b| a.completed_at.cmp(&b.completed_at))
                     .map(|t| vec![t.id.clone()])

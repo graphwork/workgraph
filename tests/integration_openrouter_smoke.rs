@@ -93,10 +93,7 @@ fn openrouter_endpoint_config_roundtrip() {
     assert!(ep.is_some(), "find_by_name should return the endpoint");
     let ep = ep.unwrap();
     assert_eq!(ep.provider, "openrouter");
-    assert_eq!(
-        ep.url.as_deref(),
-        Some("https://openrouter.ai/api/v1")
-    );
+    assert_eq!(ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
     assert_eq!(
         ep.resolve_api_key(None).unwrap(),
         Some("sk-or-test-key-1234567890".to_string())
@@ -126,9 +123,10 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
     };
 
     // Bind the endpoint to the evaluator role
-    config
-        .models
-        .set_model(DispatchRole::Evaluator, "anthropic/claude-sonnet-4-20250514");
+    config.models.set_model(
+        DispatchRole::Evaluator,
+        "anthropic/claude-sonnet-4-20250514",
+    );
     config
         .models
         .set_provider(DispatchRole::Evaluator, "openrouter");
@@ -148,10 +146,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
         .find_by_name(resolved.endpoint.as_deref().unwrap());
     assert!(ep.is_some());
     let ep = ep.unwrap();
-    assert_eq!(
-        ep.url.as_deref(),
-        Some("https://openrouter.ai/api/v1")
-    );
+    assert_eq!(ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
     assert_eq!(
         ep.resolve_api_key(None).unwrap(),
         Some("sk-or-test-key".to_string())
@@ -177,9 +172,10 @@ fn openrouter_client_creation_from_resolved_config() {
         }],
     };
 
-    config
-        .models
-        .set_model(DispatchRole::Evaluator, "anthropic/claude-sonnet-4-20250514");
+    config.models.set_model(
+        DispatchRole::Evaluator,
+        "anthropic/claude-sonnet-4-20250514",
+    );
     config
         .models
         .set_provider(DispatchRole::Evaluator, "openrouter");
@@ -207,12 +203,8 @@ fn openrouter_client_creation_from_resolved_config() {
     );
 
     // Create OpenAI client from resolved config (same as call_openai_native)
-    let client = OpenAiClient::new(
-        endpoint_key.unwrap(),
-        &resolved.model,
-        None,
-    )
-    .expect("client creation should succeed");
+    let client = OpenAiClient::new(endpoint_key.unwrap(), &resolved.model, None)
+        .expect("client creation should succeed");
     let client = client.with_base_url(endpoint_url.as_deref().unwrap());
     let client = client.with_provider_hint("openrouter");
 
@@ -265,9 +257,10 @@ fn mixed_endpoints_different_roles_different_providers() {
         .set_endpoint(DispatchRole::TaskAgent, "anthropic-direct");
 
     // Evaluator uses OpenRouter
-    config
-        .models
-        .set_model(DispatchRole::Evaluator, "anthropic/claude-sonnet-4-20250514");
+    config.models.set_model(
+        DispatchRole::Evaluator,
+        "anthropic/claude-sonnet-4-20250514",
+    );
     config
         .models
         .set_provider(DispatchRole::Evaluator, "openrouter");
@@ -279,19 +272,13 @@ fn mixed_endpoints_different_roles_different_providers() {
     let task_resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
     assert_eq!(task_resolved.model, "claude-sonnet-4-20250514");
     assert_eq!(task_resolved.provider, Some("anthropic".to_string()));
-    assert_eq!(
-        task_resolved.endpoint,
-        Some("anthropic-direct".to_string())
-    );
+    assert_eq!(task_resolved.endpoint, Some("anthropic-direct".to_string()));
 
     // Resolve evaluator
     let eval_resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
     assert_eq!(eval_resolved.model, "anthropic/claude-sonnet-4-20250514");
     assert_eq!(eval_resolved.provider, Some("openrouter".to_string()));
-    assert_eq!(
-        eval_resolved.endpoint,
-        Some("openrouter-eval".to_string())
-    );
+    assert_eq!(eval_resolved.endpoint, Some("openrouter-eval".to_string()));
 
     // Verify endpoint lookups get the correct keys
     let task_ep = config
@@ -738,9 +725,10 @@ fn config_toml_roundtrip_with_endpoints() {
     };
 
     // Set evaluator to use the OpenRouter endpoint
-    config
-        .models
-        .set_model(DispatchRole::Evaluator, "anthropic/claude-sonnet-4-20250514");
+    config.models.set_model(
+        DispatchRole::Evaluator,
+        "anthropic/claude-sonnet-4-20250514",
+    );
     config
         .models
         .set_provider(DispatchRole::Evaluator, "openrouter");
@@ -761,14 +749,8 @@ fn config_toml_roundtrip_with_endpoints() {
         .find_by_name("openrouter-main")
         .unwrap();
     assert_eq!(or_ep.provider, "openrouter");
-    assert_eq!(
-        or_ep.url.as_deref(),
-        Some("https://openrouter.ai/api/v1")
-    );
-    assert_eq!(
-        or_ep.api_key.as_deref(),
-        Some("sk-or-roundtrip-key")
-    );
+    assert_eq!(or_ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
+    assert_eq!(or_ep.api_key.as_deref(), Some("sk-or-roundtrip-key"));
     assert!(or_ep.is_default);
 
     // Verify model routing survived

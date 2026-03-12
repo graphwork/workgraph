@@ -1532,12 +1532,7 @@ fn main() -> Result<()> {
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("--set-key requires --file <path>"))?;
                 let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-                return commands::config_cmd::set_key(
-                    &workgraph_dir,
-                    write_scope,
-                    provider,
-                    file,
-                );
+                return commands::config_cmd::set_key(&workgraph_dir, write_scope, provider, file);
             }
 
             // Handle --check-key
@@ -1962,9 +1957,7 @@ fn main() -> Result<()> {
             TelegramCommands::Status => commands::telegram::run_status(cli.json),
         },
         Commands::Endpoints { command } => match command {
-            EndpointsCommands::List => {
-                commands::endpoints::run_list(&workgraph_dir, cli.json)
-            }
+            EndpointsCommands::List => commands::endpoints::run_list(&workgraph_dir, cli.json),
             EndpointsCommands::Add {
                 name,
                 provider,

@@ -3781,11 +3781,7 @@ impl VizApp {
                         // Add dims in priority order first
                         for key in priority_order {
                             if let Some(v) = dims.get(*key) {
-                                dim_strs.push(format!(
-                                    "{}: {:.2}",
-                                    key,
-                                    v.as_f64().unwrap_or(0.0)
-                                ));
+                                dim_strs.push(format!("{}: {:.2}", key, v.as_f64().unwrap_or(0.0)));
                             }
                         }
 

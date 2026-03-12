@@ -1,8 +1,8 @@
 //! CLI endpoint management: wg endpoints add/list/remove/set-default/test
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::path::Path;
 use workgraph::config::{Config, EndpointConfig};
 
@@ -122,7 +122,10 @@ pub fn run_add(
     }
 
     let default_msg = if is_default { " (set as default)" } else { "" };
-    println!("Added endpoint '{}' [{}]{}", name, provider_str, default_msg);
+    println!(
+        "Added endpoint '{}' [{}]{}",
+        name, provider_str, default_msg
+    );
     Ok(())
 }
 
@@ -143,10 +146,7 @@ pub fn run_remove(workgraph_dir: &Path, name: &str, global: bool) -> Result<()> 
         .map(|ep| ep.is_default)
         .unwrap_or(false);
 
-    config
-        .llm_endpoints
-        .endpoints
-        .retain(|ep| ep.name != name);
+    config.llm_endpoints.endpoints.retain(|ep| ep.name != name);
 
     if config.llm_endpoints.endpoints.len() == initial_len {
         bail!("Endpoint '{}' not found.", name);
@@ -248,13 +248,13 @@ pub fn run_test(workgraph_dir: &Path, name: &str) -> Result<()> {
         match ep.provider.as_str() {
             "anthropic" => {
                 headers.insert("x-api-key", HeaderValue::from_str(key)?);
-                headers.insert(
-                    "anthropic-version",
-                    HeaderValue::from_static("2023-06-01"),
-                );
+                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             }
             _ => {
-                headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", key))?);
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {}", key))?,
+                );
             }
         }
     }
@@ -263,7 +263,11 @@ pub fn run_test(workgraph_dir: &Path, name: &str) -> Result<()> {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
-                println!("  Status: {} {}", status.as_u16(), status.canonical_reason().unwrap_or("OK"));
+                println!(
+                    "  Status: {} {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("OK")
+                );
                 println!("  Connectivity: OK");
                 if api_key.is_some() {
                     println!("  Authentication: OK");
