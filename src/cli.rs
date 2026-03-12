@@ -1330,6 +1330,14 @@ pub enum Commands {
         #[arg(long, name = "retry-context-tokens")]
         retry_context_tokens: Option<u32>,
 
+        /// Set API key file for a provider: --set-key <provider> --file <path>
+        #[arg(long = "set-key", value_name = "PROVIDER")]
+        set_key: Option<String>,
+
+        /// File path for --set-key (the key file to reference)
+        #[arg(long = "file", requires = "set_key", value_name = "PATH")]
+        key_file: Option<String>,
+
         /// Check OpenRouter API key validity and credit status
         #[arg(long, name = "check-key")]
         check_key: bool,

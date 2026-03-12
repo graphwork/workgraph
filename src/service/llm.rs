@@ -269,7 +269,8 @@ fn call_anthropic_native(
     use crate::executor::native::provider::Provider;
 
     let endpoint = config.llm_endpoints.find_for_provider(provider_name);
-    let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
+    let endpoint_key = endpoint
+        .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
     // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
@@ -363,7 +364,8 @@ fn call_openai_native(
     use crate::executor::native::provider::Provider;
 
     let endpoint = config.llm_endpoints.find_for_provider(provider_name);
-    let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
+    let endpoint_key = endpoint
+        .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
     // Resolve API key. Priority: env var > endpoint config > from_env fallbacks

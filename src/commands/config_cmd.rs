@@ -2,7 +2,9 @@
 
 use anyhow::Result;
 use std::path::Path;
-use workgraph::config::{Config, ConfigSource, MatrixConfig, ModelRegistryEntry, Tier};
+use workgraph::config::{
+    Config, ConfigSource, EndpointConfig, MatrixConfig, ModelRegistryEntry, Tier,
+};
 
 /// Scope for config operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1590,6 +1592,54 @@ fn print_diff_summary(old: &str, new: &str) {
     if changed_keys.is_empty() && added == 0 && removed == 0 {
         println!("  (content differs but no key-level changes detected)");
     }
+}
+
+/// Set an API key file reference for a provider's endpoint.
+///
+/// If an endpoint for the provider already exists, updates its `api_key_file`.
+/// Otherwise, creates a new endpoint entry with the file reference.
+pub fn set_key(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    provider: &str,
+    file_path: &str,
+) -> Result<()> {
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(workgraph_dir)?,
+    };
+
+    // Find existing endpoint for provider, or create new one
+    let mut found = false;
+    for ep in &mut config.llm_endpoints.endpoints {
+        if ep.provider == provider {
+            ep.api_key_file = Some(file_path.to_string());
+            ep.api_key = None; // Clear inline key when switching to file
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        let is_first = config.llm_endpoints.endpoints.is_empty();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: provider.to_string(),
+            provider: provider.to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(file_path.to_string()),
+            is_default: is_first,
+        });
+    }
+
+    match scope {
+        ConfigScope::Global => config.save_global()?,
+        ConfigScope::Local => config.save(workgraph_dir)?,
+    }
+
+    println!("Set API key file for '{}': {}", provider, file_path);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -312,6 +312,9 @@ pub struct EndpointConfig {
     /// API key for this endpoint (stored in config — user should gitignore)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Path to a file containing the API key (~ and relative paths supported)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_file: Option<String>,
     /// Whether this is the default endpoint for new agents
     #[serde(default)]
     pub is_default: bool,
@@ -321,7 +324,56 @@ fn default_provider() -> String {
     "anthropic".to_string()
 }
 
+/// Expand `~` prefix to user's home directory.
+fn expand_tilde(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if let Ok(rest) = p.strip_prefix("~") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    p.to_path_buf()
+}
+
 impl EndpointConfig {
+    /// Resolve the API key for this endpoint.
+    ///
+    /// Priority:
+    /// 1. `api_key` — use directly if set
+    /// 2. `api_key_file` — read file contents, trim whitespace
+    ///
+    /// For `api_key_file`, supports:
+    /// - `~` expansion to home directory
+    /// - Relative paths resolved against `workgraph_dir` (if provided)
+    pub fn resolve_api_key(&self, workgraph_dir: Option<&Path>) -> anyhow::Result<Option<String>> {
+        if let Some(ref key) = self.api_key {
+            return Ok(Some(key.clone()));
+        }
+        if let Some(ref file_path) = self.api_key_file {
+            let expanded = expand_tilde(file_path);
+            let path = if expanded.is_absolute() {
+                expanded
+            } else if let Some(dir) = workgraph_dir {
+                dir.join(expanded)
+            } else {
+                expanded
+            };
+            let contents = fs::read_to_string(&path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read API key from {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            let key = contents.trim().to_string();
+            if key.is_empty() {
+                anyhow::bail!("API key file {} is empty", path.display());
+            }
+            return Ok(Some(key));
+        }
+        Ok(None)
+    }
+
     /// Return the API key masked for display: "sk-****...ab12"
     pub fn masked_key(&self) -> String {
         match &self.api_key {
@@ -331,7 +383,13 @@ impl EndpointConfig {
                 format!("{}****...{}", prefix, suffix)
             }
             Some(key) if !key.is_empty() => "****".to_string(),
-            _ => "(not set)".to_string(),
+            _ => {
+                if self.api_key_file.is_some() {
+                    "(from file)".to_string()
+                } else {
+                    "(not set)".to_string()
+                }
+            }
         }
     }
 
@@ -2875,6 +2933,7 @@ model = "haiku"
                 url: Some("https://api.openai.com/v1".to_string()),
                 model: None,
                 api_key: Some("sk-test-key".to_string()),
+                api_key_file: None,
                 is_default: false,
             }],
         };
@@ -2892,6 +2951,7 @@ model = "haiku"
                 url: None,
                 model: None,
                 api_key: Some("sk-test".to_string()),
+                api_key_file: None,
                 is_default: false,
             }],
         };
@@ -2908,6 +2968,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("sk-first".to_string()),
+                    api_key_file: None,
                     is_default: false,
                 },
                 EndpointConfig {
@@ -2916,6 +2977,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("sk-default".to_string()),
+                    api_key_file: None,
                     is_default: true,
                 },
                 EndpointConfig {
@@ -2924,6 +2986,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("sk-third".to_string()),
+                    api_key_file: None,
                     is_default: false,
                 },
             ],
@@ -2943,6 +3006,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("ant-key".to_string()),
+                    api_key_file: None,
                     is_default: false,
                 },
                 EndpointConfig {
@@ -2951,6 +3015,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("sk-first".to_string()),
+                    api_key_file: None,
                     is_default: false,
                 },
                 EndpointConfig {
@@ -2959,6 +3024,7 @@ model = "haiku"
                     url: None,
                     model: None,
                     api_key: Some("sk-second".to_string()),
+                    api_key_file: None,
                     is_default: false,
                 },
             ],
@@ -2977,6 +3043,7 @@ model = "haiku"
                 url: Some("https://openrouter.ai/api/v1".to_string()),
                 model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
                 api_key: Some("sk-or-test".to_string()),
+                api_key_file: None,
                 is_default: true,
             }],
         };
@@ -2987,5 +3054,157 @@ model = "haiku"
             ep.model.as_deref(),
             Some("anthropic/claude-sonnet-4-20250514")
         );
+    }
+
+    // ---- EndpointConfig::resolve_api_key tests ----
+
+    #[test]
+    fn test_resolve_api_key_inline() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: Some("sk-inline".to_string()),
+            api_key_file: None,
+            is_default: false,
+        };
+        let key = ep.resolve_api_key(None).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-inline"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_inline_takes_priority() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: Some("sk-inline".to_string()),
+            api_key_file: Some("/nonexistent/file".to_string()),
+            is_default: false,
+        };
+        // Inline key should win even if api_key_file is also set
+        let key = ep.resolve_api_key(None).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-inline"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test.key");
+        std::fs::write(&key_path, "sk-from-file\n").unwrap();
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(key_path.to_string_lossy().to_string()),
+            is_default: false,
+        };
+        let key = ep.resolve_api_key(None).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-from-file"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_file_trims_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test.key");
+        std::fs::write(&key_path, "  sk-trimmed  \n\n").unwrap();
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(key_path.to_string_lossy().to_string()),
+            is_default: false,
+        };
+        let key = ep.resolve_api_key(None).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-trimmed"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_file_not_found() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some("/nonexistent/path/key.txt".to_string()),
+            is_default: false,
+        };
+        let err = ep.resolve_api_key(None).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Failed to read API key from"));
+        assert!(msg.contains("/nonexistent/path/key.txt"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("empty.key");
+        std::fs::write(&key_path, "  \n").unwrap();
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(key_path.to_string_lossy().to_string()),
+            is_default: false,
+        };
+        let err = ep.resolve_api_key(None).unwrap_err();
+        assert!(format!("{}", err).contains("empty"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("keys").join("test.key");
+        std::fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+        std::fs::write(&key_path, "sk-relative").unwrap();
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some("keys/test.key".to_string()),
+            is_default: false,
+        };
+        let key = ep.resolve_api_key(Some(dir.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-relative"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_none() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            is_default: false,
+        };
+        let key = ep.resolve_api_key(None).unwrap();
+        assert!(key.is_none());
+    }
+
+    #[test]
+    fn test_masked_key_with_file_ref() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some("~/.config/workgraph/openai.key".to_string()),
+            is_default: false,
+        };
+        assert_eq!(ep.masked_key(), "(from file)");
     }
 }

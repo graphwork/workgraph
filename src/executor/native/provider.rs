@@ -88,7 +88,8 @@ pub fn create_provider_ext(
 
     // Look up endpoint config for this provider
     let endpoint = config.llm_endpoints.find_for_provider(&provider_name);
-    let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
+    let endpoint_key = endpoint
+        .and_then(|ep| ep.resolve_api_key(Some(workgraph_dir)).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
     let api_base: Option<String> = endpoint_url

@@ -1509,6 +1509,8 @@ fn main() -> Result<()> {
             role_model,
             role_provider,
             retry_context_tokens,
+            set_key,
+            key_file,
             check_key,
             install_global,
             force,
@@ -1522,6 +1524,20 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --set-key <provider> --file <path>
+            if let Some(ref provider) = set_key {
+                let file = key_file
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--set-key requires --file <path>"))?;
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                return commands::config_cmd::set_key(
+                    &workgraph_dir,
+                    write_scope,
+                    provider,
+                    file,
+                );
+            }
 
             // Handle --check-key
             if check_key {
