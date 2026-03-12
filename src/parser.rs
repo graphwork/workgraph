@@ -91,12 +91,11 @@ fn get_lock_path<P: AsRef<Path>>(graph_path: P) -> PathBuf {
     }
 }
 
-/// Load a work graph from a JSONL file
-/// Uses advisory file locking to prevent concurrent access corruption
-pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
-    let lock_path = get_lock_path(&path);
-    let _lock = FileLock::acquire(&lock_path)?;
-
+/// Load a work graph from a JSONL file (internal, no locking).
+///
+/// Callers must hold the flock themselves or use [`load_graph`] which
+/// acquires it automatically.
+fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut graph = WorkGraph::new();
@@ -129,16 +128,23 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     }
 
     Ok(graph)
+}
+
+/// Load a work graph from a JSONL file
+/// Uses advisory file locking to prevent concurrent access corruption
+pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
+    let lock_path = get_lock_path(&path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    load_graph_inner(path)
     // Lock is automatically released when _lock goes out of scope
 }
 
-/// Save a work graph to a JSONL file
-/// Uses advisory file locking and atomic write (temp file + rename) to
-/// prevent data loss on crash.
-pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
+/// Save a work graph to a JSONL file (internal, no locking).
+///
+/// Callers must hold the flock themselves or use [`save_graph`] which
+/// acquires it automatically.
+fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
     let path = path.as_ref();
-    let lock_path = get_lock_path(path);
-    let _lock = FileLock::acquire(&lock_path)?;
 
     // Write to a temporary file in the same directory, then atomically rename.
     // This ensures a crash mid-write leaves the original file intact.
@@ -180,6 +186,45 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
     }
 
     result
+}
+
+/// Save a work graph to a JSONL file
+/// Uses advisory file locking and atomic write (temp file + rename) to
+/// prevent data loss on crash.
+pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    save_graph_inner(graph, path)
+    // Lock is automatically released when _lock goes out of scope
+}
+
+/// Atomically load, modify, and save a graph file.
+///
+/// The file lock is held for the entire load-modify-save cycle, preventing
+/// concurrent read-modify-write operations from clobbering each other's
+/// changes (the "lost update" problem).
+///
+/// The closure receives a mutable reference to the freshly-loaded graph.
+/// It should return `true` if it modified the graph (triggering a save),
+/// or `false` to skip saving.
+///
+/// Returns the final graph state (after any modifications and save).
+pub fn modify_graph<P, F>(path: P, f: F) -> Result<WorkGraph, ParseError>
+where
+    P: AsRef<Path>,
+    F: FnOnce(&mut WorkGraph) -> bool,
+{
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+
+    let mut graph = load_graph_inner(path)?;
+    let modified = f(&mut graph);
+    if modified {
+        save_graph_inner(&graph, path)?;
+    }
+    Ok(graph)
     // Lock is automatically released when _lock goes out of scope
 }
 
@@ -852,5 +897,96 @@ mod tests {
         // Last-wins semantics: the second definition should be kept
         let task = graph.get_task("dup").unwrap();
         assert_eq!(task.title, "Second version");
+    }
+
+    // ---- modify_graph tests ----
+
+    #[test]
+    fn test_modify_graph_saves_when_modified() {
+        let file = NamedTempFile::new().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Task 1")));
+        save_graph(&graph, file.path()).unwrap();
+
+        let result = modify_graph(file.path(), |g| {
+            g.add_node(Node::Task(make_task("t2", "Task 2")));
+            true
+        })
+        .unwrap();
+
+        assert_eq!(result.len(), 2);
+
+        // Verify it was persisted to disk
+        let loaded = load_graph(file.path()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.get_task("t2").is_some());
+    }
+
+    #[test]
+    fn test_modify_graph_skips_save_when_not_modified() {
+        let file = NamedTempFile::new().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Task 1")));
+        save_graph(&graph, file.path()).unwrap();
+
+        let result = modify_graph(file.path(), |_g| false).unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Still the original graph on disk
+        let loaded = load_graph(file.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn test_modify_graph_concurrent_no_lost_updates() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let file = NamedTempFile::new().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t0", "Initial")));
+        save_graph(&graph, file.path()).unwrap();
+
+        let path = Arc::new(file.path().to_path_buf());
+        let success_count = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each atomically adding a task via modify_graph
+        for i in 0..10 {
+            let path = Arc::clone(&path);
+            let success_count = Arc::clone(&success_count);
+
+            let handle = thread::spawn(move || {
+                let result = modify_graph(path.as_ref(), |g| {
+                    g.add_node(Node::Task(make_task(
+                        &format!("t{}", i + 1),
+                        &format!("Task {}", i + 1),
+                    )));
+                    true
+                });
+                if result.is_ok() {
+                    success_count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let final_graph = load_graph(path.as_ref()).unwrap();
+
+        // All 10 threads should have succeeded
+        assert_eq!(success_count.load(Ordering::SeqCst), 10);
+
+        // All 11 tasks should be present (no lost updates)
+        assert_eq!(
+            final_graph.len(),
+            11,
+            "modify_graph should prevent lost updates: expected 11 tasks (1 initial + 10 added), got {}",
+            final_graph.len()
+        );
     }
 }

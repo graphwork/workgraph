@@ -20,7 +20,7 @@ use workgraph::graph::{
     evaluate_all_cycle_iterations,
 };
 use workgraph::messages;
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, modify_graph, save_graph};
 use workgraph::query::ready_tasks_with_peers_cycle_aware;
 use workgraph::service::registry::AgentRegistry;
 
@@ -2992,108 +2992,92 @@ pub fn coordinator_tick(
     // Phase 1.5: Auto-checkpoint alive agents if thresholds are met
     auto_checkpoint_agents(dir, &config);
 
-    // Phase 2: Load graph
-    let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
-
     let slots_available = max_agents.saturating_sub(alive_count);
 
-    // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
-    // This is the primary mechanism for cycle iteration: when the last task in a
-    // cycle completes, `wg done` may or may not have already triggered reactivation
-    // (it does via evaluate_cycle_iteration). This coordinator-level check acts as
-    // the authoritative sweep that catches all completed cycles each tick.
-    {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        let reactivated = evaluate_all_cycle_iterations(&mut graph, &cycle_analysis);
-        if !reactivated.is_empty() {
-            eprintln!(
-                "[coordinator] Cycle iteration: re-activated {} task(s): {:?}",
-                reactivated.len(),
-                reactivated
-            );
-            save_graph(&graph, &graph_path)
-                .context("Failed to save graph after cycle reactivation")?;
+    // Phases 2.5–2.9: Graph maintenance (atomic load-modify-save).
+    //
+    // Each phase group uses `modify_graph` to hold the file lock across the
+    // entire load-modify-save cycle.  This prevents the "lost update" race
+    // where a concurrent `wg` command (e.g. `wg publish`, `wg add`, `wg done`)
+    // inserts a task between our load and save, and our save clobbers it.
+    modify_graph(&graph_path, |graph| {
+        let mut modified = false;
+
+        // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
+        {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            let reactivated = evaluate_all_cycle_iterations(graph, &cycle_analysis);
+            if !reactivated.is_empty() {
+                eprintln!(
+                    "[coordinator] Cycle iteration: re-activated {} task(s): {:?}",
+                    reactivated.len(),
+                    reactivated
+                );
+                modified = true;
+            }
         }
-    }
 
-    // Phase 2.6: Cycle failure restart — reactivate cycles where a member is Failed
-    // and restart_on_failure is true (default). Analogous to phase 2.5 for successes.
-    {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        let reactivated = evaluate_all_cycle_failure_restarts(&mut graph, &cycle_analysis);
-        if !reactivated.is_empty() {
-            eprintln!(
-                "[coordinator] Cycle failure restart: re-activated {} task(s): {:?}",
-                reactivated.len(),
-                reactivated
-            );
-            save_graph(&graph, &graph_path)
-                .context("Failed to save graph after cycle failure restart")?;
+        // Phase 2.6: Cycle failure restart — reactivate cycles where a member is Failed
+        // and restart_on_failure is true (default).
+        {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            let reactivated = evaluate_all_cycle_failure_restarts(graph, &cycle_analysis);
+            if !reactivated.is_empty() {
+                eprintln!(
+                    "[coordinator] Cycle failure restart: re-activated {} task(s): {:?}",
+                    reactivated.len(),
+                    reactivated
+                );
+                modified = true;
+            }
         }
-    }
 
-    // Phase 2.7: Evaluate waiting tasks — check if wait conditions are satisfied
-    // and transition satisfied tasks back to Open for dispatch.
-    {
-        let wait_modified = evaluate_waiting_tasks(&mut graph, dir);
-        if wait_modified {
-            save_graph(&graph, &graph_path)
-                .context("Failed to save graph after wait condition evaluation")?;
+        // Phase 2.7: Evaluate waiting tasks — check if wait conditions are satisfied.
+        modified |= evaluate_waiting_tasks(graph, dir);
+
+        // Phase 2.8: Message-triggered resurrection.
+        modified |= resurrect_done_tasks(graph, dir);
+
+        // Phase 2.9: Build placement tasks for draft tasks needing automatic placement.
+        modified |= build_placement_tasks(graph, &config, dir);
+
+        modified
+    })
+    .context("Failed to load/save graph during maintenance phases")?;
+
+    // Phases 3–4.7: Agency scaffolding (atomic load-modify-save).
+    //
+    // A separate `modify_graph` call so that tasks created by Phase 2.9
+    // (placement) are visible on disk when we reload here.
+    let graph = modify_graph(&graph_path, |graph| {
+        let mut modified = false;
+
+        // Phase 3: Auto-assign unassigned ready tasks
+        if config.agency.auto_assign {
+            modified |= build_auto_assign_tasks(graph, &config, dir);
         }
-    }
 
-    // Phase 2.8: Message-triggered resurrection — scan Done tasks for unread
-    // messages and reopen or create child tasks as appropriate.
-    {
-        let resurrect_modified = resurrect_done_tasks(&mut graph, dir);
-        if resurrect_modified {
-            save_graph(&graph, &graph_path).context("Failed to save graph after resurrection")?;
+        // Phase 4: Auto-evaluate tasks
+        if config.agency.auto_evaluate {
+            modified |= build_auto_evaluate_tasks(dir, graph, &config);
         }
-    }
 
-    // Phase 2.9: Build placement tasks for draft tasks needing automatic placement.
-    // Must run BEFORE auto-assign (Phase 3) so placed tasks become eligible.
-    {
-        let placement_modified = build_placement_tasks(&mut graph, &config, dir);
-        if placement_modified {
-            save_graph(&graph, &graph_path).context("Failed to save graph after placement")?;
+        // Phase 4.5: FLIP verification
+        modified |= build_flip_verification_tasks(dir, graph, &config);
+
+        // Phase 4.6: Auto-evolve
+        if config.agency.auto_evolve {
+            modified |= build_auto_evolve_task(dir, graph, &config);
         }
-    }
 
-    // Phase 3: Auto-assign unassigned ready tasks
-    // NOTE: These must run BEFORE the early-return check, because they may
-    // create new ready tasks (e.g. evaluate-* tasks) that weren't there before.
-    let mut graph_modified = false;
-    if config.agency.auto_assign {
-        graph_modified |= build_auto_assign_tasks(&mut graph, &config, dir);
-    }
+        // Phase 4.7: Auto-create
+        if config.agency.auto_create {
+            modified |= build_auto_create_task(dir, graph, &config);
+        }
 
-    // Phase 4: Auto-evaluate tasks
-    if config.agency.auto_evaluate {
-        graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
-    }
-
-    // Phase 4.5: FLIP verification — create verification tasks for tasks with
-    // low FLIP scores. Only runs when flip_verification_threshold is set.
-    graph_modified |= build_flip_verification_tasks(dir, &mut graph, &config);
-
-    // Phase 4.6: Auto-evolve — trigger evolution when evaluation data warrants it.
-    if config.agency.auto_evolve {
-        graph_modified |= build_auto_evolve_task(dir, &mut graph, &config);
-    }
-
-    // Phase 4.7: Auto-create — trigger creator when enough tasks completed.
-    if config.agency.auto_create {
-        graph_modified |= build_auto_create_task(dir, &mut graph, &config);
-    }
-
-    // Save graph once if it was modified during auto-assign or auto-evaluate.
-    // Abort tick if save fails — continuing with unsaved state would spawn agents
-    // on tasks that haven't been persisted.
-    if graph_modified {
-        save_graph(&graph, &graph_path)
-            .context("Failed to save graph after auto-assign/auto-evaluate; aborting tick")?;
-    }
+        modified
+    })
+    .context("Failed to save graph after auto-assign/auto-evaluate; aborting tick")?;
 
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
     if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {
