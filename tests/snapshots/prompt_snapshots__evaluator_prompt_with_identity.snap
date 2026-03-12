@@ -67,6 +67,8 @@ Compute an overall **score** as a weighted average:
 - coordination_overhead: 10%
 - blocking_impact: 5%
 
+Note: `intent_fidelity` is mechanically injected from the FLIP score and does not need to be scored by the evaluator. Do not include it in your output dimensions.
+
 ### Rubric Spectrum
 
 Map your overall score to one of these levels:

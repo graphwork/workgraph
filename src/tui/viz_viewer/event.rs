@@ -1,6 +1,5 @@
 use std::io;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
@@ -11,41 +10,53 @@ use ratatui::layout::Position;
 
 use super::render;
 use super::state::{
-    CommandEffect, ConfigEditKind, ConfirmAction, FocusedPanel, InputMode, InspectorSubFocus,
-    RightPanelTab, TaskFormField, TextPromptAction, VizApp,
+    ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
+    ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, RightPanelTab, TaskFormField,
+    TextPromptAction, VizApp,
 };
-
-/// Input poll timeout — short for responsive scrolling.
-const INPUT_POLL: Duration = Duration::from_millis(50);
 
 /// Apply the current mouse capture state to the terminal.
 ///
 /// Uses modes 1002 (button-event tracking) and 1006 (SGR extended coordinates)
 /// instead of crossterm's EnableMouseCapture which also enables 1003 (any-event).
 /// Mode 1003 breaks mosh compatibility because mosh disables earlier modes when
-/// a new mode arrives, and Termux doesn't support 1003 — leaving no tracking
-/// mode active. Mode 1002 adds drag reporting (motion while button held) on top
-/// of 1000 (button tracking), which is needed for scrollbar dragging.
-fn set_mouse_capture(enabled: bool) -> Result<()> {
+/// a new mode arrives — leaving no tracking mode active. Mode 1002 adds drag
+/// reporting (motion while button held) on top of 1000 (button tracking), which
+/// is needed for scrollbar dragging.
+///
+/// When `any_motion` is true (auto-set for Termux without mosh), mode 1003 is
+/// also enabled so that all motion events are reported. This helps with touch
+/// environments where drag events may lack the button-held flag.
+fn set_mouse_capture(enabled: bool, any_motion: bool) -> Result<()> {
     use io::Write;
     let mut stdout = io::stdout();
     if enabled {
         stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
+        if any_motion {
+            stdout.write_all(b"\x1b[?1003h")?;
+        }
     } else {
-        stdout.write_all(b"\x1b[?1006l\x1b[?1002l")?;
+        stdout.write_all(b"\x1b[?1003l\x1b[?1006l\x1b[?1002l")?;
     }
     stdout.flush()?;
     Ok(())
 }
 
+/// Returns true when the terminal is Termux and we're NOT behind mosh.
+/// In that case, enabling mode 1003 (any-event tracking) is safe and helps
+/// with touch drag events that may lack the button-held flag.
+pub(super) fn detect_termux_touch() -> bool {
+    std::env::var_os("TERMUX_VERSION").is_some() && std::env::var_os("MOSH_SERVER_PID").is_none()
+}
+
 pub fn run_event_loop(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Result<()> {
     // Set initial mouse capture state
-    set_mouse_capture(app.mouse_enabled)?;
+    set_mouse_capture(app.mouse_enabled, app.any_motion_mouse)?;
 
     let result = run_event_loop_inner(terminal, app);
 
     // Always disable mouse capture on exit
-    let _ = set_mouse_capture(false);
+    let _ = set_mouse_capture(false, false);
 
     result
 }
@@ -65,17 +76,29 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
         }
     });
 
-    loop {
-        app.maybe_refresh();
-        app.drain_commands();
-        terminal.draw(|frame| render::draw(frame, app))?;
+    // Always draw the first frame.
+    let mut needs_redraw = true;
 
-        // Wait for the first event (up to INPUT_POLL), then drain all
+    loop {
+        let refreshed = app.maybe_refresh();
+        let drained = app.drain_commands();
+
+        if needs_redraw || refreshed || drained {
+            terminal.draw(|frame| render::draw(frame, app))?;
+            needs_redraw = false;
+        }
+
+        // Adaptive poll timeout: short during animations for smooth rendering,
+        // longer when idle to reduce CPU usage (from ~50% to <5%).
+        let poll_timeout = app.next_poll_timeout();
+
+        // Wait for the first event (up to poll_timeout), then drain all
         // immediately queued events before redrawing — same batching
         // strategy as before, but via the channel instead of raw polling.
-        match rx.recv_timeout(INPUT_POLL) {
+        match rx.recv_timeout(poll_timeout) {
             Ok(ev) => {
                 dispatch_event(app, ev);
+                needs_redraw = true;
                 // Drain remaining queued events so we only redraw once
                 // for a rapid burst (e.g. pasted text arriving as
                 // individual KeyEvents when bracketed paste is absent).
@@ -86,7 +109,14 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {} // no events — just redraw
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Timeout: redraw if timed UI elements changed (animation
+                // progress, notification expiry, scrollbar fade) or if a
+                // data refresh tick is due.
+                if app.has_timed_ui_elements() || app.is_refresh_due() {
+                    needs_redraw = true;
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 anyhow::bail!("terminal event reader thread exited unexpectedly");
             }
@@ -125,12 +155,36 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Service control panel intercepts keys when open
+    if app.service_health.panel_open {
+        handle_service_control_panel_key(app, code);
+        return;
+    }
+
+    // Service health detail popup intercepts keys when open
+    if app.service_health.detail_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.service_health.detail_open = false,
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.service_health.detail_scroll =
+                    app.service_health.detail_scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.service_health.detail_scroll =
+                    app.service_health.detail_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Dispatch based on input mode
     match &app.input_mode {
         InputMode::Search => handle_search_input(app, code, modifiers),
         InputMode::TaskForm => handle_task_form_input(app, code, modifiers),
         InputMode::Confirm(_) => handle_confirm_input(app, code),
         InputMode::TextPrompt(_) => handle_text_prompt_input(app, code, modifiers),
+        InputMode::ChoiceDialog(_) => handle_choice_dialog_input(app, code),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
@@ -149,8 +203,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     match &app.input_mode {
         InputMode::ChatInput => {
             // Insert pasted text at cursor position, preserving newlines.
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.chat.editor);
+            super::state::paste_insert_mode(text, &mut app.chat.editor);
         }
         InputMode::Search => {
             // Strip newlines for search — it's single-line.
@@ -159,8 +212,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             app.update_search();
         }
         InputMode::TextPrompt(_action) => {
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.text_prompt.editor);
+            super::state::paste_insert_mode(text, &mut app.text_prompt.editor);
         }
         InputMode::TaskForm => {
             if let Some(form) = app.task_form.as_mut() {
@@ -189,8 +241,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         }
         InputMode::MessageInput => {
             // Insert pasted text at cursor position, preserving newlines (like chat).
-            app.editor_handler
-                .on_paste_event(text.to_string(), &mut app.messages_panel.editor);
+            super::state::paste_insert_mode(text, &mut app.messages_panel.editor);
         }
         InputMode::ConfigEdit => {
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -284,6 +335,142 @@ fn handle_confirm_input(app: &mut VizApp, code: KeyCode) {
     }
 }
 
+fn handle_choice_dialog_input(app: &mut VizApp, code: KeyCode) {
+    let state = match &app.input_mode {
+        InputMode::ChoiceDialog(s) => s.clone(),
+        _ => return,
+    };
+
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let InputMode::ChoiceDialog(ref mut s) = app.input_mode {
+                if s.selected > 0 {
+                    s.selected -= 1;
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let InputMode::ChoiceDialog(ref mut s) = app.input_mode {
+                if s.selected + 1 < s.options.len() {
+                    s.selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            execute_choice_dialog_option(app, &state.action, state.selected);
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            // Check if the char matches a hotkey
+            if let Some(idx) = state.options.iter().position(|(h, _, _)| *h == c) {
+                execute_choice_dialog_option(app, &state.action, idx);
+                app.input_mode = InputMode::Normal;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn execute_choice_dialog_option(app: &mut VizApp, action: &ChoiceDialogAction, idx: usize) {
+    match action {
+        ChoiceDialogAction::RemoveCoordinator(cid) => {
+            let cid = *cid;
+            match idx {
+                0 => {
+                    // Archive
+                    app.exec_command(
+                        vec![
+                            "service".to_string(),
+                            "archive-coordinator".to_string(),
+                            cid.to_string(),
+                        ],
+                        CommandEffect::ArchiveCoordinator(cid),
+                    );
+                }
+                1 => {
+                    // Stop
+                    app.exec_command(
+                        vec![
+                            "service".to_string(),
+                            "stop-coordinator".to_string(),
+                            cid.to_string(),
+                        ],
+                        CommandEffect::StopCoordinator(cid),
+                    );
+                }
+                2 => {
+                    // Abandon (existing delete behavior)
+                    app.delete_coordinator(cid);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Handle keyboard input when the service control panel is open.
+fn handle_service_control_panel_key(app: &mut VizApp, code: KeyCode) {
+    let stuck_count = app.service_health.stuck_tasks.len();
+    if app.service_health.panic_confirm {
+        match code {
+            KeyCode::Char('y') => {
+                app.execute_panic_kill();
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                app.service_health.panic_confirm = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_service_control_panel();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.service_health.panel_focus = app.service_health.panel_focus.next(stuck_count);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.service_health.panel_focus = app.service_health.panel_focus.prev(stuck_count);
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.service_health.panel_focus == ControlPanelFocus::PanicKill {
+                app.service_health.panic_confirm = true;
+            } else {
+                app.execute_service_action();
+            }
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            app.service_health.panel_focus = ControlPanelFocus::StartStop;
+            app.execute_service_action();
+        }
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            app.service_health.panel_focus = ControlPanelFocus::PauseResume;
+            app.execute_service_action();
+        }
+        KeyCode::Char('K') => {
+            app.service_health.panel_focus = ControlPanelFocus::PanicKill;
+            app.service_health.panic_confirm = true;
+        }
+        KeyCode::Char('u') | KeyCode::Char('U') => {
+            if let ControlPanelFocus::StuckAgent(idx) = app.service_health.panel_focus
+                && let Some(st) = app.service_health.stuck_tasks.get(idx)
+            {
+                let tid = st.task_id.clone();
+                app.exec_command(
+                    vec!["unclaim".to_string(), tid.clone()],
+                    CommandEffect::RefreshAndNotify(format!("Unclaimed {}", tid)),
+                );
+                app.set_service_feedback(format!("Unclaimed {}", tid));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
     use crossterm::event::KeyEvent;
@@ -300,6 +487,17 @@ fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
     if submit {
         let text = editor_text(&app.text_prompt.editor);
         editor_clear(&mut app.text_prompt.editor);
+        // CreateCoordinator accepts empty text (creates unnamed coordinator)
+        if action == TextPromptAction::CreateCoordinator {
+            let name = if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.trim().to_string())
+            };
+            app.create_coordinator(name);
+            app.input_mode = InputMode::Normal;
+            return;
+        }
         if text.trim().is_empty() {
             if action == TextPromptAction::AttachFile {
                 app.input_mode = InputMode::ChatInput;
@@ -341,6 +539,7 @@ fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 return;
             }
+            TextPromptAction::CreateCoordinator => unreachable!("handled above"),
         }
         app.input_mode = InputMode::Normal;
         return;
@@ -480,33 +679,66 @@ fn handle_task_form_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
     use crossterm::event::KeyEvent;
+    let in_edit_mode = app.chat.editing_index.is_some();
     match code {
         KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-            app.chat_input_dismissed = true;
-            app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            if in_edit_mode {
+                app.cancel_chat_edit_mode();
+            } else {
+                app.input_mode = InputMode::Normal;
+                app.chat_input_dismissed = true;
+                app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            }
             return;
         }
         KeyCode::Enter
             if !modifiers.contains(KeyModifiers::SHIFT)
                 && !modifiers.contains(KeyModifiers::ALT) =>
         {
-            let text = editor_text(&app.chat.editor);
-            editor_clear(&mut app.chat.editor);
-            if !text.trim().is_empty() {
-                app.send_chat_message(text);
+            if in_edit_mode {
+                app.commit_chat_edit();
+            } else {
+                let text = editor_text(&app.chat.editor);
+                editor_clear(&mut app.chat.editor);
+                if !text.trim().is_empty() {
+                    app.send_chat_message(text);
+                }
             }
             return;
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-            editor_clear(&mut app.chat.editor);
-            app.input_mode = InputMode::Normal;
-            app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            if in_edit_mode {
+                app.cancel_chat_edit_mode();
+            } else {
+                editor_clear(&mut app.chat.editor);
+                app.input_mode = InputMode::Normal;
+                app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+            }
             return;
         }
         KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.try_paste_clipboard_image();
             return;
+        }
+        KeyCode::Up
+            if !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            // Up arrow: navigate to previous user message (history)
+            // Only trigger when input is empty (for fresh history nav) or already in history mode
+            let is_empty = editor_text(&app.chat.editor).is_empty();
+            if (is_empty || app.chat.history_cursor.is_some()) && app.chat_history_up() {
+                return;
+            }
+        }
+        KeyCode::Down
+            if !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            // Down arrow: navigate to next user message or back to fresh input
+            if app.chat.history_cursor.is_some() && app.chat_history_down() {
+                return;
+            }
         }
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
             app.record_panel_scroll_activity();
@@ -538,6 +770,8 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
     use crossterm::event::KeyEvent;
     match code {
         KeyCode::Esc => {
+            // Save draft on exit so it persists across panel/task switches.
+            app.save_message_draft();
             app.input_mode = InputMode::Normal;
             return;
         }
@@ -550,6 +784,8 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
             if !text.trim().is_empty()
                 && let Some(task_id) = app.messages_panel.task_id.clone()
             {
+                // Clear draft on successful send.
+                app.message_drafts.remove(&task_id);
                 app.exec_command(
                     vec![
                         "msg".to_string(),
@@ -568,6 +804,10 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
             editor_clear(&mut app.messages_panel.editor);
+            // Clear draft on Ctrl+C (intentional discard).
+            if let Some(task_id) = &app.messages_panel.task_id {
+                app.message_drafts.remove(task_id);
+            }
             app.input_mode = InputMode::Normal;
             return;
         }
@@ -610,6 +850,12 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 }
 
 fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    // When the archive browser is active, intercept keys for archive navigation.
+    if app.archive_browser.active {
+        handle_archive_key(app, code, modifiers);
+        return;
+    }
+
     match code {
         // Help overlay
         KeyCode::Char('?') => app.show_help = true,
@@ -661,18 +907,29 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.force_refresh();
         }
 
+        // Shift+Period (<): toggle showing only running system tasks
+        KeyCode::Char('<') => {
+            app.show_running_system_tasks = !app.show_running_system_tasks;
+            app.system_tasks_just_toggled = true;
+            app.force_refresh();
+        }
+
         // Backslash: toggle right panel visibility
         KeyCode::Char('\\') => {
             app.toggle_right_panel();
         }
 
         // Cycle inspector size: 1/3 → 1/2 → 2/3 → full → off
-        KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
+        KeyCode::Char('=') | KeyCode::BackTab => {
             app.cycle_layout_mode();
         }
-        // Cycle inspector size in reverse: off → full → 2/3 → 1/2 → 1/3
+        // Grow viz pane by ~5%
+        KeyCode::Char('i') => {
+            app.grow_viz_pane();
+        }
+        // Shrink viz pane by ~5%
         KeyCode::Char('I') => {
-            app.cycle_layout_mode_reverse();
+            app.shrink_viz_pane();
         }
 
         // Navigate between matches
@@ -687,14 +944,12 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.toggle_panel_focus();
         }
 
-        // Alt+Left/Right: cycle tabs
+        // Alt+Left/Right: cycle inspector views with slide animation
         KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
-            app.right_panel_visible = true;
-            app.right_panel_tab = app.right_panel_tab.prev();
+            app.cycle_inspector_view_backward();
         }
         KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
-            app.right_panel_visible = true;
-            app.right_panel_tab = app.right_panel_tab.next();
+            app.cycle_inspector_view_forward();
         }
 
         // HUD panel scroll (Shift + Up/Down/PgUp/PgDn)
@@ -779,7 +1034,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Toggle mouse capture
         KeyCode::Char('m') => {
             app.toggle_mouse();
-            let _ = set_mouse_capture(app.mouse_enabled);
+            let _ = set_mouse_capture(app.mouse_enabled, app.any_motion_mouse);
         }
 
         // Toggle coordinator log view
@@ -860,6 +1115,11 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.inspector_sub_focus = InspectorSubFocus::TextEntry;
         }
 
+        // A: toggle archive browser
+        KeyCode::Char('A') => {
+            app.toggle_archive_browser();
+        }
+
         // Digit keys 0-7: switch right panel tab
         KeyCode::Char(d @ '0'..='7') => {
             let idx = (d as u8 - b'0') as usize;
@@ -867,6 +1127,98 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 app.right_panel_visible = true;
                 app.right_panel_tab = tab;
             }
+        }
+
+        _ => {}
+    }
+}
+
+fn handle_archive_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers) {
+    if app.archive_browser.filter_active {
+        // Filter input mode: typing characters into the filter
+        match code {
+            KeyCode::Esc => {
+                app.archive_browser.filter_active = false;
+                app.archive_browser.filter.clear();
+                app.archive_browser.apply_filter();
+            }
+            KeyCode::Enter => {
+                app.archive_browser.filter_active = false;
+            }
+            KeyCode::Backspace => {
+                app.archive_browser.filter.pop();
+                app.archive_browser.apply_filter();
+            }
+            KeyCode::Char(c) => {
+                app.archive_browser.filter.push(c);
+                app.archive_browser.apply_filter();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        // Close archive browser
+        KeyCode::Esc | KeyCode::Char('A') => {
+            app.archive_browser.active = false;
+            app.archive_browser.filter_active = false;
+        }
+        KeyCode::Char('q') => {
+            app.archive_browser.active = false;
+            app.archive_browser.filter_active = false;
+        }
+
+        // Navigation
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.archive_browser.selected > 0 {
+                app.archive_browser.selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 && app.archive_browser.selected < count - 1 {
+                app.archive_browser.selected += 1;
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            app.archive_browser.selected = 0;
+            app.archive_browser.scroll = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 {
+                app.archive_browser.selected = count - 1;
+            }
+        }
+        KeyCode::PageUp => {
+            app.archive_browser.selected = app.archive_browser.selected.saturating_sub(20);
+        }
+        KeyCode::PageDown => {
+            let count = app.archive_browser.visible_count();
+            if count > 0 {
+                app.archive_browser.selected = (app.archive_browser.selected + 20).min(count - 1);
+            }
+        }
+
+        // Search/filter
+        KeyCode::Char('/') => {
+            app.archive_browser.filter.clear();
+            app.archive_browser.filter_active = true;
+        }
+
+        // Restore selected task
+        KeyCode::Char('r') => {
+            app.restore_archive_entry();
+            // Reload after restore
+            let dir = app.workgraph_dir.clone();
+            app.archive_browser.load(&dir);
+        }
+
+        // Refresh archive list
+        KeyCode::Char('R') => {
+            let dir = app.workgraph_dir.clone();
+            app.archive_browser.load(&dir);
         }
 
         _ => {}
@@ -894,10 +1246,9 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.kill_focused_agent();
                 }
                 KeyCode::Char('\\') => app.toggle_right_panel(),
-                KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
-                    app.cycle_layout_mode()
-                }
-                KeyCode::Char('I') => app.cycle_layout_mode_reverse(),
+                KeyCode::Char('=') | KeyCode::BackTab => app.cycle_layout_mode(),
+                KeyCode::Char('i') => app.grow_viz_pane(),
+                KeyCode::Char('I') => app.shrink_viz_pane(),
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
                 }
@@ -933,11 +1284,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Cycle inspector size: 1/3 → 1/2 → 2/3 → full → off
-        KeyCode::Char('=') | KeyCode::BackTab | KeyCode::Char('i') => {
+        KeyCode::Char('=') | KeyCode::BackTab => {
             app.cycle_layout_mode();
         }
+        // Grow/shrink viz pane by ~5%
+        KeyCode::Char('i') => {
+            app.grow_viz_pane();
+        }
         KeyCode::Char('I') => {
-            app.cycle_layout_mode_reverse();
+            app.shrink_viz_pane();
         }
 
         // Esc: go back to graph focus
@@ -961,20 +1316,44 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.toggle_panel_focus();
         }
 
-        // Alt+Left/Right: cycle tabs (same as bare Left/Right)
+        // Alt+Left/Right: cycle inspector views with slide animation
         KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
-            app.right_panel_tab = app.right_panel_tab.prev();
+            app.cycle_inspector_view_backward();
         }
         KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
-            app.right_panel_tab = app.right_panel_tab.next();
+            app.cycle_inspector_view_forward();
         }
 
-        // Left/Right cycle tabs
+        // Left/Right: on Chat tab, cycle coordinators; otherwise cycle tabs
         KeyCode::Left => {
-            app.right_panel_tab = app.right_panel_tab.prev();
+            if app.right_panel_tab == RightPanelTab::Chat {
+                let ids = app.list_coordinator_ids();
+                if ids.len() > 1 {
+                    let pos = ids
+                        .iter()
+                        .position(|&id| id == app.active_coordinator_id)
+                        .unwrap_or(0);
+                    let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
+                    app.switch_coordinator(ids[prev]);
+                }
+            } else {
+                app.right_panel_tab = app.right_panel_tab.prev();
+            }
         }
         KeyCode::Right => {
-            app.right_panel_tab = app.right_panel_tab.next();
+            if app.right_panel_tab == RightPanelTab::Chat {
+                let ids = app.list_coordinator_ids();
+                if ids.len() > 1 {
+                    let pos = ids
+                        .iter()
+                        .position(|&id| id == app.active_coordinator_id)
+                        .unwrap_or(0);
+                    let next = (pos + 1) % ids.len();
+                    app.switch_coordinator(ids[next]);
+                }
+            } else {
+                app.right_panel_tab = app.right_panel_tab.next();
+            }
         }
 
         // Up/Down/k/j scroll the active panel content
@@ -1010,7 +1389,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 // Editor cursor is already at the right position.
             } else if app.right_panel_tab == RightPanelTab::Messages {
-                super::state::editor_clear(&mut app.messages_panel.editor);
+                // Enter compose mode without clearing — preserves any draft.
                 app.input_mode = InputMode::MessageInput;
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
@@ -1035,6 +1414,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Config tab: 'r' reloads config from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Config => {
             app.load_config_panel();
+        }
+
+        // Config tab: 'g' installs project config as global default
+        KeyCode::Char('g') if app.right_panel_tab == RightPanelTab::Config => {
+            app.install_config_as_global();
         }
 
         // Config tab: 'a' starts the add-endpoint flow
@@ -1063,6 +1447,55 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 let task_id = phase.task_id.clone();
                 app.load_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
+            }
+        }
+
+        // Chat tab: '[' / ']' cycle between coordinator tabs
+        KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Chat => {
+            let ids = app.list_coordinator_ids();
+            if ids.len() > 1 {
+                let pos = ids
+                    .iter()
+                    .position(|&id| id == app.active_coordinator_id)
+                    .unwrap_or(0);
+                let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
+                app.switch_coordinator(ids[prev]);
+            }
+        }
+        KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Chat => {
+            let ids = app.list_coordinator_ids();
+            if ids.len() > 1 {
+                let pos = ids
+                    .iter()
+                    .position(|&id| id == app.active_coordinator_id)
+                    .unwrap_or(0);
+                let next = (pos + 1) % ids.len();
+                app.switch_coordinator(ids[next]);
+            }
+        }
+        // Chat tab: '+' creates a new coordinator session
+        KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
+            super::state::editor_clear(&mut app.text_prompt.editor);
+            app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
+        }
+        // Chat tab: '-' opens choice dialog for coordinator removal (except coordinator 0)
+        KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Chat => {
+            let cid = app.active_coordinator_id;
+            if cid != 0 {
+                let options = vec![
+                    ('a', "Archive".into(), "Mark as done — work complete".into()),
+                    (
+                        's',
+                        "Stop".into(),
+                        "Pause coordinator — resume later".into(),
+                    ),
+                    ('x', "Abandon".into(), "Permanently discard".into()),
+                ];
+                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                    action: ChoiceDialogAction::RemoveCoordinator(cid),
+                    selected: 0,
+                    options,
+                });
             }
         }
 
@@ -1114,6 +1547,10 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_up(amount);
         }
+        RightPanelTab::Firehose => {
+            app.firehose.auto_tail = false;
+            app.firehose.scroll = app.firehose.scroll.saturating_sub(amount);
+        }
     }
 }
 
@@ -1152,6 +1589,16 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_down(amount);
         }
+        RightPanelTab::Firehose => {
+            app.firehose.scroll += amount;
+            let max = app
+                .firehose
+                .total_rendered_lines
+                .saturating_sub(app.firehose.viewport_height);
+            if app.firehose.scroll >= max {
+                app.firehose.auto_tail = true;
+            }
+        }
     }
 }
 
@@ -1183,6 +1630,10 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         RightPanelTab::Files => {}
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_to_top();
+        }
+        RightPanelTab::Firehose => {
+            app.firehose.auto_tail = false;
+            app.firehose.scroll = 0;
         }
     }
 }
@@ -1216,6 +1667,10 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         RightPanelTab::CoordLog => {
             app.coord_log_scroll_to_bottom();
         }
+        RightPanelTab::Firehose => {
+            app.firehose.auto_tail = true;
+            app.firehose.scroll = usize::MAX;
+        }
     }
 }
 
@@ -1238,6 +1693,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         app.last_graph_scrollbar_area.height > 0 && app.last_graph_scrollbar_area.contains(pos);
     let in_panel_vscrollbar =
         app.last_panel_scrollbar_area.height > 0 && app.last_panel_scrollbar_area.contains(pos);
+    let in_coordinator_bar =
+        app.last_coordinator_bar_area.height > 0 && app.last_coordinator_bar_area.contains(pos);
 
     match kind {
         MouseEventKind::ScrollUp => {
@@ -1307,6 +1764,59 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            // Service health badge click
+            let in_service_badge =
+                app.last_service_badge_area.width > 0 && app.last_service_badge_area.contains(pos);
+            if in_service_badge {
+                app.toggle_service_control_panel();
+                return;
+            }
+            if in_coordinator_bar {
+                // Click on coordinator tab bar: switch coordinator, create, or close.
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.right_panel_tab = RightPanelTab::Chat;
+
+                // Check [+] button first
+                let plus = &app.coordinator_plus_hit;
+                if column >= plus.start && column < plus.end {
+                    super::state::editor_clear(&mut app.text_prompt.editor);
+                    app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
+                    return;
+                }
+
+                // Check each tab's hit area
+                for hit in &app.coordinator_tab_hits {
+                    if column >= hit.tab_start && column < hit.tab_end {
+                        // Check if click is on the close button — open choice dialog
+                        if hit.close_start != hit.close_end
+                            && column >= hit.close_start
+                            && column < hit.close_end
+                        {
+                            let cid = hit.cid;
+                            if cid != 0 {
+                                let options = vec![
+                                    ('a', "Archive".into(), "Mark as done — work complete".into()),
+                                    (
+                                        's',
+                                        "Stop".into(),
+                                        "Pause coordinator — resume later".into(),
+                                    ),
+                                    ('x', "Abandon".into(), "Permanently discard".into()),
+                                ];
+                                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                                    action: ChoiceDialogAction::RemoveCoordinator(cid),
+                                    selected: 0,
+                                    options,
+                                });
+                            }
+                        } else {
+                            app.switch_coordinator(hit.cid);
+                        }
+                        return;
+                    }
+                }
+                return;
+            }
             if in_graph_vscrollbar {
                 // Click on graph vertical scrollbar: start drag and jump.
                 app.focused_panel = FocusedPanel::Graph;
@@ -1344,13 +1854,47 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.input_mode = InputMode::ChatInput;
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 route_mouse_to_editor(app, row, column, EditorTarget::Chat);
+            } else if app.last_message_input_area.height > 0
+                && app.last_message_input_area.contains(pos)
+                && (app.right_panel_tab == RightPanelTab::Messages)
+            {
+                // Click on message input area: enter/resume editing and position cursor.
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.input_mode = InputMode::MessageInput;
+                route_mouse_to_editor(app, row, column, EditorTarget::Message);
             } else if in_right_content
                 && app.right_panel_tab == RightPanelTab::Chat
                 && app.last_chat_message_area.height > 0
                 && app.last_chat_message_area.contains(pos)
             {
-                // Click on chat message history area: focus history, exit text editing.
+                // Click on chat message history area.
                 app.focused_panel = FocusedPanel::RightPanel;
+                // Determine which rendered line was clicked.
+                let click_row = (row.saturating_sub(app.last_chat_message_area.y)) as usize;
+                let rendered_line_idx = app.chat.scroll_from_top + click_row;
+                // Check if the clicked line maps to an editable user message.
+                let clicked_msg_idx = app
+                    .chat
+                    .line_to_message
+                    .get(rendered_line_idx)
+                    .copied()
+                    .flatten();
+                if let Some(msg_idx) = clicked_msg_idx
+                    && !app.is_chat_message_consumed(msg_idx)
+                    && app
+                        .chat
+                        .messages
+                        .get(msg_idx)
+                        .is_some_and(|m| m.role == super::state::ChatRole::User)
+                {
+                    // Click on an editable user message: enter edit mode.
+                    app.enter_chat_edit_mode(msg_idx);
+                    app.input_mode = InputMode::ChatInput;
+                    app.chat_input_dismissed = false;
+                    app.inspector_sub_focus = InspectorSubFocus::TextEntry;
+                    return;
+                }
+                // Default: focus history, exit text editing.
                 app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
                 if app.input_mode == InputMode::ChatInput {
                     app.input_mode = InputMode::Normal;
@@ -1394,11 +1938,16 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             } else if in_graph {
                 // Click in graph: focus graph + select task at clicked line.
                 app.focused_panel = FocusedPanel::Graph;
+                // Start drag-to-pan tracking for touch/mouse pan gestures.
+                app.graph_pan_last = Some((column, row));
                 // Exit text entry mode if active (text persists, goes gray).
                 if app.input_mode == InputMode::ChatInput {
                     app.input_mode = InputMode::Normal;
                     app.chat_input_dismissed = true;
                     app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+                } else if app.input_mode == InputMode::MessageInput {
+                    app.save_message_draft();
+                    app.input_mode = InputMode::Normal;
                 }
                 let content_row = row.saturating_sub(app.last_graph_area.y);
                 let visible_idx = app.scroll.offset_y + content_row as usize;
@@ -1407,62 +1956,82 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     let orig_line = app.visible_to_original(visible_idx);
                     // Guard: orig_line must be within plain_lines range.
                     if orig_line < app.plain_lines.len() {
-                        // Check if the click is on the mail indicator (✉) region.
                         let content_col = (column.saturating_sub(app.last_graph_area.x) as usize)
                             + app.scroll.offset_x;
-                        let clicked_mail = app
+
+                        // Only select a task when clicking on actual text content
+                        // (task name, status, log snippet, mail indicator), not on
+                        // tree-drawing chars, indentation, or empty space past the
+                        // end of the line.  This prevents accidental selection
+                        // changes when click-dragging to pan.
+                        let on_text = app
                             .plain_lines
                             .get(orig_line)
-                            .and_then(|line| {
-                                // Find the ✉ character position in display columns
-                                // (not byte offset) since content_col is a visual column.
-                                let envelope_char_col =
-                                    line.char_indices().position(|(_, c)| c == '✉')?;
-                                // The clickable region spans from ✉ through the
-                                // count digits/slash that follow it (e.g. "✉3" or "✉2/1").
-                                let after_envelope: String = line
-                                    .chars()
-                                    .skip(envelope_char_col + 1)
-                                    .take_while(|c| !c.is_whitespace())
-                                    .collect();
-                                let end_col =
-                                    envelope_char_col + 1 + after_envelope.chars().count();
-                                if content_col >= envelope_char_col && content_col < end_col {
-                                    Some(())
-                                } else {
-                                    None
-                                }
+                            .map(|line| {
+                                let chars: Vec<char> = line.chars().collect();
+                                let text_start =
+                                    chars.iter().position(|c| c.is_alphanumeric() || *c == '✉');
+                                let text_end = chars
+                                    .iter()
+                                    .rposition(|c| !c.is_whitespace())
+                                    .map(|p| p + 1)
+                                    .unwrap_or(0);
+                                matches!(text_start, Some(ts) if content_col >= ts && content_col < text_end)
                             })
-                            .is_some();
-                        app.select_task_at_line(orig_line);
-                        if clicked_mail {
-                            // Switch to the Messages tab for this task.
-                            app.right_panel_visible = true;
-                            app.right_panel_tab = RightPanelTab::Messages;
-                            app.invalidate_messages_panel();
-                            app.load_messages_panel();
-                        } else if let Some(line) = app.plain_lines.get(orig_line) {
-                            // Determine click region for tab switching.
-                            let chars: Vec<char> = line.chars().collect();
-                            let text_start = chars.iter().position(|c| c.is_alphanumeric());
-                            // Find the "  (" separator between task ID and status.
-                            let paren_start = text_start.and_then(|ts| {
-                                (ts..chars.len().saturating_sub(1))
-                                    .find(|&i| chars[i] == ' ' && chars[i + 1] == '(')
-                            });
-                            if let (Some(ts), Some(ps)) = (text_start, paren_start)
-                                && app.right_panel_visible
-                            {
-                                // Inspector already open — update which tab is shown.
-                                if content_col >= ts && content_col < ps {
-                                    app.right_panel_tab = RightPanelTab::Detail;
-                                } else if content_col >= ps {
-                                    app.right_panel_tab = RightPanelTab::Log;
-                                    app.invalidate_log_pane();
-                                    app.load_log_pane();
+                            .unwrap_or(false);
+
+                        if on_text {
+                            // Check if the click is on the mail indicator (✉) region.
+                            let clicked_mail = app
+                                .plain_lines
+                                .get(orig_line)
+                                .and_then(|line| {
+                                    let envelope_char_col =
+                                        line.char_indices().position(|(_, c)| c == '✉')?;
+                                    let after_envelope: String = line
+                                        .chars()
+                                        .skip(envelope_char_col + 1)
+                                        .take_while(|c| !c.is_whitespace())
+                                        .collect();
+                                    let end_col =
+                                        envelope_char_col + 1 + after_envelope.chars().count();
+                                    if content_col >= envelope_char_col && content_col < end_col {
+                                        Some(())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .is_some();
+                            app.select_task_at_line(orig_line);
+                            if clicked_mail {
+                                // Switch to the Messages tab for this task.
+                                app.right_panel_visible = true;
+                                app.right_panel_tab = RightPanelTab::Messages;
+                                app.invalidate_messages_panel();
+                                app.load_messages_panel();
+                            } else if let Some(line) = app.plain_lines.get(orig_line) {
+                                // Determine click region for tab switching.
+                                let chars: Vec<char> = line.chars().collect();
+                                let text_start = chars.iter().position(|c| c.is_alphanumeric());
+                                // Find the "  (" separator between task ID and status.
+                                let paren_start = text_start.and_then(|ts| {
+                                    (ts..chars.len().saturating_sub(1))
+                                        .find(|&i| chars[i] == ' ' && chars[i + 1] == '(')
+                                });
+                                if let (Some(ts), Some(ps)) = (text_start, paren_start)
+                                    && app.right_panel_visible
+                                {
+                                    // Inspector already open — update which tab is shown.
+                                    if content_col >= ts && content_col < ps {
+                                        app.right_panel_tab = RightPanelTab::Detail;
+                                    } else if content_col >= ps {
+                                        app.right_panel_tab = RightPanelTab::Log;
+                                        app.invalidate_log_pane();
+                                        app.load_log_pane();
+                                    }
                                 }
+                                // If inspector is closed, just select — don't auto-open.
                             }
-                            // If inspector is closed, just select — don't auto-open.
                         }
                     }
                 }
@@ -1481,11 +2050,57 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             } else if app.scrollbar_drag == Some(ScrollbarDragTarget::GraphHorizontal) {
                 app.record_graph_hscroll_activity();
                 hscrollbar_jump_to_column(app, column);
+            } else if let Some((prev_col, prev_row)) = app.graph_pan_last {
+                // Drag-to-pan: move the graph viewport following the finger/mouse.
+                // Natural scrolling: dragging down (row increases) scrolls content up.
+                let dx = prev_col as i32 - column as i32;
+                let dy = prev_row as i32 - row as i32;
+                if dx > 0 {
+                    app.record_graph_hscroll_activity();
+                    app.scroll.scroll_right(dx as usize);
+                } else if dx < 0 {
+                    app.record_graph_hscroll_activity();
+                    app.scroll.scroll_left((-dx) as usize);
+                }
+                if dy > 0 {
+                    app.record_graph_scroll_activity();
+                    app.scroll.scroll_down(dy as usize);
+                } else if dy < 0 {
+                    app.record_graph_scroll_activity();
+                    app.scroll.scroll_up((-dy) as usize);
+                }
+                app.graph_pan_last = Some((column, row));
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
             if app.scrollbar_drag.is_some() {
                 app.scrollbar_drag = None;
+            }
+            app.graph_pan_last = None;
+        }
+        // Moved events (mode 1003): treat as drag-to-pan when a touch/click is
+        // active.  Termux touch-to-mouse translation may report motion without
+        // the button-held flag, producing Moved instead of Drag(Left).  With
+        // mode 1003 enabled (auto for Termux), these events keep panning alive.
+        MouseEventKind::Moved if app.graph_pan_last.is_some() => {
+            if let Some((prev_col, prev_row)) = app.graph_pan_last {
+                let dx = prev_col as i32 - column as i32;
+                let dy = prev_row as i32 - row as i32;
+                if dx > 0 {
+                    app.record_graph_hscroll_activity();
+                    app.scroll.scroll_right(dx as usize);
+                } else if dx < 0 {
+                    app.record_graph_hscroll_activity();
+                    app.scroll.scroll_left((-dx) as usize);
+                }
+                if dy > 0 {
+                    app.record_graph_scroll_activity();
+                    app.scroll.scroll_down(dy as usize);
+                } else if dy < 0 {
+                    app.record_graph_scroll_activity();
+                    app.scroll.scroll_up((-dy) as usize);
+                }
+                app.graph_pan_last = Some((column, row));
             }
         }
         _ => {}
@@ -1496,6 +2111,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 pub(super) enum EditorTarget {
     Chat,
     TextPrompt,
+    Message,
 }
 
 /// Route a mouse-down event to the appropriate edtui editor for click-to-position.
@@ -1519,6 +2135,9 @@ pub(super) fn route_mouse_to_editor(app: &mut VizApp, row: u16, column: u16, tar
             };
             app.editor_handler
                 .on_mouse_event(mouse_event, &mut app.text_prompt.editor);
+        }
+        EditorTarget::Message => {
+            message_click_to_cursor(app, row, column);
         }
     }
 }
@@ -1617,6 +2236,87 @@ fn chat_click_to_cursor(app: &mut VizApp, screen_row: u16, screen_col: u16) {
     }
 }
 
+/// Map a screen-space mouse click to a logical cursor position in the message editor.
+/// Same coordinate logic as `chat_click_to_cursor` but using the message input area.
+fn message_click_to_cursor(app: &mut VizApp, screen_row: u16, screen_col: u16) {
+    use unicode_width::UnicodeWidthChar;
+
+    let input_area = app.last_message_input_area;
+    if input_area.width == 0 || input_area.height == 0 {
+        return;
+    }
+
+    let prefix_len: u16 = 2;
+    let editor_y = if input_area.height >= 2 {
+        input_area.y + 1
+    } else {
+        input_area.y
+    };
+    let editor_x = input_area.x + prefix_len;
+    let editor_width = input_area.width.saturating_sub(prefix_len) as usize;
+    let editor_height = if input_area.height >= 2 {
+        input_area.height - 1
+    } else {
+        input_area.height
+    } as usize;
+
+    if editor_width == 0 || editor_height == 0 {
+        return;
+    }
+
+    let local_row = screen_row.saturating_sub(editor_y) as usize;
+    let local_col = screen_col.saturating_sub(editor_x) as usize;
+
+    let text = app.messages_panel.editor.lines.to_string();
+    let logical_lines: Vec<&str> = text.split('\n').collect();
+
+    let mut visual_rows: Vec<(usize, usize, usize)> = Vec::new();
+    let mut cursor_visual_row = 0usize;
+
+    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
+        let segments = super::render::word_wrap_segments(logical_line, editor_width);
+        if line_idx == app.messages_panel.editor.cursor.row {
+            let (sub_row, _) =
+                super::render::cursor_in_segments(&segments, app.messages_panel.editor.cursor.col);
+            cursor_visual_row = visual_rows.len() + sub_row;
+        }
+        for &(start, end) in &segments {
+            visual_rows.push((line_idx, start, end));
+        }
+    }
+
+    let scroll = if cursor_visual_row >= editor_height {
+        cursor_visual_row - editor_height + 1
+    } else {
+        0
+    };
+
+    let target_visual = scroll + local_row;
+
+    if target_visual < visual_rows.len() {
+        let (line_idx, seg_start, seg_end) = visual_rows[target_visual];
+        let chars: Vec<char> = logical_lines[line_idx].chars().collect();
+
+        let mut char_idx = seg_start;
+        let mut display_col = 0usize;
+        while char_idx < seg_end {
+            let cw = UnicodeWidthChar::width(chars[char_idx]).unwrap_or(0);
+            if display_col + cw > local_col {
+                break;
+            }
+            display_col += cw;
+            char_idx += 1;
+        }
+
+        app.messages_panel.editor.cursor = edtui::Index2::new(line_idx, char_idx);
+    } else if let Some(last_line) = logical_lines.last() {
+        app.messages_panel.editor.cursor = edtui::Index2::new(
+            logical_lines.len().saturating_sub(1),
+            last_line.chars().count(),
+        );
+    }
+}
+
 /// Scroll an editor up by moving the cursor up `n` lines.
 fn scroll_editor_up(app: &mut VizApp, n: usize, target: EditorTarget) {
     use crossterm::event::KeyEvent;
@@ -1629,6 +2329,10 @@ fn scroll_editor_up(app: &mut VizApp, n: usize, target: EditorTarget) {
             EditorTarget::TextPrompt => {
                 app.editor_handler
                     .on_key_event(key, &mut app.text_prompt.editor);
+            }
+            EditorTarget::Message => {
+                app.editor_handler
+                    .on_key_event(key, &mut app.messages_panel.editor);
             }
         }
     }
@@ -1646,6 +2350,10 @@ fn scroll_editor_down(app: &mut VizApp, n: usize, target: EditorTarget) {
             EditorTarget::TextPrompt => {
                 app.editor_handler
                     .on_key_event(key, &mut app.text_prompt.editor);
+            }
+            EditorTarget::Message => {
+                app.editor_handler
+                    .on_key_event(key, &mut app.messages_panel.editor);
             }
         }
     }
@@ -1777,6 +2485,17 @@ fn vscrollbar_jump_panel(app: &mut VizApp, row: u16) {
                 return;
             }
             app.coord_log.scroll = jump(max_scroll);
+        }
+        RightPanelTab::Firehose => {
+            let total = app.firehose.total_rendered_lines;
+            let viewport = app.firehose.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let new_scroll = jump(max_scroll);
+            app.firehose.scroll = new_scroll;
+            app.firehose.auto_tail = new_scroll >= max_scroll;
         }
         _ => {}
     }
@@ -2155,6 +2874,7 @@ fn handle_files_key(app: &mut VizApp, code: KeyCode) {
 fn tab_at_column(col: u16) -> Option<RightPanelTab> {
     let labels = [
         "0:Chat", "1:Detail", "2:Log", "3:Msg", "4:Agency", "5:Config", "6:Files", "7:Coord",
+        "8:Fire",
     ];
     let mut pos: u16 = 0;
     for (i, label) in labels.iter().enumerate() {
@@ -2207,7 +2927,6 @@ mod scrollbar_tests {
             &graph,
             &tasks,
             &task_ids,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -2817,5 +3536,447 @@ mod scrollbar_tests {
             app.graph_scrollbar_visible(),
             "Scrollbar should be visible immediately after scroll activity"
         );
+    }
+
+    // ── 6. Touch drag-to-pan ──
+
+    #[test]
+    fn drag_in_graph_body_pans_vertically() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Mouse down inside graph body.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 40);
+        assert!(
+            app.graph_pan_last.is_some(),
+            "Pan should start on mouse down in graph"
+        );
+        assert_eq!(app.scroll.offset_y, 0);
+
+        // Drag upward (row decreases from 10 to 5) → content follows finger up → scroll_down.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 5, 40);
+        assert_eq!(
+            app.scroll.offset_y, 5,
+            "Dragging up should scroll down by 5 rows"
+        );
+
+        // Drag back down (row increases from 5 to 8) → content follows finger down → scroll_up.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 8, 40);
+        assert_eq!(
+            app.scroll.offset_y, 2,
+            "Dragging down should scroll up by 3 rows"
+        );
+    }
+
+    #[test]
+    fn drag_in_graph_body_pans_horizontally() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Mouse down inside graph body.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 40);
+        assert_eq!(app.scroll.offset_x, 0);
+
+        // Drag left (column decreases from 40 to 30) → content follows finger left → scroll_right.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 30);
+        assert_eq!(
+            app.scroll.offset_x, 10,
+            "Dragging left should scroll right by 10 cols"
+        );
+
+        // Drag right (column increases from 30 to 35) → content follows finger right → scroll_left.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 35);
+        assert_eq!(
+            app.scroll.offset_x, 5,
+            "Dragging right should scroll left by 5 cols"
+        );
+    }
+
+    #[test]
+    fn drag_pan_cleared_on_mouse_up() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 40);
+        assert!(app.graph_pan_last.is_some());
+
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 5, 40);
+        assert!(
+            app.graph_pan_last.is_none(),
+            "Pan state should be cleared on mouse up"
+        );
+    }
+
+    #[test]
+    fn drag_pan_does_not_conflict_with_scrollbar_drag() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Click on scrollbar, not graph body.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 79);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Graph));
+        // graph_pan_last should NOT be set since this was a scrollbar click.
+        assert!(
+            app.graph_pan_last.is_none(),
+            "Scrollbar click should not start graph pan"
+        );
+    }
+
+    #[test]
+    fn drag_pan_diagonal_movement() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Mouse down at (row=10, col=40).
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 40);
+
+        // Drag diagonally: row 10→5 (up 5), col 40→30 (left 10).
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 5, 30);
+        assert_eq!(app.scroll.offset_y, 5, "Vertical pan from diagonal drag");
+        assert_eq!(app.scroll.offset_x, 10, "Horizontal pan from diagonal drag");
+    }
+
+    #[test]
+    fn mouse_wheel_scroll_still_works_with_pan_state() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Scroll wheel should work normally.
+        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 40);
+        assert_eq!(
+            app.scroll.offset_y, 3,
+            "Mouse wheel ScrollDown should scroll by 3"
+        );
+
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 40);
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "Mouse wheel ScrollUp should scroll back"
+        );
+    }
+
+    #[test]
+    fn moved_event_pans_when_graph_pan_last_set() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Simulate touch down in graph area — sets graph_pan_last.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 40);
+        assert!(
+            app.graph_pan_last.is_some(),
+            "Pan anchor should be set on mouse down in graph"
+        );
+
+        // Moved event (Termux touch drag without button flag) should pan.
+        handle_mouse(&mut app, MouseEventKind::Moved, 5, 30);
+        // Dragged up by 5 rows: dy = 10-5 = 5 > 0 → scroll_down(5)
+        assert_eq!(app.scroll.offset_y, 5, "Vertical pan via Moved event");
+        // Dragged left by 10 cols: dx = 40-30 = 10 > 0 → scroll_right(10)
+        assert_eq!(app.scroll.offset_x, 10, "Horizontal pan via Moved event");
+
+        // Mouse up clears pan state.
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 5, 30);
+        assert!(
+            app.graph_pan_last.is_none(),
+            "Pan state should be cleared on mouse up"
+        );
+
+        // Moved event without prior mouse down should NOT pan.
+        let prev_y = app.scroll.offset_y;
+        let prev_x = app.scroll.offset_x;
+        handle_mouse(&mut app, MouseEventKind::Moved, 0, 0);
+        assert_eq!(
+            app.scroll.offset_y, prev_y,
+            "Moved without graph_pan_last should not scroll vertically"
+        );
+        assert_eq!(
+            app.scroll.offset_x, prev_x,
+            "Moved without graph_pan_last should not scroll horizontally"
+        );
+    }
+
+    // ── 8. Click-select only on text content ──
+
+    /// Helper to set up graph area for click-to-select tests.
+    fn setup_for_click_select(app: &mut VizApp) {
+        setup_graph_scroll(app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+    }
+
+    #[test]
+    fn click_on_task_text_selects_task() {
+        let (mut app, _tmp) = build_test_app();
+        setup_for_click_select(&mut app);
+        app.selected_task_idx = None;
+
+        // The first plain_line should be a root task like "task-0 (open) Task 0".
+        // Find the column where alphanumeric text starts.
+        let first_line = &app.plain_lines[0];
+        let text_start = first_line
+            .chars()
+            .position(|c| c.is_alphanumeric())
+            .expect("First line should contain text");
+
+        // Click on the text content area (at text_start column, row 0).
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            text_start as u16,
+        );
+        assert!(
+            app.selected_task_idx.is_some(),
+            "Clicking on task text should select a task"
+        );
+    }
+
+    #[test]
+    fn click_on_empty_space_past_line_end_does_not_select() {
+        let (mut app, _tmp) = build_test_app();
+        setup_for_click_select(&mut app);
+        app.selected_task_idx = None;
+
+        // Click far to the right of any line content (column 78, well past text).
+        let first_line_len = app.plain_lines[0].chars().count();
+        let past_end_col = (first_line_len + 5) as u16;
+        // Make sure the column is within the graph area.
+        if past_end_col < 79 {
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                0,
+                past_end_col,
+            );
+            assert!(
+                app.selected_task_idx.is_none(),
+                "Clicking past end of line should not select a task"
+            );
+        }
+    }
+
+    /// Build a graph with parent-child edges (tree chars in output).
+    fn build_tree_app() -> (VizApp, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let root = make_task_with_status("root", "Root task", Status::Open);
+        let mut child1 = make_task_with_status("child1", "Child 1", Status::Open);
+        child1.after = vec!["root".to_string()];
+        let mut child2 = make_task_with_status("child2", "Child 2", Status::Open);
+        child2.after = vec!["root".to_string()];
+        graph.add_node(Node::Task(root));
+        graph.add_node(Node::Task(child1));
+        graph.add_node(Node::Task(child2));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        (app, tmp)
+    }
+
+    #[test]
+    fn click_on_tree_chars_does_not_select() {
+        let (mut app, _tmp) = build_tree_app();
+        setup_for_click_select(&mut app);
+
+        // Find a child line that has tree-drawing prefix (e.g. "├→" or "└→").
+        let child_line_idx = app
+            .plain_lines
+            .iter()
+            .position(|l| l.contains('├') || l.contains('└'))
+            .expect("Should have at least one child line with tree chars");
+
+        let line = &app.plain_lines[child_line_idx];
+        let text_start = line.chars().position(|c| c.is_alphanumeric()).unwrap_or(0);
+
+        // Click on the tree-drawing prefix area (column 0, which is before text).
+        // First select a different task so we can detect change.
+        app.selected_task_idx = Some(0);
+        let prev_selected = app.selected_task_idx;
+
+        // Scroll so that child_line_idx is visible at row 0.
+        app.scroll.offset_y = child_line_idx;
+
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            0, // row
+            0, // column — in the tree-drawing area
+        );
+
+        // The selection should remain unchanged because we clicked on tree chars.
+        assert_eq!(
+            app.selected_task_idx, prev_selected,
+            "Clicking on tree-drawing chars (col 0, before text_start={}) should not change selection",
+            text_start,
+        );
+    }
+
+    #[test]
+    fn click_drag_on_empty_space_does_not_change_selection() {
+        let (mut app, _tmp) = build_test_app();
+        setup_for_click_select(&mut app);
+
+        // Select task 0 first.
+        app.selected_task_idx = Some(0);
+
+        // Click on empty space past line end — should not change selection.
+        let first_line_len = app.plain_lines[0].chars().count();
+        let past_end_col = (first_line_len + 5) as u16;
+        if past_end_col < 79 {
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                0,
+                past_end_col,
+            );
+            assert_eq!(
+                app.selected_task_idx,
+                Some(0),
+                "Click on empty space should not change selection"
+            );
+
+            // Drag should work (pan) without changing selection.
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Drag(MouseButton::Left),
+                5,
+                past_end_col,
+            );
+            assert_eq!(
+                app.selected_task_idx,
+                Some(0),
+                "Drag on empty space should not change selection"
+            );
+        }
     }
 }

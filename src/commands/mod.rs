@@ -14,6 +14,7 @@ pub mod agent_crud;
 pub mod agents;
 pub mod aging;
 pub mod analyze;
+pub mod approve;
 pub mod archive;
 pub mod artifact;
 pub mod assign;
@@ -23,6 +24,7 @@ pub mod chat;
 pub mod check;
 pub mod checkpoint;
 pub mod claim;
+pub mod compact;
 pub mod config_cmd;
 pub mod context;
 pub mod coordinate;
@@ -33,6 +35,7 @@ pub mod dead_agents;
 pub mod discover;
 pub mod done;
 pub mod edit;
+pub mod eval_scaffold;
 pub mod evaluate;
 pub mod evolve;
 pub mod exec;
@@ -55,6 +58,7 @@ pub mod log;
 pub mod match_cmd;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
+pub mod models;
 pub mod msg;
 pub mod native_exec;
 pub mod next;
@@ -66,6 +70,7 @@ pub mod plan;
 pub mod quickstart;
 pub mod ready;
 pub mod reclaim;
+pub mod reject;
 pub mod replay;
 pub mod reschedule;
 pub mod resource;
@@ -79,9 +84,12 @@ pub mod setup;
 pub mod show;
 pub mod skills;
 pub mod spawn;
+pub mod stats;
 pub mod status;
 pub mod structure;
+pub mod sweep;
 pub mod telegram;
+pub mod tokens;
 pub mod trace;
 pub mod trace_animate;
 pub mod trace_export;
@@ -234,6 +242,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -275,6 +286,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -304,6 +318,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None, // verify
         )
         .unwrap();
 
@@ -346,6 +361,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -394,6 +412,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -436,6 +457,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -478,12 +502,15 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
         .unwrap();
 
-        super::abandon::run(dir, "prov-abandon", Some("no longer needed")).unwrap();
+        super::abandon::run(dir, "prov-abandon", Some("no longer needed"), &[]).unwrap();
         let entries = ops_with_type(dir, "abandon");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].detail["reason"], "no longer needed");
@@ -520,6 +547,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -565,6 +595,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -612,6 +645,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -659,13 +695,16 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
         .unwrap();
         super::done::run(dir, "prov-archive", false, false).unwrap();
 
-        super::archive::run(dir, false, None, false, false).unwrap();
+        super::archive::run(dir, false, None, false, true, &[], false).unwrap();
         let entries = ops_with_type(dir, "archive");
         assert_eq!(entries.len(), 1);
         let task_ids = entries[0].detail["task_ids"].as_array().unwrap();
@@ -703,12 +742,15 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
         .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
-        super::abandon::run(dir, "prov-gc", Some("giving up")).unwrap();
+        super::abandon::run(dir, "prov-gc", Some("giving up"), &[]).unwrap();
 
         super::gc::run(dir, false, false, None).unwrap();
         let entries = ops_with_type(dir, "gc");
@@ -750,6 +792,9 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )
@@ -779,6 +824,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None, // verify
         )
         .unwrap();
         // pause

@@ -1,0 +1,206 @@
+//! Git worktree isolation for spawned agents.
+//!
+//! When worktree isolation is enabled, each agent gets its own git worktree
+//! at `.wg-worktrees/<agent-id>/`, branched from HEAD. The `.workgraph/`
+//! directory is symlinked into the worktree so the `wg` CLI works normally.
+
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Worktree paths and metadata for an isolated agent workspace.
+pub struct WorktreeInfo {
+    /// Absolute path to the worktree directory
+    pub path: PathBuf,
+    /// Branch name: wg/<agent-id>/<task-id>
+    pub branch: String,
+    /// Absolute path to the main project root
+    pub project_root: PathBuf,
+}
+
+/// Create a worktree for an agent.
+///
+/// 1. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
+/// 2. Symlink `.workgraph` into the worktree
+/// 3. Run `worktree-setup.sh` if it exists (best-effort)
+pub fn create_worktree(
+    project_root: &Path,
+    workgraph_dir: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<WorktreeInfo> {
+    let branch = format!("wg/{}/{}", agent_id, task_id);
+    let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
+
+    // Create worktree from HEAD
+    let output = Command::new("git")
+        .args(["worktree", "add"])
+        .arg(&worktree_dir)
+        .args(["-b", &branch, "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .context("Failed to run git worktree add")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git worktree add failed: {}", stderr.trim());
+    }
+
+    // Symlink .workgraph so wg CLI works from the worktree
+    let symlink_target = workgraph_dir
+        .canonicalize()
+        .context("Failed to canonicalize .workgraph path")?;
+    let symlink_path = worktree_dir.join(".workgraph");
+    std::os::unix::fs::symlink(&symlink_target, &symlink_path)
+        .context("Failed to symlink .workgraph into worktree")?;
+
+    // Run worktree-setup.sh if it exists
+    let setup_script = workgraph_dir.join("worktree-setup.sh");
+    if setup_script.exists() {
+        let _ = Command::new("bash")
+            .arg(&setup_script)
+            .arg(&worktree_dir)
+            .arg(project_root)
+            .current_dir(&worktree_dir)
+            .output(); // Best-effort; don't fail spawn if setup hook fails
+    }
+
+    Ok(WorktreeInfo {
+        path: worktree_dir,
+        branch,
+        project_root: project_root.to_path_buf(),
+    })
+}
+
+/// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
+pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    // Remove the symlink first (git worktree remove won't remove it)
+    let symlink_path = worktree_path.join(".workgraph");
+    if symlink_path.exists() {
+        let _ = std::fs::remove_file(&symlink_path);
+    }
+
+    // Force-remove the worktree
+    let _ = Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(worktree_path)
+        .current_dir(project_root)
+        .output();
+
+    // Delete the branch
+    let _ = Command::new("git")
+        .args(["branch", "-D", branch])
+        .current_dir(project_root)
+        .output();
+
+    // Prune stale worktree entries
+    let _ = Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(project_root)
+        .output();
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn init_git_repo(path: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .arg(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::fs::write(path.join("file.txt"), "hello").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_create_worktree() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+        assert!(info.path.exists());
+        assert_eq!(info.branch, "wg/agent-1/task-foo");
+        assert!(info.path.join(".workgraph").exists()); // symlink
+        assert!(info.path.join("file.txt").exists()); // source checked out
+
+        // Cleanup
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+        assert!(!info.path.exists());
+    }
+
+    #[test]
+    fn test_create_worktree_fails_without_git_repo() {
+        let temp = TempDir::new().unwrap();
+        let result = create_worktree(temp.path(), temp.path(), "agent-1", "task-foo");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_worktree_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+        // Second remove should not fail
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    fn test_worktree_symlink_points_to_workgraph() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        // Write a marker file so we can verify the symlink target
+        std::fs::write(wg_dir.join("marker"), "test").unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-2", "task-bar").unwrap();
+        let symlink = info.path.join(".workgraph");
+        assert!(symlink.is_symlink());
+        // The marker file should be readable through the symlink
+        assert_eq!(
+            std::fs::read_to_string(symlink.join("marker")).unwrap(),
+            "test"
+        );
+
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+}

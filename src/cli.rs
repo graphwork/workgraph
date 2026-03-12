@@ -147,9 +147,17 @@ pub enum Commands {
         #[arg(long)]
         paused: bool,
 
-        /// Skip draft mode and make task immediately available for dispatch
-        #[arg(long, alias = "ready")]
-        immediate: bool,
+        /// Skip automatic placement — make task immediately available for dispatch
+        #[arg(long = "no-place", alias = "immediate", alias = "ready")]
+        no_place: bool,
+
+        /// Placement hint: place near these tasks (comma-separated IDs)
+        #[arg(long = "place-near", value_delimiter = ',')]
+        place_near: Vec<String>,
+
+        /// Placement hint: place before these tasks (comma-separated IDs)
+        #[arg(long = "place-before", value_delimiter = ',')]
+        place_before: Vec<String>,
 
         /// Delay before task becomes ready (e.g., 30s, 5m, 1h, 1d)
         #[arg(long)]
@@ -253,6 +261,10 @@ pub enum Commands {
         /// Absolute timestamp before which task won't be dispatched (ISO 8601)
         #[arg(long = "not-before")]
         not_before: Option<String>,
+
+        /// Set or update the verify command (shell command that must pass before done)
+        #[arg(long)]
+        verify: Option<String>,
     },
 
     /// Mark a task as done
@@ -297,6 +309,10 @@ pub enum Commands {
         /// Reason for abandonment
         #[arg(long)]
         reason: Option<String>,
+
+        /// Task IDs that supersede/replace this task (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        superseded_by: Vec<String>,
     },
 
     /// Retry a failed task (resets to open status)
@@ -304,6 +320,24 @@ pub enum Commands {
         /// Task ID to retry
         #[arg(value_name = "TASK")]
         id: String,
+    },
+
+    /// Approve a task pending validation (transitions to Done)
+    Approve {
+        /// Task ID to approve
+        #[arg(value_name = "TASK")]
+        id: String,
+    },
+
+    /// Reject a task pending validation (reopens with feedback, or fails after max rejections)
+    Reject {
+        /// Task ID to reject
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Reason for rejection
+        #[arg(long)]
+        reason: String,
     },
 
     /// Claim a task for work (sets status to InProgress)
@@ -635,6 +669,18 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
+        /// Skip confirmation prompt for bulk archive operations
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Undo the last archive operation (restore all tasks from the last batch)
+        #[arg(long)]
+        undo: bool,
+
+        /// Specific task IDs to archive
+        #[arg(value_name = "IDS")]
+        ids: Vec<String>,
+
         #[command(subcommand)]
         command: Option<ArchiveCommands>,
     },
@@ -736,6 +782,16 @@ pub enum Commands {
         operations: bool,
     },
 
+    /// Set or accumulate token usage on a task
+    #[command(hide = true)]
+    Tokens {
+        /// Task ID
+        id: String,
+
+        /// Token usage JSON (e.g. '{"cost_usd":0.1,"input_tokens":500,"output_tokens":200}')
+        json: String,
+    },
+
     /// Send and receive messages to/from tasks and agents
     Msg {
         #[command(subcommand)]
@@ -785,6 +841,9 @@ pub enum Commands {
         list: bool,
     },
 
+    /// Compact: distill graph state into context.md
+    Compact,
+
     /// Chat with the coordinator agent
     Chat {
         /// Message to send (omit for interactive mode)
@@ -809,6 +868,10 @@ pub enum Commands {
         /// Attach a file (copied to .workgraph/attachments/)
         #[arg(long)]
         attachment: Vec<String>,
+
+        /// Target coordinator ID (default: 0)
+        #[arg(long, default_value = "0")]
+        coordinator: u32,
     },
 
     /// Manage resources
@@ -859,6 +922,10 @@ pub enum Commands {
         /// Clear the agent assignment from the task
         #[arg(long)]
         clear: bool,
+
+        /// Automatically select an agent using LLM
+        #[arg(long)]
+        auto: bool,
     },
 
     /// Find agents capable of performing a task
@@ -1021,6 +1088,10 @@ pub enum Commands {
         #[arg(long)]
         max_agents: Option<usize>,
 
+        /// Set max concurrent coordinator agents (LLM sessions). Default: 4.
+        #[arg(long)]
+        max_coordinators: Option<usize>,
+
         /// Set coordinator poll interval in seconds
         #[arg(long)]
         coordinator_interval: Option<u64>,
@@ -1105,6 +1176,14 @@ pub enum Commands {
         #[arg(long)]
         auto_triage: Option<bool>,
 
+        /// Enable/disable automatic placement analysis on new tasks
+        #[arg(long)]
+        auto_place: Option<bool>,
+
+        /// Enable/disable automatic creator agent invocation
+        #[arg(long)]
+        auto_create: Option<bool>,
+
         /// Set model for triage (default: haiku)
         #[arg(long)]
         triage_model: Option<String>,
@@ -1167,6 +1246,62 @@ pub enum Commands {
         #[arg(long, name = "chat-history-max")]
         chat_history_max: Option<usize>,
 
+        /// TUI time counters (comma-separated: uptime,cumulative,active,session)
+        #[arg(long, name = "tui-counters")]
+        tui_counters: Option<String>,
+
+        /// Show all model registry entries (built-in + user-defined)
+        #[arg(long = "registry")]
+        show_registry: bool,
+
+        /// Add a new model to the registry (use with --id, --provider, --reg-model, --reg-tier)
+        #[arg(long = "registry-add")]
+        registry_add: bool,
+
+        /// Remove a model from the registry by ID
+        #[arg(long = "registry-remove", value_name = "ID")]
+        registry_remove: Option<String>,
+
+        /// Show current tier→model assignments
+        #[arg(long = "tiers")]
+        show_tiers: bool,
+
+        /// Set which model a tier uses (e.g., --tier standard=gpt-4o)
+        #[arg(long = "tier", value_name = "TIER=MODEL_ID")]
+        set_tier: Option<String>,
+
+        /// Registry entry short ID (for --registry-add)
+        #[arg(long = "id", requires = "registry_add")]
+        reg_id: Option<String>,
+
+        /// Provider name (for --registry-add, e.g., openai, anthropic)
+        #[arg(long = "provider", requires = "registry_add")]
+        reg_provider: Option<String>,
+
+        /// Full API model identifier (for --registry-add, e.g., gpt-4o)
+        #[arg(long = "reg-model", requires = "registry_add")]
+        reg_model: Option<String>,
+
+        /// Quality tier for registry entry (for --registry-add: fast, standard, premium)
+        #[arg(long = "reg-tier", requires = "registry_add")]
+        reg_tier: Option<String>,
+
+        /// API endpoint URL (for --registry-add)
+        #[arg(long = "endpoint", requires = "registry_add")]
+        reg_endpoint: Option<String>,
+
+        /// Context window in tokens (for --registry-add)
+        #[arg(long = "context-window", requires = "registry_add")]
+        reg_context_window: Option<u64>,
+
+        /// Cost per million input tokens in USD (for --registry-add)
+        #[arg(long = "cost-input", requires = "registry_add")]
+        cost_input: Option<f64>,
+
+        /// Cost per million output tokens in USD (for --registry-add)
+        #[arg(long = "cost-output", requires = "registry_add")]
+        cost_output: Option<f64>,
+
         /// Show all model routing assignments (per-role model+provider)
         #[arg(long = "models")]
         show_models: bool,
@@ -1190,6 +1325,22 @@ pub enum Commands {
         /// Equivalent to --set-provider but uses key=value syntax.
         #[arg(long = "role-provider", value_name = "ROLE=PROVIDER")]
         role_provider: Option<String>,
+
+        /// Max tokens of previous-attempt context to inject on retry (default: 2000, 0 = disabled)
+        #[arg(long, name = "retry-context-tokens")]
+        retry_context_tokens: Option<u32>,
+
+        /// Check OpenRouter API key validity and credit status
+        #[arg(long, name = "check-key")]
+        check_key: bool,
+
+        /// Install project config as global default (~/.workgraph/config.toml)
+        #[arg(long, name = "install-global")]
+        install_global: bool,
+
+        /// Skip confirmation when overwriting existing global config
+        #[arg(long)]
+        force: bool,
     },
 
     /// Detect and clean up dead agents
@@ -1217,6 +1368,16 @@ pub enum Commands {
         /// Override heartbeat timeout threshold (minutes)
         #[arg(long)]
         threshold: Option<u64>,
+    },
+
+    /// Detect and recover orphaned in-progress tasks with dead agents
+    #[command(
+        after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the coordinator can re-dispatch.\n\nThis is safe to run anytime — it is idempotent."
+    )]
+    Sweep {
+        /// Only report orphaned tasks, don't fix them
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// List running agent processes (service workers)
@@ -1277,6 +1438,9 @@ pub enum Commands {
     /// Quick one-screen status overview
     Status,
 
+    /// Show time counters and agent statistics
+    Stats,
+
     /// Send task notification to Matrix room
     #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
     Notify {
@@ -1318,6 +1482,12 @@ pub enum Commands {
         command: TelegramCommands,
     },
 
+    /// Browse and search available models from OpenRouter
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommands,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -1337,10 +1507,96 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// LLM provider (e.g., anthropic, openai)
+        #[arg(long)]
+        provider: Option<String>,
+
         /// Maximum agent turns before stopping
         #[arg(long, default_value = "100")]
         max_turns: usize,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ModelsCommands {
+    /// List models from the local registry
+    List {
+        /// Filter by tier (frontier, mid, budget)
+        #[arg(long)]
+        tier: Option<String>,
+    },
+
+    /// Search models from OpenRouter by name, ID, or description
+    Search {
+        /// Search query (matches against model ID, name, and description)
+        query: String,
+
+        /// Only show models that support tool use (function calling)
+        #[arg(long)]
+        tools: bool,
+
+        /// Skip the local cache and fetch fresh data from the API
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Maximum number of results to show (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// List all models available on OpenRouter (remote API)
+    Remote {
+        /// Only show models that support tool use (function calling)
+        #[arg(long)]
+        tools: bool,
+
+        /// Skip the local cache and fetch fresh data from the API
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Maximum number of results to show (default: 100)
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+
+    /// Add a custom model to the local registry
+    Add {
+        /// Model ID (e.g. "anthropic/claude-opus-4-6")
+        id: String,
+
+        /// Provider name
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Cost per 1M input tokens (USD)
+        #[arg(long, name = "cost-in")]
+        cost_in: f64,
+
+        /// Cost per 1M output tokens (USD)
+        #[arg(long, name = "cost-out")]
+        cost_out: f64,
+
+        /// Context window size in tokens
+        #[arg(long)]
+        context_window: Option<u64>,
+
+        /// Capability tags (e.g. coding, analysis, tool_use)
+        #[arg(long, short)]
+        capability: Vec<String>,
+
+        /// Tier classification (frontier, mid, budget)
+        #[arg(long, default_value = "mid")]
+        tier: String,
+    },
+
+    /// Set the default model
+    SetDefault {
+        /// Model ID to set as default
+        id: String,
+    },
+
+    /// Initialize the models.yaml with defaults
+    Init,
 }
 
 #[derive(Subcommand)]
@@ -2330,6 +2586,12 @@ pub enum ServiceCommands {
         model: Option<String>,
     },
 
+    /// Restart the service daemon (graceful stop then start)
+    ///
+    /// Stops the running daemon without killing agents, then starts a new one
+    /// with the same configuration. Running agents continue independently.
+    Restart,
+
     /// Pause the coordinator (running agents continue, no new spawns)
     Pause,
 
@@ -2352,6 +2614,31 @@ pub enum ServiceCommands {
         /// Model to use for spawned agents (overrides config.toml)
         #[arg(long)]
         model: Option<String>,
+    },
+
+    /// Create a new coordinator session
+    CreateCoordinator {
+        /// Optional name for the coordinator
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Delete a coordinator session
+    DeleteCoordinator {
+        /// Coordinator ID to delete
+        id: u32,
+    },
+
+    /// Archive a coordinator session (mark as Done)
+    ArchiveCoordinator {
+        /// Coordinator ID to archive
+        id: u32,
+    },
+
+    /// Stop a coordinator session (kill agent, reset to Open)
+    StopCoordinator {
+        /// Coordinator ID to stop
+        id: u32,
     },
 
     /// Run the daemon (internal, called by start)
@@ -2455,6 +2742,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Fail { .. } => "fail",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Approve { .. } => "approve",
+        Commands::Reject { .. } => "reject",
         Commands::Claim { .. } => "claim",
         Commands::Unclaim { .. } => "unclaim",
         Commands::Pause { .. } => "pause",
@@ -2495,6 +2784,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Replay { .. } => "replay",
         Commands::Runs { .. } => "runs",
         Commands::Log { .. } => "log",
+        Commands::Tokens { .. } => "tokens",
         Commands::Msg { .. } => "msg",
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
@@ -2506,6 +2796,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
         Commands::Checkpoint { .. } => "checkpoint",
+        Commands::Compact => "compact",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
@@ -2518,6 +2809,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Evolve { .. } => "evolve",
         Commands::Config { .. } => "config",
         Commands::DeadAgents { .. } => "dead-agents",
+        Commands::Sweep { .. } => "sweep",
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
         Commands::Service { .. } => "service",
@@ -2525,12 +2817,14 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Setup => "setup",
         Commands::Quickstart => "quickstart",
         Commands::Status => "status",
+        Commands::Stats => "stats",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify { .. } => "notify",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Matrix { .. } => "matrix",
         Commands::Telegram { .. } => "telegram",
         Commands::Chat { .. } => "chat",
+        Commands::Models { .. } => "models",
         Commands::NativeExec { .. } => "native-exec",
     }
 }
@@ -2564,6 +2858,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Replay { .. }
             | Commands::Runs { .. }
             | Commands::Log { .. }
+            | Commands::Tokens { .. }
             | Commands::Msg { .. }
             | Commands::Resource { .. }
             | Commands::Skill { .. }
@@ -2574,6 +2869,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Checkpoint { .. }
+            | Commands::Compact
             | Commands::Artifact { .. }
             | Commands::Context { .. }
             | Commands::Next { .. }
@@ -2584,6 +2880,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Evolve { .. }
             | Commands::Config { .. }
             | Commands::DeadAgents { .. }
+            | Commands::Sweep { .. }
             | Commands::Agents { .. }
             | Commands::Kill { .. }
             | Commands::Service { .. }
@@ -2592,8 +2889,10 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Cycles
             | Commands::Quickstart
             | Commands::Status
+            | Commands::Stats
             | Commands::Chat { .. }
             | Commands::Telegram { .. }
+            | Commands::Models { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         {

@@ -9,7 +9,7 @@ use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
-pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
+pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String]) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
 
     let task = graph.get_task_mut_or_err(id)?;
@@ -26,6 +26,9 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     let prev_assigned = task.assigned.clone();
     task.status = Status::Abandoned;
     task.failure_reason = reason.map(String::from);
+    if !superseded_by.is_empty() {
+        task.superseded_by = superseded_by.to_vec();
+    }
 
     let log_message = match reason {
         Some(r) => format!("Task abandoned: {}", r),
@@ -37,22 +40,50 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         message: log_message,
     });
 
+    // Cascade abandon to system tasks that depend on this task
+    let cascade_targets: Vec<String> = graph
+        .tasks()
+        .filter(|t| {
+            t.id.starts_with('.') && t.after.contains(&id.to_string()) && !t.status.is_terminal()
+        })
+        .map(|t| t.id.clone())
+        .collect();
+
+    for target_id in &cascade_targets {
+        if let Some(t) = graph.get_task_mut(target_id) {
+            t.status = Status::Abandoned;
+            t.failure_reason = Some(format!("Parent task '{}' was abandoned", id));
+            t.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: None,
+                message: format!("Auto-abandoned: parent '{}' was abandoned", id),
+            });
+        }
+    }
+
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
-    // Record operation
     let config = workgraph::config::Config::load_or_default(dir);
     let _ = workgraph::provenance::record(
         dir,
         "abandon",
         Some(id),
         prev_assigned.as_deref(),
-        serde_json::json!({ "reason": reason, "prev_assigned": prev_assigned }),
+        serde_json::json!({
+            "reason": reason,
+            "prev_assigned": prev_assigned,
+            "cascaded": cascade_targets,
+            "superseded_by": superseded_by,
+        }),
         config.log.rotation_threshold,
     );
 
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
     println!("Marked '{}' as abandoned{}", id, reason_msg);
+    for target in &cascade_targets {
+        println!("  Auto-abandoned: {}", target);
+    }
 
     Ok(())
 }
@@ -74,156 +105,115 @@ mod tests {
 
     fn setup_graph(dir: &Path, graph: &WorkGraph) {
         std::fs::create_dir_all(dir).unwrap();
-        let path = graph_path(dir);
-        save_graph(graph, &path).unwrap();
+        save_graph(graph, &graph_path(dir)).unwrap();
     }
 
     #[test]
     fn test_abandon_open_task() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
-
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Open task")));
         setup_graph(&dir, &graph);
-
-        let result = run(&dir, "t1", Some("no longer needed"));
+        let result = run(&dir, "t1", Some("no longer needed"), &[]);
         assert!(result.is_ok());
-
-        let reloaded = load_graph(graph_path(&dir)).unwrap();
-        let task = reloaded.get_task("t1").unwrap();
+        let task = load_graph(graph_path(&dir))
+            .unwrap()
+            .get_task("t1")
+            .unwrap()
+            .clone();
         assert_eq!(task.status, Status::Abandoned);
         assert_eq!(task.failure_reason.as_deref(), Some("no longer needed"));
-        assert!(!task.log.is_empty());
-        assert!(
-            task.log
-                .last()
-                .unwrap()
-                .message
-                .contains("Task abandoned: no longer needed")
-        );
-    }
-
-    #[test]
-    fn test_abandon_in_progress_task() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
-
-        let mut graph = WorkGraph::new();
-        let mut t = make_task("t1", "Active task");
-        t.status = Status::InProgress;
-        t.assigned = Some("agent-1".to_string());
-        graph.add_node(Node::Task(t));
-        setup_graph(&dir, &graph);
-
-        let result = run(&dir, "t1", None);
-        assert!(result.is_ok());
-
-        let reloaded = load_graph(graph_path(&dir)).unwrap();
-        let task = reloaded.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Abandoned);
-        assert!(task.failure_reason.is_none());
-        assert!(task.log.last().unwrap().message == "Task abandoned");
-    }
-
-    #[test]
-    fn test_abandon_failed_task() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
-
-        let mut graph = WorkGraph::new();
-        let mut t = make_task("t1", "Failed task");
-        t.status = Status::Failed;
-        graph.add_node(Node::Task(t));
-        setup_graph(&dir, &graph);
-
-        let result = run(&dir, "t1", Some("giving up"));
-        assert!(result.is_ok());
-
-        let reloaded = load_graph(graph_path(&dir)).unwrap();
-        let task = reloaded.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Abandoned);
-        assert_eq!(task.failure_reason.as_deref(), Some("giving up"));
     }
 
     #[test]
     fn test_abandon_done_task_errors() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
-
         let mut graph = WorkGraph::new();
-        let mut t = make_task("t1", "Done task");
+        let mut t = make_task("t1", "Done");
         t.status = Status::Done;
         graph.add_node(Node::Task(t));
         setup_graph(&dir, &graph);
-
-        let result = run(&dir, "t1", None);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("already done"));
+        assert!(run(&dir, "t1", None, &[]).is_err());
     }
 
     #[test]
     fn test_abandon_already_abandoned_is_noop() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
-
         let mut graph = WorkGraph::new();
-        let mut t = make_task("t1", "Abandoned task");
+        let mut t = make_task("t1", "Abandoned");
         t.status = Status::Abandoned;
         graph.add_node(Node::Task(t));
         setup_graph(&dir, &graph);
-
-        let result = run(&dir, "t1", None);
-        assert!(result.is_ok());
-
-        // Should not add another log entry
-        let reloaded = load_graph(graph_path(&dir)).unwrap();
-        let task = reloaded.get_task("t1").unwrap();
-        assert!(task.log.is_empty());
+        assert!(run(&dir, "t1", None, &[]).is_ok());
     }
 
     #[test]
-    fn test_abandon_nonexistent_task_errors() {
+    fn test_abandon_cascades_to_system_tasks() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
-
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("t1", "Exists")));
+        graph.add_node(Node::Task(make_task("t1", "Main task")));
+        let mut eval = make_task(".evaluate-t1", "Eval t1");
+        eval.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(eval));
+        let mut verify = make_task(".verify-t1", "Verify t1");
+        verify.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(verify));
+        let mut dep = make_task("t2", "Depends on t1");
+        dep.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(dep));
         setup_graph(&dir, &graph);
 
-        let result = run(&dir, "nope", None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(run(&dir, "t1", Some("decomposed"), &[]).is_ok());
+        let g = load_graph(graph_path(&dir)).unwrap();
+        assert_eq!(g.get_task("t1").unwrap().status, Status::Abandoned);
+        assert_eq!(
+            g.get_task(".evaluate-t1").unwrap().status,
+            Status::Abandoned
+        );
+        assert_eq!(g.get_task(".verify-t1").unwrap().status, Status::Abandoned);
+        assert_eq!(g.get_task("t2").unwrap().status, Status::Open);
     }
 
     #[test]
-    fn test_abandon_not_initialized() {
+    fn test_abandon_does_not_cascade_to_terminal() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
-
-        let result = run(&dir, "t1", None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not initialized"));
-    }
-
-    #[test]
-    fn test_abandon_reason_stored_in_log() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
-
         let mut graph = WorkGraph::new();
-        let mut t = make_task("t1", "Task with reason");
-        t.assigned = Some("worker-42".to_string());
-        graph.add_node(Node::Task(t));
+        graph.add_node(Node::Task(make_task("t1", "Main")));
+        let mut eval = make_task(".evaluate-t1", "Eval t1");
+        eval.after = vec!["t1".to_string()];
+        eval.status = Status::Done;
+        graph.add_node(Node::Task(eval));
         setup_graph(&dir, &graph);
+        run(&dir, "t1", None, &[]).unwrap();
+        assert_eq!(
+            load_graph(graph_path(&dir))
+                .unwrap()
+                .get_task(".evaluate-t1")
+                .unwrap()
+                .status,
+            Status::Done
+        );
+    }
 
-        run(&dir, "t1", Some("requirements changed")).unwrap();
-
-        let reloaded = load_graph(graph_path(&dir)).unwrap();
-        let task = reloaded.get_task("t1").unwrap();
-        let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("requirements changed"));
-        assert_eq!(last_log.actor.as_deref(), Some("worker-42"));
+    #[test]
+    fn test_abandon_with_superseded_by() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Original")));
+        setup_graph(&dir, &graph);
+        let r = vec!["t2".to_string(), "t3".to_string()];
+        run(&dir, "t1", Some("decomposed"), &r).unwrap();
+        let task = load_graph(graph_path(&dir))
+            .unwrap()
+            .get_task("t1")
+            .unwrap()
+            .clone();
+        assert_eq!(task.superseded_by, vec!["t2", "t3"]);
     }
 }

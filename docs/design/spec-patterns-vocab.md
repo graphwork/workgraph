@@ -162,11 +162,11 @@ wg role add "Architect" --outcome "Clear decomposition with non-overlapping boun
 wg role add "Implementer" --outcome "Working, tested code for assigned module" --skill coding --skill testing
 wg role add "Integrator" --outcome "Cohesive merged output with conflicts resolved" --skill integration
 
-wg motivation add "Thorough" --accept "Slower delivery" --reject "Skipping edge cases"
+wg tradeoff add "Thorough" --accept "Slower delivery" --reject "Skipping edge cases"
 
-wg agent create "Planner" --role <architect-hash> --motivation <thorough-hash>
-wg agent create "Worker" --role <implementer-hash> --motivation <thorough-hash>
-wg agent create "Synthesizer" --role <integrator-hash> --motivation <thorough-hash>
+wg agent create "Planner" --role <architect-hash> --tradeoff <thorough-hash>
+wg agent create "Worker" --role <implementer-hash> --tradeoff <thorough-hash>
+wg agent create "Synthesizer" --role <integrator-hash> --tradeoff <thorough-hash>
 
 wg assign planner <planner-agent-hash>
 wg assign worker-a <worker-agent-hash>

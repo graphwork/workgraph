@@ -56,6 +56,8 @@ pub(crate) fn apply_operation(
         "meta_swap_role" => apply_meta_swap_role(op, run_id, agency_dir, dir),
         "meta_swap_tradeoff" => apply_meta_swap_tradeoff(op, run_id, agency_dir, dir),
         "meta_compose_agent" => apply_meta_compose_agent(op, run_id, agency_dir, dir),
+        // Coordinator prompt evolution
+        "modify_coordinator_prompt" => apply_modify_coordinator_prompt(op, agency_dir),
         other => bail!("Unknown operation type: '{}'", other),
     }
 }
@@ -855,6 +857,56 @@ fn apply_config_swap_tradeoff(
         "new_tradeoff_id": new_tid,
         "new_id": new_agent_id,
         "path": path.display().to_string(),
+        "status": "applied",
+    }))
+}
+
+/// Apply a coordinator prompt modification.
+///
+/// `target_id` must be "evolved-amendments" or "common-patterns" (the mutable files).
+/// `new_content` is written to the file (replacing existing content).
+fn apply_modify_coordinator_prompt(
+    op: &EvolverOperation,
+    agency_dir: &Path,
+) -> Result<serde_json::Value> {
+    let target = op
+        .target_id
+        .as_deref()
+        .context("modify_coordinator_prompt requires target_id")?;
+
+    // Only allow modification of mutable prompt files
+    let allowed = ["evolved-amendments", "common-patterns"];
+    if !allowed.contains(&target) {
+        bail!(
+            "Cannot modify coordinator prompt file '{}'. Only {:?} are mutable.",
+            target,
+            allowed
+        );
+    }
+
+    let content = op
+        .new_content
+        .as_deref()
+        .context("modify_coordinator_prompt requires new_content")?;
+
+    let filename = format!("{}.md", target);
+    let prompt_dir = agency_dir.join("coordinator-prompt");
+    std::fs::create_dir_all(&prompt_dir)
+        .context("Failed to create coordinator-prompt directory")?;
+
+    let path = prompt_dir.join(&filename);
+    std::fs::write(&path, content).with_context(|| {
+        format!(
+            "Failed to write coordinator prompt file: {}",
+            path.display()
+        )
+    })?;
+
+    Ok(serde_json::json!({
+        "op": "modify_coordinator_prompt",
+        "target_id": target,
+        "path": path.display().to_string(),
+        "content_length": content.len(),
         "status": "applied",
     }))
 }

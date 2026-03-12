@@ -63,7 +63,10 @@ pub fn calculate_utilization(graph: &WorkGraph) -> Vec<ResourceUtilization> {
                     Status::Done => {
                         spent += cost;
                     }
-                    Status::Failed | Status::Abandoned | Status::Waiting => {
+                    Status::Failed
+                    | Status::Abandoned
+                    | Status::Waiting
+                    | Status::PendingValidation => {
                         // Failed/abandoned tasks don't count toward resource usage
                     }
                 }

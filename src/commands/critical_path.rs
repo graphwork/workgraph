@@ -183,6 +183,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     Status::Failed => "failed",
                     Status::Abandoned => "abandoned",
                     Status::Waiting => "waiting",
+                    Status::PendingValidation => "pending-validation",
                 };
 
                 let hours_str = task
@@ -432,6 +433,16 @@ mod tests {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
+            unplaced: false,
+            place_near: vec![],
+            place_before: vec![],
         }
     }
 

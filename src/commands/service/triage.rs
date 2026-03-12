@@ -8,7 +8,9 @@ use std::path::Path;
 
 use workgraph::agency;
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage};
+use workgraph::graph::{
+    LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage, parse_wg_tokens,
+};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 use workgraph::stream_event::{self, StreamEvent};
@@ -59,6 +61,8 @@ fn extract_session_id(agent: &AgentEntry) -> Option<String> {
 enum DeadReason {
     /// Process is no longer running
     ProcessExited,
+    /// PID exists but belongs to a different process (PID reuse after daemon restart)
+    PidReused,
 }
 
 /// Check stream file activity for an agent. Returns the timestamp of the last
@@ -99,6 +103,16 @@ fn detect_dead_reason(agent: &AgentEntry) -> Option<DeadReason> {
     // Process not running is the only signal — heartbeat is no longer used for detection
     if !is_process_alive(agent.pid) {
         return Some(DeadReason::ProcessExited);
+    }
+
+    // PID exists but might belong to a different process (PID reuse).
+    // This happens when the daemon restarts after a crash and old PIDs have been
+    // recycled by the OS. We verify by comparing the actual process start time
+    // against the agent's registered start time.
+    if let Ok(agent_start) = agent.started_at.parse::<chrono::DateTime<chrono::Utc>>()
+        && !workgraph::service::verify_process_identity(agent.pid, agent_start.timestamp())
+    {
+        return Some(DeadReason::PidReused);
     }
 
     None
@@ -217,6 +231,10 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             "Task unclaimed: agent '{}' (PID {}) process exited",
                             agent_id, pid
                         ),
+                        DeadReason::PidReused => format!(
+                            "Task unclaimed: agent '{}' (PID {}) dead (PID reused by different process)",
+                            agent_id, pid
+                        ),
                     };
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
@@ -252,6 +270,9 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 dir.parent().unwrap_or(dir).join(output_path)
             };
             if let Some(usage) = parse_token_usage(&abs_path) {
+                task.token_usage = Some(usage);
+                tasks_modified = true;
+            } else if let Some(usage) = parse_wg_tokens(&abs_path) {
                 task.token_usage = Some(usage);
                 tasks_modified = true;
             }
@@ -293,6 +314,46 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                         task_id
                     );
                 }
+            }
+        }
+    }
+
+    // Clean up worktrees for dead agents (agent isolation).
+    // Read metadata.json from each dead agent's output directory to find
+    // worktree_path and worktree_branch, then recover commits and remove.
+    let project_root = dir.parent().unwrap_or(dir);
+    for (agent_id, _task_id, _pid, output_file, _reason) in &dead {
+        let output_path = std::path::Path::new(output_file);
+        let agent_dir = if output_path.is_absolute() {
+            output_path.parent().map(|p| p.to_path_buf())
+        } else {
+            output_path.parent().map(|p| project_root.join(p))
+        };
+        let agent_dir = match agent_dir {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let metadata_path = agent_dir.join("metadata.json");
+        if let Ok(metadata_str) = fs::read_to_string(&metadata_path)
+            && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str)
+            && let (Some(wt_path_str), Some(wt_branch)) = (
+                metadata.get("worktree_path").and_then(|v| v.as_str()),
+                metadata.get("worktree_branch").and_then(|v| v.as_str()),
+            )
+        {
+            let wt_path = Path::new(wt_path_str);
+            if wt_path.exists() {
+                eprintln!(
+                    "[triage] Cleaning up worktree for dead agent {}: {:?}",
+                    agent_id, wt_path
+                );
+                super::worktree::cleanup_dead_agent_worktree(
+                    project_root,
+                    wt_path,
+                    wt_branch,
+                    agent_id,
+                );
             }
         }
     }
@@ -823,5 +884,36 @@ mod tests {
                 .unwrap()
                 .contains("Max retries exceeded")
         );
+    }
+
+    /// Verify that for bare-mode agent logs (no Claude CLI `type=result` line),
+    /// `parse_wg_tokens` extracts token usage where `parse_token_usage` returns None.
+    /// This is the fallback chain used in `cleanup_dead_agents` for `.flip-*`,
+    /// `.evaluate-*`, and `.assign-*` tasks.
+    #[test]
+    fn test_triage_token_extraction_fallback_to_wg_tokens() {
+        use workgraph::graph::{parse_token_usage, parse_wg_tokens};
+
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join("output.log");
+
+        // Bare-mode agent output: no Claude CLI JSON, only __WG_TOKENS__ lines
+        std::fs::write(
+            &log_path,
+            "FLIP Phase 1: Inferring prompt from output...\n\
+             FLIP Phase 2: Comparing prompts...\n\
+             __WG_TOKENS__:{\"cost_usd\":0.05,\"input_tokens\":300,\"output_tokens\":100,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":0}\n",
+        )
+        .unwrap();
+
+        // parse_token_usage should return None (no type=result line)
+        assert!(parse_token_usage(&log_path).is_none());
+
+        // parse_wg_tokens should succeed (the fallback path)
+        let usage = parse_wg_tokens(&log_path).unwrap();
+        assert!((usage.cost_usd - 0.05).abs() < f64::EPSILON);
+        assert_eq!(usage.input_tokens, 300);
+        assert_eq!(usage.output_tokens, 100);
+        assert_eq!(usage.cache_read_input_tokens, 50);
     }
 }

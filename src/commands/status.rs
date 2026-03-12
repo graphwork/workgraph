@@ -302,7 +302,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
             Status::Blocked => {
                 blocked += 1;
             }
-            Status::Failed | Status::Abandoned | Status::Waiting => {
+            Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Terminal/parked states, not counted in summary
             }
         }

@@ -113,7 +113,24 @@ pub enum IpcRequest {
         /// Optional file attachments
         #[serde(default)]
         attachments: Vec<workgraph::chat::Attachment>,
+        /// Target coordinator (default: 0)
+        #[serde(default)]
+        coordinator_id: Option<u32>,
     },
+    /// Create a new coordinator instance.
+    CreateCoordinator {
+        /// Optional human-readable name for the coordinator.
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Delete a coordinator instance.
+    DeleteCoordinator { coordinator_id: u32 },
+    /// Archive a coordinator instance (mark as Done).
+    ArchiveCoordinator { coordinator_id: u32 },
+    /// Stop a coordinator instance (kill agent, reset to Open).
+    StopCoordinator { coordinator_id: u32 },
+    /// List all active coordinators.
+    ListCoordinators,
 }
 
 /// IPC Response types
@@ -146,12 +163,15 @@ impl IpcResponse {
 
 /// Handle a single IPC connection
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
     stream: UnixStream,
     running: &mut bool,
     wake_coordinator: &mut bool,
     urgent_wake: &mut bool,
+    pending_coordinator_ids: &mut Vec<u32>,
+    delete_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
@@ -196,6 +216,8 @@ pub(crate) fn handle_connection(
             running,
             wake_coordinator,
             urgent_wake,
+            pending_coordinator_ids,
+            delete_coordinator_ids,
             daemon_cfg,
             logger,
         );
@@ -219,12 +241,15 @@ fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> Result<()>
 }
 
 /// Handle an IPC request
+#[allow(clippy::too_many_arguments)]
 fn handle_request(
     dir: &Path,
     request: IpcRequest,
     running: &mut bool,
     wake_coordinator: &mut bool,
     urgent_wake: &mut bool,
+    pending_coordinator_ids: &mut Vec<u32>,
+    delete_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> IpcResponse {
@@ -374,20 +399,69 @@ fn handle_request(
             message,
             request_id,
             attachments,
+            coordinator_id,
         } => {
-            logger.info(&format!("IPC UserChat: request_id={}", request_id));
-            match append_chat_inbox(dir, &message, &request_id, attachments) {
+            let cid = coordinator_id.unwrap_or(0);
+            logger.info(&format!(
+                "IPC UserChat: request_id={}, coordinator_id={}",
+                request_id, cid
+            ));
+            match append_chat_inbox(dir, cid, &message, &request_id, attachments) {
                 Ok(msg_id) => {
                     // Signal urgent wake — bypasses settling delay entirely
                     *urgent_wake = true;
+                    // Track which coordinator was targeted for lazy spawning
+                    pending_coordinator_ids.push(cid);
                     IpcResponse::success(serde_json::json!({
                         "status": "accepted",
                         "request_id": request_id,
                         "inbox_id": msg_id,
+                        "coordinator_id": cid,
                     }))
                 }
                 Err(e) => IpcResponse::error(&format!("Failed to store chat message: {}", e)),
             }
+        }
+        IpcRequest::CreateCoordinator { name } => {
+            logger.info(&format!("IPC CreateCoordinator: name={:?}", name));
+            handle_create_coordinator(dir, name.as_deref())
+        }
+        IpcRequest::DeleteCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC DeleteCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_delete_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
+        }
+        IpcRequest::ArchiveCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC ArchiveCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_archive_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
+        }
+        IpcRequest::StopCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC StopCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_stop_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
+        }
+        IpcRequest::ListCoordinators => {
+            logger.info("IPC ListCoordinators");
+            handle_list_coordinators(dir)
         }
     }
 }
@@ -718,7 +792,17 @@ fn handle_add_task(
         checkpoint: None,
         resurrection_count: 0,
         last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
         exec_mode: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+        place_near: vec![],
+        place_before: vec![],
     };
 
     graph.add_node(Node::Task(task));
@@ -736,8 +820,10 @@ fn handle_add_task(
         return IpcResponse::error(&format!("Failed to save graph: {}", e));
     }
 
-    // Notify TUI to auto-focus on the new task
-    crate::commands::notify_new_task_focus(dir, &task_id);
+    // Notify TUI to auto-focus on the new task (skip internal/system tasks)
+    if !task_id.starts_with('.') {
+        crate::commands::notify_new_task_focus(dir, &task_id);
+    }
 
     // Record provenance
     let origin_str = origin.unwrap_or("unknown");
@@ -806,19 +892,277 @@ fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
     }
 }
 
-/// Append a user chat message to the inbox.
+/// Append a user chat message to a coordinator's inbox.
 /// Delegates to workgraph::chat for the actual storage.
 fn append_chat_inbox(
     dir: &Path,
+    coordinator_id: u32,
     content: &str,
     request_id: &str,
     attachments: Vec<workgraph::chat::Attachment>,
 ) -> Result<u64> {
     if attachments.is_empty() {
-        workgraph::chat::append_inbox(dir, content, request_id)
+        workgraph::chat::append_inbox_for(dir, coordinator_id, content, request_id)
     } else {
-        workgraph::chat::append_inbox_with_attachments(dir, content, request_id, attachments)
+        workgraph::chat::append_inbox_with_attachments_for(
+            dir,
+            coordinator_id,
+            content,
+            request_id,
+            attachments,
+        )
     }
+}
+
+/// Handle CreateCoordinator IPC request.
+fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    // Find the next available coordinator ID
+    let mut next_id = 0u32;
+    loop {
+        let task_id = format!(".coordinator-{}", next_id);
+        if graph.get_task(&task_id).is_none() {
+            break;
+        }
+        next_id += 1;
+    }
+
+    // Create the coordinator task
+    let title = name
+        .map(|n| format!("Coordinator: {}", n))
+        .unwrap_or_else(|| format!("Coordinator {}", next_id));
+
+    let task = workgraph::graph::Task {
+        id: format!(".coordinator-{}", next_id),
+        title,
+        description: Some(format!(
+            "Coordinator {} — persistent coordinator agent.",
+            next_id
+        )),
+        status: workgraph::graph::Status::InProgress,
+        tags: vec!["coordinator-loop".to_string()],
+        cycle_config: Some(workgraph::graph::CycleConfig {
+            max_iterations: 0,
+            guard: None,
+            delay: None,
+            no_converge: true,
+            restart_on_failure: true,
+            max_failure_restarts: None,
+        }),
+        created_at: Some(chrono::Utc::now().to_rfc3339()),
+        started_at: Some(chrono::Utc::now().to_rfc3339()),
+        log: vec![workgraph::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("daemon".to_string()),
+            message: format!("Coordinator {} task created via IPC", next_id),
+        }],
+        ..Default::default()
+    };
+
+    graph.add_node(workgraph::graph::Node::Task(task));
+
+    // Create companion .compact-N task forming a visible cycle
+    let compact_id = format!(".compact-{}", next_id);
+    if graph.get_task(&compact_id).is_none() {
+        let compact_task = workgraph::graph::Task {
+            id: compact_id.clone(),
+            title: format!("Compact {}", next_id),
+            description: Some(format!(
+                "Compaction task — distills graph state into context.md. \
+                 Forms a cycle with coordinator {}.",
+                next_id
+            )),
+            status: workgraph::graph::Status::Open,
+            tags: vec!["compact-loop".to_string()],
+            after: vec![format!(".coordinator-{}", next_id)],
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            log: vec![workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: format!("Compact {} task created via IPC", next_id),
+            }],
+            ..Default::default()
+        };
+        graph.add_node(workgraph::graph::Node::Task(compact_task));
+
+        // Add back-edge from coordinator to compact (cycle)
+        if let Some(coord) = graph.get_task_mut(&format!(".coordinator-{}", next_id)) {
+            if !coord.after.contains(&compact_id) {
+                coord.after.push(compact_id);
+            }
+        }
+    }
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": next_id,
+        "task_id": format!(".coordinator-{}", next_id),
+        "name": name,
+    }))
+}
+
+/// Handle DeleteCoordinator IPC request.
+fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
+    };
+
+    task.status = workgraph::graph::Status::Abandoned;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} deleted via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
+/// Handle ArchiveCoordinator IPC request.
+/// Like DeleteCoordinator but marks the coordinator task as Done instead of Abandoned.
+fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
+    };
+
+    task.status = workgraph::graph::Status::Done;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} archived via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
+/// Handle StopCoordinator IPC request.
+/// Kills any running agent for this coordinator and resets the task to Open.
+fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
+    };
+
+    // Kill any running agent assigned to this coordinator task
+    if let Some(ref agent_hash) = task.agent {
+        if let Ok(registry) = AgentRegistry::load(dir) {
+            for agent in registry.list_agents() {
+                if agent.task_id == task_id {
+                    let _ = crate::commands::kill::run(dir, &agent.id, false, true);
+                    break;
+                }
+            }
+        }
+        let _ = agent_hash; // suppress unused warning
+    }
+
+    task.status = workgraph::graph::Status::Open;
+    task.assigned = None;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} stopped via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
+/// Handle ListCoordinators IPC request.
+fn handle_list_coordinators(dir: &Path) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let mut coordinators = Vec::new();
+    for task in graph.tasks() {
+        if task.tags.iter().any(|t| t == "coordinator-loop") {
+            // Skip abandoned coordinators (Done is allowed — coordinators cycle through Done between iterations)
+            if matches!(task.status, workgraph::graph::Status::Abandoned) {
+                continue;
+            }
+            // Extract coordinator ID from task ID (.coordinator-N)
+            let cid = task
+                .id
+                .strip_prefix(".coordinator-")
+                .and_then(|s: &str| s.parse::<u32>().ok())
+                .or_else(|| {
+                    // Legacy .coordinator (no suffix) → ID 0
+                    if task.id == ".coordinator" {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(id) = cid {
+                coordinators.push(serde_json::json!({
+                    "coordinator_id": id,
+                    "task_id": task.id,
+                    "title": task.title,
+                    "status": format!("{:?}", task.status),
+                    "loop_iteration": task.loop_iteration,
+                }));
+            }
+        }
+    }
+
+    coordinators.sort_by_key(|c| c["coordinator_id"].as_u64().unwrap_or(0));
+
+    IpcResponse::success(serde_json::json!({
+        "coordinators": coordinators,
+    }))
 }
 
 #[cfg(test)]
@@ -1045,6 +1389,7 @@ poll_interval = 120
             message: "help me plan the auth system".to_string(),
             request_id: "chat-123-abcd".to_string(),
             attachments: vec![],
+            coordinator_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"user_chat\""));
@@ -1064,17 +1409,104 @@ poll_interval = 120
             _ => panic!("Wrong request type"),
         }
 
-        // Also test parsing from raw JSON
+        // Also test parsing from raw JSON (backward compat: no coordinator_id)
         let raw = r#"{"cmd":"user_chat","message":"hello","request_id":"req-1"}"#;
         let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
         match parsed {
             IpcRequest::UserChat {
                 message,
                 request_id,
+                coordinator_id,
                 ..
             } => {
                 assert_eq!(message, "hello");
                 assert_eq!(request_id, "req-1");
+                assert_eq!(coordinator_id, None); // defaults to None
+            }
+            _ => panic!("Wrong request type"),
+        }
+
+        // Test with coordinator_id
+        let raw2 = r#"{"cmd":"user_chat","message":"hi","request_id":"req-2","coordinator_id":1}"#;
+        let parsed2: IpcRequest = serde_json::from_str(raw2).unwrap();
+        match parsed2 {
+            IpcRequest::UserChat { coordinator_id, .. } => {
+                assert_eq!(coordinator_id, Some(1));
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_create_coordinator_serialization() {
+        let req = IpcRequest::CreateCoordinator {
+            name: Some("Feature Work".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"create_coordinator\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::CreateCoordinator { name } => {
+                assert_eq!(name, Some("Feature Work".to_string()));
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_delete_coordinator_serialization() {
+        let req = IpcRequest::DeleteCoordinator { coordinator_id: 2 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"delete_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":2"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::DeleteCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 2);
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_list_coordinators_serialization() {
+        let req = IpcRequest::ListCoordinators;
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"list_coordinators\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, IpcRequest::ListCoordinators));
+    }
+
+    #[test]
+    fn test_ipc_archive_coordinator_serialization() {
+        let req = IpcRequest::ArchiveCoordinator { coordinator_id: 3 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"archive_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":3"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::ArchiveCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 3);
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_stop_coordinator_serialization() {
+        let req = IpcRequest::StopCoordinator { coordinator_id: 1 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"stop_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":1"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::StopCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 1);
             }
             _ => panic!("Wrong request type"),
         }
@@ -1091,6 +1523,8 @@ poll_interval = 120
         let mut running = true;
         let mut wake_coordinator = false;
         let mut urgent_wake = false;
+        let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
         let mut cfg = DaemonConfig {
             max_agents: 4,
             executor: "claude".to_string(),
@@ -1107,10 +1541,13 @@ poll_interval = 120
                 message: "test message".to_string(),
                 request_id: "req-test-1".to_string(),
                 attachments: vec![],
+                coordinator_id: None,
             },
             &mut running,
             &mut wake_coordinator,
             &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
             &mut cfg,
             &logger,
         );
@@ -1129,12 +1566,71 @@ poll_interval = 120
             "wake_coordinator should NOT be set by UserChat"
         );
 
-        // Verify message was written to inbox
+        // Verify pending_coordinator_ids was populated
+        assert_eq!(pending_coordinator_ids, vec![0]);
+
+        // Verify message was written to inbox (coordinator 0)
         let msgs = workgraph::chat::read_inbox(dir).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "test message");
         assert_eq!(msgs[0].request_id, "req-test-1");
         assert_eq!(msgs[0].role, "user");
+    }
+
+    #[test]
+    fn test_handle_user_chat_with_coordinator_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut urgent_wake = false;
+        let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        // Send to coordinator 1
+        let resp = handle_request(
+            dir,
+            IpcRequest::UserChat {
+                message: "message for coord 1".to_string(),
+                request_id: "req-coord1".to_string(),
+                attachments: vec![],
+                coordinator_id: Some(1),
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
+            &mut cfg,
+            &logger,
+        );
+
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        assert_eq!(data["coordinator_id"], 1);
+
+        // Verify pending_coordinator_ids tracks the targeted coordinator
+        assert_eq!(pending_coordinator_ids, vec![1]);
+
+        // Message should be in coordinator 1's inbox, not coordinator 0's
+        let msgs0 = workgraph::chat::read_inbox(dir).unwrap();
+        assert!(msgs0.is_empty());
+
+        let msgs1 = workgraph::chat::read_inbox_for(dir, 1).unwrap();
+        assert_eq!(msgs1.len(), 1);
+        assert_eq!(msgs1[0].content, "message for coord 1");
     }
 
     #[test]
@@ -1146,6 +1642,8 @@ poll_interval = 120
         let mut running = true;
         let mut wake_coordinator = false;
         let mut urgent_wake = false;
+        let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
         let mut cfg = DaemonConfig {
             max_agents: 4,
             executor: "claude".to_string(),
@@ -1162,6 +1660,8 @@ poll_interval = 120
             &mut running,
             &mut wake_coordinator,
             &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
             &mut cfg,
             &logger,
         );
@@ -1174,6 +1674,113 @@ poll_interval = 120
         assert!(
             !urgent_wake,
             "urgent_wake should NOT be set by GraphChanged"
+        );
+    }
+
+    #[test]
+    fn test_handle_add_task_internal_no_focus_steal() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create an empty graph file
+        fs::write(dir.join("graph.jsonl"), "").unwrap();
+
+        let focus_path = dir.join(".new_task_focus");
+
+        // Adding an internal (dot-prefixed) task should NOT create the focus marker
+        let resp = handle_add_task(
+            dir,
+            "Internal eval task",
+            Some(".evaluate-my-task"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(resp.ok, "Adding internal task should succeed");
+        assert!(
+            !focus_path.exists(),
+            "Internal dot-prefixed task should NOT create .new_task_focus"
+        );
+
+        // Adding a regular task SHOULD create the focus marker
+        let resp = handle_add_task(
+            dir,
+            "User task",
+            Some("my-regular-task"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(resp.ok, "Adding regular task should succeed");
+        assert!(
+            focus_path.exists(),
+            "Regular task should create .new_task_focus"
+        );
+        let focused_id = fs::read_to_string(&focus_path).unwrap();
+        assert_eq!(focused_id, "my-regular-task");
+    }
+
+    #[test]
+    fn test_handle_list_coordinators_excludes_abandoned_but_keeps_done() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create coordinator tasks with various statuses
+        let active = workgraph::graph::Task {
+            id: ".coordinator-0".to_string(),
+            title: "Active Coordinator".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+        let abandoned = workgraph::graph::Task {
+            id: ".coordinator-1".to_string(),
+            title: "Abandoned Coordinator".to_string(),
+            status: workgraph::graph::Status::Abandoned,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+        let done = workgraph::graph::Task {
+            id: ".coordinator-2".to_string(),
+            title: "Done Coordinator".to_string(),
+            status: workgraph::graph::Status::Done,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+
+        // Write graph to disk
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(active));
+        graph.add_node(workgraph::graph::Node::Task(abandoned));
+        graph.add_node(workgraph::graph::Node::Task(done));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_list_coordinators(dir);
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        let coordinators = data["coordinators"].as_array().unwrap();
+
+        // Active and Done coordinators should be listed; Abandoned should be excluded
+        assert_eq!(coordinators.len(), 2);
+        let ids: Vec<_> = coordinators
+            .iter()
+            .map(|c| c["coordinator_id"].as_u64().unwrap())
+            .collect();
+        assert!(ids.contains(&0), "Active coordinator should be listed");
+        assert!(ids.contains(&2), "Done coordinator should be listed");
+        assert!(
+            !ids.contains(&1),
+            "Abandoned coordinator should not be listed"
         );
     }
 }

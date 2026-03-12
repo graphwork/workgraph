@@ -258,18 +258,20 @@ Role component definitions exist as seeded primitives (6 components: research-li
 
 A `creator_pipeline_function()` exists as a design template (creator → evolver → assigner workflow).
 
-Config keys exist: `creator_agent`, `creator_model`.
+Config keys exist: `creator_agent`, `creator_model`, `auto_create`, `auto_create_threshold`.
 
-### What's partially done
+### What's wired
 
-- `src/commands/agency_create.rs` exists (567 lines) with creator logic, but is NOT wired into `mod.rs` or `main.rs`
-- No `auto_create` config flag in coordinator
-- The creator agent is not automatically composed during bootstrap
-- Cannot yet expand the primitive store via automated search
+- `src/commands/agency_create.rs` — creator logic, wired into `mod.rs` and `main.rs`
+- `auto_create` config flag in coordinator — when enabled, coordinator invokes the creator agent when the primitive store needs expansion (threshold: `auto_create_threshold`, default 20 completed tasks)
+- `wg agency create` CLI command available (supports `--model` and `--dry-run`)
+- `wg config --auto-create true` CLI toggle for enabling/disabling
+- Creator model configurable via `wg config --set-model creator <model>` (default: opus, premium tier)
+- `auto_create` displayed in `wg config --show` output
 
 ### Comparison to spec
 
-**Partially implemented.** The spec describes the agent creator as forming a pipeline with the evolver and assigner: "create new primitives → evolve and test configurations → assign to tasks." The module code exists but is not wired in. See `re-implement-missing` follow-up task.
+**Wired and functional.** The spec describes the agent creator as forming a pipeline with the evolver and assigner: "create new primitives → evolve and test configurations → assign to tasks." The creator module is now wired into the CLI and coordinator loop. The `auto_create` toggle and threshold control automated invocation. The creator agent is not yet automatically composed from its role components during bootstrap (still uses a hardcoded prompt template), but it is operationally accessible.
 
 ---
 
@@ -280,7 +282,7 @@ Config keys exist: `creator_agent`, `creator_model`.
 | Assigner | 7 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✓ (meta_swap_role/tradeoff) |
 | Evaluator | 6 ✓ | ✗ | Hardcoded template | ✓ (via coordinator) | ✓ (meta_swap_role/tradeoff) |
 | Evolver | 8 ✓ | ✗ | Hardcoded template | ✗ (manual `wg evolve`) | ✓ (deferred for review) |
-| Creator | 6 ✓ | ✗ | Module exists, not wired | ✗ | ✓ (meta_swap_role/tradeoff) |
+| Creator | 6 ✓ | ✗ | Module wired, hardcoded template | ✓ (via coordinator, `auto_create`) | ✓ (meta_swap_role/tradeoff) |
 
 The spec says: "None are privileged system components. All accumulate performance history, can be evolved, and are subject to the same selection pressure as any other agent."
 
@@ -332,7 +334,7 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 | Assigner from primitives | **PARTIAL** | Functional but hardcoded prompt, not composed from components |
 | Evaluator from primitives | **PARTIAL** | Functional but hardcoded prompt |
 | Evolver from primitives | **PARTIAL** | Functional but hardcoded prompt |
-| Agent creator pipeline | **PARTIAL** | agency_create.rs module exists (567 lines) but not wired into mod.rs/main.rs |
+| Agent creator pipeline | **WIRED** | agency_create.rs module wired into mod.rs/main.rs; `auto_create` config flag in coordinator; `wg agency create` CLI available |
 | Federation at primitive level | **PARTIAL** | Infrastructure exists, primitive-level transfer needs testing |
 | Task clarification by assigner | **NOT DONE** | Component defined, not wired (agent changes lost) |
 | Rubric specification spectrum | **NOT DONE** | Agent changes lost — needs re-implementation |

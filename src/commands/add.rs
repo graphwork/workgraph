@@ -69,6 +69,9 @@ pub fn run(
     context_scope: Option<&str>,
     exec_mode: Option<&str>,
     paused: bool,
+    no_place: bool,
+    place_near: &[String],
+    place_before: &[String],
     delay: Option<&str>,
     not_before: Option<&str>,
 ) -> Result<()> {
@@ -94,13 +97,8 @@ pub fn run(
 
     // Validate exec_mode if provided
     if let Some(mode) = exec_mode {
-        match mode {
-            "full" | "light" | "bare" | "shell" => {}
-            _ => anyhow::bail!(
-                "Invalid exec_mode '{}'. Valid values: full, light, bare, shell",
-                mode
-            ),
-        }
+        mode.parse::<workgraph::config::ExecMode>()
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     let path = graph_path(dir);
@@ -306,6 +304,16 @@ pub fn run(
         checkpoint: None,
         resurrection_count: 0,
         last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: no_place,
+        place_near: place_near.to_vec(),
+        place_before: place_before.to_vec(),
     };
 
     // Add task to graph
@@ -561,6 +569,16 @@ fn add_task_directly(
         checkpoint: None,
         resurrection_count: 0,
         last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+        place_near: vec![],
+        place_before: vec![],
     };
 
     graph.add_node(Node::Task(task));
@@ -993,6 +1011,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         );
@@ -1036,6 +1057,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         );
@@ -1079,6 +1103,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         );
@@ -1129,6 +1156,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         );
@@ -1176,6 +1206,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         );

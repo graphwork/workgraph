@@ -131,7 +131,17 @@ pub(crate) fn defer_self_mutation(
         checkpoint: None,
         resurrection_count: 0,
         last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
         exec_mode: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+        place_before: vec![],
+        place_near: vec![],
     };
 
     graph.add_node(Node::Task(task));

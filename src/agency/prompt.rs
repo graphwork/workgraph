@@ -342,6 +342,12 @@ pub struct EvaluatorInput<'a> {
     /// Downstream task context for organizational impact scoring.
     /// Each entry: (task_title, status_str, description_snippet).
     pub downstream_tasks: &'a [(String, String, Option<String>)],
+    /// FLIP score for the source task (from source: "flip" evaluation), if available.
+    pub flip_score: Option<f64>,
+    /// Verification status from .verify-<task>: "passed" or "failed", if available.
+    pub verify_status: Option<&'a str>,
+    /// Log entries from the .verify-<task> task, if available.
+    pub verify_findings: Option<&'a str>,
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -472,13 +478,53 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         for (title, status, desc) in input.downstream_tasks {
             let _ = write!(out, "- **{}** ({})", title, status);
             if let Some(d) = desc {
-                // Truncate long descriptions to save tokens
-                let snippet = if d.len() > 120 { &d[..120] } else { d.as_str() };
+                // Truncate long descriptions to save tokens (char-boundary safe)
+                let snippet = if d.len() > 120 {
+                    let mut end = 120;
+                    while !d.is_char_boundary(end) && end > 0 {
+                        end -= 1;
+                    }
+                    &d[..end]
+                } else {
+                    d.as_str()
+                };
                 let _ = write!(out, " — {}", snippet);
             }
             out.push('\n');
         }
         out.push('\n');
+    }
+
+    // -- FLIP Verification Results (when available) --
+    if input.flip_score.is_some() || input.verify_status.is_some() {
+        out.push_str("## FLIP Verification Results\n\n");
+        if let Some(score) = input.flip_score {
+            let threshold = 0.70;
+            let relation = if score >= threshold {
+                "at or above"
+            } else {
+                "below"
+            };
+            let _ = writeln!(
+                out,
+                "FLIP Score: {:.2} ({} threshold {:.2})",
+                score, relation, threshold
+            );
+        }
+        if let Some(status) = input.verify_status {
+            let _ = writeln!(out, "Verification Status: {}", status.to_uppercase());
+        }
+        if let Some(findings) = input.verify_findings {
+            out.push_str("Verification Findings:\n");
+            out.push_str(findings);
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(
+            "NOTE: Verification is a strong signal. If verification failed, significantly\n\
+             reduce the overall score. If verification passed despite low FLIP, the FLIP\n\
+             may have been a false alarm.\n\n",
+        );
     }
 
     // -- Evaluation rubric & output format --
@@ -515,7 +561,9 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
          - style_adherence: 10%\n\
          - downstream_usability: 15%\n\
          - coordination_overhead: 10%\n\
-         - blocking_impact: 5%\n\n",
+         - blocking_impact: 5%\n\n\
+         Note: `intent_fidelity` is mechanically injected from the FLIP score and does not \
+         need to be scored by the evaluator. Do not include it in your output dimensions.\n\n",
     );
 
     // -- Rubric spectrum --
@@ -785,16 +833,10 @@ pub fn render_flip_comparison_prompt(input: &FlipComparisonInput) -> String {
 
 /// Input data for assigner mode context.
 pub struct AssignerModeContext<'a> {
-    /// Current run_mode value.
-    pub run_mode: f64,
-    /// Effective exploration rate (max of run_mode and min_exploration_rate).
-    pub effective_exploration_rate: f64,
     /// Which assignment path was selected.
     pub assignment_path: AssignmentPath,
     /// For learning mode: the experiment specification.
     pub experiment: Option<&'a AssignmentExperiment>,
-    /// For performance mode: top cached agents with scores.
-    pub cached_agents: &'a [(String, f64)],
     /// Total assignment count so far.
     pub total_assignments: u32,
 }
@@ -802,99 +844,69 @@ pub struct AssignerModeContext<'a> {
 /// Render mode context for the assigner prompt.
 ///
 /// Extends the assigner prompt with:
-/// 1. Mode context (run_mode, effective rate, selected path).
-/// 2. Experiment specification (learning mode).
-/// 3. Cache contents (performance mode).
+/// 1. Assignment path (Learning or ForcedExploration).
+/// 2. Experiment specification.
 pub fn render_assigner_mode_context(ctx: &AssignerModeContext) -> String {
     let mut out = String::new();
 
     out.push_str("## Assignment Mode Context\n\n");
-    let _ = writeln!(out, "- **Run mode:** {:.2}", ctx.run_mode);
-    let _ = writeln!(
-        out,
-        "- **Effective exploration rate:** {:.2}",
-        ctx.effective_exploration_rate
-    );
     let _ = writeln!(
         out,
         "- **Assignment path:** {}",
         match ctx.assignment_path {
-            AssignmentPath::Performance => "Performance (cache-first)",
             AssignmentPath::Learning => "Learning (structured experiment)",
             AssignmentPath::ForcedExploration => "Forced Exploration (interval trigger)",
         }
     );
     let _ = writeln!(out, "- **Total assignments:** {}\n", ctx.total_assignments);
 
-    match ctx.assignment_path {
-        AssignmentPath::Performance => {
-            if ctx.cached_agents.is_empty() {
-                out.push_str(
-                    "### Cache Status\n\n\
-                     No cached agents available. Use best-guess composition.\n\n",
-                );
-            } else {
-                out.push_str("### Cached Agents (ranked by fit)\n\n");
-                for (name, score) in ctx.cached_agents {
-                    let _ = writeln!(out, "- {} (score: {:.2})", name, score);
+    if let Some(exp) = ctx.experiment {
+        out.push_str("### Experiment Specification\n\n");
+        if exp.bizarre_ideation {
+            out.push_str(
+                "**Bizarre ideation mode:** Compose from random primitives with no\n\
+                 attractor guidance. Maximise novelty.\n\n",
+            );
+        } else {
+            match &exp.dimension {
+                ExperimentDimension::RoleComponent {
+                    replaced,
+                    introduced,
+                } => {
+                    let _ = writeln!(out, "**Experiment type:** ComponentSwap");
+                    if let Some(r) = replaced {
+                        let _ = writeln!(out, "- Replace component: `{}`", r);
+                    } else {
+                        out.push_str("- Add new component (no replacement)\n");
+                    }
+                    let _ = writeln!(out, "- Introduce component: `{}`", introduced);
                 }
-                out.push('\n');
-                out.push_str(
-                    "Deploy the highest-scoring cached agent if its score meets the threshold.\n\
-                     Do NOT vary composition dimensions — deterministic selection only.\n\n",
-                );
-            }
-        }
-        AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
-            if let Some(exp) = ctx.experiment {
-                out.push_str("### Experiment Specification\n\n");
-                if exp.bizarre_ideation {
+                ExperimentDimension::TradeoffConfig {
+                    replaced,
+                    introduced,
+                } => {
+                    let _ = writeln!(out, "**Experiment type:** ConfigSwap");
+                    if let Some(r) = replaced {
+                        let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
+                    }
+                    let _ = writeln!(out, "- Introduce tradeoff: `{}`", introduced);
+                }
+                ExperimentDimension::NovelComposition => {
                     out.push_str(
-                        "**Bizarre ideation mode:** Compose from random primitives with no\n\
-                         attractor guidance. Maximise novelty.\n\n",
+                        "**Experiment type:** NovelComposition\n\
+                         Compose entirely from primitives. No base composition.\n",
                     );
-                } else {
-                    match &exp.dimension {
-                        ExperimentDimension::RoleComponent {
-                            replaced,
-                            introduced,
-                        } => {
-                            let _ = writeln!(out, "**Experiment type:** ComponentSwap");
-                            if let Some(r) = replaced {
-                                let _ = writeln!(out, "- Replace component: `{}`", r);
-                            } else {
-                                out.push_str("- Add new component (no replacement)\n");
-                            }
-                            let _ = writeln!(out, "- Introduce component: `{}`", introduced);
-                        }
-                        ExperimentDimension::TradeoffConfig {
-                            replaced,
-                            introduced,
-                        } => {
-                            let _ = writeln!(out, "**Experiment type:** ConfigSwap");
-                            if let Some(r) = replaced {
-                                let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
-                            }
-                            let _ = writeln!(out, "- Introduce tradeoff: `{}`", introduced);
-                        }
-                        ExperimentDimension::NovelComposition => {
-                            out.push_str(
-                                "**Experiment type:** NovelComposition\n\
-                                 Compose entirely from primitives. No base composition.\n",
-                            );
-                        }
-                    }
-                    if let Some(base) = &exp.base_composition {
-                        let _ = writeln!(out, "\n**Base composition:** `{}`", base);
-                    }
                 }
-                out.push('\n');
-                out.push_str(
-                    "Your role is to construct a coherent agent from the specified primitives.\n\
-                     The experiment design (what to vary) is algorithmic — do NOT override it.\n\n",
-                );
+            }
+            if let Some(base) = &exp.base_composition {
+                let _ = writeln!(out, "\n**Base composition:** `{}`", base);
             }
         }
+        out.push('\n');
+        out.push_str(
+            "Your role is to construct a coherent agent from the specified primitives.\n\
+             The experiment design (what to vary) is algorithmic — do NOT override it.\n\n",
+        );
     }
 
     out
@@ -1212,6 +1224,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1303,6 +1318,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1342,6 +1360,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1394,6 +1415,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &downstream,
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1416,6 +1440,102 @@ mod tests {
         assert!(output.contains("**downstream_usability**"));
         assert!(output.contains("**coordination_overhead**"));
         assert!(output.contains("**blocking_impact**"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_with_flip_verify() {
+        let input = EvaluatorInput {
+            task_title: "Task with verify",
+            task_description: Some("A task that was verified."),
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: Some(0.45),
+            verify_status: Some("passed"),
+            verify_findings: Some(
+                "[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified",
+            ),
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        // FLIP Verification Results section should appear
+        assert!(output.contains("## FLIP Verification Results"));
+        assert!(output.contains("FLIP Score: 0.45 (below threshold 0.70)"));
+        assert!(output.contains("Verification Status: PASSED"));
+        assert!(output.contains("Verification Findings:"));
+        assert!(output.contains("Tests pass"));
+        assert!(output.contains("Artifacts verified"));
+        assert!(output.contains("NOTE: Verification is a strong signal"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_no_flip_verify() {
+        let input = EvaluatorInput {
+            task_title: "Task without verify",
+            task_description: None,
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        // FLIP Verification Results section should NOT appear
+        assert!(!output.contains("## FLIP Verification Results"));
+        assert!(!output.contains("FLIP Score"));
+        assert!(!output.contains("Verification Status"));
+        assert!(!output.contains("NOTE: Verification is a strong signal"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_flip_above_threshold() {
+        let input = EvaluatorInput {
+            task_title: "High FLIP",
+            task_description: None,
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: Some(0.85),
+            verify_status: None,
+            verify_findings: None,
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        assert!(output.contains("## FLIP Verification Results"));
+        assert!(output.contains("FLIP Score: 0.85 (at or above threshold 0.70)"));
+        assert!(!output.contains("Verification Status"));
     }
 
     // -- Rich component resolution tests ------------------------------------

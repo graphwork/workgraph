@@ -65,6 +65,14 @@ pub struct Config {
     /// Model routing: per-role model+provider assignments
     #[serde(default)]
     pub models: ModelRoutingConfig,
+
+    /// Quality tier defaults: which model ID each tier resolves to
+    #[serde(default)]
+    pub tiers: TierConfig,
+
+    /// Model registry entries
+    #[serde(default)]
+    pub model_registry: Vec<ModelRegistryEntry>,
 }
 
 /// Help display configuration
@@ -228,6 +236,12 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
+    /// Comma-separated time counters to display: "uptime", "cumulative", "active"
+    #[serde(default = "default_counters")]
+    pub counters: String,
+    /// Show only running (in-progress/open) system tasks by default
+    #[serde(default)]
+    pub show_running_system_tasks: bool,
 }
 
 fn default_tui_layout() -> String {
@@ -257,6 +271,9 @@ fn default_inspector_size() -> String {
 fn default_chat_history_max() -> usize {
     1000
 }
+fn default_counters() -> String {
+    "uptime,cumulative,active".to_string()
+}
 
 impl Default for TuiConfig {
     fn default() -> Self {
@@ -272,6 +289,8 @@ impl Default for TuiConfig {
             default_inspector_size: default_inspector_size(),
             chat_history: true,
             chat_history_max: default_chat_history_max(),
+            counters: default_counters(),
+            show_running_system_tasks: false,
         }
     }
 }
@@ -336,6 +355,24 @@ pub struct EndpointsConfig {
     pub endpoints: Vec<EndpointConfig>,
 }
 
+impl EndpointsConfig {
+    /// Find the best endpoint for a given provider name.
+    pub fn find_for_provider(&self, provider: &str) -> Option<&EndpointConfig> {
+        let mut first_match: Option<&EndpointConfig> = None;
+        for ep in &self.endpoints {
+            if ep.provider == provider {
+                if ep.is_default {
+                    return Some(ep);
+                }
+                if first_match.is_none() {
+                    first_match = Some(ep);
+                }
+            }
+        }
+        first_match
+    }
+}
+
 /// Checkpoint configuration for agent context preservation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointConfig {
@@ -350,6 +387,10 @@ pub struct CheckpointConfig {
     /// Keep only last N checkpoints per task
     #[serde(default = "default_max_checkpoints")]
     pub max_checkpoints: u32,
+
+    /// Max tokens of previous attempt context to inject on retry (0 = disabled)
+    #[serde(default = "default_retry_context_tokens")]
+    pub retry_context_tokens: u32,
 }
 
 fn default_auto_interval_turns() -> u32 {
@@ -364,12 +405,17 @@ fn default_max_checkpoints() -> u32 {
     5
 }
 
+fn default_retry_context_tokens() -> u32 {
+    2000
+}
+
 impl Default for CheckpointConfig {
     fn default() -> Self {
         Self {
             auto_interval_turns: default_auto_interval_turns(),
             auto_interval_mins: default_auto_interval_mins(),
             max_checkpoints: default_max_checkpoints(),
+            retry_context_tokens: default_retry_context_tokens(),
         }
     }
 }
@@ -403,6 +449,12 @@ pub enum DispatchRole {
     Triage,
     /// Agent creator
     Creator,
+    /// Compactor: distills graph state into context.md
+    Compactor,
+    /// Coordinator evaluation (inline per-turn scoring)
+    CoordinatorEval,
+    /// Placement agent: analyzes tasks and wires them into the graph
+    Placer,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -418,6 +470,9 @@ impl std::fmt::Display for DispatchRole {
             Self::Verification => write!(f, "verification"),
             Self::Triage => write!(f, "triage"),
             Self::Creator => write!(f, "creator"),
+            Self::Compactor => write!(f, "compactor"),
+            Self::CoordinatorEval => write!(f, "coordinator_eval"),
+            Self::Placer => write!(f, "placer"),
         }
     }
 }
@@ -437,9 +492,12 @@ impl std::str::FromStr for DispatchRole {
             "verification" => Ok(Self::Verification),
             "triage" => Ok(Self::Triage),
             "creator" => Ok(Self::Creator),
+            "compactor" => Ok(Self::Compactor),
+            "coordinator_eval" => Ok(Self::CoordinatorEval),
+            "placer" => Ok(Self::Placer),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
-                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator",
+                 flip_inference, flip_comparison, assigner, evolver, verification, triage, creator, compactor, placer",
                 s
             )),
         }
@@ -458,7 +516,204 @@ impl DispatchRole {
         Self::Verification,
         Self::Triage,
         Self::Creator,
+        Self::Compactor,
+        Self::Placer,
     ];
+
+    /// Default quality tier for this role.
+    pub fn default_tier(&self) -> Tier {
+        match self {
+            Self::Triage => Tier::Fast,
+            Self::FlipComparison => Tier::Fast,
+            Self::Assigner => Tier::Fast,
+            Self::Compactor => Tier::Fast,
+            Self::CoordinatorEval => Tier::Fast,
+            Self::Placer => Tier::Fast,
+            Self::FlipInference => Tier::Standard,
+            Self::TaskAgent => Tier::Standard,
+            Self::Evaluator => Tier::Standard,
+            Self::Evolver => Tier::Premium,
+            Self::Creator => Tier::Premium,
+            Self::Verification => Tier::Premium,
+            Self::Default => Tier::Standard,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Execution weight tiers
+// ---------------------------------------------------------------------------
+
+/// Execution weight tier for agent spawning.
+///
+/// Controls what tools and context an agent gets, from lightest to heaviest:
+/// - Shell: no LLM, just run a shell command
+/// - Bare: LLM with wg CLI only (no file access)
+/// - Light: LLM with read-only file access (research/review)
+/// - Full: all tools (implementation/debugging)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum ExecMode {
+    /// No LLM — run `task.exec` command directly via bash
+    Shell,
+    /// LLM with `Bash(wg:*)` only, `--system-prompt` path
+    Bare,
+    /// LLM with read-only file tools: `Bash(wg:*),Read,Glob,Grep,WebFetch,WebSearch`
+    Light,
+    /// Full Claude Code session with all tools
+    #[default]
+    Full,
+}
+
+impl std::fmt::Display for ExecMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shell => write!(f, "shell"),
+            Self::Bare => write!(f, "bare"),
+            Self::Light => write!(f, "light"),
+            Self::Full => write!(f, "full"),
+        }
+    }
+}
+
+impl std::str::FromStr for ExecMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "shell" => Ok(Self::Shell),
+            "bare" => Ok(Self::Bare),
+            "light" => Ok(Self::Light),
+            "full" => Ok(Self::Full),
+            _ => Err(anyhow::anyhow!(
+                "Invalid exec_mode '{}'. Valid values: shell, bare, light, full",
+                s
+            )),
+        }
+    }
+}
+
+impl ExecMode {
+    /// All variants in order from lightest to heaviest.
+    pub const ALL: &'static [ExecMode] = &[Self::Shell, Self::Bare, Self::Light, Self::Full];
+
+    /// Parse from an optional string, defaulting to Full.
+    pub fn from_opt(s: Option<&str>) -> Result<Self, anyhow::Error> {
+        match s {
+            Some(v) => v.parse(),
+            None => Ok(Self::Full),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quality tiers and model registry
+// ---------------------------------------------------------------------------
+
+/// Quality tier for model selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Fast,
+    Standard,
+    Premium,
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fast => write!(f, "fast"),
+            Self::Standard => write!(f, "standard"),
+            Self::Premium => write!(f, "premium"),
+        }
+    }
+}
+
+impl std::str::FromStr for Tier {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "fast" => Ok(Self::Fast),
+            "standard" => Ok(Self::Standard),
+            "premium" => Ok(Self::Premium),
+            _ => anyhow::bail!("unknown tier '{}' (expected: fast, standard, premium)", s),
+        }
+    }
+}
+
+/// A model registry entry describing a provider+model combination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelRegistryEntry {
+    /// Short identifier used in config references (e.g., "haiku", "sonnet", "gpt-4o")
+    pub id: String,
+    /// Provider: "anthropic", "openai", "google", "local", etc.
+    pub provider: String,
+    /// Full model identifier sent to the API
+    pub model: String,
+    /// Quality tier this model belongs to
+    pub tier: Tier,
+    /// API endpoint URL (None = use provider default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Max input context window in tokens
+    #[serde(default)]
+    pub context_window: u64,
+    /// Max output tokens
+    #[serde(default)]
+    pub max_output_tokens: u64,
+    /// Cost per million input tokens (USD)
+    #[serde(default)]
+    pub cost_per_input_mtok: f64,
+    /// Cost per million output tokens (USD)
+    #[serde(default)]
+    pub cost_per_output_mtok: f64,
+    /// Whether the provider supports prompt caching
+    #[serde(default)]
+    pub prompt_caching: bool,
+    /// Discount multiplier for cached reads (e.g., 0.1 = 90% off)
+    #[serde(default)]
+    pub cache_read_discount: f64,
+    /// Premium multiplier for cache writes (e.g., 1.25 = 25% more)
+    #[serde(default)]
+    pub cache_write_premium: f64,
+    /// Descriptors for when to use this model
+    #[serde(default)]
+    pub descriptors: Vec<String>,
+}
+
+impl Default for ModelRegistryEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            tier: Tier::Standard,
+            endpoint: None,
+            context_window: 0,
+            max_output_tokens: 0,
+            cost_per_input_mtok: 0.0,
+            cost_per_output_mtok: 0.0,
+            prompt_caching: false,
+            cache_read_discount: 0.0,
+            cache_write_premium: 0.0,
+            descriptors: Vec::new(),
+        }
+    }
+}
+
+/// Tier routing configuration: which model ID each tier resolves to.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierConfig {
+    /// Model ID for fast tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<String>,
+    /// Model ID for standard tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard: Option<String>,
+    /// Model ID for premium tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium: Option<String>,
 }
 
 /// Per-role model+provider assignment.
@@ -470,6 +725,9 @@ pub struct RoleModelConfig {
     /// Model name within the provider (e.g., "opus", "sonnet", "haiku", "gpt-4o")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Tier override: resolve model via tier system instead of direct model
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
 }
 
 /// Model routing: maps each dispatch role to a model+provider.
@@ -507,6 +765,12 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compactor: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placer: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -523,6 +787,9 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => self.verification.as_ref(),
             DispatchRole::Triage => self.triage.as_ref(),
             DispatchRole::Creator => self.creator.as_ref(),
+            DispatchRole::Compactor => self.compactor.as_ref(),
+            DispatchRole::CoordinatorEval => self.evaluator.as_ref(),
+            DispatchRole::Placer => self.placer.as_ref(),
         }
     }
 
@@ -539,6 +806,9 @@ impl ModelRoutingConfig {
             DispatchRole::Verification => &mut self.verification,
             DispatchRole::Triage => &mut self.triage,
             DispatchRole::Creator => &mut self.creator,
+            DispatchRole::Compactor => &mut self.compactor,
+            DispatchRole::CoordinatorEval => &mut self.evaluator,
+            DispatchRole::Placer => &mut self.placer,
         }
     }
 
@@ -551,6 +821,7 @@ impl ModelRoutingConfig {
             *slot = Some(RoleModelConfig {
                 provider: None,
                 model: Some(model.to_string()),
+                tier: None,
             });
         }
     }
@@ -564,6 +835,7 @@ impl ModelRoutingConfig {
             *slot = Some(RoleModelConfig {
                 provider: Some(provider.to_string()),
                 model: None,
+                tier: None,
             });
         }
     }
@@ -574,26 +846,161 @@ impl ModelRoutingConfig {
 pub struct ResolvedModel {
     pub model: String,
     pub provider: Option<String>,
+    /// Registry entry if resolved through the registry (carries cost data)
+    pub registry_entry: Option<ModelRegistryEntry>,
 }
 
 impl Config {
+    /// Built-in Anthropic model defaults.
+    fn builtin_registry() -> Vec<ModelRegistryEntry> {
+        vec![
+            ModelRegistryEntry {
+                id: "haiku".into(),
+                provider: "anthropic".into(),
+                model: "claude-haiku-4-5-20251001".into(),
+                tier: Tier::Fast,
+                context_window: 200_000,
+                max_output_tokens: 8192,
+                cost_per_input_mtok: 0.25,
+                cost_per_output_mtok: 1.25,
+                prompt_caching: true,
+                cache_read_discount: 0.1,
+                cache_write_premium: 1.25,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "sonnet".into(),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+                tier: Tier::Standard,
+                context_window: 200_000,
+                max_output_tokens: 16384,
+                cost_per_input_mtok: 3.0,
+                cost_per_output_mtok: 15.0,
+                prompt_caching: true,
+                cache_read_discount: 0.1,
+                cache_write_premium: 1.25,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "opus".into(),
+                provider: "anthropic".into(),
+                model: "claude-opus-4-6".into(),
+                tier: Tier::Premium,
+                context_window: 200_000,
+                max_output_tokens: 32000,
+                cost_per_input_mtok: 15.0,
+                cost_per_output_mtok: 75.0,
+                prompt_caching: true,
+                cache_read_discount: 0.1,
+                cache_write_premium: 1.25,
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// Return merged registry: built-in entries + user-defined entries.
+    /// User entries with the same ID override built-in entries.
+    pub fn effective_registry(&self) -> Vec<ModelRegistryEntry> {
+        let builtins = Self::builtin_registry();
+        if self.model_registry.is_empty() {
+            return builtins;
+        }
+        let user_ids: std::collections::HashSet<&str> =
+            self.model_registry.iter().map(|e| e.id.as_str()).collect();
+        let mut result: Vec<ModelRegistryEntry> = builtins
+            .into_iter()
+            .filter(|e| !user_ids.contains(e.id.as_str()))
+            .collect();
+        result.extend(self.model_registry.clone());
+        result
+    }
+
+    /// Effective tier config: use configured tiers, filling in defaults for unconfigured ones.
+    pub fn effective_tiers_public(&self) -> TierConfig {
+        self.effective_tiers()
+    }
+
+    /// Effective tier config (internal).
+    fn effective_tiers(&self) -> TierConfig {
+        TierConfig {
+            fast: self.tiers.fast.clone().or_else(|| Some("haiku".into())),
+            standard: self
+                .tiers
+                .standard
+                .clone()
+                .or_else(|| Some("sonnet".into())),
+            premium: self.tiers.premium.clone().or_else(|| Some("opus".into())),
+        }
+    }
+
+    /// Look up a registry entry by its short ID.
+    pub fn registry_lookup(&self, id: &str) -> Option<ModelRegistryEntry> {
+        self.effective_registry().into_iter().find(|e| e.id == id)
+    }
+
+    /// Resolve a tier to a ResolvedModel via the tier config and registry.
+    pub fn resolve_tier(&self, tier: Tier) -> Option<ResolvedModel> {
+        let tiers = self.effective_tiers();
+        let model_id = match tier {
+            Tier::Fast => tiers.fast.as_deref(),
+            Tier::Standard => tiers.standard.as_deref(),
+            Tier::Premium => tiers.premium.as_deref(),
+        }?;
+
+        if let Some(entry) = self.registry_lookup(model_id) {
+            Some(ResolvedModel {
+                model: entry.model.clone(),
+                provider: Some(entry.provider.clone()),
+                registry_entry: Some(entry),
+            })
+        } else {
+            // Model ID not in registry — treat as a bare model name
+            Some(ResolvedModel {
+                model: model_id.to_string(),
+                provider: None,
+                registry_entry: None,
+            })
+        }
+    }
+
     /// Resolve the model (and optional provider) for a given dispatch role.
     ///
     /// Resolution order:
     /// 1. `models.<role>.model` (role-specific override in [models] section)
     /// 2. Legacy per-role config (e.g., `agency.evaluator_model` for Evaluator)
-    /// 3. `models.default.model` (default in [models] section)
-    /// 4. `agent.model` (global fallback)
+    /// 3. `models.<role>.tier` (role tier override via tier system)
+    /// 4. Role `default_tier()` → `tiers.<tier>` → registry lookup
+    /// 5. `models.default.model` (default in [models] section)
+    /// 6. `agent.model` (global fallback)
     ///
     /// Provider resolution follows the same cascade but only from [models].
     pub fn resolve_model_for_role(&self, role: DispatchRole) -> ResolvedModel {
-        // 1. Check role-specific [models] config
+        // Default provider cascades to all roles that don't set their own.
+        let default_provider = self
+            .models
+            .get_role(DispatchRole::Default)
+            .and_then(|c| c.provider.clone());
+
+        // Helper: resolve provider for a role, cascading to default if unset.
+        let resolve_provider = |role: DispatchRole| -> Option<String> {
+            self.models
+                .get_role(role)
+                .and_then(|c| c.provider.clone())
+                .or_else(|| default_provider.clone())
+        };
+
+        // 1. Check role-specific [models] config (direct model override)
         if let Some(role_cfg) = self.models.get_role(role)
             && let Some(ref model) = role_cfg.model
         {
             return ResolvedModel {
                 model: model.clone(),
-                provider: role_cfg.provider.clone(),
+                provider: role_cfg
+                    .provider
+                    .clone()
+                    .or_else(|| default_provider.clone()),
+                registry_entry: None,
             };
         }
 
@@ -618,50 +1025,100 @@ impl Config {
             _ => None,
         };
         if let Some(model) = legacy_model {
-            // Legacy config has no provider — check if [models] role has provider set
-            let provider = self.models.get_role(role).and_then(|c| c.provider.clone());
             return ResolvedModel {
                 model: model.clone(),
-                provider,
+                provider: resolve_provider(role),
+                registry_entry: None,
             };
         }
 
-        // 2.5. Tier-appropriate defaults for roles that historically had
-        // hardcoded fallbacks. This ensures these roles get sensible models
-        // even without explicit config, while keeping defaults in one place.
-        let tier_default = match role {
-            DispatchRole::Triage => Some("haiku"),
-            DispatchRole::FlipComparison => Some("haiku"),
-            DispatchRole::FlipInference => Some("sonnet"),
-            DispatchRole::Verification => Some("opus"),
-            _ => None,
-        };
-        if let Some(default_model) = tier_default {
-            let provider = self.models.get_role(role).and_then(|c| c.provider.clone());
-            return ResolvedModel {
-                model: default_model.to_string(),
-                provider,
-            };
+        // 3. Role tier override: [models.<role>].tier
+        if let Some(role_cfg) = self.models.get_role(role)
+            && let Some(tier) = role_cfg.tier
+            && let Some(mut resolved) = self.resolve_tier(tier)
+        {
+            // Allow role/default provider to override registry provider
+            if let Some(p) = resolve_provider(role) {
+                resolved.provider = Some(p);
+            }
+            return resolved;
         }
 
-        // 3. Check [models.default]
+        // 4. Role default_tier() → tiers.<tier> → registry lookup
+        if let Some(mut resolved) = self.resolve_tier(role.default_tier()) {
+            // Allow role/default provider to override registry provider
+            if let Some(p) = resolve_provider(role) {
+                resolved.provider = Some(p);
+            }
+            return resolved;
+        }
+
+        // 5. Check [models.default]
         if let Some(default_cfg) = self.models.get_role(DispatchRole::Default)
             && let Some(ref model) = default_cfg.model
         {
             return ResolvedModel {
                 model: model.clone(),
-                provider: default_cfg.provider.clone(),
+                provider: default_provider,
+                registry_entry: None,
             };
         }
 
-        // 4. Global fallback
+        // 6. Global fallback
         ResolvedModel {
             model: self.agent.model.clone(),
-            provider: self
-                .models
-                .get_role(DispatchRole::Default)
-                .and_then(|c| c.provider.clone()),
+            provider: default_provider,
+            registry_entry: None,
         }
+    }
+
+    /// Determine the source of model resolution for a role.
+    ///
+    /// Returns one of: "explicit", "legacy", "tier-override", "tier-default", "fallback"
+    pub fn resolve_model_source(&self, role: DispatchRole) -> &'static str {
+        // 1. Role-specific [models] config (direct model override)
+        if let Some(role_cfg) = self.models.get_role(role)
+            && role_cfg.model.is_some()
+        {
+            return "explicit";
+        }
+
+        // 2. Legacy per-role config
+        let legacy_model = match role {
+            DispatchRole::Evaluator => self.agency.evaluator_model.as_ref(),
+            DispatchRole::Assigner => self.agency.assigner_model.as_ref(),
+            DispatchRole::Evolver => self.agency.evolver_model.as_ref(),
+            DispatchRole::Creator => self.agency.creator_model.as_ref(),
+            DispatchRole::Triage => self.agency.triage_model.as_ref(),
+            DispatchRole::FlipInference => self.agency.flip_inference_model.as_ref(),
+            DispatchRole::FlipComparison => self.agency.flip_comparison_model.as_ref(),
+            DispatchRole::Verification => {
+                if self.agency.flip_verification_model != "opus" {
+                    Some(&self.agency.flip_verification_model)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if legacy_model.is_some() {
+            return "legacy";
+        }
+
+        // 3. Role tier override
+        if let Some(role_cfg) = self.models.get_role(role)
+            && role_cfg.tier.is_some()
+        {
+            return "tier-override";
+        }
+
+        // 4. Role default_tier() → registry
+        if self.resolve_tier(role.default_tier()).is_some() {
+            return "tier-default";
+        }
+
+        // 5/6. Fallback
+        "fallback"
     }
 
     /// Check for legacy `agency.*_model` fields and emit deprecation warnings to stderr.
@@ -736,12 +1193,6 @@ impl Config {
 fn default_auto_create_threshold() -> u32 {
     20
 }
-fn default_run_mode() -> f64 {
-    0.2
-}
-fn default_min_exploration_rate() -> f64 {
-    0.05
-}
 fn default_exploration_interval() -> u32 {
     20
 }
@@ -757,14 +1208,23 @@ fn default_novelty_bonus_multiplier() -> f64 {
 fn default_bizarre_ideation_interval() -> u32 {
     10
 }
-fn default_performance_threshold() -> f64 {
-    0.7
-}
 fn default_flip_verification_threshold() -> Option<f64> {
     Some(0.7)
 }
 fn default_flip_verification_model() -> String {
     "opus".to_string()
+}
+fn default_evolution_interval() -> u64 {
+    7200
+}
+fn default_evolution_threshold() -> u32 {
+    10
+}
+fn default_evolution_budget() -> u32 {
+    5
+}
+fn default_evolution_reactive_threshold() -> f64 {
+    0.4
 }
 fn default_auto_assign_grace_seconds() -> u64 {
     10
@@ -817,6 +1277,16 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_model: Option<String>,
 
+    /// Content-hash of agent to use as placer (None = not configured)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placer_agent: Option<String>,
+
+    /// Automatically run placement analysis on newly added tasks.
+    /// When enabled, the coordinator creates `.place-*` meta-tasks
+    /// for tasks that need graph wiring. Default: false.
+    #[serde(default)]
+    pub auto_place: bool,
+
     /// Automatically invoke the creator agent when the primitive store
     /// needs expansion. Default: false.
     #[serde(default)]
@@ -848,19 +1318,7 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
 
-    /// Run mode on the performance/learning continuum.
-    /// 0.0 = pure performance, 1.0 = pure learning.
-    /// Default: 0.2
-    #[serde(default = "default_run_mode")]
-    pub run_mode: f64,
-
-    /// Minimum fraction of assignments routed through learning path
-    /// even when run_mode is low. Guards against exploitation drift
-    /// (March, 1991). Default: 0.05
-    #[serde(default = "default_min_exploration_rate")]
-    pub min_exploration_rate: f64,
-
-    /// Force a learning assignment every N tasks in performance mode.
+    /// Force a learning assignment every N tasks with forced exploration parameters.
     /// 0 = disabled. Default: 20
     #[serde(default = "default_exploration_interval")]
     pub exploration_interval: u32,
@@ -885,11 +1343,6 @@ pub struct AgencyConfig {
     /// 0 = disabled. Default: 10
     #[serde(default = "default_bizarre_ideation_interval")]
     pub bizarre_ideation_interval: u32,
-
-    /// Performance threshold for cache-hit deployment in performance mode.
-    /// Default: 0.7
-    #[serde(default = "default_performance_threshold")]
-    pub performance_threshold: f64,
 
     /// Grace period in seconds after task creation before auto-assignment
     /// is eligible. Prevents premature assignment when tasks are created
@@ -937,6 +1390,32 @@ pub struct AgencyConfig {
     /// Default: "opus" (highest capability for independent verification).
     #[serde(default = "default_flip_verification_model")]
     pub flip_verification_model: String,
+
+    /// Automatically trigger evolution cycles based on evaluation data.
+    /// When enabled, the coordinator creates `.evolve-*` meta-tasks
+    /// after sufficient evaluations accumulate. Default: false (opt-in).
+    #[serde(default)]
+    pub auto_evolve: bool,
+
+    /// Minimum seconds between automatic evolution cycles. Default: 7200 (2 hours).
+    #[serde(default = "default_evolution_interval")]
+    pub evolution_interval: u64,
+
+    /// Minimum number of new evaluations required before triggering evolution.
+    /// Default: 10.
+    #[serde(default = "default_evolution_threshold")]
+    pub evolution_threshold: u32,
+
+    /// Maximum number of evolver operations per automatic evolution cycle.
+    /// Default: 5.
+    #[serde(default = "default_evolution_budget")]
+    pub evolution_budget: u32,
+
+    /// Average score threshold for reactive evolution trigger. When the
+    /// average evaluation score drops below this value, evolution is
+    /// triggered regardless of the normal interval/threshold. Default: 0.4.
+    #[serde(default = "default_evolution_reactive_threshold")]
+    pub evolution_reactive_threshold: f64,
 }
 
 impl Default for AgencyConfig {
@@ -952,6 +1431,8 @@ impl Default for AgencyConfig {
             evolver_agent: None,
             creator_agent: None,
             creator_model: None,
+            placer_agent: None,
+            auto_place: false,
             auto_create: false,
             auto_create_threshold: default_auto_create_threshold(),
             retention_heuristics: None,
@@ -959,14 +1440,11 @@ impl Default for AgencyConfig {
             triage_model: None,
             triage_timeout: None,
             triage_max_log_bytes: None,
-            run_mode: default_run_mode(),
-            min_exploration_rate: default_min_exploration_rate(),
             exploration_interval: default_exploration_interval(),
             cache_population_threshold: default_cache_population_threshold(),
             ucb_exploration_constant: default_ucb_exploration_constant(),
             novelty_bonus_multiplier: default_novelty_bonus_multiplier(),
             bizarre_ideation_interval: default_bizarre_ideation_interval(),
-            performance_threshold: default_performance_threshold(),
             auto_assign_grace_seconds: default_auto_assign_grace_seconds(),
             eval_gate_threshold: None,
             eval_gate_all: false,
@@ -975,6 +1453,11 @@ impl Default for AgencyConfig {
             flip_comparison_model: None,
             flip_verification_threshold: default_flip_verification_threshold(),
             flip_verification_model: default_flip_verification_model(),
+            auto_evolve: false,
+            evolution_interval: default_evolution_interval(),
+            evolution_threshold: default_evolution_threshold(),
+            evolution_budget: default_evolution_budget(),
+            evolution_reactive_threshold: default_evolution_reactive_threshold(),
         }
     }
 }
@@ -1060,6 +1543,29 @@ pub struct CoordinatorConfig {
     /// Default: true.
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
+
+    /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
+    #[serde(default = "default_compactor_interval")]
+    pub compactor_interval: u32,
+
+    /// Provenance ops growth threshold that triggers compaction (default: 100)
+    #[serde(default = "default_compactor_ops_threshold")]
+    pub compactor_ops_threshold: usize,
+
+    /// How often to evaluate coordinator turns.
+    /// Options: "every", "every_5" (default), "every_10", "sample_20pct", "none"
+    #[serde(default = "default_eval_frequency")]
+    pub eval_frequency: String,
+
+    /// Enable git worktree isolation for spawned agents.
+    /// When true, each agent gets its own worktree at .wg-worktrees/<agent-id>/.
+    #[serde(default)]
+    pub worktree_isolation: bool,
+
+    /// Maximum number of concurrent coordinator agents (LLM sessions).
+    /// Each coordinator is a separate Claude CLI process. Default: 4.
+    #[serde(default = "default_max_coordinators")]
+    pub max_coordinators: usize,
 }
 
 fn default_max_agents() -> usize {
@@ -1082,6 +1588,22 @@ fn default_poll_interval() -> u64 {
     60
 }
 
+fn default_compactor_interval() -> u32 {
+    5
+}
+
+fn default_compactor_ops_threshold() -> usize {
+    100
+}
+
+fn default_eval_frequency() -> String {
+    "every_5".to_string()
+}
+
+fn default_max_coordinators() -> usize {
+    4
+}
+
 fn default_agent_timeout() -> String {
     "30m".to_string()
 }
@@ -1098,6 +1620,11 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
+            compactor_interval: default_compactor_interval(),
+            compactor_ops_threshold: default_compactor_ops_threshold(),
+            eval_frequency: default_eval_frequency(),
+            worktree_isolation: false,
+            max_coordinators: default_max_coordinators(),
         }
     }
 }
@@ -1646,8 +2173,6 @@ name = "My Project"
         assert!(config.agency.evolver_agent.is_none());
         assert!(config.agency.retention_heuristics.is_none());
         // Run mode continuum defaults
-        assert!((config.agency.run_mode - 0.2).abs() < f64::EPSILON);
-        assert!((config.agency.min_exploration_rate - 0.05).abs() < f64::EPSILON);
         assert_eq!(config.agency.exploration_interval, 20);
         assert!((config.agency.cache_population_threshold - 0.8).abs() < f64::EPSILON);
         assert!(
@@ -1656,7 +2181,6 @@ name = "My Project"
         );
         assert!((config.agency.novelty_bonus_multiplier - 1.5).abs() < f64::EPSILON);
         assert_eq!(config.agency.bizarre_ideation_interval, 10);
-        assert!((config.agency.performance_threshold - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1906,33 +2430,36 @@ model = "haiku"
 
     #[test]
     fn test_resolve_triage_default() {
-        // With no config at all, triage should resolve to "haiku" (budget tier)
+        // With no config, triage resolves via Fast tier → haiku registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
-        assert_eq!(resolved.model, "haiku");
-        assert!(resolved.provider.is_none());
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.provider, Some("anthropic".to_string()));
+        assert!(resolved.registry_entry.is_some());
+        assert_eq!(resolved.registry_entry.unwrap().id, "haiku");
     }
 
     #[test]
     fn test_resolve_flip_inference_default() {
-        // With no config, flip_inference should resolve to "sonnet" (mid tier)
+        // With no config, flip_inference resolves via Standard tier → sonnet registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
-        assert_eq!(resolved.model, "sonnet");
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert!(resolved.registry_entry.is_some());
     }
 
     #[test]
     fn test_resolve_flip_comparison_default() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
-        assert_eq!(resolved.model, "haiku");
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
     }
 
     #[test]
     fn test_resolve_verification_default() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, "opus");
+        assert_eq!(resolved.model, "claude-opus-4-6");
     }
 
     #[test]
@@ -1952,6 +2479,7 @@ model = "haiku"
         config.models.triage = Some(RoleModelConfig {
             model: Some("routing-model".to_string()),
             provider: Some("openrouter".to_string()),
+            tier: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
         assert_eq!(resolved.model, "routing-model");
@@ -1968,11 +2496,11 @@ model = "haiku"
     }
 
     #[test]
-    fn test_resolve_evaluator_falls_to_global() {
-        // Evaluator has no tier default, should fall through to agent.model
+    fn test_resolve_evaluator_uses_standard_tier() {
+        // Evaluator resolves via Standard tier → sonnet registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, config.agent.model);
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
     }
 
     #[test]
@@ -2042,5 +2570,291 @@ model = "haiku"
         config.agency.evaluator_model = Some("haiku".to_string());
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "haiku");
+    }
+
+    #[test]
+    fn test_default_provider_cascades_to_tier_defaults() {
+        // Setting [models.default].provider = "openrouter" should cascade
+        // to roles that use tier defaults (triage, flip_comparison, etc.)
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: Some("openrouter".to_string()),
+            tier: None,
+        });
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(
+            resolved.provider,
+            Some("openrouter".to_string()),
+            "Default provider should cascade to tier default roles"
+        );
+
+        let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+
+        let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Verification);
+        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+    }
+
+    #[test]
+    fn test_default_provider_cascades_to_role_with_model_only() {
+        // If a role has model set but no provider, default provider should cascade
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: Some("openrouter".to_string()),
+            tier: None,
+        });
+        config.models.triage = Some(RoleModelConfig {
+            model: Some("anthropic/claude-3.5-haiku".to_string()),
+            provider: None,
+            tier: None,
+        });
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "anthropic/claude-3.5-haiku");
+        assert_eq!(
+            resolved.provider,
+            Some("openrouter".to_string()),
+            "Default provider should cascade when role only sets model"
+        );
+    }
+
+    #[test]
+    fn test_role_provider_overrides_default_provider() {
+        // Role-specific provider should override default provider
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: Some("openrouter".to_string()),
+            tier: None,
+        });
+        config.models.triage = Some(RoleModelConfig {
+            model: Some("gpt-4o-mini".to_string()),
+            provider: Some("openai".to_string()),
+            tier: None,
+        });
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "gpt-4o-mini");
+        assert_eq!(
+            resolved.provider,
+            Some("openai".to_string()),
+            "Role-specific provider should take priority"
+        );
+    }
+
+    #[test]
+    fn test_default_provider_cascades_to_global_fallback() {
+        // Evaluator resolves via Standard tier; default provider overrides registry provider
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: Some("openrouter".to_string()),
+            tier: None,
+        });
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(
+            resolved.provider,
+            Some("openrouter".to_string()),
+            "Default provider should cascade to tier-resolved roles"
+        );
+    }
+
+    #[test]
+    fn test_default_provider_cascades_to_legacy_model() {
+        // Legacy model config should also get the default provider
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: Some("openrouter".to_string()),
+            tier: None,
+        });
+        config.agency.evaluator_model = Some("haiku".to_string());
+
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "haiku");
+        assert_eq!(
+            resolved.provider,
+            Some("openrouter".to_string()),
+            "Default provider should cascade to legacy model roles"
+        );
+    }
+
+    #[test]
+    fn test_tier_serde_roundtrip() {
+        // Tier serializes/deserializes correctly
+        let tier = Tier::Fast;
+        let json = serde_json::to_string(&tier).unwrap();
+        assert_eq!(json, "\"fast\"");
+        let parsed: Tier = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Tier::Fast);
+
+        let tier = Tier::Premium;
+        let json = serde_json::to_string(&tier).unwrap();
+        assert_eq!(json, "\"premium\"");
+        let parsed: Tier = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Tier::Premium);
+    }
+
+    #[test]
+    fn test_model_registry_entry_serde() {
+        let entry = ModelRegistryEntry {
+            id: "test".into(),
+            provider: "anthropic".into(),
+            model: "claude-test".into(),
+            tier: Tier::Standard,
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            cost_per_input_mtok: 1.0,
+            cost_per_output_mtok: 5.0,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: ModelRegistryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "test");
+        assert_eq!(parsed.tier, Tier::Standard);
+        assert_eq!(parsed.context_window, 100_000);
+    }
+
+    #[test]
+    fn test_tier_config_serde() {
+        let tc = TierConfig {
+            fast: Some("haiku".into()),
+            standard: None,
+            premium: Some("opus".into()),
+        };
+        let json = serde_json::to_string(&tc).unwrap();
+        let parsed: TierConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.fast, Some("haiku".to_string()));
+        assert!(parsed.standard.is_none());
+        assert_eq!(parsed.premium, Some("opus".to_string()));
+    }
+
+    #[test]
+    fn test_effective_registry_returns_builtins_when_empty() {
+        let config = Config::default();
+        let registry = config.effective_registry();
+        assert_eq!(registry.len(), 3);
+        assert_eq!(registry[0].id, "haiku");
+        assert_eq!(registry[1].id, "sonnet");
+        assert_eq!(registry[2].id, "opus");
+    }
+
+    #[test]
+    fn test_effective_registry_returns_custom_when_configured() {
+        let mut config = Config::default();
+        config.model_registry = vec![ModelRegistryEntry {
+            id: "custom".into(),
+            provider: "local".into(),
+            model: "my-model".into(),
+            tier: Tier::Fast,
+            ..Default::default()
+        }];
+        let registry = config.effective_registry();
+        // 3 built-in + 1 custom = 4
+        assert_eq!(registry.len(), 4);
+        assert!(registry.iter().any(|e| e.id == "custom"));
+        assert!(registry.iter().any(|e| e.id == "haiku"));
+    }
+
+    #[test]
+    fn test_effective_registry_custom_overrides_builtin() {
+        let mut config = Config::default();
+        config.model_registry = vec![ModelRegistryEntry {
+            id: "haiku".into(),
+            provider: "local".into(),
+            model: "my-haiku".into(),
+            tier: Tier::Fast,
+            ..Default::default()
+        }];
+        let registry = config.effective_registry();
+        // 2 remaining built-ins + 1 override = 3
+        assert_eq!(registry.len(), 3);
+        let haiku = registry.iter().find(|e| e.id == "haiku").unwrap();
+        assert_eq!(haiku.model, "my-haiku");
+        assert_eq!(haiku.provider, "local");
+    }
+
+    #[test]
+    fn test_resolve_tier_with_registry() {
+        let config = Config::default();
+        let resolved = config.resolve_tier(Tier::Fast).unwrap();
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.provider, Some("anthropic".to_string()));
+        assert!(resolved.registry_entry.is_some());
+    }
+
+    #[test]
+    fn test_resolve_tier_bare_model_id_not_in_registry() {
+        let mut config = Config::default();
+        config.tiers.fast = Some("custom-model".into());
+        let resolved = config.resolve_tier(Tier::Fast).unwrap();
+        assert_eq!(resolved.model, "custom-model");
+        assert!(resolved.provider.is_none());
+        assert!(resolved.registry_entry.is_none());
+    }
+
+    #[test]
+    fn test_role_tier_override() {
+        // [models.evaluator].tier = "premium" should resolve to opus
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: None,
+            provider: None,
+            tier: Some(Tier::Premium),
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn test_direct_model_override_takes_priority_over_tier() {
+        // Direct model override should beat tier-based resolution
+        let mut config = Config::default();
+        config.models.triage = Some(RoleModelConfig {
+            model: Some("my-custom-model".to_string()),
+            provider: None,
+            tier: Some(Tier::Premium), // Should be ignored because model is set
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.model, "my-custom-model");
+    }
+
+    #[test]
+    fn test_dispatch_role_default_tier() {
+        assert_eq!(DispatchRole::Triage.default_tier(), Tier::Fast);
+        assert_eq!(DispatchRole::FlipComparison.default_tier(), Tier::Fast);
+        assert_eq!(DispatchRole::Assigner.default_tier(), Tier::Fast);
+        assert_eq!(DispatchRole::TaskAgent.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::Evaluator.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::FlipInference.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::Evolver.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::Creator.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::Verification.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::Default.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::Placer.default_tier(), Tier::Fast);
+    }
+
+    #[test]
+    fn test_tier_display_and_fromstr() {
+        assert_eq!(Tier::Fast.to_string(), "fast");
+        assert_eq!(Tier::Standard.to_string(), "standard");
+        assert_eq!(Tier::Premium.to_string(), "premium");
+
+        assert_eq!("fast".parse::<Tier>().unwrap(), Tier::Fast);
+        assert_eq!("Standard".parse::<Tier>().unwrap(), Tier::Standard);
+        assert_eq!("PREMIUM".parse::<Tier>().unwrap(), Tier::Premium);
+        assert!("unknown".parse::<Tier>().is_err());
     }
 }

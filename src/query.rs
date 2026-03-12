@@ -90,7 +90,7 @@ pub fn project_summary(graph: &WorkGraph) -> ProjectSummary {
                 // Explicit blocked status also counts
                 blocked_count += 1;
             }
-            Status::Failed | Status::Abandoned | Status::Waiting => {
+            Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Failed, abandoned, and waiting tasks are not counted as open
             }
         }
@@ -373,6 +373,22 @@ pub fn ready_tasks_cycle_aware<'a>(
                 {
                     return true;
                 }
+                // First-iteration bootstrap: on iteration 0, when the task has
+                // cycle_config and the blocker is in the same SCC, exempt the
+                // blocker regardless of whether it has cycle_config. This lets
+                // headers bootstrap past workers (not just other headers).
+                if task.loop_iteration == 0 && task.cycle_config.is_some() {
+                    // Self-loop: task depends on itself
+                    if *blocker_id == task.id {
+                        return true;
+                    }
+                    if graph.get_task(blocker_id).is_some()
+                        && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
+                    {
+                        return true;
+                    }
+                }
                 false
             })
         })
@@ -412,6 +428,18 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                     && cycle_analysis.task_to_cycle.get(&task.id) == Some(bc)
                 {
                     return true;
+                }
+                // First-iteration bootstrap (same as above).
+                if task.loop_iteration == 0 && task.cycle_config.is_some() {
+                    if *blocker_id == task.id {
+                        return true;
+                    }
+                    if graph.get_task(blocker_id).is_some()
+                        && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
+                    {
+                        return true;
+                    }
                 }
                 false
             })
@@ -1721,5 +1749,433 @@ mod tests {
         let graph = WorkGraph::new();
         // Remote ref without workgraph_dir → treated as blocked
         assert!(!is_blocker_satisfied("peer:task-id", &graph, None));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cycle bootstrap tests: SCC-aware first-iteration readiness
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a CycleConfig with given max_iterations.
+    fn make_cycle_config(max_iterations: u32) -> crate::graph::CycleConfig {
+        crate::graph::CycleConfig {
+            max_iterations,
+            guard: None,
+            delay: None,
+            no_converge: false,
+            restart_on_failure: true,
+            max_failure_restarts: None,
+        }
+    }
+
+    #[test]
+    fn test_cycle_aware_mutual_dep_both_have_cycle_config() {
+        // A→B→A cycle, both with max_iterations: both should be ready on iteration 0
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["b".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        b.cycle_config = Some(make_cycle_config(3));
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["a", "b"],
+            "Both tasks should bootstrap on iteration 0"
+        );
+    }
+
+    #[test]
+    fn test_cycle_aware_mutual_dep_only_one_has_cycle_config() {
+        // A→B→A cycle, only A has max_iterations.
+        // B (worker) should be ready via existing worker exemption (Path 1).
+        // A (header) should also be ready: bootstrap exempts in-SCC blocker B on iteration 0.
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["b".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        // b has no cycle_config
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        // Both should be ready: A via bootstrap, B via worker exemption
+        assert_eq!(
+            ids,
+            vec!["a", "b"],
+            "Both header A and worker B should be ready on iteration 0"
+        );
+    }
+
+    #[test]
+    fn test_cycle_aware_three_node_cycle_all_bootstrap() {
+        // A→B→C→A three-node cycle: all should bootstrap on iteration 0
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["c".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        b.cycle_config = Some(make_cycle_config(3));
+
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["b".to_string()];
+        c.cycle_config = Some(make_cycle_config(3));
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b", "c"], "All three should bootstrap");
+    }
+
+    #[test]
+    fn test_cycle_aware_external_dep_still_blocks() {
+        // A→B→A cycle where A also depends on C (external): A should wait for C
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["b".to_string(), "c".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        b.cycle_config = Some(make_cycle_config(3));
+
+        let c = make_task("c", "External Task C");
+        // c is NOT in the cycle, not done
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        // B should be ready (only blocker is A, in same SCC)
+        // A should NOT be ready (blocked by external C which is Open)
+        let ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"b"), "B should be ready");
+        assert!(!ids.contains(&"a"), "A should be blocked by external dep C");
+    }
+
+    #[test]
+    fn test_cycle_aware_external_dep_done_allows_bootstrap() {
+        // Same as above but C is Done: A should now bootstrap
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["b".to_string(), "c".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        b.cycle_config = Some(make_cycle_config(3));
+
+        let mut c = make_task("c", "External Task C");
+        c.status = Status::Done;
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["a", "b"],
+            "Both should bootstrap after external dep done"
+        );
+    }
+
+    #[test]
+    fn test_cycle_aware_self_loop_bootstraps() {
+        // Self-loop: A→A with max_iterations: should be ready on iteration 0
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["a".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+
+        graph.add_node(Node::Task(a));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "a", "Self-loop should bootstrap");
+    }
+
+    #[test]
+    fn test_cycle_aware_iteration_1_no_bootstrap() {
+        // After iteration 0, the bootstrap exemption should NOT apply.
+        // Tasks on iteration 1+ should use the existing header/worker exemption.
+        let mut graph = WorkGraph::new();
+
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["b".to_string()];
+        a.cycle_config = Some(make_cycle_config(3));
+        a.loop_iteration = 1; // past first iteration
+
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        b.cycle_config = Some(make_cycle_config(3));
+        b.loop_iteration = 1;
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        // Neither should be ready via bootstrap (loop_iteration > 0).
+        // The existing worker exemption doesn't apply either (both have cycle_config).
+        // This is the steady-state behavior — after reactivate_cycle runs,
+        // the header waits for workers. With symmetric configs, a sequencing
+        // mechanism is needed (that's the existing behavior, unchanged).
+        assert!(
+            ready.is_empty(),
+            "Bootstrap exemption should not fire on iteration > 0"
+        );
+    }
+
+    #[test]
+    fn test_cycle_aware_non_cycle_tasks_unaffected() {
+        // Non-cycle tasks with loop_iteration == 0 should NOT get false exemptions
+        let mut graph = WorkGraph::new();
+
+        let a = make_task("a", "Task A");
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()]; // linear dep, no cycle
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        // Only A should be ready; B is blocked by A (no SCC membership)
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "a");
+    }
+
+    // -----------------------------------------------------------------------
+    // Cycle entry tests: external trigger + mixed cycle_config/worker nodes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cycle_entry_external_trigger() {
+        // External(done) → Header(cc) ↔ Worker(no cc)
+        // Header should be ready: ext is done, worker is in-SCC and exempted by bootstrap.
+        // Worker should be ready: header is exempted by Path 1 (worker exemption).
+        let mut graph = WorkGraph::new();
+
+        let mut ext = make_task("ext", "External trigger");
+        ext.status = Status::Done;
+
+        let mut header = make_task("header", "Cycle header");
+        header.after = vec!["ext".to_string(), "worker".to_string()];
+        header.cycle_config = Some(make_cycle_config(3));
+
+        let mut worker = make_task("worker", "Cycle worker");
+        worker.after = vec!["header".to_string()];
+        // worker has NO cycle_config
+
+        graph.add_node(Node::Task(ext));
+        graph.add_node(Node::Task(header));
+        graph.add_node(Node::Task(worker));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["header", "worker"],
+            "Both header and worker should be ready on iteration 0 when external dep is done"
+        );
+    }
+
+    #[test]
+    fn test_cycle_entry_external_not_done_blocks() {
+        // Same topology as above but External is Open — header should be blocked.
+        let mut graph = WorkGraph::new();
+
+        let ext = make_task("ext", "External trigger"); // Open (not done)
+
+        let mut header = make_task("header", "Cycle header");
+        header.after = vec!["ext".to_string(), "worker".to_string()];
+        header.cycle_config = Some(make_cycle_config(3));
+
+        let mut worker = make_task("worker", "Cycle worker");
+        worker.after = vec!["header".to_string()];
+
+        graph.add_node(Node::Task(ext));
+        graph.add_node(Node::Task(header));
+        graph.add_node(Node::Task(worker));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        // Worker should be ready (exempts header via Path 1)
+        assert!(ids.contains(&"worker"), "Worker should be ready");
+        // Header blocked by ext (external dep not done)
+        assert!(
+            !ids.contains(&"header"),
+            "Header should be blocked by undone external dep"
+        );
+    }
+
+    #[test]
+    fn test_cycle_entry_worker_chain() {
+        // External(done) → Header(cc) → W1(no cc) → W2(no cc) → Header
+        // SCC = {header, w1, w2}
+        // Header: exempts w2 via bootstrap (in-SCC, iteration 0) → READY
+        // W1: exempts header via Path 1 (worker exempts header) → READY
+        // W2: blocked by w1 (w2 has no cc, w1 has no cc — no exemption path) → BLOCKED
+        let mut graph = WorkGraph::new();
+
+        let mut ext = make_task("ext", "External trigger");
+        ext.status = Status::Done;
+
+        let mut header = make_task("header", "Cycle header");
+        header.after = vec!["ext".to_string(), "w2".to_string()];
+        header.cycle_config = Some(make_cycle_config(3));
+
+        let mut w1 = make_task("w1", "Worker 1");
+        w1.after = vec!["header".to_string()];
+
+        let mut w2 = make_task("w2", "Worker 2");
+        w2.after = vec!["w1".to_string()];
+
+        graph.add_node(Node::Task(ext));
+        graph.add_node(Node::Task(header));
+        graph.add_node(Node::Task(w1));
+        graph.add_node(Node::Task(w2));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        // Header and w1 should be ready; w2 blocked by w1
+        assert_eq!(
+            ids,
+            vec!["header", "w1"],
+            "Header bootstraps past w2, w1 exempts header; w2 blocked by w1"
+        );
+    }
+
+    #[test]
+    fn test_cycle_entry_nested_diamond() {
+        // Diamond within a cycle: header(cc) → [wA, wB](no cc) → join(no cc) → header
+        // External(done) → header
+        // SCC = {header, wA, wB, join}
+        // Header: ext done, join exempted by bootstrap → READY
+        // wA: exempts header via Path 1 → READY
+        // wB: exempts header via Path 1 → READY
+        // join: blocked by wA and wB (no exemption: join has no cc, workers have no cc) → BLOCKED
+        let mut graph = WorkGraph::new();
+
+        let mut ext = make_task("ext", "External trigger");
+        ext.status = Status::Done;
+
+        let mut header = make_task("header", "Cycle header");
+        header.after = vec!["ext".to_string(), "join".to_string()];
+        header.cycle_config = Some(make_cycle_config(3));
+
+        let mut wa = make_task("wa", "Worker A");
+        wa.after = vec!["header".to_string()];
+
+        let mut wb = make_task("wb", "Worker B");
+        wb.after = vec!["header".to_string()];
+
+        let mut join = make_task("join", "Join task");
+        join.after = vec!["wa".to_string(), "wb".to_string()];
+
+        graph.add_node(Node::Task(ext));
+        graph.add_node(Node::Task(header));
+        graph.add_node(Node::Task(wa));
+        graph.add_node(Node::Task(wb));
+        graph.add_node(Node::Task(join));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["header", "wa", "wb"],
+            "Header bootstraps, workers exempt header; join blocked by workers"
+        );
+    }
+
+    #[test]
+    fn test_cycle_entry_no_false_positives() {
+        // A task with cycle_config that is NOT in a cycle (no back-edge) should
+        // NOT get bootstrap exemption for its non-SCC blocker.
+        let mut graph = WorkGraph::new();
+
+        let blocker = make_task("blocker", "Blocker task"); // Open, no cc
+
+        let mut task_with_cc = make_task("task_cc", "Task with cycle config");
+        task_with_cc.after = vec!["blocker".to_string()];
+        task_with_cc.cycle_config = Some(make_cycle_config(3));
+        // No back-edge from blocker → task_cc, so they're in separate SCCs
+
+        // Also add a linear chain with no cycle_config to verify it's unaffected
+        let a = make_task("a", "Linear A");
+        let mut b = make_task("b", "Linear B");
+        b.after = vec!["a".to_string()];
+
+        graph.add_node(Node::Task(blocker));
+        graph.add_node(Node::Task(task_with_cc));
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let cycle_analysis = CycleAnalysis::from_graph(&graph);
+        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+
+        let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        // Only blocker and a should be ready (they have no deps)
+        // task_cc blocked by blocker (not in same SCC), b blocked by a
+        assert_eq!(
+            ids,
+            vec!["a", "blocker"],
+            "Non-cycle tasks and cc tasks without actual cycles should not get false exemptions"
+        );
     }
 }

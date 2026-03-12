@@ -6,12 +6,12 @@ use std::fs;
 use std::path::Path;
 
 use workgraph::agency;
+use workgraph::agency::evolver::{self, EvolutionTrigger, EvolverState};
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
     AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
-    count_assignment_records, eval_source, find_cached_agent, load_agent,
-    load_all_evaluations_or_warn, load_role, load_tradeoff, render_assigner_mode_context,
-    render_identity_prompt_rich, resolve_all_components, resolve_outcome, save_assignment_record,
+    count_assignment_records, eval_source, load_all_evaluations_or_warn,
+    render_assigner_mode_context, save_assignment_record,
 };
 use workgraph::chat;
 use workgraph::config::Config;
@@ -52,6 +52,21 @@ fn cleanup_and_count_alive(
             finished_agents.len(),
             finished_agents
         );
+    }
+
+    // Reconciliation safety net: catch orphaned InProgress tasks whose agents
+    // are Dead in registry but weren't unclaimed (split-save race condition).
+    match crate::commands::sweep::reconcile_orphaned_tasks(dir, graph_path) {
+        Ok(0) => {}
+        Ok(n) => {
+            eprintln!(
+                "[coordinator] Reconciliation: recovered {} orphaned task(s)",
+                n
+            );
+        }
+        Err(e) => {
+            eprintln!("[coordinator] Reconciliation warning: {}", e);
+        }
     }
 
     // Now count truly alive agents (process still running)
@@ -700,19 +715,352 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                 );
                 modified = true;
             }
+
+            // Reopen .assign-* dependency so reassignment can happen
+            let assign_id = format!(".assign-{}", task_id);
+            if let Some(assign_task) = graph.get_task_mut(&assign_id)
+                && assign_task.status == Status::Done
+            {
+                assign_task.status = Status::Open;
+                assign_task.assigned = None;
+                assign_task.completed_at = None;
+                assign_task.description = None;
+                assign_task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("coordinator".to_string()),
+                    message: "Reopened for reassignment (source task resurrected)".to_string(),
+                });
+                eprintln!(
+                    "[coordinator] Resurrection: reopened '{}' for reassignment",
+                    assign_id,
+                );
+            }
         }
     }
 
     modified
 }
 
-/// Auto-assign: run lightweight LLM assignment for unassigned ready tasks.
+/// Build placement tasks for draft tasks needing automatic placement.
 ///
-/// Uses a single `run_lightweight_llm_call()` to select the best agent for each
-/// task (replaces the old multi-turn Claude Code session approach). The LLM
-/// receives the full agent catalog and task context, and returns a JSON verdict
-/// with agent_hash, exec_mode, and context_scope. A `.assign-*` task is created
-/// (marked Done) for audit trail only — no blocking edge or agent spawn needed.
+/// Detects tasks in draft state (paused=true, not unplaced, not system task)
+/// and either auto-places them (fast path) or creates `.place-*` system tasks
+/// for agent-based placement.
+///
+/// **Auto-place fast path:** If a draft task has `--after` deps AND no file
+/// overlap with active tasks' artifacts, publish it immediately (no agent needed).
+///
+/// **Agent placement:** Creates a `.place-<task-id>` system task with placement
+/// context (active tasks, artifacts, integration gates, file mentions).
+///
+/// Returns `true` if the graph was modified.
+fn build_placement_tasks(
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+    dir: &Path,
+) -> bool {
+    use workgraph::graph::is_system_task;
+
+    let mut modified = false;
+
+    // Handle failed .place-* tasks: fallback-publish the original task.
+    // Never let placement failure block dispatch.
+    let failed_placers: Vec<(String, String)> = graph
+        .tasks()
+        .filter(|t| {
+            t.id.starts_with(".place-")
+                && t.status == Status::Failed
+                && !t.tags.iter().any(|tag| tag == "fallback-published")
+        })
+        .map(|t| {
+            let source_id = t.id.strip_prefix(".place-").unwrap().to_string();
+            (t.id.clone(), source_id)
+        })
+        .collect();
+
+    for (place_id, source_id) in failed_placers {
+        // Publish (unpause) the source task so it proceeds without placement
+        if let Some(source) = graph.get_task_mut(&source_id)
+            && source.paused
+        {
+            source.paused = false;
+            if !source.tags.contains(&"placed".to_string()) {
+                source.tags.push("placed".to_string());
+            }
+            source.log.push(workgraph::graph::LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("coordinator".to_string()),
+                message: "Placement failed, publishing without placement".to_string(),
+            });
+            eprintln!(
+                "[coordinator] Placement failed for '{}' — fallback publishing '{}'",
+                place_id, source_id
+            );
+            modified = true;
+        }
+        // Tag the .place-* task so we don't re-process it
+        if let Some(place_task) = graph.get_task_mut(&place_id) {
+            place_task.tags.push("fallback-published".to_string());
+        }
+    }
+
+    // Collect draft tasks needing placement
+    let tasks_needing_placement: Vec<(String, Vec<String>, Option<String>)> = graph
+        .tasks()
+        .filter(|t| {
+            t.paused
+                && !t.unplaced
+                && !is_system_task(&t.id)
+                && !t.tags.iter().any(|tag| tag == "placed")
+        })
+        .map(|t| (t.id.clone(), t.after.clone(), t.description.clone()))
+        .collect();
+
+    for (task_id, after_deps, description) in tasks_needing_placement {
+        let place_task_id = format!(".place-{}", task_id);
+
+        // Idempotent: skip if placement task already exists
+        if graph.get_task(&place_task_id).is_some() {
+            continue;
+        }
+
+        // Auto-place fast path: task has --after deps AND no file overlap with active tasks
+        if !after_deps.is_empty() {
+            let mentioned_files = extract_file_paths(description.as_deref().unwrap_or(""));
+            let has_overlap = if mentioned_files.is_empty() {
+                false
+            } else {
+                graph
+                    .tasks()
+                    .filter(|t| {
+                        t.id != task_id
+                            && !t.status.is_terminal()
+                            && !t.paused
+                            && !is_system_task(&t.id)
+                    })
+                    .any(|t| {
+                        t.artifacts
+                            .iter()
+                            .any(|a| mentioned_files.iter().any(|f| a.contains(f)))
+                    })
+            };
+
+            if !has_overlap {
+                if let Some(task) = graph.get_task_mut(&task_id) {
+                    task.paused = false;
+                    if !task.tags.contains(&"placed".to_string()) {
+                        task.tags.push("placed".to_string());
+                    }
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        message: "Auto-placed: user deps sufficient, no file conflicts detected"
+                            .to_string(),
+                    });
+                }
+                eprintln!(
+                    "[coordinator] Auto-placed draft task '{}' (deps provided, no file conflicts)",
+                    task_id
+                );
+                super::super::notify_graph_changed(dir);
+                modified = true;
+                continue;
+            }
+        }
+
+        // Agent placement: create .place-<task-id> system task
+        let placement_context = build_placement_context(graph, &task_id);
+        let placer_model = config.resolve_model_for_role(workgraph::config::DispatchRole::Placer);
+        let place_task = Task {
+            id: place_task_id.clone(),
+            title: format!("Place: {}", task_id),
+            description: Some(placement_context),
+            status: Status::Open,
+            after: vec![],
+            tags: vec!["placement".to_string(), "agency".to_string()],
+            exec_mode: Some("bare".to_string()),
+            visibility: "internal".to_string(),
+            created_at: Some(Utc::now().to_rfc3339()),
+            model: Some(placer_model.model),
+            provider: placer_model.provider,
+            agent: config.agency.placer_agent.clone(),
+            ..Task::default()
+        };
+
+        graph.add_node(Node::Task(place_task));
+
+        // Wire .place-* → .assign-* dependency if .assign-* already exists.
+        // This enforces pipeline ordering: .place-* → .assign-* → task
+        let assign_task_id = format!(".assign-{}", task_id);
+        if let Some(assign_task) = graph.get_task_mut(&assign_task_id)
+            && !assign_task.after.iter().any(|a| a == &place_task_id)
+        {
+            assign_task.after.push(place_task_id.clone());
+            eprintln!(
+                "[coordinator] Wired placement dependency: '{}' → '{}'",
+                place_task_id, assign_task_id
+            );
+        }
+
+        eprintln!(
+            "[coordinator] Created placement task '{}' for draft task '{}'",
+            place_task_id, task_id
+        );
+        modified = true;
+    }
+
+    modified
+}
+
+/// Extract file paths from a task description using heuristics.
+fn extract_file_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for word in text.split_whitespace() {
+        let word = word.trim_matches(|c: char| {
+            !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-'
+        });
+        if word.contains('/')
+            && (word.ends_with(".rs")
+                || word.ends_with(".ts")
+                || word.ends_with(".js")
+                || word.ends_with(".py")
+                || word.ends_with(".go")
+                || word.ends_with(".toml")
+                || word.ends_with(".md")
+                || word.ends_with(".yaml")
+                || word.ends_with(".yml")
+                || word.ends_with(".json"))
+        {
+            paths.push(word.to_string());
+        }
+    }
+    paths
+}
+
+/// Build placement context string for a `.place-*` task description.
+fn build_placement_context(graph: &workgraph::graph::WorkGraph, task_id: &str) -> String {
+    use workgraph::graph::is_system_task;
+
+    let mut ctx = String::new();
+
+    if let Some(task) = graph.get_task(task_id) {
+        let mentioned_files = extract_file_paths(task.description.as_deref().unwrap_or(""));
+        ctx.push_str("## Task to place\n");
+        ctx.push_str(&format!("ID: {}\n", task.id));
+        ctx.push_str(&format!("Title: {}\n", task.title));
+        if let Some(ref desc) = task.description {
+            ctx.push_str(&format!("Description: {}\n", desc));
+        }
+        if !mentioned_files.is_empty() {
+            ctx.push_str(&format!(
+                "Files mentioned: {}\n",
+                mentioned_files.join(", ")
+            ));
+        }
+        if !task.after.is_empty() {
+            ctx.push_str(&format!("Existing deps: {}\n", task.after.join(", ")));
+        }
+        ctx.push('\n');
+
+        // Placement hints section (per design doc section 5)
+        if !task.place_near.is_empty() || !task.place_before.is_empty() {
+            ctx.push_str("## Placement hints\n");
+            if !task.place_near.is_empty() {
+                ctx.push_str(&format!("near: {}\n", task.place_near.join(", ")));
+            }
+            if !task.place_before.is_empty() {
+                ctx.push_str(&format!("before: {}\n", task.place_before.join(", ")));
+            }
+            ctx.push('\n');
+        }
+    }
+
+    ctx.push_str("## Active tasks (non-terminal)\n");
+    let active_tasks: Vec<_> = graph
+        .tasks()
+        .filter(|t| {
+            !t.status.is_terminal() && !t.paused && !is_system_task(&t.id) && t.id != task_id
+        })
+        .collect();
+    if active_tasks.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &active_tasks {
+            let arts = if t.artifacts.is_empty() {
+                "[]".to_string()
+            } else {
+                format!("[{}]", t.artifacts.join(", "))
+            };
+            ctx.push_str(&format!("- {} ({}): artifacts={}\n", t.id, t.status, arts));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Recently completed tasks (last 10)\n");
+    let mut completed: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.status == Status::Done && !is_system_task(&t.id))
+        .collect();
+    completed.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+    completed.truncate(10);
+    if completed.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &completed {
+            let arts = if t.artifacts.is_empty() {
+                "[]".to_string()
+            } else {
+                format!("[{}]", t.artifacts.join(", "))
+            };
+            ctx.push_str(&format!("- {} (done): artifacts={}\n", t.id, arts));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Integration gates\n");
+    let gates: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.after.len() >= 5 && !t.status.is_terminal())
+        .collect();
+    if gates.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for t in &gates {
+            ctx.push_str(&format!("- {}: {} deps\n", t.id, t.after.len()));
+        }
+    }
+    ctx.push('\n');
+
+    ctx.push_str("## Instructions\n");
+    ctx.push_str("1. Analyze file overlap between the new task and active tasks\n");
+    ctx.push_str(&format!(
+        "2. Add dependency edges using: wg edit {} --add-after <dep-id>\n",
+        task_id
+    ));
+    ctx.push_str("3. If the task belongs before an integration gate, add it:\n");
+    ctx.push_str(&format!("   wg edit <gate-id> --add-after {}\n", task_id));
+    ctx.push_str(&format!(
+        "4. When done, publish the task: wg publish {}\n",
+        task_id
+    ));
+    ctx.push_str(
+        "5. If placement is ambiguous, publish anyway — some placement is better than none\n",
+    );
+
+    ctx
+}
+
+/// Auto-assign: scaffold `.assign-*` tasks and run lightweight LLM assignment.
+///
+/// Phase 1 — Scaffold: For ready unassigned non-system tasks without an
+/// `.assign-*` task, create one as a blocking dependency. This handles tasks
+/// created via `wg add`; published tasks already have `.assign-*` from
+/// publish-time scaffolding. Also reopens stale Done `.assign-*` tasks when
+/// the source task was resurrected.
+///
+/// Phase 2 — Process: For each Open `.assign-*` task, run a lightweight LLM
+/// call to select the best agent, set the agent on the source task, and mark
+/// `.assign-*` as Done (which unblocks the source task via graph edges).
 ///
 /// Returns `true` if the graph was modified.
 fn build_auto_assign_tasks(
@@ -724,147 +1072,122 @@ fn build_auto_assign_tasks(
 
     let grace_seconds = config.agency.auto_assign_grace_seconds;
 
-    // Collect task data to avoid holding references while mutating graph
-    let ready_task_data: Vec<_> = {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
-        ready
-            .iter()
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    t.title.clone(),
-                    t.description.clone(),
-                    t.skills.clone(),
-                    t.agent.clone(),
-                    t.assigned.clone(),
-                    t.tags.clone(),
-                    t.after.clone(),
-                    t.context_scope.clone(),
-                    t.created_at.clone(),
-                )
-            })
-            .collect()
-    };
+    // Phase 1: Scaffold .assign-* for ready unassigned tasks that don't have one.
+    // Also reopens stale Done .assign-* tasks for resurrected source tasks.
+    {
+        let ready_task_data: Vec<_> = {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
+            ready
+                .iter()
+                .filter(|t| t.agent.is_none() && t.assigned.is_none())
+                .filter(|t| !workgraph::graph::is_system_task(&t.id))
+                .map(|t| (t.id.clone(), t.title.clone(), t.created_at.clone()))
+                .collect()
+        };
 
-    // Compute total assignments for run mode routing
+        for (task_id, task_title, task_created_at) in ready_task_data {
+            // Grace period: skip tasks created less than `auto_assign_grace_seconds` ago.
+            if grace_seconds > 0
+                && let Some(ref created_str) = task_created_at
+                && let Ok(created) = created_str.parse::<chrono::DateTime<chrono::Utc>>()
+            {
+                let age = Utc::now().signed_duration_since(created);
+                if age.num_seconds() < grace_seconds as i64 {
+                    eprintln!(
+                        "[coordinator] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
+                        task_id,
+                        age.num_seconds(),
+                        grace_seconds,
+                    );
+                    continue;
+                }
+            }
+
+            let assign_task_id = format!(".assign-{}", task_id);
+
+            if let Some(existing) = graph.get_task(&assign_task_id) {
+                if existing.status == Status::Done {
+                    // Stale: source is ready but unassigned, old .assign is Done.
+                    // Reopen for fresh assignment.
+                    if let Some(t) = graph.get_task_mut(&assign_task_id) {
+                        t.status = Status::Open;
+                        t.assigned = None;
+                        t.completed_at = None;
+                        t.description = None;
+                        t.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some("coordinator".to_string()),
+                            message: "Reopened for reassignment (source task resurrected)"
+                                .to_string(),
+                        });
+                    }
+                    // Ensure blocking edge exists (may be missing for pre-migration tasks)
+                    if let Some(source) = graph.get_task_mut(&task_id)
+                        && !source.after.iter().any(|a| a == &assign_task_id)
+                    {
+                        source.after.push(assign_task_id.clone());
+                    }
+                    modified = true;
+                }
+                // Already exists (Open or just reopened) — Phase 2 will process it
+                continue;
+            }
+
+            // Create .assign-* with blocking edge via shared scaffold helper
+            crate::commands::eval_scaffold::scaffold_assign_task(graph, &task_id, &task_title);
+            modified = true;
+        }
+    }
+
+    // Phase 2: Process ready .assign-* tasks (run lightweight LLM assignment).
+    // These may have been created at publish time or in Phase 1 above.
     let agency_dir = dir.join("agency");
     let total_assignments = count_assignment_records(&agency_dir.join("assignments")) as u32;
 
-    for (
-        task_id,
-        task_title,
-        task_desc,
-        task_skills,
-        task_agent,
-        task_assigned,
-        task_tags,
-        task_after,
-        task_context_scope,
-        task_created_at,
-    ) in ready_task_data
-    {
-        // Skip tasks that already have an agent or are already claimed
-        if task_agent.is_some() || task_assigned.is_some() {
-            continue;
-        }
+    let assign_task_ids: Vec<String> = graph
+        .tasks()
+        .filter(|t| t.id.starts_with(".assign-") && t.status == Status::Open && !t.paused)
+        .map(|t| t.id.clone())
+        .collect();
 
-        // Skip system tasks (dot-prefixed) to prevent infinite regress
-        if workgraph::graph::is_system_task(&task_id) {
-            continue;
-        }
-
-        // Grace period: skip tasks created less than `auto_assign_grace_seconds` ago.
-        // This prevents premature assignment when tasks are created and then have
-        // dependencies wired shortly after (e.g., `wg add` then `wg edit --add-after`).
-        if grace_seconds > 0
-            && let Some(ref created_str) = task_created_at
-            && let Ok(created) = created_str.parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            let age = Utc::now().signed_duration_since(created);
-            if age.num_seconds() < grace_seconds as i64 {
-                eprintln!(
-                    "[coordinator] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
-                    task_id,
-                    age.num_seconds(),
-                    grace_seconds,
-                );
-                continue;
-            }
-        }
-
-        let assign_task_id = format!(".assign-{}", task_id);
-
-        // Skip if assignment task already exists (idempotent)
-        if graph.get_task(&assign_task_id).is_some() {
-            continue;
-        }
-
-        // Determine assignment path via run mode continuum
-        let rng_value: f64 = {
-            // Simple deterministic pseudo-random from task_id hash to avoid
-            // requiring rand crate. Provides adequate entropy for routing.
-            let hash = task_id
-                .bytes()
-                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-            (hash % 10000) as f64 / 10000.0
+    for assign_task_id in assign_task_ids {
+        let source_id = match assign_task_id.strip_prefix(".assign-") {
+            Some(id) => id.to_string(),
+            None => continue,
         };
+
+        // Get source task data for the LLM call
+        let (task_title, task_desc, task_skills, task_tags, task_after, task_context_scope) =
+            match graph.get_task(&source_id) {
+                Some(t) => (
+                    t.title.clone(),
+                    t.description.clone(),
+                    t.skills.clone(),
+                    t.tags.clone(),
+                    t.after.clone(),
+                    t.context_scope.clone(),
+                ),
+                None => continue,
+            };
+
+        // Determine assignment path — always LLM-based
         let assignment_path =
-            run_mode::determine_assignment_path(&config.agency, total_assignments, rng_value);
+            run_mode::determine_assignment_path(&config.agency, total_assignments);
 
-        // Build mode-specific context for the assigner
-        let experiment = match assignment_path {
-            AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
-                let learning_count =
-                    count_assignment_records(&agency_dir.join("assignments")) as u32;
-                Some(run_mode::design_experiment(
-                    &agency_dir,
-                    &config.agency,
-                    learning_count,
-                ))
-            }
-            AssignmentPath::Performance => None,
-        };
+        // Design experiment for the assigner
+        let learning_count = count_assignment_records(&agency_dir.join("assignments")) as u32;
+        let experiment = run_mode::design_experiment(&agency_dir, &config.agency, learning_count);
 
-        let cached_agents: Vec<(String, f64)> = if assignment_path == AssignmentPath::Performance {
-            // Gather top cached agents for the performance mode context
-            let agents_dir = agency_dir.join("cache/agents");
-            let mut agents_with_scores: Vec<(String, f64)> =
-                agency::load_all_agents_or_warn(&agents_dir)
-                    .into_iter()
-                    .filter_map(|a| {
-                        let score = a.performance.avg_score?;
-                        if a.staleness_flags.is_empty() {
-                            Some((format!("{} ({})", a.name, agency::short_hash(&a.id)), score))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-            agents_with_scores
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            agents_with_scores.truncate(5); // Top 5
-            agents_with_scores
-        } else {
-            vec![]
-        };
-
-        let effective_rate = config
-            .agency
-            .run_mode
-            .max(config.agency.min_exploration_rate);
         let mode_context = render_assigner_mode_context(&AssignerModeContext {
-            run_mode: config.agency.run_mode,
-            effective_exploration_rate: effective_rate,
             assignment_path,
-            experiment: experiment.as_ref(),
-            cached_agents: &cached_agents,
+            experiment: Some(&experiment),
             total_assignments,
         });
 
         eprintln!(
-            "[coordinator] Assignment path for '{}': {:?} (run_mode={:.2}, total_assignments={})",
-            task_id, assignment_path, config.agency.run_mode, total_assignments,
+            "[coordinator] Assignment path for '{}': {:?} (total_assignments={})",
+            source_id, assignment_path, total_assignments,
         );
 
         // Detect task underspecification
@@ -897,7 +1220,7 @@ fn build_auto_assign_tasks(
 
         // Build a temporary Task with the gathered data for the prompt builder
         let task_snapshot = Task {
-            id: task_id.clone(),
+            id: source_id.clone(),
             title: task_title.clone(),
             description: task_desc.clone(),
             skills: task_skills.clone(),
@@ -907,7 +1230,7 @@ fn build_auto_assign_tasks(
             ..Default::default()
         };
 
-        // Run lightweight LLM call for assignment (replaces full Claude Code session)
+        // Run lightweight LLM call for assignment
         let (verdict, assign_token_usage) = match super::assignment::run_lightweight_assignment(
             config,
             &task_snapshot,
@@ -921,7 +1244,7 @@ fn build_auto_assign_tasks(
             Err(e) => {
                 eprintln!(
                     "[coordinator] Lightweight assignment failed for '{}': {}, will retry next tick",
-                    task_id, e
+                    source_id, e
                 );
                 continue;
             }
@@ -933,32 +1256,28 @@ fn build_auto_assign_tasks(
             Err(e) => {
                 eprintln!(
                     "[coordinator] Assignment verdict agent '{}' not found for '{}': {}",
-                    verdict.agent_hash, task_id, e
+                    verdict.agent_hash, source_id, e
                 );
                 continue;
             }
         };
 
-        // Apply assignment to the original task
-        if let Some(task) = graph.get_task_mut(&task_id) {
+        // Apply assignment to the source task
+        if let Some(task) = graph.get_task_mut(&source_id) {
             task.agent = Some(resolved_agent.id.clone());
-            if let Some(ref mode) = verdict.exec_mode {
-                match mode.as_str() {
-                    "shell" | "bare" | "light" | "full" => {
-                        task.exec_mode = Some(mode.clone());
-                    }
-                    _ => {} // invalid, keep default
-                }
+            if let Some(ref mode) = verdict.exec_mode
+                && mode.parse::<workgraph::config::ExecMode>().is_ok()
+            {
+                task.exec_mode = Some(mode.clone());
             }
             if let Some(ref scope) = verdict.context_scope {
                 match scope.as_str() {
                     "clean" | "task" | "graph" | "full" => {
-                        // Only set if not already pre-set
                         if task.context_scope.is_none() {
                             task.context_scope = Some(scope.clone());
                         }
                     }
-                    _ => {} // invalid, keep default
+                    _ => {}
                 }
             }
             task.log.push(LogEntry {
@@ -975,99 +1294,50 @@ fn build_auto_assign_tasks(
             });
         }
 
-        // Create .assign-* task marked Done for audit trail (no blocking edge needed)
+        // Mark the .assign-* task as Done (unblocks source task via graph edge)
         let now = Utc::now().to_rfc3339();
-        let assign_task = Task {
-            id: assign_task_id.clone(),
-            title: format!("Assign agent for: {}", task_title),
-            description: Some(format!(
+        if let Some(assign_task) = graph.get_task_mut(&assign_task_id) {
+            assign_task.status = Status::Done;
+            assign_task.description = Some(format!(
                 "Lightweight assignment: {} ({}) → '{}'\nReason: {}",
                 resolved_agent.name,
                 agency::short_hash(&resolved_agent.id),
-                task_id,
+                source_id,
                 verdict.reason,
-            )),
-            status: Status::Done,
-            assigned: None,
-            estimate: None,
-            before: vec![task_id.clone()],
-            after: vec![],
-            requires: vec![],
-            tags: vec!["assignment".to_string(), "agency".to_string()],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: None,
-            not_before: None,
-            created_at: Some(now.clone()),
-            started_at: Some(now.clone()),
-            completed_at: Some(now),
-            log: vec![LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: Some("coordinator".to_string()),
-                message: format!(
-                    "Completed via lightweight LLM call (path: {:?})",
-                    assignment_path,
-                ),
-            }],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: Some(
+            ));
+            assign_task.started_at = Some(now.clone());
+            assign_task.completed_at = Some(now);
+            assign_task.model = Some(
                 config
                     .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
                     .model,
-            ),
-            provider: config
+            );
+            assign_task.provider = config
                 .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
-                .provider,
-            verify: None,
-            agent: config.agency.assigner_agent.clone(),
-            loop_iteration: 0,
-            cycle_failure_restarts: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-            cycle_config: None,
-            token_usage: assign_token_usage,
-            session_id: None,
-            wait_condition: None,
-            checkpoint: None,
-            resurrection_count: 0,
-            last_resurrected_at: None,
-            exec_mode: Some("bare".to_string()),
-        };
-
-        graph.add_node(Node::Task(assign_task));
+                .provider;
+            assign_task.agent = config.agency.assigner_agent.clone();
+            assign_task.token_usage = assign_token_usage;
+            assign_task.exec_mode = Some("bare".to_string());
+            assign_task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("coordinator".to_string()),
+                message: format!("Assigned via LLM (path: {:?})", assignment_path,),
+            });
+        }
 
         // Persist TaskAssignmentRecord with actual agent info
         let assignment_mode = match assignment_path {
-            AssignmentPath::Performance => {
-                match find_cached_agent(&agency_dir, config.agency.performance_threshold) {
-                    Some((_, score)) => AssignmentMode::CacheHit { cache_score: score },
-                    None => AssignmentMode::CacheMiss,
-                }
+            AssignmentPath::Learning => AssignmentMode::Learning(experiment.clone()),
+            AssignmentPath::ForcedExploration => {
+                AssignmentMode::ForcedExploration(experiment.clone())
             }
-            AssignmentPath::Learning => AssignmentMode::Learning(
-                experiment
-                    .clone()
-                    .expect("experiment required for Learning path"),
-            ),
-            AssignmentPath::ForcedExploration => AssignmentMode::ForcedExploration(
-                experiment
-                    .clone()
-                    .expect("experiment required for ForcedExploration path"),
-            ),
         };
 
         let record = TaskAssignmentRecord {
-            task_id: task_id.clone(),
+            task_id: source_id.clone(),
             agent_id: resolved_agent.id.clone(),
             composition_id: resolved_agent.id.clone(),
             timestamp: Utc::now().to_rfc3339(),
-            run_mode_value: config.agency.run_mode,
             mode: assignment_mode,
         };
 
@@ -1075,17 +1345,106 @@ fn build_auto_assign_tasks(
         if let Err(e) = save_assignment_record(&record, &assignments_dir) {
             eprintln!(
                 "[coordinator] Warning: failed to save assignment record for '{}': {}",
-                task_id, e,
+                source_id, e,
             );
         }
 
         eprintln!(
             "[coordinator] Lightweight assignment for '{}': {} ({}) [path={:?}]",
-            task_id,
+            source_id,
             resolved_agent.name,
             agency::short_hash(&resolved_agent.id),
             assignment_path,
         );
+
+        // If the assigner signals that no good match was found, trigger the
+        // creator agent to expand the primitive store (self-healing).
+        if verdict.create_needed && config.agency.auto_create {
+            let has_pending_create = graph.tasks().any(|t| {
+                t.id.starts_with(".create-")
+                    && matches!(t.status, Status::Open | Status::InProgress)
+            });
+            if !has_pending_create {
+                let ts = Utc::now().format("%Y%m%d-%H%M%S");
+                let create_task_id = format!(".create-needed-{}", ts);
+                let creator_resolved =
+                    config.resolve_model_for_role(workgraph::config::DispatchRole::Creator);
+
+                let desc = format!(
+                    "## Creator Triggered by Assigner\n\n\
+                     The assigner could not find a good agent match for task '{}' ({}).\n\
+                     Reason: {}\n\n\
+                     Run `wg agency create` to expand the primitive store.\n",
+                    source_id,
+                    graph
+                        .get_task(&source_id)
+                        .map(|t| t.title.as_str())
+                        .unwrap_or("?"),
+                    verdict.reason,
+                );
+
+                let create_task = Task {
+                    id: create_task_id.clone(),
+                    title: format!("Create agents: poor match for '{}'", source_id),
+                    description: Some(desc),
+                    status: Status::Open,
+                    assigned: None,
+                    estimate: None,
+                    before: vec![],
+                    after: vec![],
+                    requires: vec![],
+                    tags: vec!["creation".to_string(), "agency".to_string()],
+                    skills: vec![],
+                    inputs: vec![],
+                    deliverables: vec![],
+                    artifacts: vec![],
+                    exec: Some("wg agency create".to_string()),
+                    not_before: None,
+                    created_at: Some(Utc::now().to_rfc3339()),
+                    started_at: None,
+                    completed_at: None,
+                    log: vec![],
+                    retry_count: 0,
+                    max_retries: Some(1),
+                    failure_reason: None,
+                    model: Some(creator_resolved.model),
+                    provider: creator_resolved.provider,
+                    verify: None,
+                    agent: config.agency.creator_agent.clone(),
+                    loop_iteration: 0,
+                    cycle_failure_restarts: 0,
+                    ready_after: None,
+                    paused: false,
+                    visibility: "internal".to_string(),
+                    context_scope: None,
+                    cycle_config: None,
+                    exec_mode: Some("bare".to_string()),
+                    token_usage: None,
+                    session_id: None,
+                    wait_condition: None,
+                    checkpoint: None,
+                    resurrection_count: 0,
+                    last_resurrected_at: None,
+                    validation: None,
+                    validation_commands: vec![],
+                    test_required: false,
+                    rejection_count: 0,
+                    max_rejections: None,
+                    superseded_by: vec![],
+                    supersedes: None,
+                    unplaced: false,
+                    place_before: vec![],
+                    place_near: vec![],
+                };
+
+                graph.add_node(Node::Task(create_task));
+                eprintln!(
+                    "[coordinator] Assigner flagged create_needed for '{}' — created '{}'",
+                    source_id, create_task_id,
+                );
+            }
+        }
+
         modified = true;
     }
 
@@ -1122,17 +1481,17 @@ fn build_auto_evaluate_tasks(
         .map(|a| a.id.as_str())
         .collect();
 
-    // Collect all tasks (not just ready ones) that might need eval tasks.
-    // We iterate all non-terminal tasks so eval tasks are created early.
+    // Catch-all for tasks that weren't published with eager scaffolding
+    // (backward compatibility). The eval_scaffold helper handles idempotency
+    // and tag checks, so this is safe to call even if publish already created
+    // the eval task.
     let tasks_needing_eval: Vec<_> = graph
         .tasks()
         .filter(|t| {
-            // Skip tasks that already have an evaluation task
             let eval_id = format!(".evaluate-{}", t.id);
             if graph.get_task(&eval_id).is_some() {
                 return false;
             }
-            // Skip tasks tagged with evaluation/assignment/evolution
             let dominated_tags = ["evaluation", "assignment", "evolution"];
             if t.tags
                 .iter()
@@ -1140,9 +1499,6 @@ fn build_auto_evaluate_tasks(
             {
                 return false;
             }
-            // Skip tasks already tagged as having had evaluation scheduled.
-            // This survives gc (which removes the evaluate-* task) and prevents
-            // re-creating hundreds of eval tasks on service restart.
             if t.tags.iter().any(|tag| tag == "eval-scheduled") {
                 return false;
             }
@@ -1152,125 +1508,19 @@ fn build_auto_evaluate_tasks(
             {
                 return false;
             }
-            // Only create for tasks that are active (Open, InProgress, Blocked)
-            // or already completed (Done, Failed) without an eval task
             !matches!(t.status, Status::Abandoned)
         })
         .map(|t| (t.id.clone(), t.title.clone()))
         .collect();
 
-    // Resolve evaluator agent identity once (shared across all eval tasks)
-    let evaluator_identity = config
-        .agency
-        .evaluator_agent
-        .as_ref()
-        .and_then(|agent_hash| {
-            let agency_dir = dir.join("agency");
-            let agents_dir = agency_dir.join("cache/agents");
-            let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
-            let agent = load_agent(&agent_path).ok()?;
-            let roles_dir = agency_dir.join("cache/roles");
-            let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-            let role = load_role(&role_path).ok()?;
-            let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-            let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
-            let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
-            let workgraph_root = dir;
-            let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
-            let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
-            Some(render_identity_prompt_rich(
-                &role,
-                &tradeoff,
-                &resolved_skills,
-                outcome.as_ref(),
-            ))
-        });
-
-    for (task_id, task_title) in &tasks_needing_eval {
-        let eval_task_id = format!(".evaluate-{}", task_id);
-
-        // Double-check (the filter above already checks but graph may have changed)
-        if graph.get_task(&eval_task_id).is_some() {
-            continue;
-        }
-
-        let mut desc = String::new();
-        // Prepend evaluator identity when composed evaluator agent is available
-        if let Some(ref identity) = evaluator_identity {
-            desc.push_str(identity);
-            desc.push_str("\n\n");
-        }
-        desc.push_str(&format!(
-            "Evaluate the completed task '{}'.\n\n\
-             Run `wg evaluate run {}` to produce a structured evaluation.\n\
-             This reads the task output from `.workgraph/output/{}/` and \
-             the task definition via `wg show {}`.",
-            task_id, task_id, task_id, task_id,
-        ));
-
-        let eval_task = Task {
-            id: eval_task_id.clone(),
-            title: format!("Evaluate: {}", task_title),
-            description: Some(desc),
-            status: Status::Open,
-            assigned: None,
-            estimate: None,
-            before: vec![],
-            after: vec![task_id.clone()],
-            requires: vec![],
-            tags: vec!["evaluation".to_string(), "agency".to_string()],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: Some(format!("wg evaluate run {}", task_id)),
-            not_before: None,
-            created_at: Some(Utc::now().to_rfc3339()),
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: Some(
-                config
-                    .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
-                    .model,
-            ),
-            provider: None,
-            verify: None,
-            agent: config.agency.evaluator_agent.clone(),
-
-            loop_iteration: 0,
-            cycle_failure_restarts: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-            cycle_config: None,
-            // Evaluation uses inline lightweight LLM call — no file access needed
-            exec_mode: Some("bare".to_string()),
-            token_usage: None,
-            session_id: None,
-            wait_condition: None,
-            checkpoint: None,
-            resurrection_count: 0,
-            last_resurrected_at: None,
-        };
-
-        graph.add_node(Node::Task(eval_task));
-
-        // Tag the source task so we never recreate the eval task after gc.
-        if let Some(source) = graph.get_task_mut(task_id)
-            && !source.tags.iter().any(|t| t == "eval-scheduled")
-        {
-            source.tags.push("eval-scheduled".to_string());
-        }
-
-        eprintln!(
-            "[coordinator] Created evaluation task '{}' blocked by '{}'",
-            eval_task_id, task_id,
-        );
+    // Use shared scaffold helper (same logic as publish-time creation)
+    let count = crate::commands::eval_scaffold::scaffold_eval_tasks_batch(
+        dir,
+        graph,
+        &tasks_needing_eval,
+        config,
+    );
+    if count > 0 {
         modified = true;
     }
 
@@ -1345,7 +1595,7 @@ fn build_flip_verification_tasks(
 
     for eval in &low_flip {
         let source_task_id = &eval.task_id;
-        let verify_task_id = format!(".verify-flip-{}", source_task_id);
+        let verify_task_id = format!(".verify-{}", source_task_id);
 
         // Skip if verification task already exists
         if graph.get_task(&verify_task_id).is_some() {
@@ -1377,18 +1627,44 @@ fn build_flip_verification_tasks(
             .take(2000)
             .collect::<String>();
 
+        // Gather source task checkpoint and artifacts for context
+        let source_checkpoint = source_task.checkpoint.clone().unwrap_or_default();
+        let source_artifacts = source_task.artifacts.clone();
+
         let mut desc = format!(
-            "## FLIP Verification\n\n\
-             FLIP score {:.2} is below threshold {:.2} — independently verify this task.\n\n\
+            "## FLIP Verification & Repair\n\n\
+             FLIP score {:.2} is below threshold {:.2} — independently verify and, if needed, **fix** this task's work.\n\n\
+             ### Your Authority\n\
+             You are a **senior engineer reviewing a junior's PR**. You have full authority to:\n\
+             - Edit source files, run builds, run tests, and commit fixes\n\
+             - Correct mistakes, resolve test failures, and improve the implementation\n\
+             - Only reject (fail) the source task if the approach is fundamentally wrong\n\n\
+             **Fix first, fail last.** If the work is close but has issues, repair it yourself.\n\n\
              ### Original Task\n\
              **ID:** {}\n\
              **Title:** {}\n\
-             **Description:**\n{}\n\n\
-             ### Verification Instructions\n\
-             You must independently verify whether the work was actually completed.\n\
-             Do NOT trust the original agent's claims. Check independently:\n\n",
+             **Description:**\n{}\n\n",
             eval.score, threshold, source_task_id, source_title, source_desc_snippet,
         );
+
+        if !source_checkpoint.is_empty() {
+            desc.push_str(&format!(
+                "**Checkpoint (last known state):**\n{}\n\n",
+                source_checkpoint
+            ));
+        }
+
+        if !source_artifacts.is_empty() {
+            desc.push_str("**Artifacts:**\n");
+            for artifact in &source_artifacts {
+                desc.push_str(&format!("- `{}`\n", artifact));
+            }
+            desc.push_str("\n");
+        }
+
+        desc.push_str("### Verification Steps\n");
+        desc.push_str("Independently check whether the work was actually completed.\n");
+        desc.push_str("Do NOT trust the original agent's claims.\n\n");
 
         if let Some(ref verify_cmd) = source_verify_cmd {
             desc.push_str(&format!(
@@ -1408,13 +1684,18 @@ fn build_flip_verification_tasks(
         }
 
         desc.push_str(
-            "### Verdict\n\
-             - If verification **passes**: run `wg log '{source_task_id}' \"FLIP verification passed (score {score:.2})\"` and mark this task done.\n\
-             - If verification **fails**: run `wg fail '{source_task_id}' --reason \"FLIP verification failed: <reason>\"` then mark this task done.\n"
+            "### Repair & Verdict\n\
+             - If everything looks good: log verification passed and mark this task done.\n\
+             - If problems found: **fix them directly** — edit code, resolve test failures, \
+               correct logic errors, then run the verification again. Commit your fixes \
+               with a descriptive message. Once fixed, mark this task done.\n\
+             - **Only as a last resort**, if the approach is fundamentally wrong and cannot \
+               be salvaged: run `wg fail '{source_task_id}' --reason \"FLIP verification failed: <reason>\"` \
+               then mark this task done.\n\n\
+             Remember: your job is to make the work **pass**, not to find reasons to reject it.\n"
         );
         // Replace placeholders
         desc = desc.replace("{source_task_id}", source_task_id);
-        desc = desc.replace("{score:.2}", &format!("{:.2}", eval.score));
 
         let verify_task = Task {
             id: verify_task_id.clone(),
@@ -1424,7 +1705,7 @@ fn build_flip_verification_tasks(
             assigned: None,
             estimate: None,
             before: vec![],
-            after: vec![], // Not blocked by anything — source task is already done
+            after: vec![source_task_id.clone()],
             requires: vec![],
             tags: vec!["verification".to_string(), "agency".to_string()],
             skills: vec![],
@@ -1451,15 +1732,25 @@ fn build_flip_verification_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
-            // Verification needs read-only file access (run tests, check git, verify artifacts)
-            // but does not modify source files — "light" is appropriate.
-            exec_mode: Some("light".to_string()),
+            // Verification agent is empowered to fix problems — needs full exec
+            // authority to edit files, run builds, and commit repairs.
+            exec_mode: None,
             token_usage: None,
             session_id: None,
             wait_condition: None,
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
+            unplaced: false,
+            place_before: vec![],
+            place_near: vec![],
         };
 
         graph.add_node(Node::Task(verify_task));
@@ -1480,10 +1771,340 @@ fn build_flip_verification_tasks(
             "[coordinator] Created FLIP verification task '{}' (score {:.2} < {:.2})",
             verify_task_id, eval.score, threshold,
         );
+
+        // Add verify as additional dep on .evaluate-<task>
+        let eval_task_id = format!(".evaluate-{}", source_task_id);
+        if let Some(eval_task) = graph.get_task_mut(&eval_task_id)
+            && !eval_task.after.contains(&verify_task_id)
+        {
+            eval_task.after.push(verify_task_id.clone());
+        }
+
+        // Eagerly scaffold the eval task for the verification task
+        let verify_title = format!("Verify (FLIP {:.2}): {}", eval.score, source_title);
+        crate::commands::eval_scaffold::scaffold_eval_task(
+            dir,
+            graph,
+            &verify_task_id,
+            &verify_title,
+            config,
+        );
+
         modified = true;
     }
 
     modified
+}
+
+/// Auto-evolve: create a `.evolve-*` meta-task when evaluation data warrants evolution.
+///
+/// Checks the evolver state to determine whether enough evaluations have
+/// accumulated (threshold trigger) or performance has dropped (reactive trigger).
+/// Creates at most one evolution meta-task per trigger.
+///
+/// Returns `true` if the graph was modified.
+fn build_auto_evolve_task(
+    dir: &Path,
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let agency_dir = dir.join("agency");
+
+    // Don't create if agency isn't initialized
+    if !agency_dir.join("cache/roles").exists() {
+        return false;
+    }
+
+    let state = EvolverState::load(&agency_dir);
+
+    let trigger = match evolver::should_trigger_evolution(&agency_dir, &config.agency, &state) {
+        Some(t) => t,
+        None => return false,
+    };
+
+    // Check that no .evolve-* task is already in-progress or open
+    let has_active_evolve = graph.tasks().any(|t| {
+        t.id.starts_with(".evolve-") && matches!(t.status, Status::Open | Status::InProgress)
+    });
+    if has_active_evolve {
+        return false;
+    }
+
+    // Generate evolve task ID and run ID
+    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+    let evolve_task_id = format!(".evolve-auto-{}", ts);
+    let budget = evolver::evolution_budget(&config.agency);
+
+    // Build description based on trigger type
+    let trigger_reason = match &trigger {
+        EvolutionTrigger::Threshold { new_evals } => {
+            format!(
+                "Threshold trigger: {} new evaluations since last evolution (threshold: {})",
+                new_evals, config.agency.evolution_threshold
+            )
+        }
+        EvolutionTrigger::Reactive { avg_score } => {
+            format!(
+                "Reactive trigger: average score {:.2} dropped below threshold {:.2}",
+                avg_score, config.agency.evolution_reactive_threshold
+            )
+        }
+    };
+
+    // Build the evolve command with safe strategies
+    let safe_strategies = evolver::SAFE_STRATEGIES.join(",");
+    let desc = format!(
+        "## Auto-Evolution Cycle\n\n\
+         **Trigger:** {}\n\n\
+         Run `wg evolve --budget {} --strategy mutation` to evolve agency roles and tradeoffs.\n\n\
+         ### Constraints\n\
+         - Safe strategies only: {}\n\
+         - Budget cap: {} operations\n\
+         - Do NOT use crossover or bizarre-ideation strategies\n\n\
+         ### Instructions\n\
+         1. Run `wg evolve --budget {}` (the evolver will use safe strategies)\n\
+         2. Log the results\n\
+         3. Mark this task done\n",
+        trigger_reason, budget, safe_strategies, budget, budget,
+    );
+
+    let evolver_resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Evolver);
+
+    let evolve_task = Task {
+        id: evolve_task_id.clone(),
+        title: format!("Auto-evolve: {}", trigger_reason),
+        description: Some(desc),
+        status: Status::Open,
+        assigned: None,
+        estimate: None,
+        before: vec![],
+        after: vec![],
+        requires: vec![],
+        tags: vec!["evolution".to_string(), "agency".to_string()],
+        skills: vec![],
+        inputs: vec![],
+        deliverables: vec![],
+        artifacts: vec![],
+        exec: Some(format!("wg evolve --budget {}", budget)),
+        not_before: None,
+        created_at: Some(Utc::now().to_rfc3339()),
+        started_at: None,
+        completed_at: None,
+        log: vec![],
+        retry_count: 0,
+        max_retries: Some(1),
+        failure_reason: None,
+        model: Some(evolver_resolved.model),
+        provider: evolver_resolved.provider,
+        verify: None,
+        agent: config.agency.evolver_agent.clone(),
+        loop_iteration: 0,
+        cycle_failure_restarts: 0,
+        ready_after: None,
+        paused: false,
+        visibility: "internal".to_string(),
+        context_scope: None,
+        cycle_config: None,
+        exec_mode: Some("bare".to_string()),
+        token_usage: None,
+        session_id: None,
+        wait_condition: None,
+        checkpoint: None,
+        resurrection_count: 0,
+        last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+        place_before: vec![],
+        place_near: vec![],
+    };
+
+    graph.add_node(Node::Task(evolve_task));
+
+    // Update evolver state to record we've created this task
+    // (actual record_evolution happens when the task completes)
+    let mut updated_state = state;
+    let current_eval_count = evolver::count_evaluation_files(&agency_dir.join("evaluations"));
+    let new_evals = current_eval_count.saturating_sub(updated_state.last_eval_count);
+    let pre_avg = evolver::compute_current_avg_score(&agency_dir);
+
+    // Record baselines before evolution
+    if let Ok(roles) = agency::load_all_roles(&agency_dir.join("cache/roles")) {
+        for role in &roles {
+            if let Some(avg) = role.performance.avg_score {
+                updated_state.baselines.insert(role.id.clone(), avg);
+            }
+        }
+    }
+
+    updated_state.record_evolution(
+        &format!("auto-{}", ts),
+        new_evals,
+        0, // Operations counted when task completes
+        vec!["auto-triggered".to_string()],
+        pre_avg,
+        Some(&evolve_task_id),
+    );
+
+    if let Err(e) = updated_state.save(&agency_dir) {
+        eprintln!("[coordinator] Warning: failed to save evolver state: {}", e);
+    }
+
+    eprintln!(
+        "[coordinator] Created auto-evolve task '{}' — {}",
+        evolve_task_id, trigger_reason,
+    );
+
+    true
+}
+
+/// Auto-create: trigger the creator agent when enough tasks have completed
+/// since the last creation run.
+///
+/// Checks `config.agency.auto_create` and `auto_create_threshold`. When the
+/// number of completed tasks since the last creator invocation exceeds the
+/// threshold, creates a `.create-<timestamp>` system task that runs
+/// `wg agency create`.
+///
+/// Returns `true` if the graph was modified.
+fn build_auto_create_task(
+    dir: &Path,
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let agency_dir = dir.join("agency");
+
+    // Don't create if agency isn't initialized
+    if !agency_dir.join("cache/roles").exists() {
+        return false;
+    }
+
+    // Check that no .create-* task is already in-progress or open
+    let has_active_create = graph.tasks().any(|t| {
+        t.id.starts_with(".create-") && matches!(t.status, Status::Open | Status::InProgress)
+    });
+    if has_active_create {
+        return false;
+    }
+
+    // Count completed (Done) non-system tasks
+    let completed_count = graph
+        .tasks()
+        .filter(|t| t.status == Status::Done && !workgraph::graph::is_system_task(&t.id))
+        .count() as u32;
+
+    // Load last creator invocation count from state file
+    let state_path = agency_dir.join("creator_state.json");
+    let last_count: u32 = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("last_completed_count")?.as_u64())
+        .unwrap_or(0) as u32;
+
+    let since_last = completed_count.saturating_sub(last_count);
+
+    if since_last < config.agency.auto_create_threshold {
+        return false;
+    }
+
+    // Generate create task ID
+    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+    let create_task_id = format!(".create-{}", ts);
+
+    let creator_resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Creator);
+
+    let desc = format!(
+        "## Auto-Creator Cycle\n\n\
+         **Trigger:** {} completed tasks since last creation (threshold: {})\n\n\
+         Run `wg agency create` to expand the primitive store with new role components,\n\
+         desired outcomes, and tradeoff configurations.\n\n\
+         ### Instructions\n\
+         1. Run `wg agency create`\n\
+         2. Log the results\n\
+         3. Mark this task done\n",
+        since_last, config.agency.auto_create_threshold,
+    );
+
+    let create_task = Task {
+        id: create_task_id.clone(),
+        title: format!("Auto-create: {} tasks since last creation", since_last),
+        description: Some(desc),
+        status: Status::Open,
+        assigned: None,
+        estimate: None,
+        before: vec![],
+        after: vec![],
+        requires: vec![],
+        tags: vec!["creation".to_string(), "agency".to_string()],
+        skills: vec![],
+        inputs: vec![],
+        deliverables: vec![],
+        artifacts: vec![],
+        exec: Some("wg agency create".to_string()),
+        not_before: None,
+        created_at: Some(Utc::now().to_rfc3339()),
+        started_at: None,
+        completed_at: None,
+        log: vec![],
+        retry_count: 0,
+        max_retries: Some(1),
+        failure_reason: None,
+        model: Some(creator_resolved.model),
+        provider: creator_resolved.provider,
+        verify: None,
+        agent: config.agency.creator_agent.clone(),
+        loop_iteration: 0,
+        cycle_failure_restarts: 0,
+        ready_after: None,
+        paused: false,
+        visibility: "internal".to_string(),
+        context_scope: None,
+        cycle_config: None,
+        exec_mode: Some("bare".to_string()),
+        token_usage: None,
+        session_id: None,
+        wait_condition: None,
+        checkpoint: None,
+        resurrection_count: 0,
+        last_resurrected_at: None,
+        validation: None,
+        validation_commands: vec![],
+        test_required: false,
+        rejection_count: 0,
+        max_rejections: None,
+        superseded_by: vec![],
+        supersedes: None,
+        unplaced: false,
+        place_before: vec![],
+        place_near: vec![],
+    };
+
+    graph.add_node(Node::Task(create_task));
+
+    // Save state: record current completed count
+    let state = serde_json::json!({
+        "last_completed_count": completed_count,
+        "last_created_at": Utc::now().to_rfc3339(),
+        "task_id": create_task_id,
+    });
+    if let Err(e) = std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&state).unwrap_or_default(),
+    ) {
+        eprintln!("[coordinator] Warning: failed to save creator state: {}", e);
+    }
+
+    eprintln!(
+        "[coordinator] Created auto-create task '{}' — {} completed tasks since last creation",
+        create_task_id, since_last,
+    );
+
+    true
 }
 
 /// Spawn an evaluation task directly without the full agent spawn machinery.
@@ -1539,22 +2160,7 @@ fn spawn_eval_inline(
         )
     };
 
-    // Determine if FLIP evaluation should also run after standard eval.
-    // FLIP runs when: flip_enabled is true globally, OR the source task has the 'flip-eval' tag.
     let config = Config::load_or_default(dir);
-    let source_has_flip_tag = graph
-        .get_task(source_task_id)
-        .map(|t| t.tags.iter().any(|tag| tag == "flip-eval"))
-        .unwrap_or(false);
-    let run_flip = config.agency.flip_enabled || source_has_flip_tag;
-    let flip_cmd = if run_flip {
-        Some(format!(
-            "wg evaluate run '{}' --flip",
-            source_task_id.replace('\'', "'\\''")
-        ))
-    } else {
-        None
-    };
 
     // Resolve the special agent (evaluator) hash for performance recording.
     // After the inline eval completes, we record an Evaluation against this
@@ -1589,22 +2195,16 @@ fn spawn_eval_inline(
             .map(|a| a.id)
     });
 
-    // Build the optional FLIP command fragment. FLIP runs after standard eval
-    // succeeds. FLIP failure is non-fatal (|| true) — it produces supplementary
-    // 'source: flip' evaluation records but should not block the eval task.
-    let flip_fragment = flip_cmd
-        .as_ref()
-        .map(|cmd| format!("\n    {cmd} >> '{escaped_output}' 2>&1 || true"))
-        .unwrap_or_default();
-
-    // Single script: run eval, optionally run FLIP, record special agent perf, then mark done/failed
+    // Single script: run eval, record special agent perf, then mark done/failed.
+    // Token usage is captured by `wg done` which parses __WG_TOKENS__ lines
+    // from the output.log directly.
     let script = if let Some(ref sa_id) = special_agent_verified {
         let escaped_sa_id = sa_id.replace('\'', "'\\''");
         format!(
             r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 {eval_cmd} >> '{escaped_output}' 2>&1
 EXIT_CODE=$?
-if [ $EXIT_CODE -eq 0 ]; then{flip_fragment}
+if [ $EXIT_CODE -eq 0 ]; then
     wg evaluate record '{escaped_eval_id}' 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
@@ -1618,7 +2218,7 @@ exit $EXIT_CODE"#,
             r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 {eval_cmd} >> '{escaped_output}' 2>&1
 EXIT_CODE=$?
-if [ $EXIT_CODE -eq 0 ]; then{flip_fragment}
+if [ $EXIT_CODE -eq 0 ]; then
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
     wg fail '{escaped_eval_id}' --reason "wg evaluate exited with code $EXIT_CODE" 2>> '{escaped_output}'
@@ -1701,58 +2301,342 @@ exit $EXIT_CODE"#,
     Ok((agent_id, pid))
 }
 
+/// Spawn an assignment inline task (similar to eval but for `wg assign --auto`).
+fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)> {
+    use std::process::{Command, Stdio};
+
+    let graph_path = graph_path(dir);
+    let mut graph = load_graph(&graph_path).context("Failed to load graph for assign spawn")?;
+
+    // Extract needed fields from the assign task before releasing the mutable borrow.
+    let (assign_task_status, assign_task_exec) = {
+        let task = graph.get_task_or_err(assign_task_id)?;
+        (task.status, task.exec.clone())
+    };
+
+    if assign_task_status != Status::Open {
+        anyhow::bail!(
+            "Assignment task '{}' is not open (status: {:?})",
+            assign_task_id,
+            assign_task_status
+        );
+    }
+
+    // Extract source task ID from the assign task ID (strip ".assign-" prefix)
+    let source_task_id = assign_task_id
+        .strip_prefix(".assign-")
+        .unwrap_or(assign_task_id);
+
+    // Use the task's exec command directly if it starts with "wg assign".
+    // Fall back to constructing from task ID for backward compatibility.
+    let assign_cmd = if let Some(ref exec) = assign_task_exec
+        && exec.starts_with("wg assign")
+    {
+        exec.to_string()
+    } else {
+        format!(
+            "wg assign '{}' --auto",
+            source_task_id.replace('\'', "'\\''")
+        )
+    };
+
+    // Set up minimal agent tracking
+    let mut agent_registry = AgentRegistry::load(dir)?;
+    let agent_id = format!("agent-{}", agent_registry.next_agent_id);
+
+    // Create minimal output directory for log capture
+    let output_dir = dir.join("agents").join(&agent_id);
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create assign output dir: {:?}", output_dir))?;
+    let output_file = output_dir.join("output.log");
+    let output_file_str = output_file.to_string_lossy().to_string();
+
+    let escaped_assign_id = assign_task_id.replace('\'', "'\\''");
+    let escaped_output = output_file_str.replace('\'', "'\\''");
+
+    // Build the script: run assign, then mark done/failed
+    let script = format!(
+        r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+{assign_cmd} >> '{escaped_output}' 2>&1
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+    wg done '{escaped_assign_id}' 2>> '{escaped_output}'
+else
+    wg fail '{escaped_assign_id}' --reason "wg assign exited with code $EXIT_CODE" 2>> '{escaped_output}'
+fi
+exit $EXIT_CODE"#,
+    );
+
+    // Claim the task before spawning
+    let task = graph.get_task_mut_or_err(assign_task_id)?;
+    task.status = Status::InProgress;
+    task.started_at = Some(Utc::now().to_rfc3339());
+    task.assigned = Some(agent_id.clone());
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: Some(agent_id.clone()),
+        message: "Spawned assignment inline".to_string(),
+    });
+    save_graph(&graph, &graph_path).context("Failed to save graph after claiming assign task")?;
+
+    // Fork the process
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(&script);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    // Detach into own session so it survives daemon restart
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            // Rollback the claim
+            if let Ok(mut rollback_graph) = load_graph(&graph_path)
+                && let Some(t) = rollback_graph.get_task_mut(assign_task_id)
+            {
+                t.status = Status::Open;
+                t.started_at = None;
+                t.assigned = None;
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some(agent_id.clone()),
+                    message: format!("Assignment spawn failed, reverting claim: {}", e),
+                });
+                let _ = save_graph(&rollback_graph, &graph_path);
+            }
+            return Err(anyhow::anyhow!("Failed to spawn assignment process: {}", e));
+        }
+    };
+
+    let pid = child.id();
+
+    // Register in agent registry for dead-agent detection
+    agent_registry.register_agent_with_model(pid, assign_task_id, "assign", &output_file_str, None);
+    agent_registry
+        .save(dir)
+        .context("Failed to save agent registry after assign spawn")?;
+
+    Ok((agent_id, pid))
+}
+
 /// Spawn agents on ready tasks, up to `slots_available`. Returns the number of
 /// agents successfully spawned.
+/// Maximum number of rapid respawns allowed before the task is failed.
+const RESPAWN_MAX_RAPID: usize = 5;
+
+/// Time window (seconds) within which respawns are considered "rapid".
+const RESPAWN_WINDOW_SECS: i64 = 300; // 5 minutes
+
+/// Minimum seconds of backoff between respawns when rapid respawning is detected.
+/// Each successive rapid respawn doubles the backoff (exponential).
+const RESPAWN_BASE_BACKOFF_SECS: i64 = 60;
+
+/// Check if a task is in a rapid respawn loop and should be throttled.
+///
+/// Examines the task's log for recent "process exited" / "Triage" entries
+/// that indicate the agent died without completing the task. Returns:
+/// - `Ok(())` if spawning should proceed
+/// - `Err(reason)` if spawning should be skipped (throttled or failed)
+fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result<(), String> {
+    let now = Utc::now();
+
+    // Count recent agent death events within the respawn window
+    let recent_deaths: Vec<&LogEntry> = task
+        .log
+        .iter()
+        .filter(|entry| {
+            // Match log messages from triage/cleanup that indicate agent death
+            (entry.message.contains("process exited")
+                || entry.message.contains("PID reused")
+                || entry.message.contains("Triage:"))
+                && entry
+                    .timestamp
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .map(|t| now.signed_duration_since(t).num_seconds() < RESPAWN_WINDOW_SECS)
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    let death_count = recent_deaths.len();
+
+    // A single death is normal (OOM, signal, network hiccup).
+    // Only start throttling at 2+ rapid deaths in the window.
+    if death_count <= 1 {
+        return Ok(());
+    }
+
+    // Fail the task if too many rapid respawns
+    if death_count >= RESPAWN_MAX_RAPID {
+        // Save the failure to the graph
+        if let Ok(mut graph) = load_graph(graph_path)
+            && let Some(t) = graph.get_task_mut(&task.id)
+        {
+            t.status = Status::Failed;
+            t.assigned = None;
+            t.failure_reason = Some(format!(
+                "Rapid respawn loop: {} agent deaths in {} seconds",
+                death_count, RESPAWN_WINDOW_SECS
+            ));
+            t.log.push(LogEntry {
+                timestamp: now.to_rfc3339(),
+                actor: Some("coordinator".to_string()),
+                message: format!(
+                    "Failed: rapid respawn loop detected ({} deaths in {}s window)",
+                    death_count, RESPAWN_WINDOW_SECS
+                ),
+            });
+            let _ = save_graph(&graph, graph_path);
+        }
+        return Err(format!(
+            "rapid respawn loop ({} deaths), task failed",
+            death_count
+        ));
+    }
+
+    // Exponential backoff: base * 2^(death_count - 2)
+    // death_count=2 → 60s, 3 → 120s, 4 → 240s
+    let backoff_secs = RESPAWN_BASE_BACKOFF_SECS * (1i64 << (death_count - 2).min(6));
+
+    // Check time since last death
+    if let Some(last_death) = recent_deaths.last()
+        && let Ok(last_time) = last_death
+            .timestamp
+            .parse::<chrono::DateTime<chrono::Utc>>()
+    {
+        let elapsed = now.signed_duration_since(last_time).num_seconds();
+        if elapsed < backoff_secs {
+            return Err(format!(
+                "respawn backoff: {} deaths, waiting {}s ({}s elapsed)",
+                death_count, backoff_secs, elapsed
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &workgraph::graph::WorkGraph,
     executor: &str,
-    model: Option<&str>,
+    config: &Config,
+    default_model: Option<&str>,
     slots_available: usize,
     auto_assign: bool,
 ) -> usize {
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let agents_dir = dir.join("agency").join("cache/agents");
+    let gp = graph_path(dir);
     let mut spawned = 0;
 
-    let to_spawn = final_ready.iter().take(slots_available);
-    for task in to_spawn {
+    for task in final_ready.iter() {
+        if spawned >= slots_available {
+            break;
+        }
         // Skip if already claimed
         if task.assigned.is_some() {
             continue;
         }
 
-        // When auto_assign is enabled, non-system tasks must go through the
-        // assignment flow (build_auto_assign_tasks → .assign-* task → wg assign)
-        // before being spawned.  The assignment flow sets `task.agent`; if it's
-        // still None the task hasn't been assigned yet — skip it so the next
-        // tick's Phase 3 can create the .assign-* task.
+        // Skip compact tasks — handled directly by the daemon, not spawned as agents
+        if task.tags.iter().any(|t| t == "compact-loop") {
+            continue;
+        }
+
+        // Respawn throttle: detect rapid respawn loops and back off
+        if let Err(reason) = check_respawn_throttle(task, &gp) {
+            eprintln!("[coordinator] Skipping '{}': {}", task.id, reason);
+            continue;
+        }
+
+        // Skip system tasks whose source task is abandoned (defense-in-depth)
+        if task.id.starts_with('.') {
+            let source_abandoned = task.after.iter().any(|dep_id| {
+                graph
+                    .get_task(dep_id)
+                    .is_some_and(|t| t.status == Status::Abandoned)
+            });
+            if source_abandoned {
+                eprintln!(
+                    "[coordinator] Skipping '{}': source task is abandoned",
+                    task.id
+                );
+                continue;
+            }
+        }
+
+        // Defense-in-depth: when auto_assign is enabled, non-system tasks
+        // should have an agent set before being spawned. Normally the graph
+        // dependency on `.assign-*` prevents reaching here without an agent,
+        // but this gate catches edge cases (e.g., pre-migration tasks without
+        // the `.assign-*` blocking edge).
         if auto_assign && !workgraph::graph::is_system_task(&task.id) && task.agent.is_none() {
             continue;
         }
 
-        // Evaluation tasks run inline: fork `wg evaluate`
+        // Evaluation, flip, and assignment tasks run inline: fork `wg evaluate`, `wg flip`, or `wg assign`
         // directly instead of going through the full spawn machinery
         // (run.sh, executor config, etc.)
-        let is_eval_task = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
-        if is_eval_task {
+        let is_inline_task = task
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && task.exec.is_some();
+        if is_inline_task {
+            let is_assignment = task.tags.iter().any(|t| t == "assignment");
             let eval_model = task.model.as_deref();
-            eprintln!(
-                "[coordinator] Spawning eval inline for: {} - {}{}",
-                task.id,
-                task.title,
-                eval_model
-                    .map(|m| format!(" (model: {})", m))
-                    .unwrap_or_default(),
-            );
-            match spawn_eval_inline(dir, &task.id, eval_model) {
-                Ok((agent_id, pid)) => {
-                    eprintln!("[coordinator] Spawned eval {} (PID {})", agent_id, pid);
-                    spawned += 1;
+            let task_id = task.id.clone();
+            let title = task.title.clone();
+
+            if is_assignment {
+                eprintln!(
+                    "[coordinator] Spawning assignment inline for: {} - {}",
+                    task_id, title,
+                );
+                match spawn_assign_inline(dir, &task_id) {
+                    Ok((agent_id, pid)) => {
+                        eprintln!(
+                            "[coordinator] Spawned assignment {} (PID {})",
+                            agent_id, pid
+                        );
+                        spawned += 1;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[coordinator] Failed to spawn assignment for {}: {}",
+                            task_id, e
+                        );
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[coordinator] Failed to spawn eval for {}: {}", task.id, e);
+            } else {
+                eprintln!(
+                    "[coordinator] Spawning eval inline for: {} - {}{}",
+                    task_id,
+                    title,
+                    eval_model
+                        .map(|m| format!(" (model: {})", m))
+                        .unwrap_or_default(),
+                );
+                match spawn_eval_inline(dir, &task_id, eval_model) {
+                    Ok((agent_id, pid)) => {
+                        eprintln!("[coordinator] Spawned eval {} (PID {})", agent_id, pid);
+                        spawned += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("[coordinator] Failed to spawn eval for {}: {}", task_id, e);
+                    }
                 }
             }
             continue;
@@ -1772,13 +2656,34 @@ fn spawn_agents_for_ready_tasks(
                 .unwrap_or_else(|| executor.to_string())
         };
 
-        // Pass coordinator model to spawn; spawn resolves the full hierarchy:
-        // task.model > executor.model > coordinator.model > 'default'
+        // Resolve model per-task: system tasks use their respective role models,
+        // all other tasks use the default (TaskAgent) model.
+        let task_model = if task.id.starts_with(".assign-") {
+            Some(
+                config
+                    .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
+                    .model,
+            )
+        } else if task.id.starts_with(".place-") {
+            Some(
+                config
+                    .resolve_model_for_role(workgraph::config::DispatchRole::Placer)
+                    .model,
+            )
+        } else {
+            default_model.map(String::from)
+        };
         eprintln!(
             "[coordinator] Spawning agent for: {} - {} (executor: {})",
             task.id, task.title, effective_executor
         );
-        match spawn::spawn_agent(dir, &task.id, &effective_executor, None, model) {
+        match spawn::spawn_agent(
+            dir,
+            &task.id,
+            &effective_executor,
+            None,
+            task_model.as_deref(),
+        ) {
             Ok((agent_id, pid)) => {
                 eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
                 spawned += 1;
@@ -2001,6 +2906,28 @@ pub fn coordinator_tick(
         Err(early_result) => return Ok(early_result),
     };
 
+    // Phase 1.3: Zero-output agent detection — kill agents that have been alive
+    // for 5+ minutes with zero bytes in stream files (API call never returned).
+    {
+        let sweep = super::zero_output::sweep_zero_output_agents(dir);
+        if !sweep.killed.is_empty() {
+            eprintln!(
+                "[coordinator] Zero-output sweep: killed {} agent(s)",
+                sweep.killed.len()
+            );
+        }
+        if !sweep.circuit_broken_tasks.is_empty() {
+            eprintln!(
+                "[coordinator] Zero-output circuit breaker: {} task(s) failed: {:?}",
+                sweep.circuit_broken_tasks.len(),
+                sweep.circuit_broken_tasks
+            );
+        }
+        if sweep.global_outage_detected {
+            eprintln!("[coordinator] Zero-output: global API outage detected, spawn paused");
+        }
+    }
+
     // Phase 1.5: Auto-checkpoint alive agents if thresholds are met
     auto_checkpoint_agents(dir, &config);
 
@@ -2063,6 +2990,15 @@ pub fn coordinator_tick(
         }
     }
 
+    // Phase 2.9: Build placement tasks for draft tasks needing automatic placement.
+    // Must run BEFORE auto-assign (Phase 3) so placed tasks become eligible.
+    {
+        let placement_modified = build_placement_tasks(&mut graph, &config, dir);
+        if placement_modified {
+            save_graph(&graph, &graph_path).context("Failed to save graph after placement")?;
+        }
+    }
+
     // Phase 3: Auto-assign unassigned ready tasks
     // NOTE: These must run BEFORE the early-return check, because they may
     // create new ready tasks (e.g. evaluate-* tasks) that weren't there before.
@@ -2080,6 +3016,16 @@ pub fn coordinator_tick(
     // low FLIP scores. Only runs when flip_verification_threshold is set.
     graph_modified |= build_flip_verification_tasks(dir, &mut graph, &config);
 
+    // Phase 4.6: Auto-evolve — trigger evolution when evaluation data warrants it.
+    if config.agency.auto_evolve {
+        graph_modified |= build_auto_evolve_task(dir, &mut graph, &config);
+    }
+
+    // Phase 4.7: Auto-create — trigger creator when enough tasks completed.
+    if config.agency.auto_create {
+        graph_modified |= build_auto_create_task(dir, &mut graph, &config);
+    }
+
     // Save graph once if it was modified during auto-assign or auto-evaluate.
     // Abort tick if save fails — continuing with unsaved state would spawn agents
     // on tasks that haven't been persisted.
@@ -2091,6 +3037,19 @@ pub fn coordinator_tick(
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
     if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {
         return Ok(early_result);
+    }
+
+    // Phase 5.5: Check if spawning is paused due to global API-down backoff.
+    if super::zero_output::should_pause_spawning(dir) {
+        eprintln!("[coordinator] Spawning paused: global zero-output backoff active");
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
+        let ready_count = final_ready.len();
+        return Ok(TickResult {
+            agents_alive: alive_count,
+            tasks_ready: ready_count,
+            agents_spawned: 0,
+        });
     }
 
     // Phase 6: Spawn agents on ready tasks
@@ -2108,6 +3067,7 @@ pub fn coordinator_tick(
         dir,
         &graph,
         executor,
+        &config,
         Some(effective_model.as_str()),
         slots_available,
         config.agency.auto_assign,
@@ -2131,21 +3091,48 @@ fn process_chat_inbox(dir: &Path) {
         return;
     }
 
-    let inbox_cursor = match chat::read_coordinator_cursor(dir) {
+    // Iterate over all coordinator subdirectories (0, 1, 2, ...)
+    let entries = match std::fs::read_dir(&chat_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let coordinator_id: u32 = match name_str.parse() {
+            Ok(id) => id,
+            Err(_) => continue, // skip non-numeric directories
+        };
+
+        if !entry.path().is_dir() {
+            continue;
+        }
+
+        process_chat_inbox_for(dir, coordinator_id);
+    }
+}
+
+/// Process pending chat inbox messages for a specific coordinator.
+fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
+    let inbox_cursor = match chat::read_coordinator_cursor_for(dir, coordinator_id) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
-                "[coordinator] Failed to read chat coordinator cursor: {}",
-                e
+                "[coordinator] Failed to read chat coordinator cursor for {}: {}",
+                coordinator_id, e
             );
             return;
         }
     };
 
-    let new_messages = match chat::read_inbox_since(dir, inbox_cursor) {
+    let new_messages = match chat::read_inbox_since_for(dir, coordinator_id, inbox_cursor) {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!("[coordinator] Failed to read chat inbox: {}", e);
+            eprintln!(
+                "[coordinator] Failed to read chat inbox for {}: {}",
+                coordinator_id, e
+            );
             return;
         }
     };
@@ -2155,8 +3142,9 @@ fn process_chat_inbox(dir: &Path) {
     }
 
     eprintln!(
-        "[coordinator] Processing {} chat message(s)",
-        new_messages.len()
+        "[coordinator] Processing {} chat message(s) for coordinator {}",
+        new_messages.len(),
+        coordinator_id
     );
 
     for msg in &new_messages {
@@ -2165,20 +3153,20 @@ fn process_chat_inbox(dir: &Path) {
              intelligent responses. For now, your message has been logged: \"{}\"",
             msg.content
         );
-        if let Err(e) = chat::append_outbox(dir, &response, &msg.request_id) {
+        if let Err(e) = chat::append_outbox_for(dir, coordinator_id, &response, &msg.request_id) {
             eprintln!(
-                "[coordinator] Failed to write chat outbox for request_id={}: {}",
-                msg.request_id, e
+                "[coordinator] Failed to write chat outbox for coordinator={}, request_id={}: {}",
+                coordinator_id, msg.request_id, e
             );
         }
     }
 
     if let Some(last) = new_messages.last()
-        && let Err(e) = chat::write_coordinator_cursor(dir, last.id)
+        && let Err(e) = chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)
     {
         eprintln!(
-            "[coordinator] Failed to update chat coordinator cursor: {}",
-            e
+            "[coordinator] Failed to update chat coordinator cursor for {}: {}",
+            coordinator_id, e
         );
     }
 }
@@ -2335,23 +3323,33 @@ mod tests {
         // Config with 15 turn threshold
         let config = Config::default(); // default has auto_interval_turns=15
 
-        // Should not panic and should attempt checkpoint (will fail on LLM call,
-        // but the logic should trigger)
-        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
-        // LLM call will fail in test env — that's expected.
+        // Should not panic and should attempt checkpoint.
         // The important thing is the logic correctly identifies the trigger.
-        // The function will return Err because claude CLI isn't available.
-        assert!(result.is_err());
-        // Error should be about the LLM call, not about threshold logic
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.to_lowercase().contains("checkpoint summary")
-                || err_msg.contains("claude")
-                || err_msg.contains("Claude")
-                || err_msg.contains("No such file"),
-            "Expected LLM-related error, got: {}",
-            err_msg
-        );
+        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
+        // Checkpoint was triggered — either succeeds (LLM available) or fails (LLM unavailable).
+        // Both outcomes confirm the threshold logic worked correctly.
+        match &result {
+            Ok(()) => {
+                // LLM was available — checkpoint was saved
+                let cp_dir = agent_dir.join("checkpoints");
+                assert!(
+                    cp_dir.exists(),
+                    "Checkpoint directory should exist on success"
+                );
+            }
+            Err(e) => {
+                // LLM not available — expected in CI environments
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.to_lowercase().contains("checkpoint summary")
+                        || err_msg.contains("claude")
+                        || err_msg.contains("Claude")
+                        || err_msg.contains("No such file"),
+                    "Expected LLM-related error, got: {}",
+                    err_msg
+                );
+            }
+        }
     }
 
     #[test]
@@ -2418,10 +3416,30 @@ mod tests {
 
         let config = Config::default();
 
-        // Should trigger due to time (25 min > 20 min threshold)
-        // but fail on LLM call
+        // Should trigger due to time (25 min > 20 min threshold).
+        // Either succeeds (LLM available) or fails (LLM unavailable) —
+        // both confirm the time-based threshold logic worked correctly.
         let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
-        assert!(result.is_err()); // Expected: LLM not available in test
+        match &result {
+            Ok(()) => {
+                let cp_dir = agent_dir.join("checkpoints");
+                assert!(
+                    cp_dir.exists(),
+                    "Checkpoint directory should exist on success"
+                );
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.to_lowercase().contains("checkpoint summary")
+                        || err_msg.contains("claude")
+                        || err_msg.contains("Claude")
+                        || err_msg.contains("No such file"),
+                    "Expected LLM-related error, got: {}",
+                    err_msg
+                );
+            }
+        }
     }
 
     #[test]
@@ -3268,8 +4286,9 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
+        let config = Config::load_or_default(wg_dir);
         let result = spawn_agents_for_ready_tasks(
-            wg_dir, &graph, "shell", None, 10, true, // auto_assign = true
+            wg_dir, &graph, "shell", &config, None, 10, true, // auto_assign = true
         );
 
         // Task should be skipped (no agent), so nothing spawned
@@ -3315,6 +4334,143 @@ mod tests {
 
         let would_skip = auto_assign && !is_system && !has_agent;
         assert!(!would_skip, "should not skip when auto_assign is disabled");
+    }
+
+    /// .assign-* tasks with `assignment` tag and `exec` field are detected as inline
+    /// tasks and spawned via the lightweight inline path, not as full Claude agents.
+    #[test]
+    fn test_assign_spawned_inline() {
+        // An .assign-* task with "assignment" tag + exec should be detected as inline
+        let mut assign_task = Task::default();
+        assign_task.id = ".assign-my-task".to_string();
+        assign_task.title = "Assign agent for: My Task".to_string();
+        assign_task.tags = vec!["assignment".to_string(), "agency".to_string()];
+        assign_task.exec = Some("wg assign my-task --auto".to_string());
+        assign_task.status = Status::Open;
+
+        let is_inline_task = assign_task
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && assign_task.exec.is_some();
+        assert!(
+            is_inline_task,
+            ".assign-* task with assignment tag + exec should be detected as inline"
+        );
+
+        // Verify the assignment branch is taken (not eval)
+        let is_assignment = assign_task.tags.iter().any(|t| t == "assignment");
+        assert!(
+            is_assignment,
+            ".assign-* task should be routed to the assignment inline path"
+        );
+
+        // An .assign-* task WITHOUT exec should NOT match inline (fallback to Phase 2)
+        let mut no_exec_assign = Task::default();
+        no_exec_assign.id = ".assign-other".to_string();
+        no_exec_assign.tags = vec!["assignment".to_string()];
+        let is_inline_no_exec = no_exec_assign
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && no_exec_assign.exec.is_some();
+        assert!(
+            !is_inline_no_exec,
+            ".assign-* without exec should NOT be inline"
+        );
+
+        // A regular task with exec but no assignment/eval/flip tag should NOT match
+        let mut regular_exec = Task::default();
+        regular_exec.id = "build-thing".to_string();
+        regular_exec.exec = Some("make build".to_string());
+        let is_inline_regular = regular_exec
+            .tags
+            .iter()
+            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
+            && regular_exec.exec.is_some();
+        assert!(
+            !is_inline_regular,
+            "regular task with exec should NOT be inline"
+        );
+    }
+
+    /// A resurrected task (reopened after completion) with an existing done
+    /// .assign-* task should have the stale assignment removed so a new one
+    /// can be created on the next tick.
+    #[test]
+    fn test_assign_recreated_after_resurrection() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        // Source task: resurrected (Open again after being Done)
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Resurrected task".to_string();
+        source.status = Status::Open;
+        // No agent — cleared on resurrection
+
+        // Old stale .assign task: completed from the previous round
+        let mut old_assign = Task::default();
+        old_assign.id = ".assign-my-task".to_string();
+        old_assign.title = "Assign my-task".to_string();
+        old_assign.status = Status::Done;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(old_assign));
+
+        // Verify stale .assign exists before the call
+        assert!(graph.get_task(".assign-my-task").is_some());
+
+        let config = Config::load_or_default(wg_dir);
+        let _modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        // The stale Done .assign should be reopened for fresh assignment.
+        // (The LLM call will fail in tests, but the critical fix is that the
+        // stale guard no longer blocks progress — the reopened .assign-* will
+        // be processed on the next coordinator tick.)
+        let assign = graph.get_task(".assign-my-task");
+        assert!(
+            assign.is_none() || assign.unwrap().status != Status::Done,
+            "stale Done .assign-my-task should be reopened after resurrection"
+        );
+    }
+
+    /// An in-progress (Open/Waiting) .assign-* task should NOT be removed.
+    #[test]
+    fn test_assign_not_removed_when_still_active() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Active task".to_string();
+        source.status = Status::Open;
+
+        // .assign is still Open (in-progress)
+        let mut active_assign = Task::default();
+        active_assign.id = ".assign-my-task".to_string();
+        active_assign.title = "Assign my-task".to_string();
+        active_assign.status = Status::Open;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(active_assign));
+
+        let config = Config::load_or_default(wg_dir);
+        let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        // Active .assign should be left alone
+        assert!(
+            !modified,
+            "should not modify graph when .assign is still active"
+        );
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(assign.status, Status::Open);
     }
 
     #[test]

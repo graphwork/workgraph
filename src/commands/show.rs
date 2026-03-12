@@ -96,6 +96,10 @@ struct TaskDetails {
     resurrection_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_resurrected_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    superseded_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supersedes: Option<String>,
 }
 
 fn is_default_visibility(val: &str) -> bool {
@@ -219,6 +223,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         checkpoint: task.checkpoint.clone(),
         resurrection_count: task.resurrection_count,
         last_resurrected_at: task.last_resurrected_at.clone(),
+        superseded_by: task.superseded_by.clone(),
+        supersedes: task.supersedes.clone(),
     };
 
     if json {
@@ -263,6 +269,12 @@ fn print_human_readable(details: &TaskDetails) {
         && let Some(ref reason) = details.failure_reason
     {
         println!("Failure reason: {}", reason);
+    }
+    if !details.superseded_by.is_empty() {
+        println!("Superseded by: {}", details.superseded_by.join(", "));
+    }
+    if let Some(ref sup) = details.supersedes {
+        println!("Supersedes: {}", sup);
     }
     if details.retry_count > 0 {
         let retry_info = match details.max_retries {
@@ -397,12 +409,21 @@ fn print_human_readable(details: &TaskDetails) {
     // Token usage
     if let Some(ref usage) = details.token_usage {
         println!();
-        let compact = format!(
-            "{}/{}",
-            format_tokens(usage.total_input()),
-            format_tokens(usage.output_tokens)
-        );
-        println!("Tokens: {} (in/out)", compact);
+        let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+        if cache_total > 0 {
+            println!(
+                "Tokens: {}/{} (novel-in/out) +{} cached",
+                format_tokens(usage.input_tokens),
+                format_tokens(usage.output_tokens),
+                format_tokens(cache_total)
+            );
+        } else {
+            println!(
+                "Tokens: {}/{} (in/out)",
+                format_tokens(usage.input_tokens),
+                format_tokens(usage.output_tokens)
+            );
+        }
         if usage.cost_usd > 0.0 {
             println!("Cost: ${:.2}", usage.cost_usd);
         }
@@ -536,6 +557,8 @@ mod tests {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            superseded_by: vec![],
+            supersedes: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

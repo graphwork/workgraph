@@ -71,7 +71,7 @@ pub fn run(
                 Status::Blocked => "[!]",
                 Status::Failed => "[F]",
                 Status::Abandoned => "[A]",
-                Status::Waiting => "[W]",
+                Status::Waiting | Status::PendingValidation => "[W]",
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
             let not_before_str = format_not_before_hint(task.not_before.as_deref());

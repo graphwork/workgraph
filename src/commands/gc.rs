@@ -11,7 +11,7 @@ use super::graph_path;
 const INTERNAL_PREFIXES: &[&str] = &[
     ".assign-",
     ".evaluate-",
-    ".verify-flip-",
+    ".verify-",
     ".respond-to-",
     "assign-",
     "evaluate-",

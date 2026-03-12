@@ -1,7 +1,8 @@
-//! LLM client abstraction and Anthropic Messages API implementation.
+//! Anthropic Messages API client and canonical request/response types.
 //!
-//! Defines the `LlmClient` trait and canonical request/response types used by the
-//! agent loop. The `AnthropicClient` implements this trait for the Anthropic API.
+//! Defines the canonical types (`Message`, `ContentBlock`, `ToolDefinition`, etc.)
+//! used by the agent loop. The `AnthropicClient` implements the `Provider` trait
+//! (defined in `provider.rs`) for the Anthropic Messages API.
 //! See `openai_client.rs` for the OpenAI-compatible implementation.
 
 use std::path::Path;
@@ -93,25 +94,6 @@ impl Usage {
         }
     }
 }
-
-// ── LlmClient trait ─────────────────────────────────────────────────────
-
-/// Provider-agnostic LLM client trait.
-///
-/// Both `AnthropicClient` and `OpenAiClient` implement this trait so the
-/// agent loop can work with any backend.
-#[async_trait::async_trait]
-pub trait LlmClient: Send + Sync {
-    /// Send a messages request (non-streaming) and return the response.
-    async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse>;
-
-    /// The model name this client is configured with.
-    fn model(&self) -> &str;
-
-    /// Max tokens per response.
-    fn max_tokens(&self) -> u32;
-}
-
 /// Request body for POST /v1/messages.
 #[derive(Debug, Clone, Serialize)]
 pub struct MessagesRequest {
@@ -222,7 +204,7 @@ impl AnthropicClient {
         Self::new(api_key.to_string(), model)
     }
 
-    fn new(api_key: String, model: &str) -> Result<Self> {
+    pub fn new(api_key: String, model: &str) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
             .build()
@@ -401,9 +383,9 @@ impl AnthropicClient {
 }
 
 #[async_trait::async_trait]
-impl LlmClient for AnthropicClient {
-    async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
-        self.messages(request).await
+impl super::provider::Provider for AnthropicClient {
+    fn name(&self) -> &str {
+        "anthropic"
     }
 
     fn model(&self) -> &str {
@@ -412,6 +394,10 @@ impl LlmClient for AnthropicClient {
 
     fn max_tokens(&self) -> u32 {
         self.max_tokens
+    }
+
+    async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
+        self.messages(request).await
     }
 }
 

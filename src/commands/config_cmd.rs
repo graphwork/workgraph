@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::path::Path;
-use workgraph::config::{Config, ConfigSource, MatrixConfig};
+use workgraph::config::{Config, ConfigSource, MatrixConfig, ModelRegistryEntry, Tier};
 
 /// Scope for config operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!();
         println!("[coordinator]");
         println!("  max_agents = {}", config.coordinator.max_agents);
+        println!(
+            "  max_coordinators = {}",
+            config.coordinator.max_coordinators
+        );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
         println!("  executor = \"{}\"", config.coordinator.executor);
@@ -44,6 +48,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);
         println!("  auto_assign = {}", config.agency.auto_assign);
+        println!("  auto_create = {}", config.agency.auto_create);
         if let Some(ref agent) = config.agency.assigner_agent {
             println!("  assigner_agent = \"{}\"", agent);
         }
@@ -103,6 +108,97 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             "  flip_verification_model = \"{}\"",
             config.agency.flip_verification_model
         );
+        println!("  auto_place = {}", config.agency.auto_place);
+        if config.agency.auto_evolve {
+            println!("  auto_evolve = {}", config.agency.auto_evolve);
+            println!(
+                "  evolution_interval = {}",
+                config.agency.evolution_interval
+            );
+            println!(
+                "  evolution_threshold = {}",
+                config.agency.evolution_threshold
+            );
+            println!("  evolution_budget = {}", config.agency.evolution_budget);
+            println!(
+                "  evolution_reactive_threshold = {}",
+                config.agency.evolution_reactive_threshold
+            );
+        }
+        println!();
+
+        // Unified agency agents display
+        {
+            use workgraph::config::DispatchRole;
+            println!("[agency agents]");
+
+            // Helper to get auto-toggle status for applicable roles
+            let auto_status = |role: &DispatchRole| -> Option<&str> {
+                match role {
+                    DispatchRole::Placer => Some(if config.agency.auto_place {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Assigner => Some(if config.agency.auto_assign {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Evaluator | DispatchRole::CoordinatorEval => {
+                        Some(if config.agency.auto_evaluate {
+                            "on"
+                        } else {
+                            "off"
+                        })
+                    }
+                    DispatchRole::Creator => Some(if config.agency.auto_create {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Evolver => Some(if config.agency.auto_evolve {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Triage => Some(if config.agency.auto_triage {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    _ => None,
+                }
+            };
+
+            for role in DispatchRole::ALL {
+                let resolved = config.resolve_model_for_role(*role);
+                let tier = role.default_tier();
+                // Use the registry entry short ID if available, otherwise truncate model name
+                let display_model = resolved
+                    .registry_entry
+                    .as_ref()
+                    .map(|e| e.id.clone())
+                    .unwrap_or_else(|| {
+                        let m = &resolved.model;
+                        if m.len() > 12 {
+                            m[..12].to_string()
+                        } else {
+                            m.to_string()
+                        }
+                    });
+
+                let auto_str = match auto_status(role) {
+                    Some(status) => format!(", auto: {}", status),
+                    None => String::new(),
+                };
+
+                println!(
+                    "  {:<14} = {:<10} (tier: {}{})",
+                    role, display_model, tier, auto_str
+                );
+            }
+        }
         println!();
         println!("[guardrails]");
         println!(
@@ -114,6 +210,11 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("[tui]");
         println!("  chat_history = {}", config.tui.chat_history);
         println!("  chat_history_max = {}", config.tui.chat_history_max);
+        println!("  counters = \"{}\"", config.tui.counters);
+        println!(
+            "  show_running_system_tasks = {}",
+            config.tui.show_running_system_tasks
+        );
         println!();
         println!("[viz]");
         println!("  edge_color = \"{}\"", config.viz.edge_color);
@@ -153,6 +254,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                         if let Some(ref p) = role_cfg.provider {
                             println!("  {}.provider = \"{}\"", role, p);
                         }
+                        if let Some(ref t) = role_cfg.tier {
+                            println!("  {}.tier = \"{}\"", role, t);
+                        }
                     }
                 }
                 println!();
@@ -190,6 +294,7 @@ pub fn update(
     model: Option<&str>,
     interval: Option<u64>,
     max_agents: Option<usize>,
+    max_coordinators: Option<usize>,
     coordinator_interval: Option<u64>,
     poll_interval: Option<u64>,
     coordinator_executor: Option<&str>,
@@ -205,6 +310,8 @@ pub fn update(
     creator_model: Option<&str>,
     retention_heuristics: Option<&str>,
     auto_triage: Option<bool>,
+    auto_place: Option<bool>,
+    auto_create: Option<bool>,
     triage_model: Option<&str>,
     triage_timeout: Option<u64>,
     triage_max_log_bytes: Option<usize>,
@@ -220,6 +327,8 @@ pub fn update(
     flip_verification_model: Option<&str>,
     chat_history: Option<bool>,
     chat_history_max: Option<usize>,
+    tui_counters: Option<&str>,
+    retry_context_tokens: Option<u32>,
 ) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
@@ -250,6 +359,12 @@ pub fn update(
     if let Some(max) = max_agents {
         config.coordinator.max_agents = max;
         println!("Set coordinator.max_agents = {}", max);
+        changed = true;
+    }
+
+    if let Some(max) = max_coordinators {
+        config.coordinator.max_coordinators = max;
+        println!("Set coordinator.max_coordinators = {}", max);
         changed = true;
     }
 
@@ -360,6 +475,18 @@ pub fn update(
         changed = true;
     }
 
+    if let Some(v) = auto_place {
+        config.agency.auto_place = v;
+        println!("Set agency.auto_place = {}", v);
+        changed = true;
+    }
+
+    if let Some(v) = auto_create {
+        config.agency.auto_create = v;
+        println!("Set agency.auto_create = {}", v);
+        changed = true;
+    }
+
     if let Some(m) = triage_model {
         config.agency.triage_model = Some(m.to_string());
         println!("Set agency.triage_model = \"{}\"", m);
@@ -467,6 +594,29 @@ pub fn update(
     if let Some(v) = chat_history_max {
         config.tui.chat_history_max = v;
         println!("Set tui.chat_history_max = {}", v);
+        changed = true;
+    }
+
+    if let Some(counters) = tui_counters {
+        let valid = ["uptime", "cumulative", "active", "session"];
+        for part in counters.split(',') {
+            let p = part.trim();
+            if !p.is_empty() && !valid.contains(&p) {
+                anyhow::bail!(
+                    "Invalid counter '{}'. Valid: uptime, cumulative, active, session",
+                    p
+                );
+            }
+        }
+        config.tui.counters = counters.to_string();
+        println!("Set tui.counters = \"{}\"", counters);
+        changed = true;
+    }
+
+    // Checkpoint settings
+    if let Some(tokens) = retry_context_tokens {
+        config.checkpoint.retry_context_tokens = tokens;
+        println!("Set checkpoint.retry_context_tokens = {}", tokens);
         changed = true;
     }
 
@@ -754,20 +904,26 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         let mut entries = serde_json::Map::new();
         // Show default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        let source = config.resolve_model_source(DispatchRole::Default);
         entries.insert(
             "default".to_string(),
             serde_json::json!({
                 "model": resolved.model,
                 "provider": resolved.provider,
+                "tier": DispatchRole::Default.default_tier().to_string(),
+                "source": source,
             }),
         );
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
+            let source = config.resolve_model_source(*role);
             entries.insert(
                 role.to_string(),
                 serde_json::json!({
                     "model": resolved.model,
                     "provider": resolved.provider,
+                    "tier": role.default_tier().to_string(),
+                    "source": source,
                 }),
             );
         }
@@ -776,32 +932,41 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("Model Routing Configuration");
         println!("===========================");
         println!();
-        println!("  {:<20} {:<20} PROVIDER", "ROLE", "MODEL");
-        println!("  {}", "-".repeat(55));
+        println!(
+            "  {:<20} {:<10} {:<30} {:<14} SOURCE",
+            "ROLE", "TIER", "MODEL", "PROVIDER"
+        );
+        println!("  {}", "-".repeat(90));
 
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        let source = config.resolve_model_source(DispatchRole::Default);
         println!(
-            "  {:<20} {:<20} {}",
+            "  {:<20} {:<10} {:<30} {:<14} {}",
             "default",
+            DispatchRole::Default.default_tier(),
             resolved.model,
-            resolved.provider.as_deref().unwrap_or("(not set)")
+            resolved.provider.as_deref().unwrap_or("(not set)"),
+            source,
         );
 
         // Per-role
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
-            let role_cfg = config.models.get_role(*role);
-            let has_explicit = role_cfg.and_then(|c| c.model.as_ref()).is_some();
-            let marker = if has_explicit { "" } else { " (inherited)" };
+            let source = config.resolve_model_source(*role);
             println!(
-                "  {:<20} {:<20} {}{}",
+                "  {:<20} {:<10} {:<30} {:<14} {}",
                 role.to_string(),
+                role.default_tier(),
                 resolved.model,
                 resolved.provider.as_deref().unwrap_or("(not set)"),
-                marker,
+                source,
             );
         }
+        println!();
+        println!("Sources: explicit = user-set model, tier-default = from default_tier(),");
+        println!("         tier-override = from [models.role].tier, legacy = from agency.*_model,");
+        println!("         fallback = from [models.default] or agent.model");
         println!();
         println!("Use --set-model <role> <model> to override a role.");
         println!("Use --set-provider <role> <provider> to set a provider.");
@@ -834,6 +999,29 @@ pub fn update_model_routing(
         let model = &args[1];
         config.models.set_model(role, model);
         println!("Set models.{}.model = \"{}\"", role, model);
+
+        // Validate: warn if model ID is not in the registry
+        if config.registry_lookup(model).is_none() {
+            eprintln!(
+                "Warning: model '{}' is not in the registry. It will be used as a raw model ID.",
+                model
+            );
+            eprintln!(
+                "  If this is a short alias, add it with: wg config --registry-add --id {} ...",
+                model
+            );
+        } else {
+            // Informational: check tier compatibility
+            if let Some(entry) = config.registry_lookup(model) {
+                let role_tier = role.default_tier();
+                if entry.tier != role_tier {
+                    eprintln!(
+                        "Note: model '{}' is tier '{}' but role '{}' defaults to tier '{}'.",
+                        model, entry.tier, role, role_tier
+                    );
+                }
+            }
+        }
         changed = true;
     }
 
@@ -865,6 +1053,427 @@ pub fn update_model_routing(
     Ok(())
 }
 
+/// Show all model registry entries (built-in + user-defined).
+pub fn show_registry(dir: &Path, json: bool) -> Result<()> {
+    let config = Config::load_merged(dir)?;
+    let entries = config.effective_registry();
+
+    if json {
+        let val: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "provider": e.provider,
+                    "model": e.model,
+                    "tier": e.tier.to_string(),
+                    "context_window": e.context_window,
+                    "cost_per_input_mtok": e.cost_per_input_mtok,
+                    "cost_per_output_mtok": e.cost_per_output_mtok,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("No model registry entries.");
+        return Ok(());
+    }
+
+    println!(
+        "  {:<12} {:<12} {:<30} {:<10} COST (in/out per MTok)",
+        "ID", "PROVIDER", "MODEL", "TIER"
+    );
+    println!("  {}", "-".repeat(85));
+
+    for entry in &entries {
+        let cost = if entry.cost_per_input_mtok > 0.0 || entry.cost_per_output_mtok > 0.0 {
+            format!(
+                "${:.2}/${:.2}",
+                entry.cost_per_input_mtok, entry.cost_per_output_mtok
+            )
+        } else {
+            "-".to_string()
+        };
+        println!(
+            "  {:<12} {:<12} {:<30} {:<10} {}",
+            entry.id, entry.provider, entry.model, entry.tier, cost,
+        );
+    }
+
+    Ok(())
+}
+
+/// Add a new model entry to the registry.
+#[allow(clippy::too_many_arguments)]
+pub fn add_registry_entry(
+    dir: &Path,
+    scope: ConfigScope,
+    id: &str,
+    provider: &str,
+    model: &str,
+    tier: &str,
+    endpoint: Option<&str>,
+    context_window: Option<u64>,
+    cost_input: Option<f64>,
+    cost_output: Option<f64>,
+) -> Result<()> {
+    let tier: Tier = tier.parse()?;
+
+    let entry = ModelRegistryEntry {
+        id: id.to_string(),
+        provider: provider.to_string(),
+        model: model.to_string(),
+        tier,
+        endpoint: endpoint.map(|s| s.to_string()),
+        context_window: context_window.unwrap_or(0),
+        cost_per_input_mtok: cost_input.unwrap_or(0.0),
+        cost_per_output_mtok: cost_output.unwrap_or(0.0),
+        ..Default::default()
+    };
+
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(dir)?,
+    };
+
+    // Check for duplicate ID and update if exists
+    let existing_idx = config.model_registry.iter().position(|e| e.id == id);
+    if let Some(idx) = existing_idx {
+        config.model_registry[idx] = entry;
+        println!("Updated registry entry: {}", id);
+    } else {
+        config.model_registry.push(entry);
+        println!("Added registry entry: {}", id);
+    }
+
+    save_config(&config, dir, scope)?;
+
+    println!("  {} / {} / {} (tier: {})", id, provider, model, tier);
+
+    Ok(())
+}
+
+/// Remove a registry entry by ID. Warns about dependents unless --force is set.
+pub fn remove_registry_entry(
+    dir: &Path,
+    scope: ConfigScope,
+    id: &str,
+    force: bool,
+    json: bool,
+) -> Result<()> {
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(dir)?,
+    };
+
+    // Check if entry exists in user config
+    let idx = config.model_registry.iter().position(|e| e.id == id);
+
+    if idx.is_none() {
+        // Check if it's a built-in
+        let merged = Config::load_merged(dir)?;
+        if merged.effective_registry().iter().any(|e| e.id == id) {
+            anyhow::bail!(
+                "'{}' is a built-in registry entry and cannot be removed.\n\
+                 To override it, add a custom entry with the same ID using --registry-add.",
+                id
+            );
+        }
+        anyhow::bail!("Registry entry '{}' not found.", id);
+    }
+
+    // Check for dependents: tier defaults and role overrides
+    let mut warnings = Vec::new();
+
+    // Check tier defaults
+    let tiers = &config.tiers;
+    if tiers.fast.as_deref() == Some(id) {
+        warnings.push(format!("tiers.fast = '{}'", id));
+    }
+    if tiers.standard.as_deref() == Some(id) {
+        warnings.push(format!("tiers.standard = '{}'", id));
+    }
+    if tiers.premium.as_deref() == Some(id) {
+        warnings.push(format!("tiers.premium = '{}'", id));
+    }
+
+    // Check role overrides
+    use workgraph::config::DispatchRole;
+    for role in DispatchRole::ALL {
+        if let Some(role_cfg) = config.models.get_role(*role)
+            && role_cfg.model.as_deref() == Some(id)
+        {
+            warnings.push(format!("[models.{}].model = '{}'", role, id));
+        }
+    }
+
+    if !warnings.is_empty() && !force {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "entry has dependents",
+                    "id": id,
+                    "dependents": warnings,
+                })
+            );
+        } else {
+            eprintln!("Cannot remove '{}': referenced by:", id);
+            for w in &warnings {
+                eprintln!("  - {}", w);
+            }
+            eprintln!();
+            eprintln!("Use --force to remove anyway, or reassign the dependents first.");
+        }
+        std::process::exit(1);
+    }
+
+    config.model_registry.remove(idx.unwrap());
+
+    save_config(&config, dir, scope)?;
+
+    if !warnings.is_empty() {
+        println!(
+            "Removed registry entry '{}' (with {} dangling reference(s))",
+            id,
+            warnings.len()
+        );
+    } else {
+        println!("Removed registry entry '{}'", id);
+    }
+
+    Ok(())
+}
+
+/// Show current tier→model assignments.
+pub fn show_tiers(dir: &Path, json: bool) -> Result<()> {
+    let config = Config::load_merged(dir)?;
+    let tiers = config.effective_tiers_public();
+    let registry = config.effective_registry();
+
+    let resolve = |model_id: Option<&str>| -> String {
+        match model_id {
+            Some(id) => registry
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.model.clone())
+                .unwrap_or_else(|| format!("{} (not in registry)", id)),
+            None => "(unset)".to_string(),
+        }
+    };
+
+    if json {
+        let val = serde_json::json!({
+            "fast": {
+                "model_id": tiers.fast,
+                "resolved_model": resolve(tiers.fast.as_deref()),
+            },
+            "standard": {
+                "model_id": tiers.standard,
+                "resolved_model": resolve(tiers.standard.as_deref()),
+            },
+            "premium": {
+                "model_id": tiers.premium,
+                "resolved_model": resolve(tiers.premium.as_deref()),
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    println!("  {:<12} {:<12} RESOLVED MODEL", "TIER", "MODEL ID");
+    println!("  {}", "-".repeat(60));
+
+    println!(
+        "  {:<12} {:<12} {}",
+        "fast",
+        tiers.fast.as_deref().unwrap_or("(unset)"),
+        resolve(tiers.fast.as_deref()),
+    );
+    println!(
+        "  {:<12} {:<12} {}",
+        "standard",
+        tiers.standard.as_deref().unwrap_or("(unset)"),
+        resolve(tiers.standard.as_deref()),
+    );
+    println!(
+        "  {:<12} {:<12} {}",
+        "premium",
+        tiers.premium.as_deref().unwrap_or("(unset)"),
+        resolve(tiers.premium.as_deref()),
+    );
+
+    Ok(())
+}
+
+/// Set which model a tier uses. Format: <tier>=<model-id>
+pub fn set_tier(dir: &Path, scope: ConfigScope, tier_spec: &str) -> Result<()> {
+    let parts: Vec<&str> = tier_spec.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "--tier requires format <tier>=<model-id>, got \"{}\"",
+            tier_spec
+        );
+    }
+
+    let tier_name = parts[0].trim();
+    let model_id = parts[1].trim();
+
+    // Validate tier name
+    let _tier: Tier = tier_name.parse()?;
+
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(dir)?,
+    };
+
+    // Warn if model_id is not in registry
+    let merged = Config::load_merged(dir)?;
+    if merged.registry_lookup(model_id).is_none() {
+        eprintln!(
+            "Warning: '{}' is not in the model registry. \
+             Tier will resolve to it as a bare model name.",
+            model_id
+        );
+    }
+
+    match tier_name {
+        "fast" => config.tiers.fast = Some(model_id.to_string()),
+        "standard" => config.tiers.standard = Some(model_id.to_string()),
+        "premium" => config.tiers.premium = Some(model_id.to_string()),
+        _ => unreachable!(), // already validated by Tier::from_str
+    }
+
+    save_config(&config, dir, scope)?;
+
+    println!("Set tiers.{} = \"{}\"", tier_name, model_id);
+
+    Ok(())
+}
+
+/// Helper: save config to the appropriate location based on scope.
+fn save_config(config: &Config, dir: &Path, scope: ConfigScope) -> Result<()> {
+    match scope {
+        ConfigScope::Global => config.save_global()?,
+        ConfigScope::Local => config.save(dir)?,
+    }
+    Ok(())
+}
+
+/// Check OpenRouter API key validity and credit status
+pub fn check_key(dir: &Path, json: bool) -> Result<()> {
+    use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
+
+    let key = match resolve_openai_api_key_from_dir(dir) {
+        Ok(k) => k,
+        Err(_) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": "No API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY."})
+                );
+            } else {
+                eprintln!("Error: No API key found.");
+                eprintln!("Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable,");
+                eprintln!("or add [native_executor] api_key to .workgraph/config.toml");
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get("https://openrouter.ai/api/v1/key")
+        .header("Authorization", format!("Bearer {}", key))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json()?;
+            let data = body.get("data").unwrap_or(&body);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(data)?);
+            } else {
+                println!("OpenRouter API Key Status");
+                println!("========================");
+                println!();
+                println!("  Key: {}", mask_token(&key));
+
+                if let Some(limit) = data.get("limit") {
+                    if limit.is_null() {
+                        println!("  Credit limit: unlimited");
+                    } else {
+                        println!("  Credit limit: ${}", limit);
+                    }
+                }
+
+                if let Some(remaining) = data.get("limit_remaining") {
+                    if remaining.is_null() {
+                        println!("  Remaining: unlimited");
+                    } else {
+                        println!("  Remaining: ${}", remaining);
+                    }
+                }
+
+                if let Some(usage) = data.get("usage") {
+                    println!("  Usage (all-time): ${}", usage);
+                }
+
+                if let Some(is_free) = data.get("is_free_tier") {
+                    println!(
+                        "  Tier: {}",
+                        if is_free.as_bool().unwrap_or(false) {
+                            "free"
+                        } else {
+                            "paid"
+                        }
+                    );
+                }
+
+                if let Some(daily) = data.get("usage_daily") {
+                    println!("  Usage (today): ${}", daily);
+                }
+
+                println!();
+                println!("Status: Valid");
+            }
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().unwrap_or_default();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": format!("HTTP {}", status), "body": body})
+                );
+            } else {
+                eprintln!("Error: API key check failed (HTTP {})", status);
+                if !body.is_empty() {
+                    eprintln!("  {}", body);
+                }
+            }
+            std::process::exit(1);
+        }
+        Err(e) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": format!("Request failed: {}", e)})
+                );
+            } else {
+                eprintln!("Error: Could not reach OpenRouter API: {}", e);
+            }
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
 /// Mask a token for display (show first and last 4 chars)
 fn mask_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
@@ -874,6 +1483,112 @@ fn mask_token(token: &str) -> String {
         let prefix: String = chars[..4].iter().collect();
         let suffix: String = chars[chars.len() - 4..].iter().collect();
         format!("{}...{}", prefix, suffix)
+    }
+}
+
+/// Install the current project's config as the global default.
+///
+/// Copies `.workgraph/config.toml` → `~/.workgraph/config.toml`.
+/// If the global config already exists and `--force` is not set, shows a diff
+/// summary and asks for confirmation on stdin.
+pub fn install_global(workgraph_dir: &Path, force: bool) -> Result<()> {
+    let global_path = Config::global_config_path()?;
+    let global_dir = Config::global_dir()?;
+    install_global_to(workgraph_dir, &global_path, &global_dir, force)
+}
+
+/// Core logic for install-global, parameterized for testing.
+pub fn install_global_to(
+    workgraph_dir: &Path,
+    global_path: &Path,
+    global_dir: &Path,
+    force: bool,
+) -> Result<()> {
+    let local_path = workgraph_dir.join("config.toml");
+    if !local_path.exists() {
+        anyhow::bail!(
+            "No project config found at {}.\nRun `wg config --init` to create one first.",
+            local_path.display()
+        );
+    }
+
+    let local_content = std::fs::read_to_string(&local_path)?;
+
+    if global_path.exists() && !force {
+        let global_content = std::fs::read_to_string(global_path)?;
+        if local_content == global_content {
+            println!("Global config is already identical to project config — nothing to do.");
+            return Ok(());
+        }
+        println!("Global config already exists at {}", global_path.display());
+        println!();
+        print_diff_summary(&global_content, &local_content);
+        println!();
+        eprint!("Overwrite global config? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Ensure parent directory exists
+    std::fs::create_dir_all(global_dir)?;
+
+    std::fs::copy(&local_path, global_path)?;
+    println!("Installed project config as global default");
+    println!("  {} → {}", local_path.display(), global_path.display());
+    Ok(())
+}
+
+/// Print a brief summary of differences between two TOML config strings.
+fn print_diff_summary(old: &str, new: &str) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut changed_keys: Vec<String> = Vec::new();
+
+    // Simple line-by-line diff: collect changed lines
+    let max_len = old_lines.len().max(new_lines.len());
+    for i in 0..max_len {
+        let ol = old_lines.get(i).copied().unwrap_or("");
+        let nl = new_lines.get(i).copied().unwrap_or("");
+        if ol != nl {
+            if ol.is_empty() {
+                added += 1;
+            } else if nl.is_empty() {
+                removed += 1;
+            } else {
+                // Try to extract key name from TOML line
+                if let Some(key) = nl.split('=').next() {
+                    let k = key.trim().to_string();
+                    if !k.is_empty() && !k.starts_with('[') && !changed_keys.contains(&k) {
+                        changed_keys.push(k);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("Diff summary:");
+    if !changed_keys.is_empty() {
+        let display: Vec<&str> = changed_keys.iter().take(10).map(|s| s.as_str()).collect();
+        println!("  Changed keys: {}", display.join(", "));
+        if changed_keys.len() > 10 {
+            println!("  ... and {} more", changed_keys.len() - 10);
+        }
+    }
+    if added > 0 {
+        println!("  +{} new lines", added);
+    }
+    if removed > 0 {
+        println!("  -{} removed lines", removed);
+    }
+    if changed_keys.is_empty() && added == 0 && removed == 0 {
+        println!("  (content differs but no key-level changes detected)");
     }
 }
 
@@ -906,6 +1621,8 @@ mod tests {
             Some("opencode"),
             Some("gpt-4"),
             Some(30),
+            None, // max_agents
+            None, // max_coordinators
             None,
             None,
             None,
@@ -920,6 +1637,9 @@ mod tests {
             None,
             None,
             None,
+            None, // auto_triage
+            None, // auto_place
+            None, // auto_create
             None,
             None,
             None,
@@ -957,7 +1677,8 @@ mod tests {
             None,
             None,
             None,
-            Some(8),
+            Some(8), // max_agents
+            None,    // max_coordinators
             Some(60),
             None,
             Some("shell"),
@@ -972,6 +1693,10 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None, // auto_triage
+            None, // auto_place
+            None, // auto_create
             None,
             None,
             None,
@@ -1008,7 +1733,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // max_agents
+            None, // max_coordinators
             None,
             Some(120),
             None,
@@ -1023,6 +1749,10 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None, // auto_triage
+            None, // auto_place
+            None, // auto_create
             None,
             None,
             None,
@@ -1057,7 +1787,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // max_agents
+            None, // max_coordinators
             None,
             None,
             None,
@@ -1072,6 +1803,10 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None, // auto_triage
+            None, // auto_place
+            None, // auto_create
+            None,
             None,
             None,
             None,
@@ -1167,5 +1902,67 @@ mod tests {
 
         let result = list(temp_dir.path(), true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_install_global() {
+        // Set up a project dir with a config
+        let project_dir = TempDir::new().unwrap();
+        init(project_dir.path(), None).unwrap();
+
+        // Set up a separate "global" dir
+        let global_dir = TempDir::new().unwrap();
+        let global_path = global_dir.path().join("config.toml");
+
+        // Install with --force (no global exists yet)
+        let result = install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_ok());
+        assert!(global_path.exists(), "Global config should be created");
+
+        // Verify contents match
+        let local_content =
+            std::fs::read_to_string(project_dir.path().join("config.toml")).unwrap();
+        let global_content = std::fs::read_to_string(&global_path).unwrap();
+        assert_eq!(local_content, global_content);
+
+        // Install again with --force should overwrite
+        let result = install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_ok());
+
+        // Without project config should fail
+        let empty_dir = TempDir::new().unwrap();
+        let result = install_global_to(empty_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No project config"),
+            "Should mention missing project config"
+        );
+    }
+
+    #[test]
+    fn test_config_install_global_creates_parent_dir() {
+        let project_dir = TempDir::new().unwrap();
+        init(project_dir.path(), None).unwrap();
+
+        // Point to a nested global path that doesn't exist yet
+        let global_base = TempDir::new().unwrap();
+        let global_dir = global_base.path().join("nested").join(".workgraph");
+        let global_path = global_dir.join("config.toml");
+
+        let result = install_global_to(project_dir.path(), &global_path, &global_dir, true);
+        assert!(result.is_ok());
+        assert!(global_path.exists());
+    }
+
+    #[test]
+    fn test_diff_summary() {
+        // Just verify it doesn't panic
+        print_diff_summary(
+            "key1 = \"old\"\nkey2 = \"same\"\n",
+            "key1 = \"new\"\nkey2 = \"same\"\nkey3 = \"added\"\n",
+        );
     }
 }

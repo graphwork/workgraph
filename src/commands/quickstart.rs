@@ -44,6 +44,20 @@ AGENCY SETUP
   • Agent     — a role+tradeoff pairing (default: Careful Programmer)
   • Config    — enables auto_assign and auto_evaluate
 
+  Additional agency toggles:
+    wg config --auto-place true      # Auto-place new tasks in the graph
+    wg config --auto-create true     # Auto-invoke creator agent for new primitives
+
+  Placement: when auto_place is enabled, the coordinator creates .place-* tasks
+  for newly added tasks to determine optimal graph wiring (dependencies, context).
+
+  Model registry: each dispatch role has a tier-based model default. View and
+  configure per-role models:
+    wg config --models                # Show all role→model assignments
+    wg config --set-model <role> <m>  # Set model for a role (e.g., evolver opus)
+    wg config --registry              # Show registered models and tiers
+    wg config --tier <tier>=<model>   # Change which model a tier uses
+
   You can also set up manually:
     wg role add "Name" --outcome "What it produces" --skill skill-name
     wg tradeoff add "Name" --accept "Slow" --reject "Untested"
@@ -342,7 +356,21 @@ fn json_output() -> serde_json::Value {
                 "wg tradeoff add \"Name\" --accept \"...\" --reject \"...\"",
                 "wg agent create \"Name\" --role <hash> --tradeoff <hash>",
                 "wg config --auto-assign true --auto-evaluate true"
-            ]
+            ],
+            "placement": {
+                "description": "When auto_place is enabled, the coordinator creates .place-* tasks for newly added tasks to determine optimal graph wiring.",
+                "enable": "wg config --auto-place true"
+            },
+            "auto_create": {
+                "description": "When auto_create is enabled, the coordinator invokes the creator agent to discover and add new primitives when the store needs expansion.",
+                "enable": "wg config --auto-create true"
+            },
+            "model_registry": {
+                "show_models": "wg config --models",
+                "set_model": "wg config --set-model <role> <model>",
+                "show_registry": "wg config --registry",
+                "set_tier": "wg config --tier <tier>=<model>"
+            }
         },
         "modes": {
             "service": {

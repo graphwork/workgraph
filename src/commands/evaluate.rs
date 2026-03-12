@@ -237,6 +237,39 @@ pub fn run(
         })
         .collect();
 
+    // Step 3.8: Load FLIP score and verify findings (if available)
+    let flip_score = {
+        let evals_dir = agency_dir.join("evaluations");
+        let all_evals = load_all_evaluations_or_warn(&evals_dir);
+        all_evals
+            .iter()
+            .find(|e| e.task_id == task_id && e.source == eval_source::FLIP)
+            .map(|e| e.score)
+    };
+
+    let verify_task_id = format!(".verify-{}", task_id);
+    let verify_task_data = graph.get_task(&verify_task_id);
+    let verify_status_owned: Option<String> = verify_task_data.and_then(|vt| match vt.status {
+        Status::Done => Some("passed".to_string()),
+        Status::Failed => Some("failed".to_string()),
+        _ => None,
+    });
+    let verify_findings_owned: Option<String> = verify_task_data.and_then(|vt| {
+        if vt.log.is_empty() {
+            None
+        } else {
+            let entries: Vec<String> = vt
+                .log
+                .iter()
+                .map(|entry| {
+                    let actor = entry.actor.as_deref().unwrap_or("system");
+                    format!("[{}] ({}): {}", entry.timestamp, actor, entry.message)
+                })
+                .collect();
+            Some(entries.join("\n"))
+        }
+    });
+
     // Step 4: Build evaluator prompt
     let evaluator_input = EvaluatorInput {
         task_title: &task.title,
@@ -253,6 +286,9 @@ pub fn run(
         artifact_diff: artifact_diff.as_deref(),
         evaluator_identity: evaluator_identity.as_deref(),
         downstream_tasks: &downstream_tasks,
+        flip_score,
+        verify_status: verify_status_owned.as_deref(),
+        verify_findings: verify_findings_owned.as_deref(),
     };
 
     let prompt = render_evaluator_prompt(&evaluator_input);
@@ -296,18 +332,44 @@ pub fn run(
     // Step 6: Run lightweight LLM call for evaluation (replaces claude --print)
     println!("Evaluating task '{}' with model '{}'...", task_id, model);
 
-    let timeout_secs = config.agency.triage_timeout.unwrap_or(60);
-    let eval_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::Evaluator,
-        &prompt,
-        timeout_secs,
-    )
-    .context("Evaluation LLM call failed")?;
+    // Eval calls can be slow with large task outputs — use a generous timeout.
+    // The triage_timeout is designed for short triage calls; evals need more.
+    let timeout_secs = config.agency.triage_timeout.unwrap_or(60).max(300);
 
-    // Step 7: Parse the JSON output from the evaluator
-    let eval_json = extract_json(&eval_result.text)
-        .context("Failed to extract valid JSON from evaluator output")?;
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (eval_json, eval_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let eval_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::Evaluator,
+                &prompt,
+                timeout_secs,
+            )
+            .context("Evaluation LLM call failed")?;
+            last_text = eval_result.text;
+            token_usage = eval_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract valid JSON from evaluator output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
@@ -328,6 +390,11 @@ pub fn run(
     let timestamp = chrono::Utc::now().to_rfc3339();
     let eval_id = format!("eval-{}-{}", task_id, timestamp.replace(':', "-"));
 
+    let mut dimensions = parsed.dimensions;
+    if let Some(fs) = flip_score {
+        dimensions.insert("intent_fidelity".to_string(), fs);
+    }
+
     let evaluation = Evaluation {
         id: eval_id,
         task_id: task_id.to_string(),
@@ -335,7 +402,7 @@ pub fn run(
         role_id: role_id.clone(),
         tradeoff_id: tradeoff_id.clone(),
         score: parsed.score,
-        dimensions: parsed.dimensions,
+        dimensions,
         notes: parsed.notes,
         evaluator: format!("claude:{}", model),
         timestamp,
@@ -390,6 +457,9 @@ pub fn run(
             if let Some(b) = evaluation.dimensions.get("blocking_impact") {
                 println!("  blocking_impact:        {:.2}", b);
             }
+            if let Some(f) = evaluation.dimensions.get("intent_fidelity") {
+                println!("  intent_fidelity:        {:.2}", f);
+            }
             println!("Notes:      {}", evaluation.notes);
             println!("Evaluator:  {}", evaluation.evaluator);
             println!("Saved to:   {}", eval_path.display());
@@ -430,14 +500,19 @@ pub fn run(
     }
 
     // Step 8.5: Persist token usage to the .evaluate-* task
-    if let Some(usage) = eval_result.token_usage {
+    if let Some(ref usage) = eval_token_usage {
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
         if let Ok(mut graph) = load_graph(&graph_path)
             && let Some(eval_task) = graph.get_task_mut(&eval_task_id)
         {
-            eval_task.token_usage = Some(usage);
+            eval_task.token_usage = Some(usage.clone());
             let _ = workgraph::parser::save_graph(&graph, &graph_path);
+        }
+        // Emit machine-readable token summary for inline eval capture.
+        // The spawn_eval_inline script greps for this line and calls `wg tokens`.
+        if let Ok(json) = serde_json::to_string(usage) {
+            eprintln!("__WG_TOKENS__:{}", json);
         }
     }
 
@@ -638,16 +713,42 @@ pub fn run_flip(
         inference_model
     );
 
-    let flip_timeout = config.agency.triage_timeout.unwrap_or(60);
-    let inference_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::FlipInference,
-        &inference_prompt,
-        flip_timeout,
-    )
-    .context("FLIP inference LLM call failed")?;
-    let inference_json = extract_json(&inference_result.text)
-        .context("Failed to extract JSON from FLIP inference output")?;
+    let flip_timeout = config.agency.triage_timeout.unwrap_or(60).max(300);
+
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (inference_json, inference_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let inference_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::FlipInference,
+                &inference_prompt,
+                flip_timeout,
+            )
+            .context("FLIP inference LLM call failed")?;
+            last_text = inference_result.text;
+            token_usage = inference_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract JSON from FLIP inference output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed_inference: FlipInferenceOutput = serde_json::from_str(&inference_json)
         .with_context(|| format!("Failed to parse FLIP inference JSON:\n{}", inference_json))?;
@@ -671,15 +772,40 @@ pub fn run_flip(
         comparison_model
     );
 
-    let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::FlipComparison,
-        &comparison_prompt,
-        flip_timeout,
-    )
-    .context("FLIP comparison LLM call failed")?;
-    let comparison_json = extract_json(&comparison_result.text)
-        .context("Failed to extract JSON from FLIP comparison output")?;
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (comparison_json, comparison_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::FlipComparison,
+                &comparison_prompt,
+                flip_timeout,
+            )
+            .context("FLIP comparison LLM call failed")?;
+            last_text = comparison_result.text;
+            token_usage = comparison_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract JSON from FLIP comparison output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed_comparison: FlipComparisonOutput = serde_json::from_str(&comparison_json)
         .with_context(|| format!("Failed to parse FLIP comparison JSON:\n{}", comparison_json))?;
@@ -804,17 +930,20 @@ pub fn run_flip(
         }
     }
 
-    // Persist combined token usage from both FLIP phases to the .evaluate-* task
-    let combined_usage =
-        combine_token_usage(&[inference_result.token_usage, comparison_result.token_usage]);
-    if let Some(usage) = combined_usage {
-        let eval_task_id = format!(".evaluate-{}", task_id);
+    // Persist combined token usage from both FLIP phases to the .flip-* task
+    let combined_usage = combine_token_usage(&[inference_token_usage, comparison_token_usage]);
+    if let Some(ref usage) = combined_usage {
+        let eval_task_id = format!(".flip-{}", task_id);
         let graph_path = super::graph_path(dir);
         if let Ok(mut graph) = load_graph(&graph_path)
             && let Some(eval_task) = graph.get_task_mut(&eval_task_id)
         {
-            eval_task.token_usage = Some(usage);
+            eval_task.token_usage = Some(usage.clone());
             let _ = workgraph::parser::save_graph(&graph, &graph_path);
+        }
+        // Emit machine-readable token summary for inline eval capture.
+        if let Ok(json) = serde_json::to_string(usage) {
+            eprintln!("__WG_TOKENS__:{}", json);
         }
     }
 
@@ -1308,5 +1437,50 @@ mod tests {
         assert!((parsed.score - 0.82).abs() < f64::EPSILON);
         assert_eq!(parsed.dimensions.len(), 4);
         assert_eq!(parsed.notes, "Well implemented but could be more efficient");
+    }
+
+    #[test]
+    fn flip_score_injected_as_intent_fidelity() {
+        let parsed = EvalOutput {
+            score: 0.80,
+            dimensions: {
+                let mut d = HashMap::new();
+                d.insert("correctness".to_string(), 0.9);
+                d
+            },
+            notes: "good".to_string(),
+        };
+        let flip_score: Option<f64> = Some(0.75);
+
+        let mut dimensions = parsed.dimensions;
+        if let Some(fs) = flip_score {
+            dimensions.insert("intent_fidelity".to_string(), fs);
+        }
+
+        assert_eq!(dimensions.get("intent_fidelity"), Some(&0.75));
+        assert_eq!(dimensions.get("correctness"), Some(&0.9));
+        assert_eq!(dimensions.len(), 2);
+    }
+
+    #[test]
+    fn no_intent_fidelity_when_flip_score_none() {
+        let parsed = EvalOutput {
+            score: 0.80,
+            dimensions: {
+                let mut d = HashMap::new();
+                d.insert("correctness".to_string(), 0.9);
+                d
+            },
+            notes: "good".to_string(),
+        };
+        let flip_score: Option<f64> = None;
+
+        let mut dimensions = parsed.dimensions;
+        if let Some(fs) = flip_score {
+            dimensions.insert("intent_fidelity".to_string(), fs);
+        }
+
+        assert!(dimensions.get("intent_fidelity").is_none());
+        assert_eq!(dimensions.len(), 1);
     }
 }

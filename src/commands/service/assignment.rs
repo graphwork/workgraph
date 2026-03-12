@@ -22,6 +22,10 @@ pub(crate) struct AssignmentVerdict {
     /// Brief explanation of the decision.
     #[serde(default)]
     pub reason: String,
+    /// When true, the assigner signals that no good match was found and the
+    /// primitive store should be expanded via the creator agent.
+    #[serde(default)]
+    pub create_needed: bool,
 }
 
 /// Pre-gathered agent catalog entry for prompt rendering.
@@ -180,10 +184,14 @@ Respond with ONLY a JSON object (no markdown fences, no commentary):
   "agent_hash": "<hash prefix of selected agent>",
   "exec_mode": "<shell|bare|light|full>",
   "context_scope": "<clean|task|graph|full>",
-  "reason": "<one-sentence explanation>"
+  "reason": "<one-sentence explanation>",
+  "create_needed": false
 }}
 
-If no suitable agent exists, still pick the closest match — never fail to assign."#
+Always pick the closest match — never fail to assign. If no agent is a good fit
+(the task requires capabilities not represented by any existing agent), still assign
+the best available but set `"create_needed": true` to signal that new agent types
+should be created for future tasks like this."#
     )
 }
 

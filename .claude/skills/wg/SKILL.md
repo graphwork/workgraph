@@ -307,11 +307,11 @@ wg service resume           # Resume dispatching
 | `wg dead-agents --purge --delete-dirs` | Also delete agent work directories when purging |
 | `wg dead-agents --threshold 30` | Override heartbeat timeout threshold (minutes) |
 
-### Agency (roles, motivations, agents)
+### Agency (roles, tradeoffs, agents)
 
 | Command | Purpose |
 |---------|---------|
-| `wg agency init` | Bootstrap agency with starter roles, motivations, and agents |
+| `wg agency init` | Bootstrap agency with starter roles, tradeoffs, and agents |
 | `wg agency stats` | Performance analytics |
 | `wg agency stats --by-model` | Per-model score breakdown |
 | `wg role add <id>` | Create a role |
@@ -319,12 +319,12 @@ wg service resume           # Resume dispatching
 | `wg role show <id>` | Show role details |
 | `wg role edit <id>` | Edit a role |
 | `wg role rm <id>` | Remove a role |
-| `wg motivation add <id>` | Create a motivation |
-| `wg motivation list` | List motivations |
-| `wg motivation show <id>` | Show motivation details |
-| `wg motivation edit <id>` | Edit a motivation |
-| `wg motivation rm <id>` | Remove a motivation |
-| `wg agent create` | Create agent (role+motivation pairing) |
+| `wg tradeoff add <id>` | Create a tradeoff |
+| `wg tradeoff list` | List tradeoffs |
+| `wg tradeoff show <id>` | Show tradeoff details |
+| `wg tradeoff edit <id>` | Edit a tradeoff |
+| `wg tradeoff rm <id>` | Remove a tradeoff |
+| `wg agent create` | Create agent (role+tradeoff pairing) |
 | `wg agent list` | List agents |
 | `wg agent show <hash>` | Show agent details |
 | `wg agent rm <hash>` | Remove an agent |

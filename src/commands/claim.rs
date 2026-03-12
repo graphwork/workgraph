@@ -55,6 +55,9 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         Status::Abandoned => {
             anyhow::bail!("Cannot claim task '{}': task is Abandoned", id);
         }
+        Status::PendingValidation => {
+            anyhow::bail!("Cannot claim task '{}': task is pending validation", id);
+        }
     }
 
     let prev_status = format!("{:?}", task.status);
@@ -115,6 +118,9 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
         Status::Done => anyhow::bail!("Cannot unclaim task '{}': task is Done", id),
         Status::Failed => anyhow::bail!("Cannot unclaim task '{}': task is Failed", id),
         Status::Abandoned => anyhow::bail!("Cannot unclaim task '{}': task is Abandoned", id),
+        Status::PendingValidation => {
+            anyhow::bail!("Cannot unclaim task '{}': task is pending validation", id)
+        }
     }
 
     let prev_assigned = task.assigned.clone();

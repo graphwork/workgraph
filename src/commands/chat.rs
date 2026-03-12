@@ -53,6 +53,7 @@ pub fn run_send(
     message: &str,
     timeout_secs: Option<u64>,
     attachment_paths: &[String],
+    coordinator_id: u32,
 ) -> Result<()> {
     // Validate message size
     if message.len() > MAX_MESSAGE_SIZE {
@@ -106,6 +107,7 @@ pub fn run_send(
             message: full_message,
             request_id: request_id.clone(),
             attachments: attachments.clone(),
+            coordinator_id: Some(coordinator_id),
         },
     )
     .context("Failed to connect to service. Is it running? Start with: wg service start")?;
@@ -118,7 +120,7 @@ pub fn run_send(
     }
 
     // Wait for the coordinator's response (poll outbox)
-    match chat::wait_for_response(dir, &request_id, timeout)? {
+    match chat::wait_for_response_for(dir, coordinator_id, &request_id, timeout)? {
         Some(response) => {
             println!("{}", response.content);
         }
@@ -138,7 +140,7 @@ pub fn run_send(
 }
 
 /// Run interactive chat REPL.
-pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>) -> Result<()> {
+pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>, coordinator_id: u32) -> Result<()> {
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
     // Verify service is running before entering the REPL
@@ -198,6 +200,7 @@ pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>) -> Result<()> {
                 message: msg.to_string(),
                 request_id: request_id.clone(),
                 attachments: vec![],
+                coordinator_id: Some(coordinator_id),
             },
         ) {
             Ok(resp) => resp,
@@ -219,7 +222,7 @@ pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>) -> Result<()> {
         }
 
         // Wait for response
-        match chat::wait_for_response(dir, &request_id, timeout)? {
+        match chat::wait_for_response_for(dir, coordinator_id, &request_id, timeout)? {
             Some(response) => {
                 eprintln!();
                 println!("coordinator> {}", response.content);
@@ -239,8 +242,8 @@ pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>) -> Result<()> {
 }
 
 /// Display chat history (interleaved inbox + outbox by timestamp).
-pub fn run_history(dir: &Path, json: bool) -> Result<()> {
-    let history = chat::read_history(dir)?;
+pub fn run_history(dir: &Path, json: bool, coordinator_id: u32) -> Result<()> {
+    let history = chat::read_history_for(dir, coordinator_id)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&history)?);
@@ -279,10 +282,10 @@ pub fn run_history(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Clear all chat history.
-pub fn run_clear(dir: &Path) -> Result<()> {
-    chat::clear(dir)?;
-    println!("Chat history cleared.");
+/// Clear chat history for a specific coordinator.
+pub fn run_clear(dir: &Path, coordinator_id: u32) -> Result<()> {
+    chat::clear_for(dir, coordinator_id)?;
+    println!("Chat history cleared for coordinator {}.", coordinator_id);
     Ok(())
 }
 
@@ -324,8 +327,8 @@ mod tests {
     fn test_run_history_empty() {
         let (_tmp, dir) = setup();
         // Should not error on empty history
-        run_history(&dir, false).unwrap();
-        run_history(&dir, true).unwrap();
+        run_history(&dir, false, 0).unwrap();
+        run_history(&dir, true, 0).unwrap();
     }
 
     #[test]
@@ -336,7 +339,7 @@ mod tests {
         chat::append_outbox(&dir, "hi there", "req-1").unwrap();
 
         // Should not error
-        run_history(&dir, false).unwrap();
+        run_history(&dir, false, 0).unwrap();
     }
 
     #[test]
@@ -347,7 +350,7 @@ mod tests {
         chat::append_outbox(&dir, "hi there", "req-1").unwrap();
 
         // Should not error
-        run_history(&dir, true).unwrap();
+        run_history(&dir, true, 0).unwrap();
     }
 
     #[test]
@@ -357,7 +360,7 @@ mod tests {
         chat::append_inbox(&dir, "msg", "r1").unwrap();
         chat::append_outbox(&dir, "resp", "r1").unwrap();
 
-        run_clear(&dir).unwrap();
+        run_clear(&dir, 0).unwrap();
 
         let history = chat::read_history(&dir).unwrap();
         assert!(history.is_empty());
@@ -366,7 +369,7 @@ mod tests {
     #[test]
     fn test_send_empty_message_fails() {
         let (_tmp, dir) = setup();
-        let result = run_send(&dir, "  ", None, &[]);
+        let result = run_send(&dir, "  ", None, &[], 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }

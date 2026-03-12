@@ -1,4 +1,5 @@
 mod eval;
+pub mod evolver;
 mod hash;
 mod lineage;
 mod output;
@@ -10,6 +11,7 @@ mod types;
 
 // Re-export everything at the agency:: level for backward compatibility
 pub use eval::*;
+pub use evolver::*;
 pub use hash::*;
 pub use lineage::*;
 pub use output::*;

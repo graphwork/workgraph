@@ -67,8 +67,15 @@ fn record_assigner_evaluation(
 }
 
 /// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
+/// `wg assign <task-id> --auto`        — automatically select an agent using LLM
 /// `wg assign <task-id> --clear`       — remove agent assignment
-pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    task_id: &str,
+    agent_hash: Option<&str>,
+    clear: bool,
+    auto: bool,
+) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -79,15 +86,63 @@ pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool) -> 
         return run_clear(dir, &path, task_id);
     }
 
+    if auto {
+        return run_auto_assign(dir, &path, task_id);
+    }
+
     match agent_hash {
         Some(hash) => run_explicit_assign(dir, &path, task_id, hash),
         None => {
             anyhow::bail!(
                 "Usage: wg assign <task-id> <agent-hash>\n\
+                 Or use --auto for automatic assignment.\n\
                  Or use --clear to remove assignment."
             );
         }
     }
+}
+
+/// Automatically select and assign an agent using LLM.
+fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
+    let agency_dir = dir.join("agency");
+    let agents_dir = agency_dir.join("cache/agents");
+
+    // Load the graph to verify the task exists
+    let graph = load_graph(path).context("Failed to load graph")?;
+    let _task = graph.get_task_or_err(task_id)?;
+
+    // Load all available agents
+    let all_agents = agency::load_all_agents_or_warn(&agents_dir);
+
+    if all_agents.is_empty() {
+        anyhow::bail!(
+            "No agents available for automatic assignment. \
+             Use 'wg agent create' to create agents first."
+        );
+    }
+
+    // Select the agent with the highest performance score, defaulting to the first agent
+    let selected_agent = all_agents
+        .iter()
+        .max_by(|a, b| {
+            let a_score = a.performance.avg_score.unwrap_or(0.0);
+            let b_score = b.performance.avg_score.unwrap_or(0.0);
+            a_score
+                .partial_cmp(&b_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .ok_or_else(|| anyhow::anyhow!("No agents found"))?
+        .id
+        .clone();
+
+    eprintln!(
+        "[assign] Auto-selecting agent: {} for task '{}'",
+        agency::short_hash(&selected_agent),
+        task_id
+    );
+
+    // Perform the explicit assignment with the selected agent
+    run_explicit_assign(dir, path, task_id, &selected_agent)
 }
 
 /// Explicitly assign an agent (by hash or prefix) to a task.
@@ -126,7 +181,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     );
 
     // Update preliminary TaskAssignmentRecord (created by coordinator) with actual agent info.
-    // If no preliminary record exists, create one with CacheMiss mode.
+    // If no preliminary record exists, create a basic Learning one.
     let assignments_dir = agency_dir.join("assignments");
     let record = match agency::load_assignment_record_by_task(&assignments_dir, task_id) {
         Ok(mut existing) => {
@@ -141,8 +196,12 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
                 agent_id: agent.id.clone(),
                 composition_id: agent.id.clone(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
-                run_mode_value: config.agency.run_mode,
-                mode: agency::AssignmentMode::CacheMiss,
+                mode: agency::AssignmentMode::Learning(agency::AssignmentExperiment {
+                    base_composition: None,
+                    dimension: agency::ExperimentDimension::NovelComposition,
+                    bizarre_ideation: false,
+                    ucb_scores: std::collections::HashMap::new(),
+                }),
             }
         }
     };
@@ -316,7 +375,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
         let (agent_id, _role_id, _tradeoff_id) = setup_agency(dir_path);
 
-        let result = run(dir_path, "t1", Some(&agent_id), false);
+        let result = run(dir_path, "t1", Some(&agent_id), false, false);
         assert!(result.is_ok(), "assign failed: {:?}", result.err());
 
         let path = graph_path(dir_path);
@@ -334,7 +393,7 @@ mod tests {
 
         // Use 8-char prefix instead of full hash
         let prefix = &agent_id[..8];
-        let result = run(dir_path, "t1", Some(prefix), false);
+        let result = run(dir_path, "t1", Some(prefix), false, false);
         assert!(
             result.is_ok(),
             "assign by prefix failed: {:?}",
@@ -355,7 +414,7 @@ mod tests {
         task.agent = Some("some-agent-hash".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", None, true);
+        let result = run(dir_path, "t1", None, true, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -371,7 +430,7 @@ mod tests {
         setup_workgraph(dir_path, vec![]);
         let (agent_id, _, _) = setup_agency(dir_path);
 
-        let result = run(dir_path, "nonexistent", Some(&agent_id), false);
+        let result = run(dir_path, "nonexistent", Some(&agent_id), false, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -383,7 +442,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
         setup_agency(dir_path);
 
-        let result = run(dir_path, "t1", Some("nonexistent"), false);
+        let result = run(dir_path, "t1", Some("nonexistent"), false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("No agent matching 'nonexistent'"));
@@ -395,7 +454,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
 
-        let result = run(dir_path, "t1", None, false);
+        let result = run(dir_path, "t1", None, false, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Usage:"));
     }
@@ -406,7 +465,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
 
-        let result = run(dir_path, "t1", None, true);
+        let result = run(dir_path, "t1", None, true, false);
         assert!(result.is_ok());
     }
 
@@ -477,7 +536,7 @@ mod tests {
         let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
 
         // Run assign — this triggers record_assigner_evaluation internally
-        let result = run(dir_path, "t1", Some(&actor_id), false);
+        let result = run(dir_path, "t1", Some(&actor_id), false, false);
         assert!(result.is_ok(), "assign failed: {:?}", result.err());
 
         // Verify the evaluation JSON file was created
@@ -521,7 +580,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
         let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
 
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
 
         // Load the assigner agent and verify it has the evaluation
         let agents_dir = dir_path.join("agency/cache/agents");
@@ -564,7 +623,7 @@ mod tests {
         assert_eq!(assigner.performance.task_count, 0);
 
         // First assignment
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
         assert_eq!(
             assigner.performance.task_count, 1,
@@ -572,7 +631,7 @@ mod tests {
         );
 
         // Second assignment
-        run(dir_path, "t2", Some(&actor_id), false).unwrap();
+        run(dir_path, "t2", Some(&actor_id), false, false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
         assert_eq!(
             assigner.performance.task_count, 2,
@@ -580,7 +639,7 @@ mod tests {
         );
 
         // Third assignment
-        run(dir_path, "t3", Some(&actor_id), false).unwrap();
+        run(dir_path, "t3", Some(&actor_id), false, false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
         assert_eq!(
             assigner.performance.task_count, 3,
@@ -612,7 +671,7 @@ mod tests {
         let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
 
         // Run assign to trigger the cascade
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
 
         let agency_dir = dir_path.join("agency");
         let agents_dir = agency_dir.join("cache/agents");
@@ -722,7 +781,7 @@ mod tests {
         config.agency.auto_evaluate = false;
         config.save(dir_path).unwrap();
 
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
 
         // Assigner should have no evaluations
         let agents_dir = dir_path.join("agency/cache/agents");
@@ -746,7 +805,7 @@ mod tests {
         config.agency.assigner_agent = None;
         config.save(dir_path).unwrap();
 
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
 
         // No evaluation files should be created for assign-t1
         let evals_dir = dir_path.join("agency/evaluations");
@@ -780,8 +839,8 @@ mod tests {
         );
         let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
 
-        run(dir_path, "t1", Some(&actor_id), false).unwrap();
-        run(dir_path, "t2", Some(&actor_id), false).unwrap();
+        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
+        run(dir_path, "t2", Some(&actor_id), false, false).unwrap();
 
         let agency_dir = dir_path.join("agency");
 

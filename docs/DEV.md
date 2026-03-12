@@ -65,12 +65,115 @@ wg list --status open             # what's pending
 wg unclaim <task>                 # clear stale assignment
 ```
 
+## Worktree Isolation
+
+When multiple agents run concurrently, each gets its own git worktree to prevent build interference and file conflicts.
+
+### How it works
+
+Enable in config:
+```toml
+[coordinator]
+worktree_isolation = true
+merge_strategy = "squash"   # "merge", "squash", or "rebase"
+```
+
+The coordinator creates a worktree per agent at spawn time:
+1. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
+2. Symlinks `.workgraph` into the worktree (shared task state)
+3. Agent runs inside `.wg-worktrees/<agent-id>/`
+4. On completion: squash-merges branch back to main, removes worktree
+
+### Directory structure
+
+```
+.wg-worktrees/           # in .gitignore
+├── agent-42/             # full working tree for agent-42
+│   ├── .git              # file pointing to .git/worktrees/agent-42
+│   ├── .workgraph -> /abs/path/.workgraph   # symlink (shared state)
+│   └── src/              # independent file copy
+└── agent-43/             # another agent's worktree
+```
+
+Branch naming: `wg/<agent-id>/<task-id>` (e.g. `wg/agent-42/implement-auth`).
+
+### Cleanup
+
+```bash
+git worktree list              # see all worktrees
+git worktree prune             # remove stale admin entries
+git worktree remove .wg-worktrees/<agent-id>   # remove specific worktree
+```
+
+On service startup, `cleanup_orphaned_worktrees()` in `src/commands/service/worktree.rs` scans `.wg-worktrees/` and removes worktrees whose agents are no longer alive. Stale worktrees older than a threshold can be pruned via `prune_stale_worktrees()`.
+
+See `docs/WORKTREE-ISOLATION.md` for the full research report and design rationale.
+
+## Agency Pipeline Setup
+
+The agency system automates agent assignment, evaluation, and evolution. Enable the pipeline:
+
+```bash
+# Enable auto-assign and auto-evaluate
+wg config --auto-assign true --auto-evaluate true
+
+# Start the service — the coordinator creates assign-{task} and evaluate-{task}
+# meta-tasks automatically
+wg service start
+wg add "Implement feature X" --skill rust
+```
+
+### FLIP pipeline
+
+FLIP (Fidelity via Latent Intent Probing) validates task output by reconstructing the prompt from the output and comparing it to the original. It runs as part of the evaluation pipeline.
+
+FLIP uses two model roles:
+- **FlipInference** (standard tier, default: sonnet) — reconstructs the prompt
+- **FlipComparison** (fast tier, default: haiku) — scores similarity
+
+Low FLIP scores can trigger **Verification** tasks (premium tier, default: opus) for deeper review.
+
+### Evolution
+
+After accumulating evaluations, evolve the agency:
+
+```bash
+wg evolve run                                  # full cycle, all strategies
+wg evolve run --strategy mutation --budget 3   # targeted changes
+wg evolve run --dry-run                        # preview without applying
+```
+
+Strategies: `mutation`, `crossover`, `gap-analysis`, `retirement`, `tradeoff-tuning`, `all` (default).
+
+See `docs/AGENCY.md` for the full agency system reference.
+
 ## Model Defaults
 
-- **Agents**: configurable via `wg config` or per-task `--model`
-- **Evaluator**: haiku (lightweight, cheap — set by `wg agency init`)
-- **Assigner**: haiku (same rationale)
-- Hierarchy: task `--model` > executor model > coordinator model > `"default"`
+Models are routed per-role via the `DispatchRole` enum (`src/config.rs`). Each role maps to a quality tier:
+
+| Tier | Default Model | Roles |
+|------|---------------|-------|
+| **fast** | haiku | Triage, FlipComparison, Assigner |
+| **standard** | sonnet | TaskAgent, Evaluator, FlipInference, Evolver, Default |
+| **premium** | opus | Creator, Verification |
+
+Resolution hierarchy (highest priority first):
+1. `task.model` / `task.provider` — per-task override
+2. `[models.<role>].model` — role-specific config
+3. `[models.<role>].tier` — role-to-tier override
+4. `DispatchRole::default_tier()` — built-in tier mapping (table above)
+5. `[models.default]` — project-wide default
+6. `agent.model` — global fallback
+
+```bash
+# Set tier defaults
+wg config --tier fast=haiku --tier standard=sonnet --tier premium=opus
+
+# Override a role's tier
+wg config --model-role task_agent --tier premium
+```
+
+See `docs/MODEL_REGISTRY.md` for the full registry design (multi-provider support, cost tracking, budget hooks).
 
 ## Common Pitfalls
 
@@ -78,3 +181,6 @@ wg unclaim <task>                 # clear stale assignment
 - `wg evaluate` requires `run` subcommand: `wg evaluate run <task-id>`
 - `wg retry` must clear `assigned` field or coordinator skips the task
 - `--output-format stream-json` requires `--verbose` with `--print` in Claude CLI
+- **Worktree stale state**: concurrent agents without worktree isolation caused 38 stashes and cross-agent contamination in SPARK v3. Never run `git stash` in a multi-agent setup — commit or discard instead. Enable `worktree_isolation = true` when running 2+ agents.
+- **Branch management with concurrent agents**: each worktree uses `wg/<agent-id>/<task-id>` branches. On agent death, orphaned worktrees and branches accumulate. Service startup auto-cleans orphans; run `git worktree prune` and `git branch -d wg/...` manually if needed.
+- **FLIP false negatives on human-integration tasks**: FLIP scored notification/webhook tasks 0.29-0.46 despite correct implementations, because these tasks produce side effects (sending messages) rather than code artifacts FLIP can compare. Consider manual evaluation or outcome-based scoring for side-effect-heavy tasks.

@@ -1,9 +1,8 @@
-//! Run mode continuum: assignment routing, UCB1 primitive selection,
-//! novelty bonus, and retrospective inference.
+//! Assignment routing, UCB1 primitive selection, novelty bonus, and
+//! retrospective inference.
 //!
-//! Implements the performance/learning continuum described in the run-modes
-//! design document. Controls how task assignments are routed between
-//! cache-first performance mode and structured learning experiments.
+//! All assignments go through the LLM-based learning path with structured
+//! experiments. ForcedExploration fires on interval triggers.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,8 +19,6 @@ use super::types::*;
 /// Which path a single assignment should take.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AssignmentPath {
-    /// Use cached agent (performance mode).
-    Performance,
     /// Run a structured learning experiment.
     Learning,
     /// Forced exploration episode (exploration_interval trigger).
@@ -30,28 +27,16 @@ pub enum AssignmentPath {
 
 /// Determine the assignment path for a given task.
 ///
-/// `task_count` is the total number of assignments made so far (used for
-/// exploration_interval checks). `rng_value` is a uniform random number
-/// in [0, 1) for probabilistic routing.
-pub fn determine_assignment_path(
-    config: &AgencyConfig,
-    task_count: u32,
-    rng_value: f64,
-) -> AssignmentPath {
-    // Forced exploration takes precedence
+/// All assignments go through the LLM. `ForcedExploration` fires on
+/// interval triggers to vary experiment parameters; otherwise `Learning`.
+pub fn determine_assignment_path(config: &AgencyConfig, task_count: u32) -> AssignmentPath {
     if config.exploration_interval > 0
         && task_count > 0
         && task_count.is_multiple_of(config.exploration_interval)
     {
-        return AssignmentPath::ForcedExploration;
-    }
-
-    let effective_rate = config.run_mode.max(config.min_exploration_rate);
-
-    if rng_value < effective_rate {
-        AssignmentPath::Learning
+        AssignmentPath::ForcedExploration
     } else {
-        AssignmentPath::Performance
+        AssignmentPath::Learning
     }
 }
 
@@ -269,30 +254,6 @@ pub fn design_experiment(
 }
 
 // ---------------------------------------------------------------------------
-// Performance mode: cache lookup
-// ---------------------------------------------------------------------------
-
-/// Find the best cached agent for a task.
-///
-/// Returns (agent, score) if a suitable agent is found above threshold.
-pub fn find_cached_agent(agency_dir: &Path, threshold: f64) -> Option<(Agent, f64)> {
-    let agents_dir = agency_dir.join("cache/agents");
-    let agents = load_all_agents_or_warn(&agents_dir);
-
-    agents
-        .into_iter()
-        .filter_map(|a| {
-            let score = a.performance.avg_score?;
-            if score >= threshold && a.staleness_flags.is_empty() {
-                Some((a, score))
-            } else {
-                None
-            }
-        })
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-}
-
-// ---------------------------------------------------------------------------
 // Retrospective inference
 // ---------------------------------------------------------------------------
 
@@ -319,7 +280,6 @@ pub fn process_retrospective_inference(
 
     let experiment = match &record.mode {
         AssignmentMode::Learning(exp) | AssignmentMode::ForcedExploration(exp) => exp.clone(),
-        AssignmentMode::CacheHit { .. } | AssignmentMode::CacheMiss => return Ok(()),
     };
 
     let components_dir = agency_dir.join("primitives/components");
@@ -420,14 +380,11 @@ mod tests {
 
     fn test_config() -> AgencyConfig {
         AgencyConfig {
-            run_mode: 0.2,
-            min_exploration_rate: 0.05,
             exploration_interval: 20,
             cache_population_threshold: 0.8,
             ucb_exploration_constant: std::f64::consts::SQRT_2,
             novelty_bonus_multiplier: 1.5,
             bizarre_ideation_interval: 10,
-            performance_threshold: 0.7,
             ..AgencyConfig::default()
         }
     }
@@ -435,94 +392,53 @@ mod tests {
     // -- Assignment routing tests --
 
     #[test]
-    fn test_pure_performance_mode() {
+    fn test_always_learning_mode() {
         let mut config = test_config();
-        config.run_mode = 0.0;
-        config.min_exploration_rate = 0.0;
         config.exploration_interval = 0;
 
-        // Every assignment should be Performance
+        // Every assignment should be Learning
         for i in 0..100 {
             assert_eq!(
-                determine_assignment_path(&config, i, 0.5),
-                AssignmentPath::Performance,
-            );
-        }
-    }
-
-    #[test]
-    fn test_pure_learning_mode() {
-        let mut config = test_config();
-        config.run_mode = 1.0;
-        config.exploration_interval = 0;
-
-        // Every assignment should be Learning (rng always < 1.0)
-        for i in 0..100 {
-            assert_eq!(
-                determine_assignment_path(&config, i, 0.99),
+                determine_assignment_path(&config, i),
                 AssignmentPath::Learning,
             );
         }
     }
 
     #[test]
-    fn test_min_exploration_rate() {
-        let mut config = test_config();
-        config.run_mode = 0.0;
-        config.min_exploration_rate = 0.05;
-        config.exploration_interval = 0;
-
-        // rng < 0.05 should trigger Learning
-        assert_eq!(
-            determine_assignment_path(&config, 1, 0.01),
-            AssignmentPath::Learning,
-        );
-        // rng >= 0.05 should be Performance
-        assert_eq!(
-            determine_assignment_path(&config, 1, 0.06),
-            AssignmentPath::Performance,
-        );
-    }
-
-    #[test]
     fn test_forced_exploration_interval() {
         let mut config = test_config();
-        config.run_mode = 0.0;
-        config.min_exploration_rate = 0.0;
         config.exploration_interval = 10;
 
         // task_count=10: forced
         assert_eq!(
-            determine_assignment_path(&config, 10, 0.99),
+            determine_assignment_path(&config, 10),
             AssignmentPath::ForcedExploration,
         );
         // task_count=20: forced
         assert_eq!(
-            determine_assignment_path(&config, 20, 0.99),
+            determine_assignment_path(&config, 20),
             AssignmentPath::ForcedExploration,
         );
-        // task_count=11: not forced
+        // task_count=11: not forced — Learning
         assert_eq!(
-            determine_assignment_path(&config, 11, 0.99),
-            AssignmentPath::Performance,
+            determine_assignment_path(&config, 11),
+            AssignmentPath::Learning,
         );
         // task_count=0: not forced (avoid triggering on first task)
         assert_eq!(
-            determine_assignment_path(&config, 0, 0.99),
-            AssignmentPath::Performance,
+            determine_assignment_path(&config, 0),
+            AssignmentPath::Learning,
         );
     }
 
     #[test]
-    fn test_forced_exploration_overrides_performance() {
+    fn test_forced_exploration_fires_on_interval() {
         let mut config = test_config();
-        config.run_mode = 0.0;
-        config.min_exploration_rate = 0.0;
         config.exploration_interval = 5;
 
-        // Even with rng_value = 0.99, forced exploration fires at task 5
         assert_eq!(
-            determine_assignment_path(&config, 5, 0.99),
+            determine_assignment_path(&config, 5),
             AssignmentPath::ForcedExploration,
         );
     }
@@ -623,38 +539,5 @@ mod tests {
         let config = test_config();
         let result = process_retrospective_inference(&agency_dir, "nonexistent-task", 0.9, &config);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_retrospective_cache_hit_is_noop() {
-        let tmp = TempDir::new().unwrap();
-        let agency_dir = tmp.path().join("agency");
-        init(&agency_dir).unwrap();
-
-        let record = TaskAssignmentRecord {
-            task_id: "task-1".to_string(),
-            agent_id: "agent-abc".to_string(),
-            composition_id: "comp-xyz".to_string(),
-            timestamp: "2025-01-01T00:00:00Z".to_string(),
-            run_mode_value: 0.0,
-            mode: AssignmentMode::CacheHit { cache_score: 0.9 },
-        };
-        save_assignment_record(&record, &agency_dir.join("assignments")).unwrap();
-
-        let config = test_config();
-        let result = process_retrospective_inference(&agency_dir, "task-1", 0.9, &config);
-        assert!(result.is_ok());
-    }
-
-    // -- Find cached agent tests --
-
-    #[test]
-    fn test_find_cached_agent_none() {
-        let tmp = TempDir::new().unwrap();
-        let agency_dir = tmp.path().join("agency");
-        init(&agency_dir).unwrap();
-
-        let result = find_cached_agent(&agency_dir, 0.7);
-        assert!(result.is_none());
     }
 }

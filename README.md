@@ -112,7 +112,7 @@ wg agent create "Erik" \
 # AI agent
 wg agent create "Claude Coder" \
   --role <role-hash> \
-  --motivation <motivation-hash> \
+  --tradeoff <tradeoff-hash> \
   --capabilities coding,testing,docs
 ```
 
@@ -131,20 +131,21 @@ wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 
 ### 7. Verification workflow
 
-Tasks created with `--verify` require human approval before completion:
+Tasks created with `--verify` go through a validation gate before completion. When an agent calls `wg done`, the task transitions to `PendingValidation` instead of `Done`:
 
 ```bash
 # Create a task that needs review
 wg add "Security audit" --verify "All findings documented with severity ratings"
 
-# Agent works on it, then marks it done
+# Agent works on it, then marks it done — status becomes PendingValidation
 wg done security-audit
 
-# The verify field is recorded for human reviewers to check
-wg show security-audit
+# Reviewer approves or rejects
+wg approve security-audit                          # transitions to Done
+wg reject security-audit --reason "Missing CVE references"  # reopens for rework
 ```
 
-The verify criteria are stored on the task for auditing and review purposes.
+Rejected tasks reopen for the agent to address feedback. After too many rejections (default: 3), the task is failed automatically. See [docs/COMMANDS.md](docs/COMMANDS.md) for full details.
 
 ## Using with AI Coding Assistants
 
@@ -450,13 +451,21 @@ Launch the interactive terminal dashboard:
 wg tui [--refresh-rate 2000]  # default: 2000ms refresh
 ```
 
-The TUI has three views:
+The TUI has three main views plus a rich inspector panel:
 
 **Dashboard** — split-pane showing tasks (left) and agents (right) with status bars.
 
-**Graph Explorer** — tree view of the dependency graph with task status and active agent indicators.
+**Graph Explorer** — tree view of the dependency graph with task status and active agent indicators. Touch drag-to-pan is supported for mobile terminals (Termux).
 
 **Log Viewer** — real-time tailing of agent output with auto-scroll.
+
+**Inspector panel** — nine tabbed views accessible via `Alt+Left`/`Alt+Right` (with slide animation): Chat, Detail, Log, Messages, Agency, Config, Files, Coordinator Log, and Firehose. The Firehose tab is a combined live stream of all agent activity. Resize the inspector with `i` (cycle through 1/3 → 1/2 → 2/3 → full) and `I` (shrink back).
+
+**Status bar features:**
+- Service health badge — colored dot (green/yellow/red) with tap-to-inspect showing service state, stuck tasks, and control actions
+- Token display — shows novel vs cached input split per task
+- Lifecycle indicators — Unicode symbols for agency phases (⊳ assigning, ∴ evaluating, validating, verifying) rendered in pink
+- Markdown rendering with syntax highlighting (pulldown-cmark + syntect) in detail views
 
 #### Keybindings
 
@@ -529,16 +538,16 @@ wg service status
 
 ## Agency system
 
-The agency system gives agents composable identities — a **role** (what it does) paired with a **motivation** (why it acts that way). Instead of every spawned agent being a generic assistant, the agency system lets you define specialized agents that are evaluated and evolved over time.
+The agency system gives agents composable identities — a **role** (what it does) paired with a **tradeoff** (why it acts that way). Instead of every spawned agent being a generic assistant, the agency system lets you define specialized agents that are evaluated and evolved over time.
 
 ### Quick start
 
 ```bash
-# Seed built-in starter roles and motivations
+# Seed built-in starter roles and tradeoffs
 wg agency init
 
 # Create an agent pairing
-wg agent create "Careful Coder" --role <role-hash> --motivation <motivation-hash>
+wg agent create "Careful Coder" --role <role-hash> --tradeoff <tradeoff-hash>
 
 # Assign the agent identity to a task
 wg assign my-task <agent-hash>
@@ -549,14 +558,20 @@ wg assign my-task <agent-hash>
 ### What it does
 
 1. **Roles** define skills and desired outcomes ("Programmer" → working, tested code)
-2. **Motivations** define trade-offs and constraints ("Careful" → prioritizes reliability, rejects untested code)
-3. **Agents** pair one role + one motivation into a named identity
+2. **Tradeoffs** define trade-offs and constraints ("Careful" → prioritizes reliability, rejects untested code)
+3. **Agents** pair one role + one tradeoff into a named identity
 4. **Assignment** binds an agent to a task — its identity is injected at spawn time
 5. **Evaluation** scores completed tasks across four dimensions:
    - `wg evaluate run <task>` — trigger LLM-based evaluation
    - `wg evaluate record --task <id> --score <n> --source <tag>` — record external signals (CI, peer review)
    - `wg evaluate show` — view evaluation history
-6. **Evolution** uses performance data to create new roles/motivations and retire weak ones
+6. **Evolution** uses performance data to create new roles/tradeoffs and retire weak ones
+
+### FLIP pipeline
+
+FLIP (Fidelity via Latent Intent Probing) is an independent second-opinion scoring system. After a task completes, an LLM reconstructs what the task must have been from only the agent's output, then a comparison scores how well the output matched the actual task description. Low FLIP scores (below threshold) automatically trigger verification tasks where a stronger model independently checks the work.
+
+The full agency loop: **eval → FLIP → verify → evolve**. Evaluation grades quality, FLIP grades fidelity, verification catches low-confidence results, and evolution uses performance data to improve agent identities.
 
 ### Automation
 
@@ -575,9 +590,9 @@ When the coordinator ticks, it automatically creates `assign-{task}` and `evalua
 ### Evolution
 
 ```bash
-wg evolve                              # full evolution cycle
-wg evolve --strategy mutation --budget 3  # targeted changes
-wg evolve --dry-run                    # preview without applying
+wg evolve run                              # full evolution cycle
+wg evolve run --strategy mutation --budget 3  # targeted changes
+wg evolve run --dry-run                    # preview without applying
 ```
 
 ### Federation
@@ -587,7 +602,7 @@ Share agency entities across projects:
 ```bash
 wg agency remote add partner /path/to/other/project/.workgraph/agency
 wg agency scan partner              # see what they have
-wg agency pull partner              # import their roles, motivations, agents
+wg agency pull partner              # import their roles, tradeoffs, agents
 wg agency push partner              # export yours to them
 ```
 
@@ -604,6 +619,32 @@ wg peer status                      # quick health check of all peers
 ```
 
 See [docs/AGENCY.md](docs/AGENCY.md) for the full agency system documentation.
+
+## Communication
+
+Agents and humans can exchange messages on tasks using `wg msg`:
+
+```bash
+# Send a message to a task (any agent working on it will see it)
+wg msg send my-task "The API schema changed — use v2 endpoints"
+
+# Read messages as an agent
+wg msg read my-task --agent $WG_AGENT_ID
+```
+
+For interactive conversation with the coordinator agent, use `wg chat`:
+
+```bash
+wg chat "What's the status of the auth refactor?"
+```
+
+See [docs/COMMANDS.md](docs/COMMANDS.md) for full messaging options.
+
+## Agent isolation
+
+When the service spawns multiple agents concurrently, each agent operates in its own [git worktree](https://git-scm.com/docs/git-worktree) to avoid file conflicts. Each worktree has an independent working tree and index while sharing the same repository, so agents can build, test, and commit without interfering with each other.
+
+See [docs/WORKTREE-ISOLATION.md](docs/WORKTREE-ISOLATION.md) for the full design and implementation details.
 
 ## Graph locking
 
@@ -772,9 +813,9 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 ## Key concepts
 
-**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
+**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`, `pending-validation`, `waiting`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
 
-**Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
+**Agents** are humans or AIs that do work. They can be AI agents (with a role and tradeoff that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 
 **The graph** is tasks connected by dependency edges (the `after` field). A task is waiting until all its dependencies reach a terminal status. Concurrent writes are protected by flock-based file locking.
 
@@ -782,7 +823,7 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 **Trajectories**: For AI agents, `wg trajectory <task>` suggests the best order to claim related tasks, minimizing context switches.
 
-**Agency**: Composable agent identities (role + motivation) that are assigned to tasks, evaluated after completion, and evolved over time based on performance data.
+**Agency**: Composable agent identities (role + tradeoff) that are assigned to tasks, evaluated after completion, and evolved over time based on performance data.
 
 ## Query and analysis
 
@@ -882,11 +923,17 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
   functions/               # Trace functions (workflow templates)
     <name>.yaml
   agency/
-    roles/                 # Role YAML files (keyed by content-hash)
-    motivations/           # Motivation YAML files
-    agents/                # Agent YAML files (role+motivation pairings)
-    evaluations/           # Evaluation records (JSON)
-    evolver-skills/        # Strategy-specific skill documents for evolution
+    primitives/
+      components/              # Skill components (atomic capabilities)
+      outcomes/                # Desired outcomes
+      tradeoffs/               # Tradeoff definitions
+    cache/
+      roles/                   # Composed roles (component_ids + outcome_id)
+      agents/                  # Agent definitions (role + tradeoff pairs)
+    evaluations/               # Evaluation records (JSON)
+    evolver-skills/            # Strategy-specific guidance documents
+    coordinator-prompt/        # Coordinator prompt files
+    deferred-ops/              # Deferred evolution operations
 ```
 
 ## More docs
@@ -894,7 +941,7 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Complete command reference
 - [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) - Deep dive on agent operation
 - [docs/AGENT-SERVICE.md](docs/AGENT-SERVICE.md) - Service architecture and coordinator lifecycle
-- [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, motivations, evaluation, evolution
+- [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, tradeoffs, evaluation, evolution
 - [docs/LOGGING.md](docs/LOGGING.md) - Provenance logging and the operations log
 - [docs/DEV.md](docs/DEV.md) - Developer notes
 - [docs/KEY_DOCS.md](docs/KEY_DOCS.md) - Documentation inventory and status

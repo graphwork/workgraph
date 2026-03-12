@@ -913,6 +913,91 @@ mod tui_editor_tests {
         );
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Paste tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// Helper: simulate pasting text into the chat editor.
+    fn paste_into_chat(app: &mut VizApp, text: &str) {
+        crate::tui::viz_viewer::state::paste_insert_mode(text, &mut app.chat.editor);
+    }
+
+    #[test]
+    fn test_paste_cursor_position() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        paste_into_chat(&mut app, "hello");
+        assert_eq!(editor_text(&app.chat.editor), "hello");
+        assert_eq!(
+            app.chat.editor.cursor.col, 5,
+            "cursor should be at col 5 (after 'hello'), got {}",
+            app.chat.editor.cursor.col
+        );
+        assert_eq!(app.chat.editor.cursor.row, 0);
+
+        // Typing after paste should append
+        send_chat_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert_eq!(editor_text(&app.chat.editor), "hello!");
+    }
+
+    #[test]
+    fn test_paste_cursor_position_multiline() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        paste_into_chat(&mut app, "line1\nline2");
+        assert_eq!(editor_text(&app.chat.editor), "line1\nline2");
+        assert_eq!(app.chat.editor.cursor.row, 1);
+        assert_eq!(
+            app.chat.editor.cursor.col, 5,
+            "cursor should be at col 5 (after 'line2'), got {}",
+            app.chat.editor.cursor.col
+        );
+
+        // Typing after paste should append to line2
+        send_chat_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert_eq!(editor_text(&app.chat.editor), "line1\nline2!");
+    }
+
+    #[test]
+    fn test_paste_into_existing_text() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        type_string(&mut app, "ac");
+        // Move cursor back one so it's between 'a' and 'c'
+        send_chat_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        paste_into_chat(&mut app, "b");
+        assert_eq!(editor_text(&app.chat.editor), "abc");
+        // Cursor should be after the pasted 'b' (col 2), before 'c'
+        assert_eq!(app.chat.editor.cursor.col, 2);
+    }
+
+    #[test]
+    fn test_paste_ending_with_newline() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        paste_into_chat(&mut app, "hello\n");
+        assert_eq!(editor_text(&app.chat.editor), "hello\n");
+        // Cursor should be at start of the new empty line
+        assert_eq!(app.chat.editor.cursor.row, 1);
+        assert_eq!(app.chat.editor.cursor.col, 0);
+    }
+
+    #[test]
+    fn test_paste_empty_string() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        type_string(&mut app, "abc");
+        let cursor_before = app.chat.editor.cursor;
+        paste_into_chat(&mut app, "");
+        assert_eq!(app.chat.editor.cursor, cursor_before);
+        assert_eq!(editor_text(&app.chat.editor), "abc");
+    }
+
     #[test]
     fn tui_editor_ctrl_u_kills_to_beginning() {
         let mut app = make_editor_test_app();

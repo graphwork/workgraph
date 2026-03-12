@@ -43,37 +43,74 @@ The daemon runs a coordinator tick on two triggers:
 Each tick does:
 
 ```
-1. Reap zombie child processes (waitpid for exited agents)
-2. Clean up dead agents (process exited or heartbeat stale)
-3. Count alive agents → if >= max_agents, stop here
-4. Compute cycle analysis (Tarjan SCC) for back-edge exemption
-5. Get ready tasks (open, all blockers done, not_before passed)
-   - Cycle headers get back-edge exemption: predecessors within the
-     same cycle that form back-edges are exempt from readiness checks
-     (only when the header has a CycleConfig)
+ 0. Process chat inbox (user-facing, runs before capacity checks)
 
-6. [IF auto_assign enabled]
-   For each unassigned ready task (no agent field):
-     Skip meta-tasks (tagged assignment/evaluation/evolution)
-     Create assign-{task-id} blocker task
-     Set assigner_model and assigner_agent on the new task
-     The assigner runs: wg agent list, wg role list, then wg assign <task> <agent-hash>
+ 1. Clean up dead agents (process exited) and count alive
+    → If alive >= max_agents, stop here (early return)
 
-7. [IF auto_evaluate enabled]
-   For each completed task without an existing evaluate-{task-id}:
-     Skip meta-tasks (tagged evaluation/assignment/evolution)
-     Create evaluate-{task-id} blocked by the original task
-     Set evaluator_model and evaluator_agent on the new task
-     Unblock eval tasks whose source task is Failed (so failures get evaluated too)
+ 1.3 Zero-output agent detection
+     Kill agents alive 5+ min with 0 bytes written to stream files
+     Three-layer circuit breaker:
+       a) Agent-level: kill the zombie agent, unclaim its task
+       b) Per-task: after 2 consecutive zero-output spawns, fail the task
+       c) Global API-down: if ≥50% of alive agents are zero-output,
+          pause all spawning with exponential backoff (60s → 15min max)
 
-8. Spawn agents on ready tasks:
-     Resolve effective model: task.model > executor.model > coordinator.model
-     Register agent in AgentRegistry
-     Detach with setsid()
+ 1.5 Auto-checkpoint alive agents (if turn/time thresholds are met)
 
-9. Evaluate cycle iteration on completed tasks:
-     If all members of a cycle are Done and cycle hasn't converged
-     or hit max_iterations → re-open all members for next iteration
+ 2. Load graph
+
+ 2.5 Cycle iteration evaluation
+     If all members of a cycle are Done and the cycle hasn't converged
+     or hit max_iterations → re-open all members for the next iteration
+
+ 2.6 Cycle failure restart
+     If a cycle member is Failed and restart_on_failure is true (default)
+     → re-activate the cycle for another attempt
+
+ 2.7 Wait/resume evaluation
+     Check Waiting tasks for satisfied conditions (task status, timer,
+     human input, message) and transition them back to Open.
+     Detect and fail circular waits.
+
+ 2.8 Message-triggered resurrection
+     Scan Done tasks for unread messages from whitelisted senders
+     (user, coordinator, dependent-task agents). Reopen the task so
+     the next agent can address the message. Rate-limited: max 3
+     resurrections per task with cooldown.
+
+ 3. [IF auto_assign enabled]
+    For each unassigned ready task (no agent field):
+      Skip meta-tasks (tagged assignment/evaluation/evolution)
+      Create assign-{task-id} blocker task
+      Set assigner_model and assigner_agent on the new task
+
+ 4. [IF auto_evaluate enabled]
+    For each completed task without an existing evaluate-{task-id}:
+      Skip meta-tasks (tagged evaluation/assignment/evolution)
+      Create evaluate-{task-id} blocked by the original task
+      Set evaluator_model and evaluator_agent on the new task
+
+ 4.5 FLIP verification (if flip_verification_threshold is set)
+     For tasks with FLIP scores below threshold, create an independent
+     .verify-flip-{task-id} verification task dispatched to a stronger
+     model (Opus) to confirm or reject the result.
+
+ 4.6 [IF auto_evolve enabled]
+     Trigger agent evolution when evaluation data warrants it.
+
+ 5. Check for ready tasks (after agency phases may have created new ones)
+    → If no ready tasks, stop here (early return)
+    Cycle headers get back-edge exemption: predecessors within the
+    same cycle that form back-edges are exempt from readiness checks
+
+ 5.5 Check global API-down backoff
+     → If zero-output backoff is active, skip spawning (early return)
+
+ 6. Spawn agents on ready tasks
+    Resolve effective model: task.model > executor.model > coordinator.model
+    Register agent in AgentRegistry
+    Detach with setsid()
 ```
 
 ## Service Commands
@@ -99,6 +136,14 @@ wg service stop --kill-agents     # stop daemon and kill all agents
 ```
 
 By default, detached agents continue running after the daemon stops. Use `--kill-agents` to clean up everything.
+
+### `wg service restart`
+
+Graceful stop then start. Equivalent to `wg service stop && wg service start`.
+
+```bash
+wg service restart
+```
 
 ### `wg service status`
 
@@ -189,7 +234,7 @@ When the coordinator spawns an agent for a task:
 
 1. **Claim**: The task is claimed (status → `in-progress`)
 2. **Model resolution**: task.model > executor.model > coordinator.model/CLI --model
-3. **Identity injection**: If the task has an `agent` field, the agent's role and motivation are loaded from `.workgraph/agency/` and rendered into an identity prompt section
+3. **Identity injection**: If the task has an `agent` field, the agent's role and tradeoff are loaded from `.workgraph/agency/` and rendered into an identity prompt section
 4. **Context scope resolution**: The task's `context_scope` determines how much context is assembled into the prompt:
    - `clean` — task description only (no dependency context)
    - `task` — task description + direct predecessor artifacts/logs (default)

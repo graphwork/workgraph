@@ -101,7 +101,7 @@ wg service start
 wg evaluate run my-task
 
 # 4. Evolve
-wg evolve
+wg evolve run
 ```
 
 ### Automated loop
@@ -116,7 +116,7 @@ wg service start
 wg add "Implement feature X" --skill rust
 
 # Evolution is still manual (run when you have enough evaluations):
-wg evolve
+wg evolve run
 ```
 
 ## Lifecycle
@@ -264,15 +264,104 @@ Scores propagate to three levels:
 2. The **role's** performance record (with `tradeoff_id` as context)
 3. The **tradeoff's** performance record (with `role_id` as context)
 
+### 4b. FLIP — Fidelity via Latent Intent Probing
+
+FLIP is a **roundtrip intent fidelity** metric that complements standard evaluation. While evaluation judges *quality* (was the approach good?), FLIP judges *fidelity* (did the output match what was asked?).
+
+#### How it works
+
+FLIP runs in two phases:
+
+1. **Inference phase** (sonnet): An LLM reads *only* the agent's output (logs, artifacts, diffs) and reconstructs what the original task prompt must have been — without seeing the actual task description.
+2. **Comparison phase** (haiku): A second LLM compares the inferred prompt to the actual task description, scoring similarity across four dimensions.
+
+The resulting `flip_score` (0.0–1.0) measures whether the agent's output faithfully reflects the task spec. High FLIP = output clearly reflects the task. Low FLIP = agent went off-track.
+
+#### FLIP dimensions
+
+| Dimension | Description |
+|-----------|-------------|
+| `semantic_match` | How closely the inferred intent matches the actual task |
+| `requirement_coverage` | What fraction of requirements are reflected in the output |
+| `specificity_match` | Whether the output addresses task-specific details vs. generic work |
+| `hallucination_rate` | How much of the output addresses things *not* in the task spec |
+
+#### FLIP vs evaluation
+
+FLIP and evaluation are independent — they measure different things and should not be merged into a single score:
+
+- **High quality + low fidelity** = well-crafted code that doesn't match the spec
+- **Low quality + high fidelity** = sloppy code that does what was asked
+- **Both high** = ideal
+- **Both low** = needs rework
+
+#### Low-FLIP verification
+
+When a FLIP score falls below the configured threshold (default: 0.70), the coordinator automatically creates a `.verify-flip-{task-id}` task. This task uses a high-capability model (default: opus) to independently verify whether the work was actually completed correctly.
+
+The verification task receives the original task description, the agent's output, and the low FLIP score, then makes a pass/fail determination.
+
+#### Running FLIP
+
+FLIP runs automatically as part of the `.evaluate-*` task when enabled:
+
+```bash
+# Enable globally
+wg config --flip-enabled true
+
+# Or tag individual tasks for FLIP evaluation
+wg add "My task" --tag flip-eval
+
+# Run manually
+wg evaluate run <task-id> --flip
+wg evaluate run <task-id> --flip --dry-run    # preview the prompts
+```
+
+FLIP evaluations are stored with `source: "flip"` in the evaluations directory, separate from standard evaluations.
+
+#### Per-role model routing
+
+FLIP uses different models for each phase, configured via the model routing system:
+
+| Role | Default model | Rationale |
+|------|---------------|-----------|
+| `flip_inference` | sonnet | Creative reconstruction requires mid-tier capability |
+| `flip_comparison` | haiku | Comparison/scoring is simpler, cost-effective |
+| `verification` | opus | Independent verification needs highest capability |
+
+Configure via `[models]` in config.toml:
+
+```toml
+[models.flip_inference]
+model = "sonnet"
+
+[models.flip_comparison]
+model = "haiku"
+
+[models.verification]
+model = "opus"
+```
+
+#### Pipeline integration
+
+FLIP fits into the coordinator tick as follows:
+
+```
+Phase 4:   Task completes -> .evaluate-* created
+           Eval script runs standard eval, then FLIP (non-fatal)
+Phase 4.5: If FLIP score < threshold -> .verify-flip-* created
+Phase 4.6: Auto-evolve (if enabled)
+```
+
 ### 5. Evolve
 
 Use performance data to improve the agency:
 
 ```bash
-wg evolve                                     # full cycle, all strategies
-wg evolve --strategy mutation --budget 3      # targeted changes
-wg evolve --model opus                        # use specific model
-wg evolve --dry-run                           # preview without applying
+wg evolve run                                     # full cycle, all strategies
+wg evolve run --strategy mutation --budget 3      # targeted changes
+wg evolve run --model opus                        # use specific model
+wg evolve run --dry-run                           # preview without applying
 ```
 
 ## CLI Reference
@@ -347,7 +436,7 @@ wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
 ### `wg evolve`
 
 ```bash
-wg evolve [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
+wg evolve run [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
 ```
 
 ### `wg agency stats`
@@ -422,20 +511,48 @@ The evolution system improves agency performance by analyzing evaluation data an
 | `gap-analysis` | Create entirely new roles/tradeoffs for unmet needs |
 | `retirement` | Remove consistently poor-performing roles/tradeoffs |
 | `tradeoff-tuning` | Adjust trade-offs and constraints on existing tradeoffs |
+| `component-mutation` | Mutate individual components (skills, outcomes, tradeoffs) at the primitive level |
+| `randomisation` | Randomly compose new roles or agents from existing primitives |
+| `bizarre-ideation` | Generate novel primitives via creative/divergent prompting |
 | `all` | Use all strategies as appropriate (default) |
 
 ### Operations
 
-The evolver outputs structured JSON operations:
+The evolver outputs structured JSON operations. These span three levels of the agency hierarchy:
+
+**Legacy (role/motivation level):**
 
 | Operation | Effect |
 |-----------|--------|
 | `create_role` | Creates a new role (typically from gap-analysis) |
 | `modify_role` | Mutates or crosses over an existing role into a new one |
-| `create_tradeoff` | Creates a new tradeoff |
-| `modify_tradeoff` | Tunes an existing tradeoff into a new variant |
+| `create_motivation` | Creates a new tradeoff/motivation |
+| `modify_motivation` | Tunes an existing tradeoff into a new variant |
 | `retire_role` | Retires a poor-performing role (renamed to `.yaml.retired`) |
-| `retire_tradeoff` | Retires a poor-performing tradeoff |
+| `retire_motivation` | Retires a poor-performing tradeoff |
+
+**Primitive-level mutations:**
+
+| Operation | Effect |
+|-----------|--------|
+| `wording_mutation` | Rewrites description/content of a component, tradeoff, or outcome |
+| `component_substitution` | Swaps one component for another in a role |
+| `config_add_component` | Adds a component to an existing role |
+| `config_remove_component` | Removes a component from an existing role |
+| `config_swap_outcome` | Changes which outcome a role targets (deferred for approval) |
+| `config_swap_tradeoff` | Changes which tradeoff an agent uses |
+| `random_compose_role` | Randomly assembles a role from existing components |
+| `random_compose_agent` | Randomly assembles an agent from existing role + tradeoff |
+| `bizarre_ideation` | Generates a novel primitive via creative divergent prompting |
+
+**Meta-agent operations (coordinator-level):**
+
+| Operation | Effect |
+|-----------|--------|
+| `meta_swap_role` | Change which role a meta-agent (assigner/evaluator/evolver) uses |
+| `meta_swap_tradeoff` | Change which tradeoff a meta-agent uses |
+| `meta_compose_agent` | Compose a new agent for a meta-agent slot from scratch |
+| `modify_coordinator_prompt` | Modify mutable coordinator prompt files (`evolved-amendments.md`, `common-patterns.md`) |
 
 ### Safety guardrails
 
@@ -443,6 +560,59 @@ The evolver outputs structured JSON operations:
 - Retired entities are preserved as `.yaml.retired` files, not deleted
 - `--dry-run` shows the full evolver prompt without making changes
 - `--budget` limits the number of operations applied
+
+### Deferred operations
+
+Some operations are too impactful to apply immediately. The evolver automatically defers operations that require human approval:
+
+- **Outcome swaps** (`config_swap_outcome`) — changing a role's target outcome changes what "success" means
+- **Self-mutation** — operations targeting the evolver's own role or tradeoff
+
+Deferred operations are saved to `.workgraph/agency/deferred-ops/` and can be managed with:
+
+```bash
+wg evolve review list              # view pending deferred operations
+wg evolve review approve <id>      # approve and apply a deferred operation
+wg evolve review reject <id>       # reject and discard
+```
+
+### Coordinator prompt evolution
+
+The evolver can modify the coordinator agent's behavior by writing to mutable prompt files in `.workgraph/agency/coordinator-prompt/`:
+
+| File | Mutability | Purpose |
+|------|-----------|---------|
+| `base-system-prompt.md` | Immutable | Core coordinator instructions |
+| `behavioral-rules.md` | Immutable | Safety and behavioral constraints |
+| `evolved-amendments.md` | **Mutable** | Evolver-written rules and heuristics |
+| `common-patterns.md` | **Mutable** | Evolver-written examples and patterns |
+
+The `evolved-amendments.md` file is the primary output of coordinator prompt evolution — the evolver appends learned rules and heuristics based on evaluation data.
+
+### Auto-evolve infrastructure
+
+The coordinator can automatically trigger evolution cycles when sufficient evaluation data accumulates. This is opt-in:
+
+```bash
+wg config --auto-evolve true
+```
+
+When enabled, the coordinator's Phase 4.6 checks two triggers:
+
+1. **Threshold trigger**: New evaluations since last evolution exceed `evolution_threshold` (default: 10)
+2. **Reactive trigger**: Performance has dropped below `evolution_reactive_threshold`
+
+The coordinator creates a `.evolve-*` meta-task that runs `wg evolve run` with the configured budget. A minimum interval (`evolution_interval`, default: 7200 seconds / 2 hours) prevents evolution from running too frequently.
+
+Configuration:
+
+```toml
+[agency]
+auto_evolve = false              # enable auto-evolution (default: false)
+evolution_interval = 7200        # minimum seconds between cycles (default: 2h)
+evolution_threshold = 10         # new evals needed to trigger (default: 10)
+evolution_budget = 5             # max operations per cycle (default: 5)
+```
 
 ### Evolver identity and meta-agent configuration
 
@@ -483,7 +653,10 @@ Strategy-specific guidance documents live in `.workgraph/agency/evolver-skills/`
 - `role-crossover.md` — procedures for combining two roles
 - `gap-analysis.md` — procedures for identifying missing capabilities
 - `retirement.md` — procedures for removing underperformers
-- `tradeoff-tuning.md` — procedures for adjusting trade-offs
+- `motivation-tuning.md` — procedures for adjusting trade-offs
+- `component-mutation.md` — procedures for mutating individual primitives
+- `randomisation.md` — procedures for random composition
+- `bizarre-ideation.md` — procedures for divergent creative generation
 
 ## Performance Tracking
 
@@ -552,22 +725,39 @@ wg agent lineage <id>        # shows agent + role + tradeoff ancestry
 
 ```
 .workgraph/agency/
-├── roles/
-│   ├── <sha256>.yaml            # Role definitions
-│   └── <sha256>.yaml.retired    # Retired roles
-├── tradeoffs/
-│   ├── <sha256>.yaml            # Tradeoff definitions
-│   └── <sha256>.yaml.retired    # Retired tradeoffs
-├── agents/
-│   └── <sha256>.yaml            # Agent definitions (role+tradeoff pairs)
+├── primitives/
+│   ├── components/              # Skill components (atomic capabilities)
+│   │   └── <sha256>.yaml
+│   ├── outcomes/                # Desired outcomes
+│   │   └── <sha256>.yaml
+│   └── tradeoffs/               # Tradeoff definitions
+│       ├── <sha256>.yaml
+│       └── <sha256>.yaml.retired
+├── cache/
+│   ├── roles/                   # Composed roles (component_ids + outcome_id)
+│   │   ├── <sha256>.yaml
+│   │   └── <sha256>.yaml.retired
+│   └── agents/                  # Agent definitions (role + tradeoff pairs)
+│       └── <sha256>.yaml
 ├── evaluations/
-│   └── eval-<task-id>-<timestamp>.json  # Evaluation records
-└── evolver-skills/
-    ├── role-mutation.md
-    ├── role-crossover.md
-    ├── gap-analysis.md
-    ├── retirement.md
-    └── tradeoff-tuning.md
+│   ├── eval-<task-id>-<timestamp>.json   # Standard evaluations (source: "llm")
+│   └── flip-<task-id>-<timestamp>.json   # FLIP evaluations (source: "flip")
+├── evolver-skills/              # Strategy-specific guidance documents
+│   ├── role-mutation.md
+│   ├── role-crossover.md
+│   ├── gap-analysis.md
+│   ├── retirement.md
+│   ├── motivation-tuning.md
+│   ├── component-mutation.md
+│   ├── randomisation.md
+│   └── bizarre-ideation.md
+├── coordinator-prompt/          # Coordinator prompt files
+│   ├── base-system-prompt.md    # (immutable)
+│   ├── behavioral-rules.md      # (immutable)
+│   ├── evolved-amendments.md    # (mutable — evolver-written rules)
+│   └── common-patterns.md       # (mutable — evolver-written examples)
+└── deferred-ops/                # Deferred evolution operations awaiting approval
+    └── <op-id>.json
 ```
 
 Roles, tradeoffs, and agents are stored as YAML. Evaluations are stored as JSON. All filenames are based on the entity's content-hash ID.
@@ -642,6 +832,26 @@ creator_agent = ""                 # content-hash of agent-creator agent
 retention_heuristics = ""          # prose policy for retirement decisions
 triage_timeout = 30                # timeout in seconds for triage calls
 triage_max_log_bytes = 50000       # max bytes of agent log to read for triage
+
+# FLIP settings
+flip_enabled = false               # enable FLIP fidelity evaluation (default: false)
+flip_verification_threshold = 0.7  # FLIP score below this triggers Opus verification
+
+# Auto-evolve settings
+auto_evolve = false                # enable automatic evolution cycles
+evolution_interval = 7200          # minimum seconds between cycles (default: 2h)
+evolution_threshold = 10           # new evals needed to trigger (default: 10)
+evolution_budget = 5               # max operations per auto-evolve cycle
+
+# Per-role model routing (alternative to legacy model fields above)
+[models.flip_inference]
+model = "sonnet"                   # model for FLIP inference phase
+
+[models.flip_comparison]
+model = "haiku"                    # model for FLIP comparison phase
+
+[models.verification]
+model = "opus"                     # model for FLIP-triggered verification
 ```
 
 ```bash
@@ -661,4 +871,6 @@ wg config --creator-agent abc123
 wg config --retention-heuristics "Retire roles scoring below 0.3 after 10 evaluations"
 wg config --triage-timeout 30
 wg config --triage-max-log-bytes 50000
+wg config --flip-enabled true
+wg config --auto-evolve true
 ```

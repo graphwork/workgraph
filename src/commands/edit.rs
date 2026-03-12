@@ -33,6 +33,7 @@ pub fn run(
     exec_mode: Option<&str>,
     delay: Option<&str>,
     not_before: Option<&str>,
+    verify: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -135,6 +136,13 @@ pub fn run(
         if let Some(new_provider) = provider {
             task.provider = Some(new_provider.to_string());
             println!("Updated provider: {}", new_provider);
+            changed = true;
+        }
+
+        // Update verify command
+        if let Some(new_verify) = verify {
+            task.verify = Some(new_verify.to_string());
+            println!("Updated verify: {}", new_verify);
             changed = true;
         }
 
@@ -291,20 +299,13 @@ pub fn run(
 
         // Update exec mode
         if let Some(mode) = exec_mode {
-            match mode {
-                "full" | "light" | "bare" | "shell" => {
-                    let old = task.exec_mode.clone();
-                    task.exec_mode = Some(mode.to_string());
-                    field_changes
-                        .push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
-                    println!("Updated exec_mode: {}", mode);
-                    changed = true;
-                }
-                _ => anyhow::bail!(
-                    "Invalid exec_mode '{}'. Valid values: full, light, bare, shell",
-                    mode
-                ),
-            }
+            mode.parse::<workgraph::config::ExecMode>()
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let old = task.exec_mode.clone();
+            task.exec_mode = Some(mode.to_string());
+            field_changes.push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
+            println!("Updated exec_mode: {}", mode);
+            changed = true;
         }
 
         // Update not_before (from --delay or --not-before)
@@ -452,6 +453,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )?;
@@ -492,6 +496,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )?;
@@ -523,6 +530,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            &[],
+            &[],
             None,
             None,
         )?;
@@ -553,6 +563,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -597,6 +608,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -629,6 +641,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -674,6 +687,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -706,6 +720,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -751,6 +766,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -789,6 +805,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -821,6 +838,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -866,6 +884,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -898,6 +917,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -938,6 +958,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -965,6 +986,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -1005,6 +1027,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -1055,6 +1078,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1077,6 +1101,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -1130,6 +1155,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -1197,6 +1223,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1239,6 +1266,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1270,6 +1298,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
             None,
             None,

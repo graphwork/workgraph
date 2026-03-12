@@ -14,8 +14,10 @@ use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVar
 use workgraph::service::registry::AgentRegistry;
 
 use super::context::{
-    build_scope_context, build_task_context, resolve_task_exec_mode, resolve_task_scope,
+    build_previous_attempt_context, build_scope_context, build_task_context,
+    resolve_task_exec_mode, resolve_task_scope,
 };
+use super::worktree;
 use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
     shell_escape,
@@ -84,6 +86,12 @@ pub(crate) fn spawn_agent_inner(
         Status::Waiting => {
             anyhow::bail!("Cannot spawn on task '{}': task is Waiting", task_id);
         }
+        Status::PendingValidation => {
+            anyhow::bail!(
+                "Cannot spawn on task '{}': task is pending validation",
+                task_id
+            );
+        }
     }
 
     // Resolve context scope
@@ -94,7 +102,13 @@ pub(crate) fn spawn_agent_inner(
     let task_context = build_task_context(&graph, task);
 
     // Build scope context for prompt assembly
-    let scope_ctx = build_scope_context(&graph, task, scope, &config, dir);
+    let mut scope_ctx = build_scope_context(&graph, task, scope, &config, dir);
+
+    // Inject previous attempt context on retry
+    if task.retry_count > 0 {
+        let max_tokens = config.checkpoint.retry_context_tokens;
+        scope_ctx.previous_attempt_context = build_previous_attempt_context(task, dir, max_tokens);
+    }
 
     // Create template variables
     let mut vars = TemplateVars::from_task(task, Some(&task_context), Some(dir));
@@ -143,6 +157,27 @@ pub(crate) fn spawn_agent_inner(
     let output_file = output_dir.join("output.log");
     let output_file_str = output_file.to_string_lossy().to_string();
 
+    // --- Worktree isolation ---
+    let worktree_info = if config.coordinator.worktree_isolation {
+        let project_root = dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
+        match worktree::create_worktree(project_root, dir, &temp_agent_id, task_id) {
+            Ok(info) => {
+                eprintln!(
+                    "[spawn] Created worktree for {} at {:?} (branch: {})",
+                    temp_agent_id, info.path, info.branch
+                );
+                Some(info)
+            }
+            Err(e) => {
+                anyhow::bail!("Worktree creation failed for {}: {}", temp_agent_id, e);
+            }
+        }
+    } else {
+        None
+    };
+
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
 
@@ -161,12 +196,26 @@ pub(crate) fn spawn_agent_inner(
     // Use resolved exec_mode (already accounts for role defaults)
     let exec_mode = resolved_exec_mode.as_str();
 
+    // Resolve per-role provider for native executor.
+    // Priority: task.provider (set on Task struct) > role-based config resolution.
+    let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
+    let effective_provider: Option<String> = if settings.executor_type == "native" {
+        task_provider.or_else(|| {
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
+                .provider
+        })
+    } else {
+        None
+    };
+
     // Build the inner command string first
     let inner_command = build_inner_command(
         &settings,
         exec_mode,
         &output_dir,
         &effective_model,
+        &effective_provider,
         &vars,
         &task_exec,
         resume_session_id.as_deref(),
@@ -231,8 +280,13 @@ pub(crate) fn spawn_agent_inner(
         cmd.env("WG_MODEL", m);
     }
 
-    // Set working directory if specified
-    if let Some(ref wd) = settings.working_dir {
+    // Set working directory: worktree overrides settings.working_dir
+    if let Some(ref wt) = worktree_info {
+        cmd.current_dir(&wt.path);
+        cmd.env("WG_WORKTREE_PATH", &wt.path);
+        cmd.env("WG_BRANCH", &wt.branch);
+        cmd.env("WG_PROJECT_ROOT", &wt.project_root);
+    } else if let Some(ref wd) = settings.working_dir {
         cmd.current_dir(wd);
     }
 
@@ -346,6 +400,10 @@ pub(crate) fn spawn_agent_inner(
                     );
                 }
             }
+            // Clean up worktree on spawn failure
+            if let Some(ref wt) = worktree_info {
+                let _ = worktree::remove_worktree(&wt.project_root, &wt.path, &wt.branch);
+            }
             return Err(anyhow::anyhow!(
                 "Failed to spawn executor '{}' (command: {}): {}",
                 executor_name,
@@ -391,7 +449,7 @@ pub(crate) fn spawn_agent_inner(
 
     // Write metadata
     let metadata_path = output_dir.join("metadata.json");
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "agent_id": agent_id,
         "pid": pid,
         "task_id": task_id,
@@ -400,6 +458,10 @@ pub(crate) fn spawn_agent_inner(
         "started_at": Utc::now().to_rfc3339(),
         "timeout_secs": effective_timeout_secs,
     });
+    if let Some(ref wt) = worktree_info {
+        metadata["worktree_path"] = serde_json::json!(wt.path.to_string_lossy());
+        metadata["worktree_branch"] = serde_json::json!(&wt.branch);
+    }
     fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
     Ok(SpawnResult {
@@ -414,11 +476,13 @@ pub(crate) fn spawn_agent_inner(
 }
 
 /// Build the inner command string for the executor.
+#[allow(clippy::too_many_arguments)]
 fn build_inner_command(
     settings: &workgraph::service::executor::ExecutorSettings,
     exec_mode: &str,
     output_dir: &Path,
     effective_model: &Option<String>,
+    effective_provider: &Option<String>,
     vars: &TemplateVars,
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
@@ -614,6 +678,10 @@ fn build_inner_command(
                 cmd_parts.push("--model".to_string());
                 cmd_parts.push(shell_escape(m));
             }
+            if let Some(p) = effective_provider {
+                cmd_parts.push("--provider".to_string());
+                cmd_parts.push(shell_escape(p));
+            }
             cmd_parts.join(" ")
         }
         "shell" => {
@@ -756,6 +824,53 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
         wg fail "$TASK_ID" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
     fi
+fi
+
+# --- Merge Back (worktree isolation) ---
+# When the agent ran in an isolated worktree, merge its changes back to the main
+# branch and clean up the worktree. Env vars are set by spawn when worktree
+# isolation is enabled; this section is a no-op otherwise.
+if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
+    TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+
+    if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
+        # Check if agent made any commits on its worktree branch
+        COMMITS=$(git -C "$WG_PROJECT_ROOT" log --oneline "HEAD..$WG_BRANCH" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$COMMITS" -gt 0 ]; then
+            cd "$WG_PROJECT_ROOT"
+
+            # Acquire merge lock (serialize concurrent merges)
+            MERGE_LOCK="$WG_PROJECT_ROOT/.wg-worktrees/.merge-lock"
+            mkdir -p "$(dirname "$MERGE_LOCK")"
+            exec 9>"$MERGE_LOCK"
+            flock 9
+
+            git merge --squash "$WG_BRANCH" 2>> "$OUTPUT_FILE"
+            MERGE_EXIT=$?
+
+            if [ $MERGE_EXIT -ne 0 ]; then
+                git merge --abort 2>/dev/null
+                echo "[wrapper] Merge conflict on $WG_BRANCH — marking task failed for retry" >> "$OUTPUT_FILE"
+                wg fail "$TASK_ID" --reason "Merge conflict integrating worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
+            else
+                git commit -m "feat: $TASK_ID ($WG_AGENT_ID)
+
+Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
+                echo "[wrapper] Merged $WG_BRANCH to $(git rev-parse --abbrev-ref HEAD)" >> "$OUTPUT_FILE"
+            fi
+
+            # Release merge lock
+            flock -u 9
+        else
+            echo "[wrapper] No commits on $WG_BRANCH, nothing to merge" >> "$OUTPUT_FILE"
+        fi
+    fi
+
+    # Always clean up the worktree, regardless of task outcome
+    rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
+    git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
+    git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
+    echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
 fi
 
 exit $EXIT_CODE

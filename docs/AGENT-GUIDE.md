@@ -24,6 +24,82 @@ If the request doesn't map to one of these, it's probably a **composition** — 
 
 ---
 
+## 1b. Task Lifecycle
+
+Every task moves through a state machine. Understanding the states and transitions is essential for working effectively with the graph.
+
+### Status states
+
+| Status | Meaning |
+|--------|---------|
+| **Open** | Ready to be claimed/dispatched (all `--after` deps are done) |
+| **Blocked** | Waiting for upstream dependencies to complete |
+| **InProgress** | An agent has claimed the task and is working on it |
+| **PendingValidation** | Agent called `wg done`, but the task has a `--verify` criterion requiring external validation |
+| **Done** | Completed successfully |
+| **Failed** | Agent called `wg fail` or validation failed |
+| **Abandoned** | Manually abandoned via `wg abandon` |
+| **Waiting** | Paused — waiting for an external event or manual intervention |
+
+### Validation flow (PendingValidation)
+
+Tasks created with `--verify` go through an extra validation gate:
+
+```
+InProgress → wg done → PendingValidation → wg approve → Done
+                                          → wg reject  → Open (re-dispatched)
+```
+
+- `wg approve <task-id>` — transitions PendingValidation → Done
+- `wg reject <task-id> --reason "..."` — reopens the task for re-dispatch (clears assignment)
+- After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
+
+### Retry workflow
+
+Failed tasks can be retried:
+
+```bash
+wg retry <task-id>    # Failed → Open (clears assignment, preserves logs)
+```
+
+- Retry count is tracked (`retry_count`). Set `max_retries` to limit attempts.
+- Previous failure reasons and logs are preserved for the next agent to learn from.
+- The coordinator re-dispatches the task automatically after retry.
+
+### Cascade abandon
+
+When a task is abandoned (`wg abandon`), its **system tasks** (IDs starting with `.`, such as `.evaluate-*` and `.verify-*`) are automatically cascade-abandoned. Normal dependent tasks are NOT cascade-abandoned — they remain blocked until the situation is resolved.
+
+### Task supersession
+
+When abandoning a task that's been replaced by a better approach:
+
+```bash
+wg abandon old-task --superseded-by new-task-a,new-task-b --reason "Replaced with better approach"
+```
+
+The `superseded_by` field creates a traceable link from the old task to its replacements.
+
+### Placement flow
+
+When `auto_place` is enabled (`wg config --auto-place true`), newly added tasks go through placement analysis before becoming available for assignment:
+
+```
+wg add "New task" → Draft state → coordinator creates .place-<task-id>
+                                → placement agent analyzes graph context
+                                → determines optimal dependencies and wiring
+                                → task transitions to Open (ready for assignment)
+```
+
+The placement agent (dispatched at the `fast` tier, typically haiku) examines the current graph structure and the new task's description to decide:
+- Which existing tasks should be `--after` dependencies
+- Whether the task needs specific context scope
+- Optimal position in the task graph
+
+If `auto_place` is disabled, tasks are added directly in Open state and the user must wire dependencies manually with `--after`.
+
+---
+
 ## 2. Structure Rules
 
 Structure patterns describe how to arrange tasks in the graph.
@@ -124,9 +200,9 @@ wg role add "Implementer" --outcome "Working, tested code for assigned module" -
 wg role add "Integrator" --outcome "Cohesive merged output with conflicts resolved" --skill integration
 
 # Create agents from roles
-wg agent create "Planner" --role <architect-hash> --motivation <motivation-hash>
-wg agent create "Worker" --role <implementer-hash> --motivation <motivation-hash>
-wg agent create "Synthesizer" --role <integrator-hash> --motivation <motivation-hash>
+wg agent create "Planner" --role <architect-hash> --tradeoff <tradeoff-hash>
+wg agent create "Worker" --role <implementer-hash> --tradeoff <tradeoff-hash>
+wg agent create "Synthesizer" --role <integrator-hash> --tradeoff <tradeoff-hash>
 
 # Assign agents to tasks
 wg assign planner <planner-agent>
@@ -165,8 +241,8 @@ wg assign integrate <integrator-agent>
 
 | Violation | Symptom | Fix |
 |-----------|---------|-----|
-| Too few roles | Low scores on specialized tasks | `wg evolve --strategy gap-analysis` |
-| Too many roles | Roles with zero assignments | `wg evolve --strategy retirement` |
+| Too few roles | Low scores on specialized tasks | `wg evolve run --strategy gap-analysis` |
+| Too many roles | Roles with zero assignments | `wg evolve run --strategy retirement` |
 
 Check coverage:
 ```bash
@@ -280,6 +356,8 @@ wg msg poll <task-id> --agent $WG_AGENT_ID
 
 **Messages are persistent** — they survive agent restarts and are visible to future agents who work on the same task.
 
+**Workflow expectation:** Agents should check for messages at task start, at natural breakpoints during work, and before marking a task done. Unreplied messages at completion time indicate incomplete work.
+
 ### 4.2 After Code Changes: Rebuild
 
 When you modify source code in a Rust project that uses `cargo install`:
@@ -290,7 +368,18 @@ cargo install --path .
 
 This updates the global `wg` binary. Forgetting this step is a common source of "why isn't this working" bugs. Do it after every code change.
 
-### 4.3 Convergence Signaling
+### 4.3 Worktree Isolation
+
+When the coordinator spawns agents, each agent works in an isolated [git worktree](WORKTREE-ISOLATION.md). This means:
+
+- Each agent has its own working tree — no shared file conflicts
+- Agents can build, test, and commit independently
+- Worktrees share the same `.git` object store, so branches are visible across agents
+- Worktrees are created under `.wg-worktrees/` and cleaned up after task completion
+
+This eliminates the "parallel file conflict" problem at the git level. However, you should still serialize tasks that modify the same logical files (via `--after`) to avoid merge conflicts at commit time.
+
+### 4.4 Convergence Signaling
 
 Use `wg done --converged` to stop a loop. Use plain `wg done` to iterate.
 
@@ -304,7 +393,7 @@ wg done review
 
 The `--converged` flag tags the cycle header. This prevents further iterations even if `--max-iterations` hasn't been reached. Any cycle member can signal convergence for the entire cycle.
 
-### 4.4 Evolve — the feedback loop
+### 4.5 Evolve — the feedback loop
 
 After work accumulates, evaluate and evolve roles:
 
@@ -319,14 +408,14 @@ wg evaluate record --task my-task --score 0.85 --source "manual"
 wg evaluate show --task my-task
 
 # Preview evolution proposals
-wg evolve --dry-run
+wg evolve run --dry-run
 
 # Apply evolution
-wg evolve --strategy all
+wg evolve run --strategy all
 ```
 
 **Single-loop learning:** task failed → retry with different agent (`wg retry`).
-**Double-loop learning:** task type keeps failing → change the role itself (`wg evolve --strategy mutation`).
+**Double-loop learning:** task type keeps failing → change the role itself (`wg evolve run --strategy mutation`).
 
 Escalate from single to double loop when the same task type fails repeatedly.
 
@@ -342,8 +431,8 @@ Escalate from single to double loop when the same task type fails repeatedly.
 | **Missing loop-back on refine** | Review identifies issues but there's no path back to fix them | Add a revise task in the cycle with a back-edge to the cycle header |
 | **Unbounded loop** | Cycle without `--max-iterations` → runs forever | Always set `--max-iterations` on cycle headers |
 | **Monolithic task** | One giant task with no decomposition → no parallelism, no feedback | Break into diamond or pipeline |
-| **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve --strategy retirement` |
-| **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve --strategy gap-analysis` |
+| **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve run --strategy retirement` |
+| **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve run --strategy gap-analysis` |
 | **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate run` manually |
 
 ---

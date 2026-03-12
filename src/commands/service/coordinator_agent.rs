@@ -36,6 +36,7 @@ use chrono::{DateTime, Utc};
 use workgraph::chat;
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
+use workgraph::service::compactor::{CompactorState, context_md_path};
 use workgraph::service::registry::AgentRegistry;
 
 use crate::commands::{graph_path, is_process_alive};
@@ -92,6 +93,20 @@ pub enum Event {
         task_id: String,
         reason: String,
     },
+    /// A zero-output agent was detected and killed.
+    ZeroOutputKill {
+        agent_id: String,
+        task_id: String,
+        age_secs: u64,
+    },
+    /// A task hit the per-task zero-output circuit breaker.
+    ZeroOutputCircuitBreak { task_id: String, attempts: u32 },
+    /// Global API-down detected: majority of agents have zero output.
+    GlobalApiOutage {
+        zero_count: usize,
+        total_count: usize,
+        backoff_secs: u64,
+    },
 }
 
 impl std::fmt::Display for Event {
@@ -138,6 +153,35 @@ impl std::fmt::Display for Event {
                 reason,
             } => {
                 write!(f, "agent {} failed on {}: {}", agent_id, task_id, reason)
+            }
+            Event::ZeroOutputKill {
+                agent_id,
+                task_id,
+                age_secs,
+            } => {
+                write!(
+                    f,
+                    "zero-output agent {} killed on {} (alive {}s with no output)",
+                    agent_id, task_id, age_secs
+                )
+            }
+            Event::ZeroOutputCircuitBreak { task_id, attempts } => {
+                write!(
+                    f,
+                    "task {} circuit-broken after {} zero-output attempts",
+                    task_id, attempts
+                )
+            }
+            Event::GlobalApiOutage {
+                zero_count,
+                total_count,
+                backoff_secs,
+            } => {
+                write!(
+                    f,
+                    "GLOBAL API OUTAGE: {}/{} agents zero-output, backoff {}s",
+                    zero_count, total_count, backoff_secs
+                )
             }
         }
     }
@@ -260,6 +304,7 @@ impl CoordinatorAgent {
     /// Returns an error if the Claude CLI is not available.
     pub fn spawn(
         dir: &Path,
+        coordinator_id: u32,
         model: Option<&str>,
         logger: &DaemonLogger,
         event_log: SharedEventLog,
@@ -281,10 +326,11 @@ impl CoordinatorAgent {
         let event_log_clone = event_log.clone();
 
         let agent_thread = thread::Builder::new()
-            .name("coordinator-agent".to_string())
+            .name(format!("coordinator-agent-{}", coordinator_id))
             .spawn(move || {
                 agent_thread_main(
                     &dir,
+                    coordinator_id,
                     model.as_deref(),
                     rx,
                     alive_clone,
@@ -363,8 +409,10 @@ impl CoordinatorAgent {
 /// - Conversation history injection on restart
 /// - Graph state refresh on restart
 /// - Chat history rotation to prevent unbounded growth
+#[allow(clippy::too_many_arguments)]
 fn agent_thread_main(
     dir: &Path,
+    coordinator_id: u32,
     model: Option<&str>,
     rx: mpsc::Receiver<ChatRequest>,
     alive: Arc<Mutex<bool>>,
@@ -418,7 +466,9 @@ fn agent_thread_main(
         let is_restart = !restart_timestamps.is_empty();
 
         // Rotate old chat history on restart to prevent unbounded growth
-        if is_restart && let Err(e) = chat::rotate_history(dir, HISTORY_ROTATION_KEEP) {
+        if is_restart
+            && let Err(e) = chat::rotate_history_for(dir, coordinator_id, HISTORY_ROTATION_KEEP)
+        {
             logger.warn(&format!(
                 "Coordinator agent: failed to rotate chat history: {}",
                 e
@@ -461,7 +511,9 @@ fn agent_thread_main(
         // If this is a restart, inject crash recovery context
         if is_restart {
             logger.info("Coordinator agent: injecting crash recovery context");
-            if let Err(e) = inject_crash_recovery_context(dir, &mut stdin, &response_rx, logger) {
+            if let Err(e) =
+                inject_crash_recovery_context(dir, coordinator_id, &mut stdin, &response_rx, logger)
+            {
                 logger.warn(&format!(
                     "Coordinator agent: failed to inject crash recovery context: {}",
                     e
@@ -471,6 +523,9 @@ fn agent_thread_main(
 
         // Track the last interaction time for context injection
         let mut last_interaction = chrono::Utc::now().to_rfc3339();
+
+        // Track turn count for evaluation frequency
+        let mut turn_count: u32 = 0;
 
         // Process messages from the main daemon thread
         loop {
@@ -500,8 +555,9 @@ fn agent_thread_main(
 
                 // If there was a pending request, write an error response
                 if let Some(req) = request {
-                    let _ = chat::append_outbox(
+                    let _ = chat::append_outbox_for(
                         dir,
+                        coordinator_id,
                         "The coordinator agent crashed and is being restarted. Please try again in a moment.",
                         &req.request_id,
                     );
@@ -510,23 +566,28 @@ fn agent_thread_main(
             }
 
             if let Some(req) = request {
+                let turn_start = std::time::Instant::now();
                 logger.info(&format!(
                     "Coordinator agent: processing request_id={}",
                     req.request_id
                 ));
 
                 // Build context injection with event log
-                let context =
-                    match build_coordinator_context(dir, &last_interaction, Some(event_log)) {
-                        Ok(ctx) => ctx,
-                        Err(e) => {
-                            logger.warn(&format!(
-                                "Coordinator agent: failed to build context: {}",
-                                e
-                            ));
-                            String::new()
-                        }
-                    };
+                let context = match build_coordinator_context(
+                    dir,
+                    &last_interaction,
+                    Some(event_log),
+                    coordinator_id,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        logger.warn(&format!(
+                            "Coordinator agent: failed to build context: {}",
+                            e
+                        ));
+                        String::new()
+                    }
+                };
 
                 // Format the user message with context injection prepended
                 let full_content = if context.is_empty() {
@@ -546,8 +607,9 @@ fn agent_thread_main(
                             "Coordinator agent: failed to write to stdin: {}",
                             e
                         ));
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator agent encountered an error. Please try again.",
                             &req.request_id,
                         );
@@ -559,11 +621,13 @@ fn agent_thread_main(
                 let collected =
                     collect_response(&response_rx, logger, std::time::Duration::from_secs(300));
 
-                match collected {
+                let response_info = match collected {
                     Some(resp) if !resp.summary.is_empty() => {
+                        let len = resp.summary.len();
+                        let summary_clone = resp.summary.clone();
                         logger.info(&format!(
                             "Coordinator agent: got response ({} chars{}) for request_id={}",
-                            resp.summary.len(),
+                            len,
                             if resp.full_text.is_some() {
                                 ", with tool calls"
                             } else {
@@ -571,8 +635,9 @@ fn agent_thread_main(
                             },
                             req.request_id
                         ));
-                        if let Err(e) = chat::append_outbox_full(
+                        if let Err(e) = chat::append_outbox_full_for(
                             dir,
+                            coordinator_id,
                             &resp.summary,
                             resp.full_text,
                             &req.request_id,
@@ -582,22 +647,56 @@ fn agent_thread_main(
                                 e
                             ));
                         }
+                        Some((len, summary_clone))
                     }
                     Some(_) => {
                         logger.warn("Coordinator agent: empty response from Claude CLI");
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator processed your message but produced no response text.",
                             &req.request_id,
                         );
+                        None
                     }
                     None => {
                         logger.warn("Coordinator agent: response timeout");
-                        let _ = chat::append_outbox(
+                        let _ = chat::append_outbox_for(
                             dir,
+                            coordinator_id,
                             "The coordinator agent timed out processing your message. It may be performing a long-running operation.",
                             &req.request_id,
                         );
+                        None
+                    }
+                };
+
+                // Record this turn as a cycle iteration on the .coordinator task
+                if let Some((resp_len, ref resp_summary)) = response_info {
+                    turn_count += 1;
+                    record_coordinator_turn(
+                        dir,
+                        coordinator_id,
+                        &req.message,
+                        resp_len,
+                        turn_start,
+                    );
+
+                    // Inline evaluation (runs in background thread, non-blocking)
+                    let eval_config = workgraph::config::Config::load_or_default(dir);
+                    if should_evaluate_turn(turn_count, &eval_config.coordinator.eval_frequency) {
+                        let eval_dir = dir.to_path_buf();
+                        let eval_msg = req.message.clone();
+                        let eval_resp = resp_summary.clone();
+                        let eval_turn = turn_count;
+                        std::thread::Builder::new()
+                            .name("coordinator-eval".to_string())
+                            .spawn(move || {
+                                evaluate_coordinator_turn(
+                                    &eval_dir, eval_turn, &eval_msg, &eval_resp,
+                                );
+                            })
+                            .ok();
                     }
                 }
 
@@ -629,11 +728,12 @@ fn agent_thread_main(
 /// Waits for the agent's acknowledgment response (with a shorter timeout).
 fn inject_crash_recovery_context(
     dir: &Path,
+    coordinator_id: u32,
     stdin: &mut std::process::ChildStdin,
     response_rx: &mpsc::Receiver<ResponseEvent>,
     logger: &DaemonLogger,
 ) -> Result<()> {
-    let summary = build_crash_recovery_summary(dir)?;
+    let summary = build_crash_recovery_summary(dir, coordinator_id)?;
 
     // Send as a user message
     let user_msg = format_stream_json_user_message(&summary);
@@ -660,14 +760,14 @@ fn inject_crash_recovery_context(
 }
 
 /// Build the crash recovery summary string from chat history and graph state.
-fn build_crash_recovery_summary(dir: &Path) -> Result<String> {
+fn build_crash_recovery_summary(dir: &Path, coordinator_id: u32) -> Result<String> {
     let mut parts = Vec::new();
 
     parts.push("You were restarted after a crash. Previous conversation summary:".to_string());
     parts.push(String::new());
 
     // Load recent conversation history from chat inbox/outbox
-    let history = chat::read_history(dir).unwrap_or_default();
+    let history = chat::read_history_for(dir, coordinator_id).unwrap_or_default();
 
     if history.is_empty() {
         parts.push("(No previous conversation history.)".to_string());
@@ -699,7 +799,8 @@ fn build_crash_recovery_summary(dir: &Path) -> Result<String> {
     parts.push("---".to_string());
     parts.push(String::new());
 
-    let graph_context = build_coordinator_context(dir, "1970-01-01T00:00:00Z", None)?;
+    let graph_context =
+        build_coordinator_context(dir, "1970-01-01T00:00:00Z", None, coordinator_id)?;
     if graph_context.is_empty() {
         parts.push("Current graph state: No graph found.".to_string());
     } else {
@@ -1071,7 +1172,7 @@ fn spawn_claude_process(
     model: Option<&str>,
     logger: &DaemonLogger,
 ) -> Result<(Child, std::process::ChildStdin, std::process::ChildStdout)> {
-    let system_prompt = build_system_prompt();
+    let system_prompt = build_system_prompt(dir);
 
     // Write system prompt to a temp file to avoid shell argument length issues
     let prompt_file = dir.join("service").join("coordinator-prompt.txt");
@@ -1141,140 +1242,326 @@ fn spawn_claude_process(
 // System prompt
 // ---------------------------------------------------------------------------
 
-/// Build the static system prompt for the coordinator agent.
+/// Coordinator prompt component file names (in composition order).
+const COORDINATOR_PROMPT_FILES: &[&str] = &[
+    "base-system-prompt.md",
+    "behavioral-rules.md",
+    "common-patterns.md",
+    "evolved-amendments.md",
+];
+
+/// Build the system prompt for the coordinator agent by composing from files.
 ///
-/// This is injected once at session start and never changes.
+/// Reads from `.workgraph/agency/coordinator-prompt/` and concatenates the
+/// component files in order. Falls back to the hardcoded prompt if the
+/// directory doesn't exist or no files are found.
+///
 /// Dynamic state goes through context injection (see `build_coordinator_context`).
-fn build_system_prompt() -> String {
-    // From docs/design/coordinator-agent-prompt.md §1.1
-    r#"You are the workgraph coordinator — the persistent intelligence that manages a task graph.
+fn build_system_prompt(dir: &Path) -> String {
+    let prompt_dir = dir.join("agency/coordinator-prompt");
 
-## Your Role
+    if prompt_dir.is_dir() {
+        let mut parts = Vec::new();
+        for filename in COORDINATOR_PROMPT_FILES {
+            let path = prompt_dir.join(filename);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
+                }
+            }
+        }
+        if !parts.is_empty() {
+            return parts.join("\n\n");
+        }
+    }
 
-You interpret user requests, manage the task graph, monitor agent progress, and report status. You are the bridge between the user's intent and the graph's execution.
+    // Fallback: hardcoded prompt (for projects without coordinator-prompt/ files)
+    build_system_prompt_fallback()
+}
 
-You do NOT implement code. You do NOT write files. You do NOT run tests. You orchestrate: you create tasks, set dependencies, assign priorities, monitor agents, and communicate with the user.
+/// Hardcoded fallback prompt used when coordinator-prompt files don't exist.
+fn build_system_prompt_fallback() -> String {
+    include_str!("coordinator_prompt_fallback.txt").to_string()
+}
 
-## How the System Works
+// ---------------------------------------------------------------------------
+// Turn recording (Phase 2: coordinator-as-graph-citizen)
+// ---------------------------------------------------------------------------
 
-Workgraph is a task orchestration system built on stigmergic coordination:
-- **Tasks** form a directed graph with dependency edges (`--after`). Tasks can form cycles.
-- **Agents** are spawned by the coordinator daemon to work on ready tasks (all dependencies met).
-- **The graph is the coordination medium** — agents discover work by reading it, create work by writing to it. You dispatch agents; they self-organize through the graph.
-- **You are persistent** — you maintain conversational context across messages, unlike task agents that are spawned for a single task and exit.
+/// Record a coordinator turn as a cycle iteration on the `.coordinator` task.
+///
+/// Logs turn metadata (response length, latency) and increments `loop_iteration`.
+fn record_coordinator_turn(
+    dir: &Path,
+    coordinator_id: u32,
+    user_message: &str,
+    response_len: usize,
+    turn_start: std::time::Instant,
+) {
+    use workgraph::graph::LogEntry;
+    use workgraph::parser::save_graph;
 
-When a user asks you to do something, your job is to translate that into graph operations:
-- Create tasks with clear descriptions and correct dependencies
-- Group related work with shared prefixes (e.g., `auth-research`, `auth-impl`, `auth-test`)
-- Set appropriate dependency chains — sequential for shared-file work, parallel for independent work
-- Monitor progress and report back when asked
+    let gp = graph_path(dir);
+    let mut graph = match load_graph(&gp) {
+        Ok(g) => g,
+        Err(_) => return,
+    };
 
-## Available Tools
+    // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let coordinator_task_id = if graph.get_task(&task_id).is_some() {
+        task_id.as_str()
+    } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+        ".coordinator"
+    } else {
+        return;
+    };
+    let task = graph.get_task_mut(coordinator_task_id).unwrap();
 
-You have access to these workgraph CLI commands via the `Bash` tool:
+    let latency = turn_start.elapsed();
+    let iteration = task.loop_iteration;
+    task.loop_iteration = iteration.saturating_add(1);
 
-### Task Management
-- `wg add "title" [-d "description"] [--after dep1,dep2] [--tag tag1,tag2] [--skill skill1]` — Create a task
-- `wg edit <task-id> [--title "new"] [--description "new"] [--after dep1,dep2] [--tag tag1]` — Modify a task
-- `wg done <task-id>` — Mark a task complete
-- `wg fail <task-id> --reason "why"` — Mark a task as failed
-- `wg retry <task-id>` — Retry a failed task
-- `wg pause <task-id>` / `wg resume <task-id>` — Pause/resume a task
-- `wg abandon <task-id>` — Permanently abandon a task
+    // Truncate user message for the log entry
+    let msg_preview: String = user_message.chars().take(80).collect();
+    let msg_suffix = if user_message.len() > 80 { "..." } else { "" };
 
-### Inspection
-- `wg show <task-id>` — Full task details (description, status, logs, artifacts, deps)
-- `wg list [--status open|in-progress|done|failed|blocked]` — List tasks with optional filter
-- `wg status` — One-screen project overview
-- `wg ready` — List tasks ready to be worked on
-- `wg blocked <task-id>` — Show what blocks a task
-- `wg why-blocked <task-id>` — Transitive blocking chain
-- `wg context <task-id>` — Show dependency context for a task
-- `wg impact <task-id>` — What depends on this task
+    let log_msg = format!(
+        "Turn {}: processed \"{}{}\" ({} chars response, {:.1}s)",
+        iteration + 1,
+        msg_preview,
+        msg_suffix,
+        response_len,
+        latency.as_secs_f64(),
+    );
 
-### Agent Management
-- `wg agents` — List running agents and their tasks
-- `wg kill <agent-id>` — Kill a running agent
-- `wg unclaim <task-id>` — Release a claimed task
+    task.log.push(LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: log_msg,
+    });
 
-### Communication
-- `wg msg send <task-id> "message"` — Send a message to a task's agent
-- `wg msg list <task-id>` — View messages on a task
-- `wg log <task-id> "note"` — Add a log entry to a task
+    // Keep log bounded (last 100 entries)
+    if task.log.len() > 100 {
+        let drain_count = task.log.len() - 100;
+        task.log.drain(..drain_count);
+    }
 
-### Analysis
-- `wg critical-path` — Longest dependency chain
-- `wg bottlenecks` — Tasks blocking the most downstream work
-- `wg velocity` — Task completion rate
-- `wg forecast` — Projected completion date
-- `wg coordinate` — Ready tasks, in-progress tasks, parallelism opportunities
+    if let Err(e) = save_graph(&graph, &gp) {
+        eprintln!(
+            "[coordinator-agent] Failed to save graph after turn recording: {}",
+            e
+        );
+    }
+}
 
-### Service Control
-- `wg service status` — Service daemon status
-- `wg service pause` / `wg service resume` — Pause/resume agent spawning
+// ---------------------------------------------------------------------------
+// Inline evaluation (Phase 3: coordinator-as-graph-citizen)
+// ---------------------------------------------------------------------------
 
-## Behavioral Rules
+/// Coordinator evaluation rubric dimensions with weights.
+const COORDINATOR_EVAL_DIMENSIONS: &[(&str, f64)] = &[
+    ("decomposition", 0.30),
+    ("dependency_accuracy", 0.25),
+    ("description_quality", 0.20),
+    ("user_responsiveness", 0.15),
+    ("efficiency", 0.10),
+];
 
-1. **Never implement** — You NEVER write code, modify source files, run builds, or execute tests. If the user asks you to "do" something that involves writing code, create a task for it.
+/// Check whether a coordinator turn should be evaluated based on eval_frequency config.
+fn should_evaluate_turn(turn_number: u32, eval_frequency: &str) -> bool {
+    match eval_frequency {
+        "every" => true,
+        "every_5" => turn_number.is_multiple_of(5),
+        "every_10" => turn_number.is_multiple_of(10),
+        "sample_20pct" => {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            turn_number.hash(&mut hasher);
+            chrono::Utc::now().timestamp_nanos_opt().hash(&mut hasher);
+            hasher.finish().is_multiple_of(5)
+        }
+        "none" => false,
+        _ => turn_number.is_multiple_of(5), // default to every_5
+    }
+}
 
-2. **Decompose intelligently** — Break user requests into the right granularity:
-   - Small request ("fix the typo in README") → single task
-   - Medium request ("add JWT auth") → 3-5 tasks (research, implement, test, integrate)
-   - Large request ("build a new microservice") → plan phase + implementation phase with fan-out
+/// Build the evaluation prompt for a coordinator turn.
+fn build_coordinator_eval_prompt(
+    user_message: &str,
+    response_summary: &str,
+    graph_summary: &str,
+) -> String {
+    format!(
+        r#"You are evaluating a coordinator turn. The coordinator received input and produced output.
 
-3. **Respect the golden rule** — Tasks that modify the same files MUST be sequential (pipeline), not parallel. When unsure, default to sequential.
+## Input
+- User message: {user_message}
+- Graph state at turn start: {graph_summary}
 
-4. **Include integration points** — When fanning out parallel work, always add an integrator task that depends on all parallel branches: `wg add "Integrate X" --after branch-a,branch-b,branch-c`
+## Output
+- Response to user: {response_summary}
 
-5. **Give clear descriptions** — Each task description should tell the agent exactly what to do, what files to touch, and what "done" looks like. Agents cannot ask you clarifying questions mid-task.
+## Evaluation Criteria
+Score each dimension 0.0-1.0:
 
-6. **Use the graph for status** — When the user asks "what's happening?", inspect the graph (`wg status`, `wg agents`, `wg list`) rather than guessing from memory.
+1. **Decomposition (30%)**: Were the tasks well-scoped? Right number? Right boundaries?
+2. **Dependency accuracy (25%)**: Correct edges? No cycles that shouldn't be there? Same-file work serialized?
+3. **Description quality (20%)**: Clear? Actionable? Validation criteria included?
+4. **User responsiveness (15%)**: Helpful? Accurate? Right level of detail?
+5. **Efficiency (10%)**: Minimal unnecessary work? No redundant tasks?
 
-7. **Report concisely** — Summarize graph state in human-readable form. Don't dump raw command output unless the user asks for details.
+Output JSON:
+{{
+  "score": <float 0.0-1.0>,
+  "dimensions": {{
+    "decomposition": <float>,
+    "dependency_accuracy": <float>,
+    "description_quality": <float>,
+    "user_responsiveness": <float>,
+    "efficiency": <float>
+  }},
+  "notes": "<brief explanation of strengths and weaknesses>"
+}}"#
+    )
+}
 
-8. **Be conversational** — You're a collaborator, not a command parser. Understand intent, ask clarifying questions when ambiguous, and suggest approaches.
+/// Run inline evaluation of a coordinator turn via lightweight LLM call.
+///
+/// Called asynchronously after eligible turns. Records the evaluation in
+/// `.workgraph/agency/evaluations/`.
+fn evaluate_coordinator_turn(
+    dir: &Path,
+    turn_number: u32,
+    user_message: &str,
+    response_summary: &str,
+) {
+    use std::collections::HashMap;
+    use workgraph::agency::{self, Evaluation};
+    use workgraph::config::{Config, DispatchRole};
+    use workgraph::service::llm::run_lightweight_llm_call;
 
-## Common Patterns
+    let config = Config::load_or_default(dir);
 
-### User: "I need to implement X"
-1. Clarify scope if ambiguous
-2. Create a research/design task (if X is non-trivial)
-3. Create implementation task(s) with `--after` the research task
-4. Create test task(s) with `--after` the implementation task(s)
-5. Report what you created and the expected flow
+    // Build a brief graph summary for context
+    let gp = graph_path(dir);
+    let graph_summary = if let Ok(graph) = load_graph(&gp) {
+        let total = graph.tasks().count();
+        let done = graph.tasks().filter(|t| t.status == Status::Done).count();
+        let in_prog = graph
+            .tasks()
+            .filter(|t| t.status == Status::InProgress)
+            .count();
+        let failed = graph.tasks().filter(|t| t.status == Status::Failed).count();
+        format!(
+            "{} tasks ({} done, {} in-progress, {} failed)",
+            total, done, in_prog, failed
+        )
+    } else {
+        "unknown".to_string()
+    };
 
-### User: "What's the status?"
-1. Run `wg status` for overview
-2. Run `wg agents` if agents are active
-3. Run `wg list --status failed` if there are failures
-4. Summarize in natural language
+    // Truncate inputs for the eval prompt (keep it cheap)
+    let msg_trunc: String = user_message.chars().take(500).collect();
+    let resp_trunc: String = response_summary.chars().take(1000).collect();
 
-### User: "Why is task X stuck?"
-1. Run `wg show <task-id>` for current state
-2. Run `wg why-blocked <task-id>` for blocking chain
-3. Check if blocking tasks have agents assigned
-4. Suggest resolution (retry, unblock, reprioritize)
+    let prompt = build_coordinator_eval_prompt(&msg_trunc, &resp_trunc, &graph_summary);
 
-### User: "Retry the failed tasks"
-1. Run `wg list --status failed` to identify failures
-2. For each, check logs (`wg show <id>`) to understand why
-3. If retriable, `wg retry <id>`. If systemic, explain the pattern.
+    let result = match run_lightweight_llm_call(&config, DispatchRole::CoordinatorEval, &prompt, 30)
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "[coordinator-eval] Failed to run evaluation LLM call: {}",
+                e
+            );
+            return;
+        }
+    };
 
-### User: "Pause everything / I need to make manual changes"
-1. `wg service pause` to stop new agent spawns
-2. Explain what's currently in-progress (agents will finish)
-3. Wait for user to say resume, then `wg service resume`
+    // Parse the JSON response
+    let text = result.text.trim();
+    // Extract JSON from possible markdown code blocks
+    let json_str = if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            &text[start..=end]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
 
-## Context You Receive
+    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[coordinator-eval] Failed to parse evaluation response: {}",
+                e
+            );
+            return;
+        }
+    };
 
-On each message, you receive a system context update (injected automatically) with:
-- Graph summary: task count by status
-- Recent events: completions, failures, new tasks since your last message
-- Active agents: who's working on what
-- Pending items: failed/blocked tasks that may need attention
+    let score = parsed.get("score").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let notes = parsed
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-Use this context to stay oriented. You do NOT need to run `wg status` on every message — only when you need more detail than the summary provides."#
-        .to_string()
+    let mut dimensions = HashMap::new();
+    if let Some(dims) = parsed.get("dimensions").and_then(|v| v.as_object()) {
+        for (key, val) in dims {
+            if let Some(f) = val.as_f64() {
+                dimensions.insert(key.clone(), f);
+            }
+        }
+    }
+
+    // Compute weighted score if we got dimensions
+    let weighted_score = if !dimensions.is_empty() {
+        let mut total = 0.0;
+        for (dim_name, weight) in COORDINATOR_EVAL_DIMENSIONS {
+            if let Some(dim_score) = dimensions.get(*dim_name) {
+                total += dim_score * weight;
+            }
+        }
+        total
+    } else {
+        score
+    };
+
+    let evaluation = Evaluation {
+        id: format!("eval-coordinator-turn-{}", turn_number),
+        task_id: ".coordinator".to_string(),
+        agent_id: String::new(),
+        role_id: "coordinator".to_string(),
+        tradeoff_id: String::new(),
+        score: weighted_score,
+        dimensions,
+        notes,
+        evaluator: "inline-coordinator-eval".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        model: None,
+        source: "coordinator-inline".to_string(),
+    };
+
+    let agency_dir = dir.join("agency");
+    match agency::record_evaluation(&evaluation, &agency_dir) {
+        Ok(path) => {
+            eprintln!(
+                "[coordinator-eval] Turn {} evaluated: {:.2} (saved to {})",
+                turn_number,
+                weighted_score,
+                path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("[coordinator-eval] Failed to record evaluation: {}", e);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1580,7 @@ pub fn build_coordinator_context(
     dir: &Path,
     last_interaction: &str,
     event_log: Option<&SharedEventLog>,
+    coordinator_id: u32,
 ) -> Result<String> {
     let gp = graph_path(dir);
     if !gp.exists() {
@@ -1407,6 +1695,25 @@ pub fn build_coordinator_context(
 
     parts.push(format!("## System Context Update ({})", now));
 
+    // --- Compacted Project Context ---
+    let context_path = context_md_path(dir);
+    if context_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&context_path) {
+            let contents = contents.trim();
+            if !contents.is_empty() {
+                let state = CompactorState::load(dir);
+                let ts_line = match &state.last_compaction {
+                    Some(ts) => format!("_Last compacted: {}_\n", ts),
+                    None => String::new(),
+                };
+                parts.push(format!(
+                    "\n### Compacted Project Context\n{}{}",
+                    ts_line, contents
+                ));
+            }
+        }
+    }
+
     parts.push(format!(
         "\n### Graph Summary\n{} tasks: {} done, {} in-progress, {} open, {} blocked, {} failed, {} abandoned",
         total, done, in_progress, open, blocked, failed, abandoned
@@ -1438,6 +1745,13 @@ pub fn build_coordinator_context(
             parts.push(line.clone());
         }
     }
+
+    // Tell the coordinator where its chat log lives
+    let chat_log = chat::chat_log_path_for(dir, coordinator_id);
+    parts.push(format!(
+        "\n### Chat Log\nYour full chat history is at: {}",
+        chat_log.display()
+    ));
 
     Ok(parts.join("\n"))
 }
@@ -1485,18 +1799,39 @@ mod tests {
     }
 
     #[test]
-    fn test_build_system_prompt_not_empty() {
-        let prompt = build_system_prompt();
+    fn test_build_system_prompt_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let prompt = build_system_prompt(tmp.path());
+        // Falls back to hardcoded prompt since no coordinator-prompt dir exists
         assert!(prompt.contains("workgraph coordinator"));
         assert!(prompt.contains("Never implement"));
         assert!(prompt.contains("wg add"));
     }
 
     #[test]
+    fn test_build_system_prompt_from_files() {
+        let tmp = TempDir::new().unwrap();
+        let prompt_dir = tmp.path().join("agency/coordinator-prompt");
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        std::fs::write(prompt_dir.join("base-system-prompt.md"), "Base prompt here").unwrap();
+        std::fs::write(prompt_dir.join("behavioral-rules.md"), "Rules here").unwrap();
+        std::fs::write(prompt_dir.join("common-patterns.md"), "Patterns here").unwrap();
+        std::fs::write(prompt_dir.join("evolved-amendments.md"), "Amendments here").unwrap();
+
+        let prompt = build_system_prompt(tmp.path());
+        assert!(prompt.contains("Base prompt here"));
+        assert!(prompt.contains("Rules here"));
+        assert!(prompt.contains("Patterns here"));
+        assert!(prompt.contains("Amendments here"));
+        // Should NOT contain fallback content
+        assert!(!prompt.contains("workgraph coordinator"));
+    }
+
+    #[test]
     fn test_build_coordinator_context_no_graph() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None).unwrap();
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
         assert!(ctx.is_empty());
     }
 
@@ -1516,7 +1851,7 @@ mod tests {
 
         // This will fail to load since it's not a valid graph format,
         // but we're testing the error path gracefully
-        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None);
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0);
         // Either succeeds with content or fails gracefully
         assert!(ctx.is_ok() || ctx.is_err());
     }
@@ -1567,7 +1902,7 @@ mod tests {
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("chat")).unwrap();
 
-        let summary = build_crash_recovery_summary(dir).unwrap();
+        let summary = build_crash_recovery_summary(dir, 0).unwrap();
         assert!(summary.contains("restarted after a crash"));
         assert!(summary.contains("No previous conversation history"));
     }
@@ -1584,7 +1919,7 @@ mod tests {
         chat::append_inbox(dir, "what's the status?", "req-2").unwrap();
         chat::append_outbox(dir, "3 tasks in progress", "req-2").unwrap();
 
-        let summary = build_crash_recovery_summary(dir).unwrap();
+        let summary = build_crash_recovery_summary(dir, 0).unwrap();
         assert!(summary.contains("restarted after a crash"));
         assert!(summary.contains("help me plan auth"));
         assert!(summary.contains("create tasks for auth"));
@@ -1602,7 +1937,7 @@ mod tests {
         let long_msg = "x".repeat(1000);
         chat::append_inbox(dir, &long_msg, "req-1").unwrap();
 
-        let summary = build_crash_recovery_summary(dir).unwrap();
+        let summary = build_crash_recovery_summary(dir, 0).unwrap();
         // The summary should contain the truncated version (500 chars + "...")
         assert!(summary.contains("..."));
         assert!(!summary.contains(&long_msg));
@@ -1620,11 +1955,85 @@ mod tests {
             chat::append_outbox(dir, &format!("response-{}", i), &format!("req-{}", i)).unwrap();
         }
 
-        let summary = build_crash_recovery_summary(dir).unwrap();
+        let summary = build_crash_recovery_summary(dir, 0).unwrap();
         // Should only contain the last RECOVERY_HISTORY_COUNT messages
         // The earliest messages should NOT be present
         assert!(!summary.contains("msg-0"));
         // But later messages should be
         assert!(summary.contains("msg-19") || summary.contains("response-19"));
+    }
+
+    #[test]
+    fn test_coordinator_context_includes_compaction() {
+        use workgraph::service::compactor::{CompactorState, context_md_path};
+        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Set up a valid graph so build_coordinator_context proceeds past the early return
+        setup_workgraph(
+            dir,
+            vec![make_task_with_status("task-1", "A task", Status::Open)],
+        );
+
+        // Write context.md with known content
+        let ctx_path = context_md_path(dir);
+        std::fs::create_dir_all(ctx_path.parent().unwrap()).unwrap();
+        std::fs::write(&ctx_path, "The project is building a widget system.").unwrap();
+
+        // Write compactor state with a known timestamp
+        let state = CompactorState {
+            last_compaction: Some("2026-03-10T12:00:00Z".to_string()),
+            last_ops_count: 10,
+            last_tick: 3,
+            compaction_count: 1,
+        };
+        state.save(dir).unwrap();
+
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
+
+        // Compacted context should appear
+        assert!(
+            ctx.contains("### Compacted Project Context"),
+            "missing section header"
+        );
+        assert!(
+            ctx.contains("The project is building a widget system."),
+            "missing context body"
+        );
+        assert!(
+            ctx.contains("2026-03-10T12:00:00Z"),
+            "missing compaction timestamp"
+        );
+
+        // Compacted context should appear BEFORE graph summary
+        let compact_pos = ctx.find("### Compacted Project Context").unwrap();
+        let graph_pos = ctx.find("### Graph Summary").unwrap();
+        assert!(
+            compact_pos < graph_pos,
+            "compacted context should come before graph summary"
+        );
+    }
+
+    #[test]
+    fn test_coordinator_context_without_compaction() {
+        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Set up a valid graph, no context.md
+        setup_workgraph(
+            dir,
+            vec![make_task_with_status("task-1", "A task", Status::Open)],
+        );
+
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
+
+        // Should not contain compacted section
+        assert!(!ctx.contains("Compacted Project Context"));
+        // But should still have graph summary
+        assert!(ctx.contains("### Graph Summary"));
     }
 }

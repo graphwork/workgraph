@@ -15,6 +15,7 @@ Complete reference for all `wg` commands. Most query commands support `--json` f
 - [Peer Commands](#peer-commands)
 - [Service Commands](#service-commands)
 - [Monitoring Commands](#monitoring-commands)
+- [Communication Commands](#communication-commands)
 - [Utility Commands](#utility-commands)
 
 ---
@@ -381,6 +382,147 @@ wg resume implement-api
 
 ---
 
+### `wg approve`
+
+Approve a task pending validation (transitions to Done).
+
+```bash
+wg approve <TASK>
+```
+
+**Arguments:**
+- `TASK` - Task ID to approve (required)
+
+**Example:**
+```bash
+wg approve security-audit
+# Transitions the task from pending-validation to done
+```
+
+---
+
+### `wg reject`
+
+Reject a task pending validation (reopens with feedback, or fails after max rejections).
+
+```bash
+wg reject <TASK> --reason <REASON>
+```
+
+**Arguments:**
+- `TASK` - Task ID to reject (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--reason <REASON>` | Reason for rejection (required) |
+
+**Example:**
+```bash
+wg reject security-audit --reason "Missing severity ratings for 3 findings"
+# Reopens the task with feedback so the agent can address issues
+```
+
+---
+
+### `wg publish`
+
+Publish a draft task (validates dependencies, then resumes entire subgraph).
+
+```bash
+wg publish <TASK> [OPTIONS]
+```
+
+**Arguments:**
+- `TASK` - Task ID to publish (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--only` | Only publish this single task (skip subgraph propagation) |
+
+**Examples:**
+```bash
+wg publish my-draft-task
+# Validates dependencies and resumes the entire subgraph
+
+wg publish my-draft-task --only
+# Publish just this task without propagating to the subgraph
+```
+
+---
+
+### `wg add-dep`
+
+Add a dependency edge between two tasks.
+
+```bash
+wg add-dep <TASK> <DEPENDENCY>
+```
+
+**Arguments:**
+- `TASK` - The task that will depend on the dependency (required)
+- `DEPENDENCY` - The dependency (blocker) task (required)
+
+**Example:**
+```bash
+wg add-dep deploy-prod run-tests
+# deploy-prod now waits for run-tests to complete
+```
+
+---
+
+### `wg rm-dep`
+
+Remove a dependency edge between two tasks.
+
+```bash
+wg rm-dep <TASK> <DEPENDENCY>
+```
+
+**Arguments:**
+- `TASK` - The task to remove the dependency from (required)
+- `DEPENDENCY` - The dependency to remove (required)
+
+**Example:**
+```bash
+wg rm-dep deploy-prod run-tests
+# deploy-prod no longer waits for run-tests
+```
+
+---
+
+### `wg wait`
+
+Park a task and exit — sets status to Waiting until a condition is met.
+
+```bash
+wg wait <TASK> --until <UNTIL> [OPTIONS]
+```
+
+**Arguments:**
+- `TASK` - Task ID to park (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--until <UNTIL>` | Condition to wait for: `task:<id>=done`, `timer:<duration>`, `message` (required) |
+| `--checkpoint <CHECKPOINT>` | Checkpoint summary of progress so far |
+
+**Examples:**
+```bash
+wg wait my-task --until "task:dep-a=done"
+# Park until dep-a completes
+
+wg wait my-task --until "timer:5m"
+# Park for 5 minutes
+
+wg wait my-task --until "message" --checkpoint "Completed phase 1, waiting for review feedback"
+# Park until a message arrives, saving a checkpoint of progress
+```
+
+---
+
 ## Query Commands
 
 ### `wg list`
@@ -503,6 +645,34 @@ wg status
 ```bash
 wg status
 # Shows task counts by status, recent activity, and overall progress
+```
+
+---
+
+### `wg discover`
+
+Show recently completed tasks and their artifacts (stigmergic discovery).
+
+```bash
+wg discover [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--since <SINCE>` | Time window (e.g. `24h`, `7d`, `30m`). Default: `24h` |
+| `--with-artifacts` | Include artifact paths in output |
+
+**Examples:**
+```bash
+wg discover
+# Show tasks completed in the last 24 hours
+
+wg discover --since 7d
+# Show tasks completed in the last 7 days
+
+wg discover --since 1h --with-artifacts
+# Show recently completed tasks with their artifact paths
 ```
 
 ---
@@ -1704,6 +1874,47 @@ wg dead-agents --purge --delete-dirs
 
 ---
 
+### `wg checkpoint`
+
+Save a checkpoint for context preservation during long-running tasks.
+
+```bash
+wg checkpoint <TASK> --summary <SUMMARY> [OPTIONS]
+```
+
+**Arguments:**
+- `TASK` - Task ID (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-s, --summary <SUMMARY>` | Summary of progress (~500 tokens) (required) |
+| `--agent <AGENT>` | Agent ID (default: `WG_AGENT_ID` env var or task assignee) |
+| `-f, --file <FILES>` | Files modified since last checkpoint (repeatable) |
+| `--stream-offset <OFFSET>` | Stream byte offset |
+| `--turn-count <N>` | Conversation turn count |
+| `--token-input <N>` | Input tokens used |
+| `--token-output <N>` | Output tokens used |
+| `--checkpoint-type <TYPE>` | Checkpoint type: `explicit` (default) or `auto` |
+| `--list` | List checkpoints instead of creating one |
+
+**Examples:**
+```bash
+wg checkpoint my-task --summary "Completed auth module, starting API routes"
+# Save a progress checkpoint
+
+wg checkpoint my-task --summary "Phase 2 done" -f src/api.rs -f src/auth.rs
+# Checkpoint with modified file tracking
+
+wg checkpoint my-task --summary "Midway" --token-input 50000 --token-output 8000
+# Checkpoint with token usage metrics
+
+wg checkpoint my-task --list
+# List all checkpoints for a task
+```
+
+---
+
 ## Peer Commands
 
 Manage peer workgraph instances for cross-repo communication and function sharing.
@@ -1970,6 +2181,162 @@ wg watch --event task_state --event evaluation
 
 wg watch --task deploy --replay 20
 # Stream events for tasks matching "deploy", including 20 historical events
+```
+
+---
+
+### `wg stats`
+
+Show time counters and agent statistics.
+
+```bash
+wg stats
+```
+
+**Example:**
+```bash
+wg stats
+# Displays agent time counters, task throughput, and resource usage
+```
+
+---
+
+## Communication Commands
+
+### `wg msg`
+
+Send and receive messages to/from tasks and agents.
+
+```bash
+wg msg <COMMAND>
+```
+
+**Subcommands:**
+
+#### `wg msg send`
+
+Send a message to a task/agent.
+
+```bash
+wg msg send <TASK_ID> [MESSAGE] [OPTIONS]
+```
+
+**Arguments:**
+- `TASK_ID` - Task ID (required)
+- `MESSAGE` - Message body (optional if `--stdin` is used)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--from <FROM>` | Sender identifier (default: `user`) |
+| `--priority <PRIORITY>` | Message priority: `normal` or `urgent` (default: `normal`) |
+| `--stdin` | Read message body from stdin |
+
+**Examples:**
+```bash
+wg msg send my-task "Please also update the README"
+# Send a message to a task
+
+wg msg send my-task "Urgent: API key rotated" --priority urgent
+# Send an urgent message
+
+echo "Long feedback..." | wg msg send my-task --stdin --from reviewer
+# Pipe message from stdin
+```
+
+---
+
+#### `wg msg list`
+
+List all messages for a task.
+
+```bash
+wg msg list <TASK_ID>
+```
+
+**Example:**
+```bash
+wg msg list my-task
+# Show all messages associated with the task
+```
+
+---
+
+#### `wg msg read`
+
+Read unread messages (marks as read, advances cursor).
+
+```bash
+wg msg read <TASK_ID> [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--agent <AGENT>` | Agent ID (default: from `WG_AGENT_ID` env var, or `user`) |
+
+**Example:**
+```bash
+wg msg read my-task --agent agent-1234
+# Read unread messages for this agent on the task
+```
+
+---
+
+#### `wg msg poll`
+
+Poll for new messages (exit code 0 = new messages, 1 = none).
+
+```bash
+wg msg poll <TASK_ID> [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--agent <AGENT>` | Agent ID (default: from `WG_AGENT_ID` env var, or `user`) |
+
+**Example:**
+```bash
+wg msg poll my-task --agent agent-1234
+# Check if new messages exist (useful in scripts)
+```
+
+---
+
+### `wg chat`
+
+Chat with the coordinator agent.
+
+```bash
+wg chat [OPTIONS] [MESSAGE]
+```
+
+**Arguments:**
+- `MESSAGE` - Message to send (omit for interactive mode)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-i, --interactive` | Interactive REPL mode |
+| `--history` | Show chat history |
+| `--clear` | Clear chat history |
+| `--timeout <TIMEOUT>` | Timeout in seconds waiting for response (default: 120) |
+| `--attachment <ATTACHMENT>` | Attach a file (copied to `.workgraph/attachments/`) |
+
+**Examples:**
+```bash
+wg chat "What tasks are blocked?"
+# Send a one-shot message to the coordinator
+
+wg chat -i
+# Start an interactive chat session
+
+wg chat --history
+# View previous chat messages
+
+wg chat "Review this file" --attachment src/main.rs
+# Send a message with a file attachment
 ```
 
 ---
@@ -2344,6 +2711,99 @@ wg gc
 
 wg gc --include-done
 # Also remove completed tasks
+```
+
+---
+
+### `wg compact`
+
+Compact: distill graph state into context.md.
+
+```bash
+wg compact
+```
+
+**Example:**
+```bash
+wg compact
+# Distills current graph state into .workgraph/context.md for context preservation
+```
+
+---
+
+### `wg telegram`
+
+Telegram integration commands.
+
+```bash
+wg telegram <COMMAND>
+```
+
+**Subcommands:**
+
+#### `wg telegram listen`
+
+Start the Telegram bot listener.
+
+```bash
+wg telegram listen [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--chat-id <CHAT_ID>` | Telegram chat ID to listen in (uses configured chat_id if not specified) |
+
+**Example:**
+```bash
+wg telegram listen
+# Start listening for Telegram messages using configured chat ID
+
+wg telegram listen --chat-id 123456789
+# Listen on a specific chat
+```
+
+---
+
+#### `wg telegram send`
+
+Send a message to the configured Telegram chat.
+
+```bash
+wg telegram send <MESSAGE> [OPTIONS]
+```
+
+**Arguments:**
+- `MESSAGE` - Message to send (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--chat-id <CHAT_ID>` | Target chat ID (uses configured chat_id if not specified) |
+
+**Example:**
+```bash
+wg telegram send "Deploy complete — all tests passing"
+# Send a notification to the configured Telegram chat
+
+wg telegram send "Alert: build failed" --chat-id 123456789
+# Send to a specific chat
+```
+
+---
+
+#### `wg telegram status`
+
+Show Telegram configuration status.
+
+```bash
+wg telegram status
+```
+
+**Example:**
+```bash
+wg telegram status
+# Shows whether Telegram is configured and the current chat ID
 ```
 
 ---

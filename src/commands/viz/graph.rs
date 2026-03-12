@@ -19,8 +19,7 @@ pub fn generate_graph(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    assign_token_usage: &HashMap<String, TokenUsage>,
-    eval_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
 ) -> String {
     generate_graph_with_overrides(
@@ -30,8 +29,7 @@ pub fn generate_graph(
         annotations,
         &HashMap::new(),
         live_token_usage,
-        assign_token_usage,
-        eval_token_usage,
+        agency_token_usage,
         context_ids,
     )
 }
@@ -46,8 +44,7 @@ pub fn generate_graph_with_overrides(
     annotations: &HashMap<String, String>,
     status_overrides: &HashMap<&str, Status>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    assign_token_usage: &HashMap<String, TokenUsage>,
-    eval_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
 ) -> String {
     if tasks.is_empty() {
@@ -88,7 +85,7 @@ pub fn generate_graph_with_overrides(
             Status::Blocked => "\x1b[90m",
             Status::Failed => "\x1b[31m",
             Status::Abandoned => "\x1b[90m",
-            Status::Waiting => "\x1b[33m",
+            Status::Waiting | Status::PendingValidation => "\x1b[33m",
         }
     };
     let reset = if use_color { "\x1b[0m" } else { "" };
@@ -101,7 +98,7 @@ pub fn generate_graph_with_overrides(
             Status::Blocked => "blocked",
             Status::Failed => "failed",
             Status::Abandoned => "abandoned",
-            Status::Waiting => "waiting",
+            Status::Waiting | Status::PendingValidation => "waiting",
         }
     };
 
@@ -202,6 +199,8 @@ pub fn generate_graph_with_overrides(
         let effective_status = status_overrides.get(id).copied().unwrap_or(task.status);
         let status = status_label(&effective_status);
 
+        let is_coordinator = super::is_coordinator_task(task);
+
         // Context nodes: dimmed, reduced detail (just ID and status)
         let (line1, line2) = if is_context {
             (display_id, status.to_string())
@@ -211,7 +210,9 @@ pub fn generate_graph_with_overrides(
                 .map(|a| format!(" {}", a))
                 .unwrap_or_default();
 
-            let loop_info = if let Some(ref cfg) = task.cycle_config {
+            let loop_info = if is_coordinator {
+                format!(" [turn {}]", task.loop_iteration)
+            } else if let Some(ref cfg) = task.cycle_config {
                 if cfg.max_iterations > 0 {
                     if cfg.no_converge {
                         format!(" ↺ forced {}/{}", task.loop_iteration, cfg.max_iterations)
@@ -231,9 +232,8 @@ pub fn generate_graph_with_overrides(
                 .token_usage
                 .as_ref()
                 .or_else(|| live_token_usage.get(id));
-            let atok_usage = assign_token_usage.get(id);
-            let etok_usage = eval_token_usage.get(id);
-            let token_info = format_token_display(usage, atok_usage, etok_usage)
+            let agency_usage = agency_token_usage.get(id);
+            let token_info = format_token_display(usage, agency_usage)
                 .map(|s| format!(" · {}", s))
                 .unwrap_or_default();
 
@@ -244,7 +244,9 @@ pub fn generate_graph_with_overrides(
         };
         let width = line1.len().max(line2.len());
 
-        let color = if is_context {
+        let color = if is_coordinator && use_color {
+            "\x1b[36m" // cyan for coordinator
+        } else if is_context {
             dim
         } else {
             status_color(&effective_status)
@@ -612,7 +614,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
         assert_eq!(result, "(no tasks to display)");
@@ -632,7 +633,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -669,7 +669,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -711,7 +710,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -746,7 +744,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -785,7 +782,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -834,7 +830,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -880,7 +875,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -910,7 +904,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),

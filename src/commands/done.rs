@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, evaluate_cycle_iteration, parse_token_usage};
+use workgraph::graph::{
+    LogEntry, Status, evaluate_cycle_iteration, parse_token_usage, parse_wg_tokens,
+};
 use workgraph::parser::save_graph;
 use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
@@ -98,6 +100,41 @@ fn run_verify_command(verify_cmd: &str, project_root: &Path) -> Result<()> {
     }
 }
 
+/// Check git hygiene when an agent marks a task as done.
+/// Emits warnings for uncommitted changes and stash growth.
+fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
+    use std::process::Command;
+    let project_root = dir.parent().unwrap_or(dir);
+    if let Ok(output) = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(project_root)
+        .output()
+    {
+        let status = String::from_utf8_lossy(&output.stdout);
+        if !status.is_empty() {
+            let changed: Vec<&str> = status.lines().take(10).collect();
+            eprintln!(
+                "Warning: git hygiene for '{}': uncommitted changes:\n{}",
+                task_id,
+                changed.join("\n")
+            );
+        }
+    }
+    if let Ok(output) = Command::new("git")
+        .args(["stash", "list"])
+        .current_dir(project_root)
+        .output()
+    {
+        let count = String::from_utf8_lossy(&output.stdout).lines().count();
+        if count > 0 {
+            eprintln!(
+                "Warning: git hygiene for '{}': {} stash(es) exist. Agents should never stash.",
+                task_id, count
+            );
+        }
+    }
+}
+
 pub fn run(dir: &Path, id: &str, converged: bool, skip_verify: bool) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
     run_inner(dir, id, converged, skip_verify, is_agent)
@@ -122,23 +159,21 @@ fn run_inner(
     // Check for unresolved blockers (cycle-aware: only exempt back-edge blockers,
     // not all same-cycle blockers).
     //
-    // A "back-edge blocker" is a blocker that has cycle_config (the cycle's
-    // iterator/validator task) and is in the same cycle as the task being
-    // completed.  The auto-created dependency from the worker back to the
-    // iterator is a loop-back edge; the iterator should not block the worker.
+    // Any blocker that is in the same cycle (SCC) as the task being completed
+    // is exempted — both header and non-header members.  The mutual dependency
+    // between cycle members is a structural back-edge; blocking on it would
+    // deadlock the cycle.
     let blockers = query::after(&graph, id);
     if !blockers.is_empty() {
         let cycle_analysis = graph.compute_cycle_analysis();
         let effective_blockers: Vec<_> = blockers
             .into_iter()
             .filter(|b| {
-                // Exempt if the blocker is the cycle iterator in the same cycle
-                let blocker_is_cycle_iterator = b.cycle_config.is_some();
-                let in_same_cycle = blocker_is_cycle_iterator
-                    && cycle_analysis
-                        .task_to_cycle
-                        .get(&b.id)
-                        .is_some_and(|bc| cycle_analysis.task_to_cycle.get(id) == Some(bc));
+                // Exempt any blocker in the same cycle (SCC) as this task
+                let in_same_cycle = cycle_analysis
+                    .task_to_cycle
+                    .get(&b.id)
+                    .is_some_and(|bc| cycle_analysis.task_to_cycle.get(id) == Some(bc));
                 !in_same_cycle
             })
             .collect();
@@ -154,6 +189,11 @@ fn run_inner(
                 blocker_list.join("\n")
             );
         }
+    }
+
+    // Git hygiene check for agents: warn about uncommitted changes
+    if is_agent {
+        check_agent_git_hygiene(dir, id);
     }
 
     // Run verify command gate (if task has a verify field)
@@ -173,6 +213,101 @@ fn run_inner(
             run_verify_command(&verify_cmd, project_root)?;
             eprintln!("Verify command passed");
         }
+    }
+
+    // Determine validation mode for this task.
+    // Resolution: task.validation > "none" (default, backward compatible).
+    let validation_mode = graph
+        .get_task(id)
+        .and_then(|t| t.validation.clone())
+        .unwrap_or_else(|| "none".to_string());
+
+    // Integrated validation: enforce log check + run validation_commands
+    if validation_mode == "integrated" {
+        let task_ref = graph.get_task(id).unwrap();
+        let has_validation_log = task_ref
+            .log
+            .iter()
+            .any(|entry| entry.message.to_lowercase().contains("validat"));
+        if !has_validation_log {
+            anyhow::bail!(
+                "Cannot mark '{}' as done: integrated validation requires a validation log entry.\n\
+                 Add one with: wg log {} \"Validated: <what you checked>\"",
+                id,
+                id
+            );
+        }
+        let commands = task_ref.validation_commands.clone();
+        if !commands.is_empty() {
+            let project_root = dir.parent().unwrap_or(dir);
+            for cmd in &commands {
+                eprintln!("Running validation command: {}", cmd);
+                run_verify_command(cmd, project_root).with_context(|| {
+                    format!(
+                        "Integrated validation failed for '{}': command failed: {}",
+                        id, cmd
+                    )
+                })?;
+            }
+            eprintln!("All validation commands passed");
+        }
+    }
+
+    // External validation: transition to PendingValidation instead of Done
+    if validation_mode == "external" {
+        let task = graph
+            .get_task_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("Task '{}' disappeared from graph", id))?;
+        task.status = Status::PendingValidation;
+        task.completed_at = Some(Utc::now().to_rfc3339());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: task.assigned.clone(),
+            message: "Task pending external validation".to_string(),
+        });
+
+        save_graph(&graph, &path).context("Failed to save graph")?;
+        super::notify_graph_changed(dir);
+
+        let config = workgraph::config::Config::load_or_default(dir);
+        let _ = workgraph::provenance::record(
+            dir,
+            "done",
+            Some(id),
+            None,
+            serde_json::json!({ "validation": "external", "status": "pending-validation" }),
+            config.log.rotation_threshold,
+        );
+
+        println!("Task '{}' is pending external validation", id);
+
+        // Archive agent conversation for provenance
+        if let Some(task) = graph.get_task(id)
+            && let Some(ref agent_id) = task.assigned
+        {
+            match super::log::archive_agent(dir, id, agent_id) {
+                Ok(archive_dir) => {
+                    eprintln!("Agent archived to {}", archive_dir.display());
+                }
+                Err(e) => {
+                    eprintln!("Warning: agent archive failed: {}", e);
+                }
+            }
+        }
+
+        // Capture task output for validation
+        if let Some(task) = graph.get_task(id) {
+            match capture_task_output(dir, task) {
+                Ok(output_dir) => {
+                    eprintln!("Output captured to {}", output_dir.display());
+                }
+                Err(e) => {
+                    eprintln!("Warning: output capture failed: {}", e);
+                }
+            }
+        }
+
+        return Ok(());
     }
 
     // When --converged is passed, determine whether the task's cycle has a
@@ -288,6 +423,10 @@ fn run_inner(
             dir.parent().unwrap_or(dir).join(output_path)
         };
         if let Some(usage) = parse_token_usage(&abs_path) {
+            task.token_usage = Some(usage);
+        } else if let Some(usage) = parse_wg_tokens(&abs_path) {
+            // Eval agents (.evaluate-*, .flip-*) emit __WG_TOKENS__ lines
+            // instead of Claude CLI type=result JSON.
             task.token_usage = Some(usage);
         }
     }
@@ -1069,5 +1208,121 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::InProgress);
+    }
+
+    #[test]
+    fn test_done_external_validation_transitions_to_pending() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "External validation task", Status::InProgress);
+        task.validation = Some("external".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::PendingValidation);
+        assert!(task.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_done_external_validation_adds_log() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "External validation task", Status::InProgress);
+        task.validation = Some("external".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false, false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        let last_log = task.log.last().unwrap();
+        assert!(last_log.message.contains("pending external validation"));
+    }
+
+    #[test]
+    fn test_done_integrated_validation_requires_log_entry() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Integrated validation task", Status::InProgress);
+        task.validation = Some("integrated".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // Should fail: no validation log entry
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("validation log entry"));
+    }
+
+    #[test]
+    fn test_done_integrated_validation_with_log_succeeds() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Integrated validation task", Status::InProgress);
+        task.validation = Some("integrated".to_string());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            message: "Validated: all tests pass".to_string(),
+        });
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+    }
+
+    #[test]
+    fn test_done_integrated_validation_runs_commands() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Integrated with commands", Status::InProgress);
+        task.validation = Some("integrated".to_string());
+        task.validation_commands = vec!["exit 1".to_string()]; // will fail
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            message: "Validated: ready".to_string(),
+        });
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("validation failed"));
+    }
+
+    #[test]
+    fn test_done_none_validation_is_default() {
+        // validation=None (default) should behave like "none" — direct to Done
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let task = make_task("t1", "Default task", Status::InProgress);
+        assert!(task.validation.is_none());
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
     }
 }

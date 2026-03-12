@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, evaluate_cycle_on_failure};
+use workgraph::graph::{
+    LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
+};
 use workgraph::parser::save_graph;
+use workgraph::service::registry::AgentRegistry;
 
 #[cfg(test)]
 use super::graph_path;
@@ -64,6 +67,24 @@ fn run_inner(dir: &Path, id: &str, reason: Option<&str>, eval_reject: bool) -> R
         actor: task.assigned.clone(),
         message: log_message,
     });
+
+    // Extract token usage from agent output.log if available
+    if task.token_usage.is_none()
+        && let Ok(registry) = AgentRegistry::load(dir)
+        && let Some(agent) = registry.get_agent_by_task(id)
+    {
+        let output_path = std::path::Path::new(&agent.output_file);
+        let abs_path = if output_path.is_absolute() {
+            output_path.to_path_buf()
+        } else {
+            dir.parent().unwrap_or(dir).join(output_path)
+        };
+        if let Some(usage) = parse_token_usage(&abs_path) {
+            task.token_usage = Some(usage);
+        } else if let Some(usage) = parse_wg_tokens(&abs_path) {
+            task.token_usage = Some(usage);
+        }
+    }
 
     // Extract values we need before cycle restart may modify the task
     let retry_count = task.retry_count;

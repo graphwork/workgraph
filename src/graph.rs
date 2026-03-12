@@ -128,6 +128,7 @@ pub enum Status {
     Blocked,
     Failed,
     Abandoned,
+    PendingValidation,
 }
 
 impl std::fmt::Display for Status {
@@ -140,6 +141,7 @@ impl std::fmt::Display for Status {
             Status::Blocked => write!(f, "blocked"),
             Status::Failed => write!(f, "failed"),
             Status::Abandoned => write!(f, "abandoned"),
+            Status::PendingValidation => write!(f, "pending-validation"),
         }
     }
 }
@@ -159,6 +161,7 @@ impl<'de> serde::Deserialize<'de> for Status {
             "blocked" => Ok(Status::Blocked),
             "failed" => Ok(Status::Failed),
             "abandoned" => Ok(Status::Abandoned),
+            "pending-validation" => Ok(Status::PendingValidation),
             // Migration: pending-review is treated as done
             "pending-review" => Ok(Status::Done),
             other => Err(serde::de::Error::unknown_variant(
@@ -171,6 +174,7 @@ impl<'de> serde::Deserialize<'de> for Status {
                     "blocked",
                     "failed",
                     "abandoned",
+                    "pending-validation",
                 ],
             )),
         }
@@ -293,9 +297,11 @@ pub struct Task {
     /// Context scope for prompt assembly: clean, task, graph, full
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_scope: Option<String>,
-    /// Execution mode: "full" (default, full Claude Code session with all tools)
-    /// or "bare" (lightweight --system-prompt path, no file I/O tools).
-    /// Use "bare" for pure-reasoning tasks: synthesis, triage, summarization, abstract reasoning.
+    /// Execution weight tier controlling agent tool access:
+    /// - "shell": no LLM, run task.exec command directly
+    /// - "bare": LLM with wg CLI only, --system-prompt path
+    /// - "light": LLM with read-only file access (Read, Glob, Grep, WebFetch)
+    /// - "full" (default): full Claude Code session with all tools
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_mode: Option<String>,
     /// Token usage and cost data extracted from agent output.log
@@ -316,6 +322,37 @@ pub struct Task {
     /// Timestamp of last resurrection (for cooldown enforcement)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_resurrected_at: Option<String>,
+    /// Validation mode: "none" (default/backward-compat), "integrated", or "external"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<String>,
+    /// Commands to run during validation
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validation_commands: Vec<String>,
+    /// If true, validator rejects when no test files were modified
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub test_required: bool,
+    /// Number of times this task has been rejected by validation
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rejection_count: u32,
+    /// Maximum rejections before task fails (default 3)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rejections: Option<u32>,
+    /// Tasks that this task was replaced by (set on abandon with --superseded-by)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded_by: Vec<String>,
+    /// Task that this task replaces (set on new tasks created as replacements)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// When true, task was created with --no-place and should skip automatic placement.
+    /// The placement system will not create a .place-* task for this task.
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub unplaced: bool,
+    /// Placement hint: place near these tasks (IDs). Used by .place-* agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_near: Vec<String>,
+    /// Placement hint: place before these tasks (IDs). Used by .place-* agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_before: Vec<String>,
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -507,20 +544,47 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
     }
 }
 
+/// Parse token usage from `__WG_TOKENS__:` lines in an output log.
+///
+/// Eval agents (`.evaluate-*`, `.flip-*`) emit `__WG_TOKENS__:{json}` to stderr
+/// during `wg evaluate run`. This function extracts and sums those lines.
+/// Returns `None` if the file doesn't exist or has no `__WG_TOKENS__` lines.
+pub fn parse_wg_tokens(output_log_path: &std::path::Path) -> Option<TokenUsage> {
+    let content = std::fs::read_to_string(output_log_path).ok()?;
+
+    let mut total = TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
+    let mut found_any = false;
+
+    for line in content.lines() {
+        if let Some(json) = line.strip_prefix("__WG_TOKENS__:")
+            && let Ok(usage) = serde_json::from_str::<TokenUsage>(json.trim())
+        {
+            found_any = true;
+            total.accumulate(&usage);
+        }
+    }
+
+    if found_any { Some(total) } else { None }
+}
+
 /// Format token usage in compact slash notation: in/out or in/out/val
 /// Input = total input (uncached + cache_read + cache_creation).
 /// Validation shown only when > 0.
 /// `usage` is the work task's token usage, `validation` is the optional assign+eval token usage.
 pub fn format_token_display(
     usage: Option<&TokenUsage>,
-    assign_usage: Option<&TokenUsage>,
-    eval_usage: Option<&TokenUsage>,
+    agency_usage: Option<&TokenUsage>,
 ) -> Option<String> {
     let has_work = usage.is_some();
-    let has_assign = assign_usage.is_some_and(|a| a.total_input() + a.output_tokens > 0);
-    let has_eval = eval_usage.is_some_and(|e| e.total_input() + e.output_tokens > 0);
+    let has_agency = agency_usage.is_some_and(|a| a.input_tokens + a.output_tokens > 0);
 
-    if !has_work && !has_assign && !has_eval {
+    if !has_work && !has_agency {
         return None;
     }
 
@@ -530,7 +594,7 @@ pub fn format_token_display(
         let cache_total = u.cache_read_input_tokens + u.cache_creation_input_tokens;
         s.push_str(&format!(
             "→{} ←{}",
-            format_tokens(u.total_input()),
+            format_tokens(u.input_tokens),
             format_tokens(u.output_tokens)
         ));
         if cache_total > 0 {
@@ -539,19 +603,13 @@ pub fn format_token_display(
         }
     }
 
-    if let Some(a) = assign_usage {
-        let atok = a.total_input() + a.output_tokens;
-        if atok > 0 {
-            // ⊳ triangle for assignment
-            s.push_str(&format!(" ⊳{}", format_tokens(atok)));
-        }
-    }
-
-    if let Some(e) = eval_usage {
-        let etok = e.total_input() + e.output_tokens;
-        if etok > 0 {
-            // ∴ QED for evaluation
-            s.push_str(&format!(" ∴{}", format_tokens(etok)));
+    if let Some(a) = agency_usage {
+        let novel_in = a.input_tokens;
+        let novel_out = a.output_tokens;
+        let total = novel_in + novel_out;
+        if total > 0 {
+            // § agency overhead (sum of input + output)
+            s.push_str(&format!(" §{}", format_tokens(total)));
         }
     }
 
@@ -727,6 +785,26 @@ struct TaskHelper {
     resurrection_count: u32,
     #[serde(default)]
     last_resurrected_at: Option<String>,
+    #[serde(default)]
+    validation: Option<String>,
+    #[serde(default)]
+    validation_commands: Vec<String>,
+    #[serde(default)]
+    test_required: bool,
+    #[serde(default)]
+    rejection_count: u32,
+    #[serde(default)]
+    max_rejections: Option<u32>,
+    #[serde(default)]
+    superseded_by: Vec<String>,
+    #[serde(default)]
+    supersedes: Option<String>,
+    #[serde(default)]
+    unplaced: bool,
+    #[serde(default)]
+    place_near: Vec<String>,
+    #[serde(default)]
+    place_before: Vec<String>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -791,6 +869,16 @@ impl<'de> Deserialize<'de> for Task {
             checkpoint: helper.checkpoint,
             resurrection_count: helper.resurrection_count,
             last_resurrected_at: helper.last_resurrected_at,
+            validation: helper.validation,
+            validation_commands: helper.validation_commands,
+            test_required: helper.test_required,
+            rejection_count: helper.rejection_count,
+            max_rejections: helper.max_rejections,
+            superseded_by: helper.superseded_by,
+            supersedes: helper.supersedes,
+            unplaced: helper.unplaced,
+            place_near: helper.place_near,
+            place_before: helper.place_before,
         })
     }
 }
@@ -1245,7 +1333,7 @@ fn reactivate_cycle(
         .map(|t| t.loop_iteration)
         .unwrap_or(0);
     let new_iteration = current_iter + 1;
-    if new_iteration >= cycle_config.max_iterations {
+    if cycle_config.max_iterations > 0 && new_iteration >= cycle_config.max_iterations {
         return vec![];
     }
 
@@ -1286,10 +1374,17 @@ fn reactivate_cycle(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
-                message: format!(
-                    "Re-activated by cycle iteration (iteration {}/{})",
-                    new_iteration, cycle_config.max_iterations
-                ),
+                message: if cycle_config.max_iterations == 0 {
+                    format!(
+                        "Re-activated by cycle iteration (iteration {}/unlimited)",
+                        new_iteration
+                    )
+                } else {
+                    format!(
+                        "Re-activated by cycle iteration (iteration {}/{})",
+                        new_iteration, cycle_config.max_iterations
+                    )
+                },
             });
 
             reactivated.push(member_id.clone());
@@ -1627,6 +1722,7 @@ mod tests {
         assert!(Status::Done.is_terminal());
         assert!(Status::Failed.is_terminal());
         assert!(Status::Abandoned.is_terminal());
+        assert!(!Status::PendingValidation.is_terminal());
     }
 
     #[test]
@@ -2087,42 +2183,31 @@ mod tests {
             cache_read_input_tokens: 100_000,
             cache_creation_input_tokens: 5_000,
         };
-        let assign = TokenUsage {
+        // Aggregated agency usage (assign + eval combined, novel only)
+        let agency = TokenUsage {
             cost_usd: 0.0,
-            input_tokens: 500,
-            output_tokens: 200,
+            input_tokens: 1300, // 500 assign + 800 eval novel input
+            output_tokens: 600, // 200 assign + 400 eval novel output
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
         };
-        let eval = TokenUsage {
-            cost_usd: 0.0,
-            input_tokens: 800,
-            output_tokens: 400,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-        };
-        // →in ←out ◎cached ⊳assign ∴eval format
+        // →novel_in ←out ◎cached ☀agency_total
         assert_eq!(
-            format_token_display(Some(&usage), Some(&assign), Some(&eval)),
-            Some("→110k ←3.9k ◎105k ⊳700 ∴1.2k".to_string())
+            format_token_display(Some(&usage), Some(&agency)),
+            Some("→4.6k ←3.9k ◎105k §1.9k".to_string())
         );
         assert_eq!(
-            format_token_display(Some(&usage), None, None),
-            Some("→110k ←3.9k ◎105k".to_string())
+            format_token_display(Some(&usage), None),
+            Some("→4.6k ←3.9k ◎105k".to_string())
         );
-        // Only eval, no assign
+        // Only agency, no task usage
         assert_eq!(
-            format_token_display(None, None, Some(&eval)),
-            Some(" ∴1.2k".to_string())
+            format_token_display(None, Some(&agency)),
+            Some(" §1.9k".to_string())
         );
-        // Only assign, no eval
-        assert_eq!(
-            format_token_display(None, Some(&assign), None),
-            Some(" ⊳700".to_string())
-        );
-        assert_eq!(format_token_display(None, None, None), None);
+        assert_eq!(format_token_display(None, None), None);
 
-        // Zero validation tokens should not show assign/eval
+        // Zero agency tokens should not show § section
         let zero_val = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,
@@ -2131,10 +2216,10 @@ mod tests {
             cache_creation_input_tokens: 0,
         };
         assert_eq!(
-            format_token_display(Some(&usage), Some(&zero_val), Some(&zero_val)),
-            Some("→110k ←3.9k ◎105k".to_string())
+            format_token_display(Some(&usage), Some(&zero_val)),
+            Some("→4.6k ←3.9k ◎105k".to_string())
         );
-        assert_eq!(format_token_display(None, Some(&zero_val), None), None);
+        assert_eq!(format_token_display(None, Some(&zero_val)), None);
     }
 
     #[test]
@@ -2246,6 +2331,52 @@ mod tests {
     fn test_parse_token_usage_live_missing_file() {
         let result = parse_token_usage_live(std::path::Path::new("/nonexistent/output.log"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_wg_tokens_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            "FLIP Phase 1: Inferring prompt from output...\nFLIP Phase 2: Comparing prompts...\n__WG_TOKENS__:{\"cost_usd\":0.12,\"input_tokens\":500,\"output_tokens\":200,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":50}\n",
+        ).unwrap();
+
+        let usage = parse_wg_tokens(&log_path).unwrap();
+        assert!((usage.cost_usd - 0.12).abs() < f64::EPSILON);
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 200);
+        assert_eq!(usage.cache_read_input_tokens, 100);
+        assert_eq!(usage.cache_creation_input_tokens, 50);
+    }
+
+    #[test]
+    fn test_parse_wg_tokens_multiple_lines_accumulate() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            "__WG_TOKENS__:{\"cost_usd\":0.1,\"input_tokens\":100,\"output_tokens\":50}\n__WG_TOKENS__:{\"cost_usd\":0.2,\"input_tokens\":200,\"output_tokens\":80}\n",
+        ).unwrap();
+
+        let usage = parse_wg_tokens(&log_path).unwrap();
+        assert!((usage.cost_usd - 0.3).abs() < f64::EPSILON);
+        assert_eq!(usage.input_tokens, 300);
+        assert_eq!(usage.output_tokens, 130);
+    }
+
+    #[test]
+    fn test_parse_wg_tokens_missing_file() {
+        let result = parse_wg_tokens(std::path::Path::new("/nonexistent/output.log"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_wg_tokens_no_tokens_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(&log_path, "Some eval output\nAnother line\n").unwrap();
+        assert!(parse_wg_tokens(&log_path).is_none());
     }
 
     #[test]

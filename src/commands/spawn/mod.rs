@@ -13,6 +13,7 @@
 
 mod context;
 mod execution;
+pub(crate) mod worktree;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -549,6 +550,162 @@ mod tests {
         assert_eq!(
             metadata["timeout_secs"], 600,
             "Metadata should record 600s (10m)"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_script_contains_merge_back_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        // Merge-back section is always present but gated by env var check
+        assert!(
+            script.contains("# --- Merge Back (worktree isolation) ---"),
+            "Wrapper should contain merge-back section header"
+        );
+        assert!(
+            script.contains(r#"if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]"#),
+            "Merge-back should be gated by worktree env vars"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_uses_squash_merge() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(
+            script.contains("git merge --squash \"$WG_BRANCH\""),
+            "Should use squash merge for clean history"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_handles_conflicts() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(
+            script.contains("git merge --abort"),
+            "Should abort merge on conflict"
+        );
+        assert!(
+            script.contains("Merge conflict"),
+            "Should report merge conflict"
+        );
+        assert!(
+            script.contains(r#"wg fail "$TASK_ID" --reason "Merge conflict"#),
+            "Should fail task on merge conflict"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_uses_flock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(script.contains(".merge-lock"), "Should use merge lock file");
+        assert!(script.contains("flock 9"), "Should acquire flock");
+        assert!(script.contains("flock -u 9"), "Should release flock");
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_cleans_up_worktree() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(
+            script.contains(
+                r#"git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH""#
+            ),
+            "Should force-remove worktree"
+        );
+        assert!(
+            script.contains(r#"git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH""#),
+            "Should delete worktree branch"
+        );
+        assert!(
+            script.contains(r#"rm -f "$WG_WORKTREE_PATH/.workgraph""#),
+            "Should remove .workgraph symlink"
+        );
+        assert!(
+            script.contains("[wrapper] Cleaned up worktree"),
+            "Should log worktree cleanup"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_skips_no_commits() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(
+            script.contains("No commits on $WG_BRANCH, nothing to merge"),
+            "Should skip merge when no commits exist"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_merge_back_commit_convention() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut task = make_task("t1", "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(temp_dir.path(), "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        assert!(
+            script.contains("feat: $TASK_ID ($WG_AGENT_ID)"),
+            "Commit message should follow convention"
+        );
+        assert!(
+            script.contains("Squash-merged from worktree branch"),
+            "Commit message should mention squash merge origin"
         );
     }
 }

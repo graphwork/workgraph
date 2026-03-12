@@ -114,7 +114,7 @@ pub struct EvolverOperation {
     /// retire_role, retire_motivation, wording_mutation, component_substitution,
     /// config_add_component, config_remove_component, config_swap_outcome,
     /// config_swap_tradeoff, random_compose_role, random_compose_agent, bizarre_ideation,
-    /// meta_swap_role, meta_swap_tradeoff, meta_compose_agent
+    /// meta_swap_role, meta_swap_tradeoff, meta_compose_agent, modify_coordinator_prompt
     pub op: String,
 
     // -- Targeting --

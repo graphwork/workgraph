@@ -565,6 +565,9 @@ fn test_full_agency_lifecycle_new_design() {
         artifact_diff: None,
         evaluator_identity: None,
         downstream_tasks: &[],
+        flip_score: None,
+        verify_status: None,
+        verify_findings: None,
     });
     assert!(evaluator_prompt.contains("integration-test-agent"));
     assert!(evaluator_prompt.contains("Integration Implementer"));

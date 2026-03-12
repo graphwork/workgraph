@@ -7,9 +7,10 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ConfigEditKind, ConfigSection, ConfirmAction, FocusedPanel, InputMode, LayoutMode,
-    RightPanelTab, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
-    extract_section_name,
+    ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus,
+    CoordinatorPlusHit, CoordinatorTabHit, FocusedPanel, InputMode, LayoutMode, RightPanelTab,
+    ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
+    extract_section_name, format_duration_compact,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -79,6 +80,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Lazy-init file browser on first switch to Files tab.
     if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
         app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
+    }
+    // Lazy-load firehose data on first switch to Firehose tab.
+    if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
+        app.update_firehose();
     }
 
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
@@ -257,6 +262,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Top status bar
     draw_status_bar(frame, app, status_area);
 
+    // Service health badge — right-aligned pill on the status bar.
+    draw_service_health_badge(frame, app, status_area);
+
     // Bottom action hints
     draw_action_hints(frame, app, hints_area);
 
@@ -278,11 +286,26 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.last_text_prompt_area = Rect::default();
     }
 
+    // Choice dialog overlay
+    if let InputMode::ChoiceDialog(ref state) = app.input_mode {
+        draw_choice_dialog(frame, state);
+    }
+
     // Task creation form overlay
     if app.input_mode == InputMode::TaskForm
         && let Some(ref form) = app.task_form
     {
         draw_task_form(frame, form);
+    }
+
+    // Service control panel (modal overlay)
+    if app.service_health.panel_open {
+        draw_service_control_panel(frame, app);
+    }
+
+    // Legacy service health detail popup
+    if app.service_health.detail_open && !app.service_health.panel_open {
+        draw_service_health_detail(frame, app);
     }
 }
 
@@ -646,7 +669,13 @@ fn is_selected_task_line(app: &VizApp, orig_idx: usize) -> bool {
     false
 }
 
-fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // When the archive browser is active, render it instead of the graph.
+    if app.archive_browser.active {
+        draw_archive_browser(frame, app, area);
+        return;
+    }
+
     let visible_count = app.visible_line_count();
     let start = app.scroll.offset_y;
     let end = (start + area.height as usize).min(visible_count);
@@ -667,6 +696,19 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     // Precompute the selected task ID for the edge map lookups.
     let selected_id = app.selected_task_id().map(|s| s.to_string());
+
+    // Precompute coordinator line indices for chat-to-coordinator visual link.
+    // When the Chat tab is active, coordinator task lines get a subtle cyan highlight.
+    let chat_active = app.right_panel_visible && app.right_panel_tab == RightPanelTab::Chat;
+    let coordinator_lines: HashSet<usize> = if chat_active {
+        app.node_line_map
+            .iter()
+            .filter(|(id, _)| id.starts_with(".coordinator"))
+            .map(|(_, &line)| line)
+            .collect()
+    } else {
+        HashSet::new()
+    };
 
     for visible_idx in start..end {
         let orig_idx = app.visible_to_original(visible_idx);
@@ -761,6 +803,14 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
                 reduced,
                 anim_kind,
             );
+        }
+
+        // Chat-to-coordinator visual link: apply a subtle cyan tint to coordinator
+        // task lines when the Chat tab is visible, connecting the two visually.
+        if coordinator_lines.contains(&orig_idx) {
+            let last = text_lines.last_mut().unwrap();
+            // Subtle dark cyan background to mark the coordinator row.
+            *last = std::mem::take(last).style(Style::default().bg(Color::Rgb(0, 40, 50)));
         }
     }
 
@@ -1092,6 +1142,105 @@ fn highlight_fuzzy_match<'a>(
     Line::from(new_spans)
 }
 
+fn draw_archive_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let ab = &app.archive_browser;
+    let visible = ab.visible_count();
+    let viewport_h = area.height.saturating_sub(2) as usize; // 1 for header, 1 for footer
+
+    // Auto-scroll to keep selection visible
+    let scroll = if ab.selected < ab.scroll {
+        ab.selected
+    } else if ab.selected >= ab.scroll + viewport_h {
+        ab.selected.saturating_sub(viewport_h - 1)
+    } else {
+        ab.scroll
+    };
+    // Update scroll in app (needs mut)
+    app.archive_browser.scroll = scroll;
+
+    let ab = &app.archive_browser;
+
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+    // Header line
+    let header_text = if ab.filter_active {
+        format!(
+            " Archive ({} entries) — filter: /{}▌",
+            ab.entries.len(),
+            ab.filter
+        )
+    } else if !ab.filter.is_empty() {
+        format!(
+            " Archive ({}/{} entries) — filter: /{} ",
+            visible,
+            ab.entries.len(),
+            ab.filter
+        )
+    } else {
+        format!(" Archive ({} entries) ", ab.entries.len())
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            header_text,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " [A/Esc:close  /:filter  r:restore  R:refresh]",
+            Style::default().fg(Color::Rgb(100, 100, 100)),
+        ),
+    ]));
+
+    // Entry rows
+    let end = (scroll + viewport_h).min(visible);
+    for vi in scroll..end {
+        let idx = ab.filtered_indices[vi];
+        let entry = &ab.entries[idx];
+        let is_selected = vi == ab.selected;
+
+        let completed = entry
+            .completed_at
+            .as_deref()
+            .and_then(|s| s.get(..10)) // YYYY-MM-DD
+            .unwrap_or("????-??-??");
+
+        let tags_str = if entry.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", entry.tags.join(", "))
+        };
+
+        let line_text = format!(
+            "  {} │ {} │ {}{}",
+            completed, entry.id, entry.title, tags_str
+        );
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(50, 50, 80))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(180, 180, 180))
+        };
+
+        lines.push(Line::from(Span::styled(line_text, style)));
+    }
+
+    // Fill remaining rows
+    while lines.len() < area.height as usize {
+        lines.push(Line::from(""));
+    }
+
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 20, 20)));
+    frame.render_widget(paragraph, area);
+
+    // Store the area for graph pane compatibility
+    app.last_graph_area = area;
+}
+
 fn draw_scrollbar(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Store the scrollbar area for mouse hit-testing (rightmost column of the area).
     let sb_area = Rect {
@@ -1107,7 +1256,9 @@ fn draw_scrollbar(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .content_height
         .saturating_sub(app.scroll.viewport_height);
     let mut state = ScrollbarState::new(max_scroll).position(app.scroll.offset_y);
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .thumb_style(Style::default().fg(Color::White))
+        .track_style(Style::default().fg(Color::DarkGray));
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
 
@@ -1128,7 +1279,9 @@ fn draw_panel_scrollbar(
     app.last_panel_scrollbar_area = sb_area;
 
     let mut state = ScrollbarState::new(max_scroll).position(position);
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .thumb_style(Style::default().fg(Color::White))
+        .track_style(Style::default().fg(Color::DarkGray));
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
 
@@ -1151,7 +1304,9 @@ fn draw_horizontal_scrollbar(
     };
     let max_offset = content_width.saturating_sub(viewport_width);
     let mut state = ScrollbarState::new(max_offset).position(offset_x);
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+        .thumb_style(Style::default().fg(Color::White))
+        .track_style(Style::default().fg(Color::DarkGray));
     frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
     scrollbar_area
 }
@@ -1172,7 +1327,10 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         area
     } else {
         let is_focused = app.focused_panel == FocusedPanel::RightPanel;
-        let border_color = if is_focused {
+        let is_chat_tab = app.right_panel_tab == RightPanelTab::Chat;
+        let border_color = if is_chat_tab && app.chat.coordinator_active {
+            Color::Cyan
+        } else if is_focused {
             Color::White
         } else {
             Color::DarkGray
@@ -1204,6 +1362,39 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Tab bar
     draw_tab_bar(frame, app.right_panel_tab, tab_area);
 
+    // Apply slide animation offset to the content area.
+    let content_area = if let Some(ref anim) = app.slide_animation {
+        if anim.is_done() {
+            app.slide_animation = None;
+            content_area
+        } else {
+            let offset = anim.x_offset(content_area.width);
+            let abs_offset = offset.unsigned_abs().min(content_area.width);
+            if offset > 0 {
+                // Forward: content slides in from the right
+                Rect {
+                    x: content_area.x + abs_offset,
+                    width: content_area.width.saturating_sub(abs_offset),
+                    ..content_area
+                }
+            } else if offset < 0 {
+                // Backward: content slides in from the left — reduce visible width from right
+                Rect {
+                    width: content_area.width.saturating_sub(abs_offset),
+                    ..content_area
+                }
+            } else {
+                content_area
+            }
+        }
+    } else {
+        content_area
+    };
+
+    if content_area.width < 4 {
+        return;
+    }
+
     // Tab content
     match app.right_panel_tab {
         RightPanelTab::Chat => {
@@ -1229,6 +1420,9 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
         RightPanelTab::CoordLog => {
             draw_coord_log_tab(frame, app, content_area);
+        }
+        RightPanelTab::Firehose => {
+            draw_firehose_tab(frame, app, content_area);
         }
     }
 }
@@ -1493,15 +1687,155 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     };
     let msg_area_height = area.height.saturating_sub(input_height);
 
+    // Coordinator tab bar — always visible so the user can discover [+] even with 1 coordinator
+    let coordinator_entries = app.list_coordinator_ids_and_labels();
+    let tab_bar_height: u16 = 1;
+
+    {
+        let tab_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        };
+        app.last_coordinator_bar_area = tab_area;
+
+        // Color palette for coordinator dots — hashed from coordinator ID.
+        const DOT_COLORS: &[Color] = &[
+            Color::Cyan,
+            Color::Green,
+            Color::Yellow,
+            Color::Blue,
+            Color::Magenta,
+            Color::Red,
+            Color::LightCyan,
+            Color::LightGreen,
+        ];
+        fn dot_color(cid: u32) -> Color {
+            // Knuth multiplicative hash to spread sequential IDs across the palette
+            let hash = cid.wrapping_mul(2654435761);
+            DOT_COLORS[hash as usize % DOT_COLORS.len()]
+        }
+
+        let bar_x = tab_area.x;
+        let max_width = tab_area.width as usize;
+        let mut spans = Vec::new();
+        let mut tab_hits = Vec::new();
+        let mut col: usize = 1; // start after leading space
+        let mut overflow = false;
+
+        // Leading space
+        spans.push(Span::raw(" "));
+
+        for (i, (cid, label)) in coordinator_entries.iter().enumerate() {
+            let cid = *cid;
+            let is_active = cid == app.active_coordinator_id;
+            let color = dot_color(cid);
+            let has_close = cid != 0;
+
+            // Tab content: " ◉ Label " or " ◉ Label ✕ "
+            // dot(1) + space(1) + label + space(1) + optional close(1+space(1))
+            let label_width = label.len();
+            let close_width: usize = if has_close { 2 } else { 0 }; // " ✕"
+            // Content: dot(1) + " "(1) + label + " "(1) + close
+            let tab_content_width = 1 + 1 + label_width + 1 + close_width;
+            // Separator: "│" between tabs (1 column wide)
+            let sep_w: usize = if i > 0 { 1 } else { 0 };
+
+            let total_tab_width = sep_w + tab_content_width;
+
+            // Check if this tab fits (also need room for "… [+]" = 5 if there are more tabs)
+            let remaining_tabs = coordinator_entries.len() - i - 1;
+            let suffix_width = if remaining_tabs > 0 { 6 } else { 4 }; // "… [+]" or " [+]"
+            if col + total_tab_width + suffix_width > max_width && remaining_tabs > 0 {
+                overflow = true;
+                break;
+            }
+
+            // Separator
+            if i > 0 {
+                spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+                col += sep_w;
+            }
+
+            let tab_start = (bar_x as usize + col) as u16;
+
+            // Dot
+            if is_active {
+                spans.push(Span::styled(
+                    " ◉",
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
+            }
+            col += 2; // " ◉" = space + dot
+
+            // Label
+            let label_style = if is_active {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(format!(" {}", label), label_style));
+            col += 1 + label_width; // " " + label
+
+            // Close button (padded for wider touch target)
+            let mut close_start: u16 = 0;
+            let mut close_end: u16 = 0;
+            if has_close {
+                close_start = (bar_x as usize + col) as u16;
+                spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                col += 2; // " ✕"
+                close_end = (bar_x as usize + col) as u16;
+            }
+
+            // Trailing space
+            spans.push(Span::raw(" "));
+            col += 1;
+
+            let tab_end = (bar_x as usize + col) as u16;
+
+            tab_hits.push(CoordinatorTabHit {
+                cid,
+                tab_start,
+                tab_end,
+                close_start,
+                close_end,
+            });
+        }
+
+        if overflow {
+            spans.push(Span::styled("… ", Style::default().fg(Color::DarkGray)));
+            col += 2;
+        }
+
+        let plus_start = (bar_x as usize + col) as u16;
+        spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
+        col += 3;
+        let plus_end = (bar_x as usize + col) as u16;
+
+        app.coordinator_tab_hits = tab_hits;
+        app.coordinator_plus_hit = CoordinatorPlusHit {
+            start: plus_start,
+            end: plus_end,
+        };
+
+        let tab_line = Line::from(spans);
+        frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
+    }
+
     let msg_area = Rect {
         x: area.x,
-        y: area.y,
+        y: area.y + tab_bar_height,
         width: area.width,
-        height: msg_area_height,
+        height: msg_area_height.saturating_sub(tab_bar_height),
     };
     let input_area = Rect {
         x: area.x,
-        y: area.y + msg_area_height,
+        y: area.y + tab_bar_height + msg_area.height,
         width: area.width,
         height: input_height,
     };
@@ -1563,14 +1897,24 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Scrollbar overlays the rightmost column when visible.
     let content_width = width.saturating_sub(1);
     let mut rendered_lines: Vec<Line> = Vec::new();
+    // Track which message index each rendered line belongs to (for click-to-edit).
+    let mut line_to_message: Vec<Option<usize>> = Vec::new();
 
     // Subtle warm-tinted dark background for user messages (like iMessage blue/gray,
     // but extremely subtle). Echoes the yellow ">" prefix and loop arrows.
     let user_msg_bg = Color::Rgb(30, 28, 20);
+    // Brighter background for editable (pending) user messages.
+    let pending_user_msg_bg = Color::Rgb(35, 32, 20);
+    // Highlight background for the message currently being edited.
+    let editing_msg_bg = Color::Rgb(40, 35, 15);
 
-    for msg in app.chat.messages.iter() {
+    let editing_index = app.chat.editing_index;
+
+    for (msg_idx, msg) in app.chat.messages.iter().enumerate() {
         let is_coordinator = msg.role == super::state::ChatRole::Coordinator;
         let is_user = msg.role == super::state::ChatRole::User;
+        let is_editable = is_user && !app.is_chat_message_consumed(msg_idx);
+        let is_being_edited = editing_index == Some(msg_idx);
 
         let (prefix, role_style) = match msg.role {
             super::state::ChatRole::User => (
@@ -1678,16 +2022,35 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             out
         };
 
+        // Choose background for user messages based on state.
+        let msg_bg = if is_being_edited {
+            editing_msg_bg
+        } else if is_editable {
+            pending_user_msg_bg
+        } else {
+            user_msg_bg
+        };
+
         let mut first_line = true;
         for line in &wrapped {
             if first_line {
                 let mut spans = vec![Span::styled(prefix.clone(), role_style)];
                 spans.extend(line.spans.iter().cloned());
+                // Append "(edited)" indicator on the first line of edited messages.
+                if msg.edited {
+                    spans.push(Span::styled(
+                        " (edited)",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
                 let mut built = Line::from(spans);
                 if is_user {
-                    built = apply_line_bg(built, user_msg_bg);
+                    built = apply_line_bg(built, msg_bg);
                 }
                 rendered_lines.push(built);
+                line_to_message.push(Some(msg_idx));
                 first_line = false;
             } else {
                 // Continuation/tool lines: indent to align with text after prefix
@@ -1695,9 +2058,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 spans.extend(line.spans.iter().cloned());
                 let mut built = Line::from(spans);
                 if is_user {
-                    built = apply_line_bg(built, user_msg_bg);
+                    built = apply_line_bg(built, msg_bg);
                 }
                 rendered_lines.push(built);
+                line_to_message.push(Some(msg_idx));
             }
         }
         // Show attachment indicators.
@@ -1710,12 +2074,14 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .add_modifier(Modifier::ITALIC),
             ));
             if is_user {
-                att_line = apply_line_bg(att_line, user_msg_bg);
+                att_line = apply_line_bg(att_line, msg_bg);
             }
             rendered_lines.push(att_line);
+            line_to_message.push(Some(msg_idx));
         }
         // Blank line between messages.
         rendered_lines.push(Line::from(""));
+        line_to_message.push(None);
     }
 
     // Streaming indicator when awaiting response.
@@ -1726,8 +2092,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::SLOW_BLINK),
         )));
+        line_to_message.push(None);
         rendered_lines.push(Line::from(""));
+        line_to_message.push(None);
     }
+
+    // Store line-to-message mapping for click-to-edit.
+    app.chat.line_to_message = line_to_message;
 
     // Scrolling: `scroll` is lines from bottom (0 = fully scrolled down).
     let total_lines = rendered_lines.len();
@@ -1794,21 +2165,41 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 /// Draw the chat input line at the bottom of the chat panel.
 fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let is_editing = app.input_mode == InputMode::ChatInput;
+    let in_edit_mode = app.chat.editing_index.is_some();
     let has_text = !super::state::editor_is_empty(&app.chat.editor);
     app.last_chat_input_area = area;
-    let border_color = if is_editing {
+    // Use yellow/gold border when in edit mode, magenta for normal input.
+    let border_color = if is_editing && in_edit_mode {
+        Color::Yellow
+    } else if is_editing {
         Color::Magenta
     } else {
         Color::DarkGray
     };
-    let prompt_color = if is_editing {
+    let prompt_color = if is_editing && in_edit_mode {
+        Color::Yellow
+    } else if is_editing {
         Color::LightMagenta
     } else {
         Color::DarkGray
     };
     if is_editing || has_text {
+        // Separator line — show edit mode hint.
+        let sep_text = if is_editing && in_edit_mode {
+            let w = area.width as usize;
+            let hint = " Editing (Enter=save, Esc=cancel) ";
+            if w > hint.len() + 2 {
+                let left = (w - hint.len()) / 2;
+                let right = w - hint.len() - left;
+                format!("{}{}{}", "─".repeat(left), hint, "─".repeat(right))
+            } else {
+                "─".repeat(w)
+            }
+        } else {
+            "─".repeat(area.width as usize)
+        };
         let sep = Line::from(Span::styled(
-            "─".repeat(area.width as usize),
+            sep_text,
             Style::default()
                 .fg(border_color)
                 .add_modifier(if is_editing {
@@ -2353,6 +2744,140 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 }
 
+/// Agent color palette for the firehose view.
+const FIREHOSE_COLORS: [Color; 8] = [
+    Color::Cyan,
+    Color::Green,
+    Color::Yellow,
+    Color::Magenta,
+    Color::Blue,
+    Color::LightRed,
+    Color::LightCyan,
+    Color::LightGreen,
+];
+
+/// Draw the Firehose tab content (panel 8) — merged stream of all agent output.
+fn draw_firehose_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    if app.firehose.lines.is_empty() {
+        let active_count = app
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|a| matches!(a.status, AgentStatus::Working))
+            .count();
+        let msg = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Firehose — All Agents",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                if active_count == 0 {
+                    "No active agents streaming output.".to_string()
+                } else {
+                    format!("{active_count} active agent(s), waiting for output...")
+                },
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let viewport_h = area.height.saturating_sub(1) as usize; // 1 line for header
+    let width = area.width as usize;
+    if viewport_h == 0 || width < 4 {
+        return;
+    }
+
+    // Header line: active agent count + total lines.
+    let active_count = app
+        .agent_monitor
+        .agents
+        .iter()
+        .filter(|a| matches!(a.status, AgentStatus::Working))
+        .count();
+    let header = Line::from(vec![
+        Span::styled(
+            "Firehose",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  {active_count} active  {} lines",
+                app.firehose.lines.len()
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let header_area = Rect { height: 1, ..area };
+    let content_area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+
+    frame.render_widget(Paragraph::new(vec![header]), header_area);
+
+    // Build rendered lines with color-coded prefix.
+    let mut rendered: Vec<Line> = Vec::with_capacity(app.firehose.lines.len());
+    for fl in &app.firehose.lines {
+        let color = FIREHOSE_COLORS[fl.color_idx % FIREHOSE_COLORS.len()];
+        let short_agent = if fl.agent_id.len() > 10 {
+            &fl.agent_id[fl.agent_id.len().saturating_sub(8)..]
+        } else {
+            &fl.agent_id
+        };
+        let short_task = if fl.task_id.len() > 20 {
+            &fl.task_id[..fl.task_id.floor_char_boundary(20)]
+        } else {
+            &fl.task_id
+        };
+        let prefix = format!("[{short_agent} {short_task}] ");
+        let text_budget = width.saturating_sub(prefix.len());
+        let display_text = if fl.text.len() > text_budget && text_budget > 3 {
+            format!(
+                "{}…",
+                &fl.text[..fl.text.floor_char_boundary(text_budget.saturating_sub(1))]
+            )
+        } else {
+            fl.text.clone()
+        };
+        rendered.push(Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(display_text),
+        ]));
+    }
+
+    let total_lines = rendered.len();
+    app.firehose.total_rendered_lines = total_lines;
+    app.firehose.viewport_height = viewport_h;
+
+    // Clamp scroll.
+    let max_scroll = total_lines.saturating_sub(viewport_h);
+    let scroll = app.firehose.scroll.min(max_scroll);
+    app.firehose.scroll = scroll;
+
+    let end = (scroll + viewport_h).min(total_lines);
+    let visible: Vec<Line> = rendered[scroll..end].to_vec();
+
+    let paragraph = Paragraph::new(visible);
+    frame.render_widget(paragraph, content_area);
+
+    // Scrollbar.
+    if total_lines > viewport_h && app.panel_scrollbar_visible() {
+        draw_panel_scrollbar(frame, app, content_area, max_scroll, scroll);
+    }
+}
+
 /// Draw the Messages tab content (panel 3) — message queue for selected task.
 /// Uses chat-app style: incoming messages left-aligned, outgoing right-aligned,
 /// with a stats header showing sent/received/reply status.
@@ -2423,7 +2948,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "No messages yet. Press Enter to compose.",
+                "No messages yet. Click below or press Enter to compose.",
                 Style::default().fg(Color::DarkGray),
             )),
         ]);
@@ -2682,6 +3207,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 fn draw_message_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let is_editing = app.input_mode == InputMode::MessageInput;
     let has_text = !super::state::editor_is_empty(&app.messages_panel.editor);
+    app.last_message_input_area = area;
     let border_color = if is_editing {
         Color::Magenta
     } else {
@@ -2768,7 +3294,7 @@ fn draw_message_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " Enter: compose  \u{2191}\u{2193}: scroll",
+                " Type a message...",
                 Style::default().fg(Color::DarkGray),
             ))),
             area,
@@ -3110,18 +3636,27 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     if let Some(ref usage) = phase.token_usage {
                         let cache_total =
                             usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-                        let mut tok_parts = vec![format!("→{}", format_tokens(usage.input_tokens))];
-                        if cache_total > 0 {
-                            tok_parts.push(format!("+{} cached", format_tokens(cache_total)));
-                        }
-                        tok_parts.push(format!("←{}", format_tokens(usage.output_tokens)));
-                        if usage.cost_usd > 0.0 {
-                            tok_parts.push(format!("${:.4}", usage.cost_usd));
-                        }
-                        lines.push(Line::from(Span::styled(
-                            format!("  Tokens: {}", tok_parts.join(" ")),
+                        let mut spans: Vec<Span> = vec![Span::styled(
+                            format!(
+                                "  Tokens: →{} ←{}",
+                                format_tokens(usage.input_tokens),
+                                format_tokens(usage.output_tokens)
+                            ),
                             Style::default().fg(Color::DarkGray),
-                        )));
+                        )];
+                        if cache_total > 0 {
+                            spans.push(Span::styled(
+                                format!("  (cached: {})", format_tokens(cache_total)),
+                                Style::default().fg(Color::Rgb(80, 80, 80)),
+                            ));
+                        }
+                        if usage.cost_usd > 0.0 {
+                            spans.push(Span::styled(
+                                format!(" ${:.4}", usage.cost_usd),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
                     }
 
                     // Runtime
@@ -3209,29 +3744,31 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let total_tokens = total_new_input + total_output + total_cached;
         if total_tokens > 0 {
             lines.push(Line::from(""));
-            let mut summary = if total_cached > 0 {
-                format!(
-                    "  Total: →{} +{} cached ←{}",
-                    format_tokens(total_new_input),
-                    format_tokens(total_cached),
-                    format_tokens(total_output)
-                )
-            } else {
+            let mut spans: Vec<Span> = vec![Span::styled(
                 format!(
                     "  Total: →{} ←{}",
                     format_tokens(total_new_input),
                     format_tokens(total_output)
-                )
-            };
-            if total_cost > 0.0 {
-                summary.push_str(&format!(" (${:.4})", total_cost));
-            }
-            lines.push(Line::from(Span::styled(
-                summary,
+                ),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
-            )));
+            )];
+            if total_cached > 0 {
+                spans.push(Span::styled(
+                    format!("  (cached: {})", format_tokens(total_cached)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            if total_cost > 0.0 {
+                spans.push(Span::styled(
+                    format!(" ${:.4}", total_cost),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
 
         lines.push(Line::from(""));
@@ -3460,6 +3997,72 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Draw a choice dialog overlay with multiple selectable options.
+fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) {
+    use super::state::ChoiceDialogAction;
+
+    let title = match &state.action {
+        ChoiceDialogAction::RemoveCoordinator(cid) => format!(" Close Coordinator {} ", cid),
+    };
+
+    let size = frame.area();
+    let width: u16 = 45;
+    let height: u16 = 3 + state.options.len() as u16 + 2; // border + options + footer + border
+    let x = (size.width.saturating_sub(width)) / 2;
+    let y = (size.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (hotkey, label, desc)) in state.options.iter().enumerate() {
+        let is_selected = i == state.selected;
+        let style = if is_selected {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        } else {
+            Style::default()
+        };
+        let hotkey_style = if is_selected {
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" [{}] ", hotkey), hotkey_style),
+            Span::styled(format!("{:<8}", label), style.add_modifier(Modifier::BOLD)),
+            Span::styled(format!("— {}", desc), style),
+        ]));
+    }
+    // Empty line + footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" [↑↓]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Navigate  "),
+        Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Select  "),
+        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Cancel"),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// Draw a text prompt overlay (fail reason, message, edit description).
 /// Returns the overlay area for mouse hit-testing.
 fn draw_text_prompt(
@@ -3474,6 +4077,7 @@ fn draw_text_prompt(
         TextPromptAction::SendMessage(id) => format!("Message to '{}':", id),
         TextPromptAction::EditDescription(id) => format!("Edit description for '{}':", id),
         TextPromptAction::AttachFile => "Attach file \u{2014} enter path:".to_string(),
+        TextPromptAction::CreateCoordinator => "New Coordinator".to_string(),
     };
     let size = frame.area();
     if is_multiline {
@@ -3888,9 +4492,9 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 Color::Magenta,
                 vec![
                     ("Enter", "send"),
+                    ("Esc", "cancel"),
+                    ("↑↓", "history"),
                     ("S-Enter", "newline"),
-                    ("Ctrl+K/Y", "kill/yank"),
-                    ("Esc", "exit"),
                 ],
             )
         }
@@ -3939,7 +4543,36 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             Color::Yellow,
             vec![("Enter", "save"), ("Esc", "cancel")],
         ),
+        InputMode::ChoiceDialog(_) => (
+            "Choice",
+            "EDIT",
+            Color::Yellow,
+            vec![("↑↓", "navigate"), ("Enter", "select"), ("Esc", "cancel")],
+        ),
         InputMode::Normal => match app.focused_panel {
+            FocusedPanel::Graph if app.archive_browser.active => {
+                if app.archive_browser.filter_active {
+                    (
+                        "Archive",
+                        "FILTER",
+                        Color::Cyan,
+                        vec![("Enter", "accept"), ("Esc", "clear")],
+                    )
+                } else {
+                    (
+                        "Archive",
+                        "NAV",
+                        Color::Yellow,
+                        vec![
+                            ("↑↓", "select"),
+                            ("/", "filter"),
+                            ("r", "restore"),
+                            ("R", "refresh"),
+                            ("A/Esc", "close"),
+                        ],
+                    )
+                }
+            }
             FocusedPanel::Graph => (
                 "Graph",
                 "NAV",
@@ -3951,9 +4584,9 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     ("/", "search"),
                     ("a", "add"),
                     ("D", "done"),
-                    ("i/I", "inspector size"),
+                    ("i/I", "resize pane"),
                     ("?", "help"),
-                    ("Alt←→", "tabs"),
+                    ("Alt←→", "cycle views"),
                 ],
             ),
             FocusedPanel::RightPanel => {
@@ -3967,11 +4600,15 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     RightPanelTab::Config => "5:Config",
                     RightPanelTab::Files => "6:Files",
                     RightPanelTab::CoordLog => "7:Coord",
+                    RightPanelTab::Firehose => "8:Fire",
                 };
                 let mut hints: Vec<(&str, &str)> = Vec::new();
                 match tab {
                     RightPanelTab::Chat => {
-                        hints.push(("Enter", "type"));
+                        hints.push(("←→", "coordinators"));
+                        hints.push(("+", "new"));
+                        hints.push(("-", "close"));
+                        hints.push(("Enter", "chat"));
                         hints.push(("↑↓", "scroll"));
                     }
                     RightPanelTab::Detail => {
@@ -3979,7 +4616,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("PgUp/Dn", "page"));
                         hints.push(("Enter", "toggle"));
                     }
-                    RightPanelTab::Log | RightPanelTab::CoordLog | RightPanelTab::Agency => {
+                    RightPanelTab::Log
+                    | RightPanelTab::CoordLog
+                    | RightPanelTab::Agency
+                    | RightPanelTab::Firehose => {
                         hints.push(("↑↓", "scroll"));
                         hints.push(("PgUp/Dn", "page"));
                         hints.push(("Home/End", "jump"));
@@ -4001,9 +4641,9 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 }
                 // Common hints for all right-panel tabs.
                 hints.push(("Tab", "graph"));
-                hints.push(("i/I", "inspector"));
+                hints.push(("i/I", "resize pane"));
                 hints.push(("?", "help"));
-                hints.push(("Alt←→", "tabs"));
+                hints.push(("Alt←→", "cycle views"));
                 (tab_label, "NAV", Color::Rgb(120, 120, 120), hints)
             }
         },
@@ -4113,6 +4753,13 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     spans.push(Span::styled(") ", Style::default().fg(Color::White)));
 
+    if c.archived > 0 {
+        spans.push(Span::styled(
+            format!("{} archived ", c.archived),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     // Token breakdown: input/output/cache with view/total toggle
     let visible_usage;
     let (usage, label) = if app.show_total_tokens {
@@ -4124,6 +4771,56 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     if usage.total_tokens() > 0 {
         spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
         render_token_breakdown(&mut spans, usage, label);
+    }
+
+    // Time counters
+    {
+        let tc = &app.time_counters;
+        let mut cp: Vec<Span> = Vec::new();
+        if tc.show_uptime {
+            cp.push(Span::styled(
+                match tc.service_uptime_secs {
+                    Some(s) => format!("\u{2191}{}", format_duration_compact(s)),
+                    None => "\u{2191}-".into(),
+                },
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        if tc.show_cumulative {
+            cp.push(Span::styled(
+                format!("\u{03A3}{}", format_duration_compact(tc.cumulative_secs)),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        if tc.show_active && tc.active_agent_count > 0 {
+            cp.push(Span::styled(
+                format!(
+                    "\u{26A1}{}({})",
+                    format_duration_compact(tc.active_secs),
+                    tc.active_agent_count
+                ),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if tc.show_session {
+            cp.push(Span::styled(
+                format!(
+                    "\u{25F7}{}",
+                    format_duration_compact(tc.session_start.elapsed().as_secs())
+                ),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        if !cp.is_empty() {
+            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+            for (i, p) in cp.into_iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" ", Style::default()));
+                }
+                spans.push(p);
+            }
+            spans.push(Span::styled(" ", Style::default()));
+        }
     }
 
     // Scroll position
@@ -4238,6 +4935,461 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     );
 }
 
+/// Render the service health badge at the right end of the status bar.
+fn draw_service_health_badge(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let health = &app.service_health;
+    let (dot_color, bg_color) = match health.level {
+        ServiceHealthLevel::Green => (Color::Green, Color::Rgb(20, 50, 20)),
+        ServiceHealthLevel::Yellow => (Color::Yellow, Color::Rgb(50, 50, 10)),
+        ServiceHealthLevel::Red => (Color::Red, Color::Rgb(50, 20, 20)),
+    };
+
+    let badge_text = format!(" \u{25CF} {} ", health.label);
+    let badge_width = UnicodeWidthStr::width(badge_text.as_str()) as u16;
+
+    if area.width < badge_width + 1 {
+        app.last_service_badge_area = Rect::default();
+        return;
+    }
+
+    let badge_x = area.x + area.width - badge_width;
+    let badge_area = Rect::new(badge_x, area.y, badge_width, 1);
+    app.last_service_badge_area = badge_area;
+
+    let badge = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " \u{25CF}".to_string(),
+            Style::default().fg(dot_color).bg(bg_color),
+        ),
+        Span::styled(
+            format!(" {} ", health.label),
+            Style::default().fg(Color::White).bg(bg_color),
+        ),
+    ]));
+    frame.render_widget(badge, badge_area);
+}
+
+/// Draw the service health detail popup — anchored below the badge.
+fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
+    let size = frame.area();
+    let health = &app.service_health;
+
+    let width = 50.min(size.width.saturating_sub(4));
+    let height = 22.min(size.height.saturating_sub(4));
+
+    // Anchor to top-right, below the status bar.
+    let x = size.width.saturating_sub(width + 1);
+    let y = 1.min(size.height.saturating_sub(height));
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let (border_color, title_dot) = match health.level {
+        ServiceHealthLevel::Green => (Color::Green, "\u{25CF}"),
+        ServiceHealthLevel::Yellow => (Color::Yellow, "\u{25CF}"),
+        ServiceHealthLevel::Red => (Color::Red, "\u{25CF}"),
+    };
+
+    let block = Block::default()
+        .title(format!(" {} Service Health ", title_dot))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let label_style = Style::default().fg(Color::Cyan);
+    let value_style = Style::default().fg(Color::White);
+    let dim_style = Style::default().fg(Color::DarkGray);
+
+    // PID & uptime
+    lines.push(Line::from(vec![
+        Span::styled("  PID: ", label_style),
+        Span::styled(
+            health
+                .pid
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            value_style,
+        ),
+        Span::styled("    Uptime: ", label_style),
+        Span::styled(health.uptime.as_deref().unwrap_or("N/A"), value_style),
+    ]));
+
+    // Socket
+    lines.push(Line::from(vec![
+        Span::styled("  Socket: ", label_style),
+        Span::styled(health.socket_path.as_deref().unwrap_or("N/A"), dim_style),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Agents
+    lines.push(Line::from(vec![
+        Span::styled("  Agents: ", label_style),
+        Span::styled(
+            format!("{} alive / {} max", health.agents_alive, health.agents_max),
+            value_style,
+        ),
+        Span::styled(format!("  ({} total)", health.agents_total), dim_style),
+    ]));
+
+    // Paused
+    if health.paused {
+        lines.push(Line::from(vec![
+            Span::styled("  Status: ", label_style),
+            Span::styled(
+                "PAUSED",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" (agent spawning disabled)", dim_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Stuck tasks
+    if health.stuck_tasks.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck tasks: ", label_style),
+            Span::styled("none", Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck tasks: ", label_style),
+            Span::styled(
+                format!("{}", health.stuck_tasks.len()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for st in &health.stuck_tasks {
+            let title_display = if st.task_title.len() > 30 {
+                format!(
+                    "{}...",
+                    &st.task_title[..st.task_title.floor_char_boundary(27)]
+                )
+            } else {
+                st.task_title.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    ", dim_style),
+                Span::styled(&st.task_id, Style::default().fg(Color::Yellow)),
+                Span::styled(format!(" ({})", title_display), dim_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // Recent errors
+    if health.recent_errors.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Recent errors: ", label_style),
+            Span::styled("none", Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![Span::styled(
+            "  Recent errors:",
+            label_style,
+        )]));
+        for err in &health.recent_errors {
+            let max_w = width as usize - 6;
+            let truncated = if err.len() > max_w {
+                format!(
+                    "{}...",
+                    &err[..err.floor_char_boundary(max_w.saturating_sub(3))]
+                )
+            } else {
+                err.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    ", dim_style),
+                Span::styled(truncated, Style::default().fg(Color::Red)),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Press ", dim_style),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" or click badge to close", dim_style),
+    ]));
+
+    // Apply scroll
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(health.detail_scroll)
+        .take(inner.height as usize)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+}
+
+/// Draw the service control panel - a modal overlay with service actions.
+fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
+    let size = frame.area();
+    let health = &app.service_health;
+    let is_running = health.pid.is_some() && health.level != ServiceHealthLevel::Red;
+    let width = 56.min(size.width.saturating_sub(4));
+    let height = 32.min(size.height.saturating_sub(2));
+    let x = size.width.saturating_sub(width + 1);
+    let y = 1.min(size.height.saturating_sub(height));
+    let area = Rect::new(x, y, width, height);
+    frame.render_widget(Clear, area);
+    let (border_color, title_dot) = match health.level {
+        ServiceHealthLevel::Green => (Color::Green, "\u{25CF}"),
+        ServiceHealthLevel::Yellow => (Color::Yellow, "\u{25CF}"),
+        ServiceHealthLevel::Red => (Color::Red, "\u{25CF}"),
+    };
+    let block = Block::default()
+        .title(format!(" {} Service Control ", title_dot))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines: Vec<Line> = Vec::new();
+    let label_style = Style::default().fg(Color::Cyan);
+    let value_style = Style::default().fg(Color::White);
+    let dim_style = Style::default().fg(Color::DarkGray);
+    let focus = &health.panel_focus;
+    lines.push(Line::from(vec![
+        Span::styled("  PID: ", label_style),
+        Span::styled(
+            health
+                .pid
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            value_style,
+        ),
+        Span::styled("    Uptime: ", label_style),
+        Span::styled(health.uptime.as_deref().unwrap_or("N/A"), value_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Agents: ", label_style),
+        Span::styled(
+            format!("{} alive / {} max", health.agents_alive, health.agents_max),
+            value_style,
+        ),
+        Span::styled(format!("  ({} total)", health.agents_total), dim_style),
+    ]));
+    if !health.recent_errors.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "  Recent errors:",
+            label_style,
+        )]));
+        for err in health.recent_errors.iter().take(3) {
+            let max_w = width as usize - 6;
+            let truncated = if err.len() > max_w {
+                format!(
+                    "{}...",
+                    &err[..err.floor_char_boundary(max_w.saturating_sub(3))]
+                )
+            } else {
+                err.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    ", dim_style),
+                Span::styled(truncated, Style::default().fg(Color::Red)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "  Controls",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    let ssl = if is_running {
+        "Stop Service"
+    } else {
+        "Start Service"
+    };
+    let ssk = if is_running { "[S] Stop" } else { "[S] Start" };
+    lines.push(control_panel_line(
+        ssl,
+        ssk,
+        *focus == ControlPanelFocus::StartStop,
+        if is_running { Color::Red } else { Color::Green },
+    ));
+    let pl = if health.paused {
+        "Resume Launches"
+    } else {
+        "Pause Launches"
+    };
+    let pk = if health.paused {
+        "[P] Resume"
+    } else {
+        "[P] Pause"
+    };
+    lines.push(control_panel_line(
+        pl,
+        pk,
+        *focus == ControlPanelFocus::PauseResume,
+        Color::Yellow,
+    ));
+    lines.push(control_panel_line(
+        "Restart Service",
+        "[Enter]",
+        *focus == ControlPanelFocus::Restart,
+        Color::Cyan,
+    ));
+    let pf = *focus == ControlPanelFocus::PanicKill;
+    let ps = if pf {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if pf { " > " } else { "   " }, ps),
+        Span::styled("PANIC KILL", ps),
+        Span::styled("  [K]  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("kills {} agents + stops service", health.agents_alive),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    if health.stuck_tasks.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck agents: ", label_style),
+            Span::styled("none", Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Stuck agents: ", label_style),
+            Span::styled(
+                format!("{}", health.stuck_tasks.len()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  (Enter=kill, U=unclaim)", dim_style),
+        ]));
+        for (i, st) in health.stuck_tasks.iter().enumerate() {
+            let sf = *focus == ControlPanelFocus::StuckAgent(i);
+            let td = if st.task_title.len() > 25 {
+                format!(
+                    "{}...",
+                    &st.task_title[..st.task_title.floor_char_boundary(22)]
+                )
+            } else {
+                st.task_title.clone()
+            };
+            let pfx = if sf { " > " } else { "   " };
+            let fg = if sf { Color::Yellow } else { Color::DarkGray };
+            lines.push(Line::from(vec![
+                Span::styled(pfx, Style::default().fg(fg)),
+                Span::styled(&st.agent_id, Style::default().fg(Color::Yellow)),
+                Span::styled(format!(" ({}) ", td), Style::default().fg(fg)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(control_panel_line(
+        "Kill All Dead Agents",
+        "[Enter]",
+        *focus == ControlPanelFocus::KillAllDead,
+        Color::Yellow,
+    ));
+    lines.push(control_panel_line(
+        "Retry Failed Evals",
+        "[Enter]",
+        *focus == ControlPanelFocus::RetryFailedEvals,
+        Color::Cyan,
+    ));
+    if let Some((ref msg, ref at)) = health.feedback
+        && at.elapsed() < std::time::Duration::from_secs(5)
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  ", dim_style),
+            Span::styled(
+                msg.as_str(),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    if health.panic_confirm {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  WARNING: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "This will kill {} running agents and stop the service.",
+                    health.agents_alive
+                ),
+                Style::default().fg(Color::White),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Are you sure? ", Style::default().fg(Color::White)),
+            Span::styled(
+                "[y]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Yes  ", dim_style),
+            Span::styled(
+                "[n/Esc]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" No", dim_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", dim_style),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" close  ", dim_style),
+        Span::styled("\u{2191}\u{2193}", Style::default().fg(Color::Yellow)),
+        Span::styled(" navigate  ", dim_style),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" activate", dim_style),
+    ]));
+    let visible_lines: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+}
+
+fn control_panel_line<'a>(
+    label: &'a str,
+    key_hint: &'a str,
+    focused: bool,
+    color: Color,
+) -> Line<'a> {
+    let prefix = if focused { " > " } else { "   " };
+    let style = if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(color)
+    };
+    Line::from(vec![
+        Span::styled(prefix, style),
+        Span::styled(label, style),
+        Span::styled("  ", Style::default()),
+        Span::styled(key_hint, Style::default().fg(Color::DarkGray)),
+    ])
+}
+
 fn draw_help_overlay(frame: &mut Frame) {
     let size = frame.area();
     let width = 56.min(size.width.saturating_sub(4));
@@ -4288,10 +5440,10 @@ fn draw_help_overlay(frame: &mut Frame) {
         heading("Panels"),
         binding("Tab", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-↑/↓", "Switch focus: Graph ↔ Right Panel"),
-        binding("Alt-←/→", "Cycle tabs (prev / next)"),
+        binding("Alt-←/→", "Cycle inspector views (with slide animation)"),
         binding("\\", "Toggle right panel visible"),
-        binding("i", "Cycle inspector size (1/3→1/2→2/3→full→off)"),
-        binding("I", "Cycle inspector size (reverse)"),
+        binding("i", "Grow viz pane (10% per press, wraps)"),
+        binding("I", "Shrink viz pane (10% per press, wraps)"),
         binding("=", "Cycle layout: split/panel/graph"),
         binding("0-7", "Switch tab: Chat/.../Files/Coord"),
         binding("R", "Toggle raw JSON in Detail tab"),
@@ -4310,6 +5462,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("f", "Mark selected task failed"),
         binding("x", "Retry selected task"),
         binding("e", "Edit task description"),
+        binding("A", "Toggle archive browser"),
         binding("c", "Open chat input"),
         binding("Ctrl-C", "Kill agent on focused task"),
         blank(),
@@ -4323,6 +5476,8 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
         binding("m", "Toggle mouse capture"),
         binding("r", "Force refresh"),
+        binding(".", "Toggle all system tasks"),
+        binding("<", "Toggle running system tasks only"),
         binding("L", "Toggle coordinator log"),
         binding("?", "Toggle this help"),
         binding("q", "Quit"),
@@ -4347,7 +5502,7 @@ fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, lab
     let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
     let token_str = if cache_total > 0 {
         let cache = format_tokens(cache_total);
-        format!("→{} +{} cached ←{}", new_input, cache, output)
+        format!("→{} ◎{} ←{}", new_input, cache, output)
     } else {
         format!("→{} ←{}", new_input, output)
     };
@@ -4593,7 +5748,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {
-            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  r: reload"
+            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  g: install global  r: reload"
         };
         lines.push((
             Line::from(Span::styled(
@@ -4751,7 +5906,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             LayoutMode::Tree,
@@ -5054,7 +6208,6 @@ mod tests {
             &graph,
             &tasks,
             &task_ids,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -5530,7 +6683,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Diamond,
             &HashSet::new(),
             "gray",
@@ -5729,7 +6881,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -5828,7 +6979,6 @@ mod tests {
             &graph,
             &tasks,
             &task_ids,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -6174,7 +7324,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -6272,7 +7421,6 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -6305,7 +7453,7 @@ mod tests {
         let task2 = make_task_with_status("eval-task", "Eval Task", Status::Done);
         graph2.add_node(Node::Task(task2));
         let mut annotations2 = HashMap::new();
-        annotations2.insert("eval-task".to_string(), "[evaluating]".to_string());
+        annotations2.insert("eval-task".to_string(), "[∴ evaluating]".to_string());
 
         let tasks2: Vec<_> = graph2.tasks().collect();
         let task_ids2: HashSet<&str> = tasks2.iter().map(|t| t.id.as_str()).collect();
@@ -6314,7 +7462,6 @@ mod tests {
             &tasks2,
             &task_ids2,
             &annotations2,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             LayoutMode::Tree,
@@ -6326,8 +7473,8 @@ mod tests {
         let task_line_idx2 = viz2.node_line_map["eval-task"];
         let ansi_line2 = viz2.text.lines().nth(task_line_idx2).unwrap();
         assert!(
-            ansi_line2.contains("[evaluating]"),
-            "Evaluating phase should show [evaluating] annotation.\nLine: {:?}",
+            ansi_line2.contains("[∴ evaluating]"),
+            "Evaluating phase should show [∴ evaluating] annotation.\nLine: {:?}",
             ansi_line2
         );
         if ansi_line2.contains("\x1b[") {
@@ -6338,8 +7485,71 @@ mod tests {
             );
         }
 
+        // Test validating phase
+        let mut graph3 = WorkGraph::new();
+        let task3 = make_task_with_status("val-task", "Val Task", Status::InProgress);
+        graph3.add_node(Node::Task(task3));
+        let mut annotations3 = HashMap::new();
+        annotations3.insert("val-task".to_string(), "[✓ validating]".to_string());
+
+        let tasks3: Vec<_> = graph3.tasks().collect();
+        let task_ids3: HashSet<&str> = tasks3.iter().map(|t| t.id.as_str()).collect();
+        let viz3 = generate_ascii(
+            &graph3,
+            &tasks3,
+            &task_ids3,
+            &annotations3,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let task_line_idx3 = viz3.node_line_map["val-task"];
+        let ansi_line3 = viz3.text.lines().nth(task_line_idx3).unwrap();
+        assert!(
+            ansi_line3.contains("[✓ validating]"),
+            "Validating phase should show [✓ validating] annotation.\nLine: {:?}",
+            ansi_line3
+        );
+
+        // Test both simultaneously
+        let mut graph4 = WorkGraph::new();
+        let task4 = make_task_with_status("both-task", "Both Task", Status::InProgress);
+        graph4.add_node(Node::Task(task4));
+        let mut annotations4 = HashMap::new();
+        annotations4.insert(
+            "both-task".to_string(),
+            "[∴ evaluating] [✓ validating]".to_string(),
+        );
+
+        let tasks4: Vec<_> = graph4.tasks().collect();
+        let task_ids4: HashSet<&str> = tasks4.iter().map(|t| t.id.as_str()).collect();
+        let viz4 = generate_ascii(
+            &graph4,
+            &tasks4,
+            &task_ids4,
+            &annotations4,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let task_line_idx4 = viz4.node_line_map["both-task"];
+        let ansi_line4 = viz4.text.lines().nth(task_line_idx4).unwrap();
+        assert!(
+            ansi_line4.contains("[∴ evaluating]") && ansi_line4.contains("[✓ validating]"),
+            "Both phases should appear simultaneously.\nLine: {:?}",
+            ansi_line4
+        );
+
         // Verify the code logic: in ascii.rs, the agency phase detection checks:
-        //   is_agency_phase = use_color && annotations.get(id).map_or(false, |a| a.contains("assigning") || a.contains("evaluating"))
+        //   is_agency_phase = use_color && annotations.get(id).map_or(false, |a| a.contains("assigning") || a.contains("evaluating") || a.contains("validating") || a.contains("verifying"))
         // When true, the phase annotation is wrapped in \x1b[38;5;219m..\x1b[0m (ANSI 256-color 219, true pink).
         // The task text itself keeps its status color (e.g., green for done).
         // We've verified the annotation appears; the color logic is deterministic given use_color.
@@ -6366,7 +7576,6 @@ mod tests {
             &tasks,
             &task_ids,
             &annotations,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             LayoutMode::Tree,
@@ -6463,7 +7672,6 @@ mod tests {
             &graph,
             &tasks,
             &task_ids,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -6609,7 +7817,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -6714,7 +7921,6 @@ mod tests {
                 graph,
                 &tasks,
                 &task_ids,
-                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -7162,7 +8368,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             LayoutMode::Tree,

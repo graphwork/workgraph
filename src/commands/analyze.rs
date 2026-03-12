@@ -200,7 +200,7 @@ fn compute_summary(graph: &WorkGraph) -> Summary {
                     estimated_cost += est.cost.unwrap_or(0.0);
                 }
             }
-            Status::Failed | Status::Abandoned | Status::Waiting => {
+            Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Failed/abandoned tasks not counted in progress metrics
             }
         }
@@ -735,7 +735,7 @@ fn print_human_readable(output: &AnalysisOutput) {
                 Status::Blocked => "blocked".to_string(),
                 Status::Failed => "failed".to_string(),
                 Status::Abandoned => "abandoned".to_string(),
-                Status::Waiting => "waiting".to_string(),
+                Status::Waiting | Status::PendingValidation => "waiting".to_string(),
             };
 
             let assigned_str = bottleneck

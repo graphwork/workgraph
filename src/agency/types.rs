@@ -543,11 +543,7 @@ pub struct AssignmentExperiment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssignmentMode {
-    /// Deployed from composition cache.
-    CacheHit { cache_score: f64 },
-    /// Cache miss; basic composition, no structured experiment.
-    CacheMiss,
-    /// Deliberate learning experiment (run_mode > 0).
+    /// Deliberate learning experiment.
     Learning(AssignmentExperiment),
     /// Forced learning episode (exploration_interval trigger).
     ForcedExploration(AssignmentExperiment),
@@ -562,7 +558,5 @@ pub struct TaskAssignmentRecord {
     pub agent_id: String,
     pub composition_id: String,
     pub timestamp: String,
-    /// Snapshot of run_mode at time of assignment.
-    pub run_mode_value: f64,
     pub mode: AssignmentMode,
 }

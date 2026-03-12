@@ -21,6 +21,8 @@ mod coordinator;
 pub(crate) mod coordinator_agent;
 pub mod ipc;
 mod triage;
+pub(crate) mod worktree;
+pub(crate) mod zero_output;
 
 pub use ipc::{IpcRequest, IpcResponse};
 
@@ -790,7 +792,7 @@ pub(crate) struct DaemonConfig {
     settling_delay: Duration,
 }
 
-/// Route new chat inbox messages to the persistent coordinator agent.
+/// Route new chat inbox messages to the persistent coordinator agent for a specific coordinator.
 ///
 /// Reads the inbox since the coordinator cursor, sends each message to the
 /// agent thread, and advances the cursor. The agent thread handles context
@@ -799,16 +801,17 @@ pub(crate) struct DaemonConfig {
 /// Returns the number of messages routed.
 fn route_chat_to_agent(
     dir: &Path,
+    coordinator_id: u32,
     agent: &coordinator_agent::CoordinatorAgent,
     logger: &DaemonLogger,
 ) -> Result<usize> {
-    let chat_dir = dir.join("chat");
+    let chat_dir = dir.join("chat").join(coordinator_id.to_string());
     if !chat_dir.exists() {
         return Ok(0);
     }
 
-    let inbox_cursor = workgraph::chat::read_coordinator_cursor(dir)?;
-    let new_messages = workgraph::chat::read_inbox_since(dir, inbox_cursor)?;
+    let inbox_cursor = workgraph::chat::read_coordinator_cursor_for(dir, coordinator_id)?;
+    let new_messages = workgraph::chat::read_inbox_since_for(dir, coordinator_id, inbox_cursor)?;
 
     if new_messages.is_empty() {
         return Ok(0);
@@ -818,12 +821,13 @@ fn route_chat_to_agent(
     for msg in &new_messages {
         if let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone()) {
             logger.error(&format!(
-                "Failed to send chat message to coordinator agent: {}",
-                e
+                "Failed to send chat message to coordinator agent {}: {}",
+                coordinator_id, e
             ));
             // Write an error response so the user isn't left hanging
-            let _ = workgraph::chat::append_outbox(
+            let _ = workgraph::chat::append_outbox_for(
                 dir,
+                coordinator_id,
                 "The coordinator agent is not available. Please try again.",
                 &msg.request_id,
             );
@@ -832,10 +836,33 @@ fn route_chat_to_agent(
 
     // Advance the coordinator cursor past these messages
     if let Some(last) = new_messages.last() {
-        workgraph::chat::write_coordinator_cursor(dir, last.id)?;
+        workgraph::chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)?;
     }
 
     Ok(count)
+}
+
+/// Route chat messages to all active coordinator agents.
+/// Checks each coordinator's inbox and routes pending messages.
+/// Returns total number of messages routed across all coordinators.
+fn route_chat_to_all_agents(
+    dir: &Path,
+    agents: &std::collections::HashMap<u32, coordinator_agent::CoordinatorAgent>,
+    logger: &DaemonLogger,
+) -> Result<usize> {
+    let mut total = 0;
+    for (&cid, agent) in agents {
+        match route_chat_to_agent(dir, cid, agent, logger) {
+            Ok(count) => total += count,
+            Err(e) => {
+                logger.error(&format!(
+                    "Failed to route chat to coordinator {}: {}",
+                    cid, e
+                ));
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Record events from the latest coordinator tick into the event log.
@@ -1069,6 +1096,238 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
     }
 }
 
+/// Ensure the `.coordinator` and `.compact` cycle tasks exist in the graph.
+///
+/// Creates them if missing (Phase 2 of coordinator-as-graph-citizen).
+/// The coordinator task has unlimited iterations and is tagged `coordinator-loop`.
+/// The compact task forms a visible cycle with the coordinator:
+///   .coordinator-0 → .compact-0 → .coordinator-0
+fn ensure_coordinator_task(dir: &Path) {
+    use workgraph::graph::{CycleConfig, LogEntry, Node, Task};
+    use workgraph::parser::save_graph;
+
+    let gp = graph_path(dir);
+    let mut graph = match load_graph(&gp) {
+        Ok(g) => g,
+        Err(_) => return, // No graph yet — nothing to do
+    };
+
+    let mut modified = false;
+
+    // Migrate legacy .coordinator to .coordinator-0
+    if graph.get_task(".coordinator").is_some()
+        && graph.get_task(".coordinator-0").is_none()
+        && let Some(task) = graph.get_task_mut(".coordinator")
+    {
+        task.id = ".coordinator-0".to_string();
+        task.title = "Coordinator 0".to_string();
+        modified = true;
+    }
+
+    // Ensure .coordinator-0 exists
+    if graph.get_task(".coordinator-0").is_none() {
+        let task = Task {
+            id: ".coordinator-0".to_string(),
+            title: "Coordinator 0".to_string(),
+            description: Some(
+                "Persistent coordinator agent — each turn is a cycle iteration.".to_string(),
+            ),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["coordinator-loop".to_string()],
+            after: vec![".compact-0".to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0, // unlimited
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Coordinator 0 task created by daemon".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        graph.add_node(Node::Task(task));
+        modified = true;
+    } else if let Some(coord) = graph.get_task_mut(".coordinator-0") {
+        // Ensure back-edge to .compact-0 exists on pre-existing coordinator tasks
+        if !coord.after.contains(&".compact-0".to_string()) {
+            coord.after.push(".compact-0".to_string());
+            modified = true;
+        }
+    }
+
+    // Ensure .compact-0 exists — forms a cycle with .coordinator-0
+    if graph.get_task(".compact-0").is_none() {
+        let task = Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            description: Some(
+                "Compaction task — distills graph state into context.md. \
+                 Forms a cycle with the coordinator: coordinator → compact → coordinator."
+                    .to_string(),
+            ),
+            status: workgraph::graph::Status::Open,
+            tags: vec!["compact-loop".to_string()],
+            after: vec![".coordinator-0".to_string()],
+            created_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Compact 0 task created by daemon".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        graph.add_node(Node::Task(task));
+        modified = true;
+    }
+
+    if modified && let Err(e) = save_graph(&graph, &gp) {
+        eprintln!(
+            "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
+            e
+        );
+    }
+}
+
+/// Run compaction as a visible graph task (`.compact-N`).
+///
+/// Compaction is purely cycle-driven: it fires only when `.compact-0` is
+/// graph-ready (status=Open and all after-deps are terminal). This replaces
+/// the old timer/ops-threshold gating via `should_compact()`.
+fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &DaemonLogger) {
+    let gp = graph_path(dir);
+
+    // Check if .compact-0 is graph-ready (Open + all deps terminal)
+    {
+        let graph = match load_graph(&gp) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let compact = match graph.get_task(".compact-0") {
+            Some(t) => t,
+            None => return, // No compact task in graph
+        };
+        if compact.status != workgraph::graph::Status::Open {
+            return; // Not ready — already in-progress, done, etc.
+        }
+        let all_deps_met = compact.after.iter().all(|dep_id| {
+            graph
+                .get_task(dep_id)
+                .map(|t| t.status.is_terminal())
+                .unwrap_or(false)
+        });
+        if !all_deps_met {
+            return; // Dependencies not yet satisfied
+        }
+    }
+
+    // Mark .compact-0 as InProgress
+    {
+        let mut graph = match load_graph(&gp) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if let Some(task) = graph.get_task_mut(".compact-0") {
+            task.status = workgraph::graph::Status::InProgress;
+            task.started_at = Some(chrono::Utc::now().to_rfc3339());
+            task.log.push(workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Compaction started (cycle-driven)".to_string(),
+            });
+            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+                eprintln!(
+                    "[daemon] Failed to save graph after marking .compact-0 InProgress: {}",
+                    e
+                );
+                return;
+            }
+        }
+    }
+
+    // Run compaction
+    match workgraph::service::compactor::run_compaction(dir) {
+        Ok(path) => {
+            if *compaction_error_count > 0 {
+                logger.info(&format!(
+                    "Compaction recovered after {} consecutive error(s)",
+                    *compaction_error_count
+                ));
+            }
+            *compaction_error_count = 0;
+            logger.info(&format!("Compaction complete → {}", path.display()));
+
+            // Mark .compact-0 as Done and increment iteration
+            let mut graph = match load_graph(&gp) {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if let Some(task) = graph.get_task_mut(".compact-0") {
+                task.status = workgraph::graph::Status::Done;
+                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                task.loop_iteration = task.loop_iteration.saturating_add(1);
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    message: format!(
+                        "Compaction iteration {} complete → {}",
+                        task.loop_iteration,
+                        path.display()
+                    ),
+                });
+                // Keep log bounded
+                if task.log.len() > 50 {
+                    let drain_count = task.log.len() - 50;
+                    task.log.drain(..drain_count);
+                }
+            }
+            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+                eprintln!(
+                    "[daemon] Failed to save graph after marking .compact-0 Done: {}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            *compaction_error_count += 1;
+            if *compaction_error_count == 1 || *compaction_error_count % 5 == 0 {
+                logger.error(&format!(
+                    "Compaction error (#{} consecutive): {:#}",
+                    *compaction_error_count, e
+                ));
+            }
+
+            // Mark .compact-0 as failed for this iteration, then reopen for retry
+            let mut graph = match load_graph(&gp) {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if let Some(task) = graph.get_task_mut(".compact-0") {
+                task.status = workgraph::graph::Status::Open;
+                task.started_at = None;
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    message: format!("Compaction error: {:#}", e),
+                });
+                if task.log.len() > 50 {
+                    let drain_count = task.log.len() - 50;
+                    task.log.drain(..drain_count);
+                }
+            }
+            let _ = workgraph::parser::save_graph(&graph, &gp);
+        }
+    }
+}
+
 /// Run the actual daemon loop (called by forked process)
 #[cfg(unix)]
 pub fn run_daemon(
@@ -1163,6 +1422,20 @@ pub fn run_daemon(
         }
     }
 
+    // Clean up orphaned worktrees from a previous service run
+    match worktree::cleanup_orphaned_worktrees(&dir) {
+        Ok(count) if count > 0 => {
+            logger.info(&format!(
+                "Cleaned up {} orphaned worktree(s) on startup",
+                count
+            ));
+        }
+        Ok(_) => {} // No orphaned worktrees
+        Err(e) => {
+            logger.warn(&format!("Failed to clean up orphaned worktrees: {}", e));
+        }
+    }
+
     // Initialize coordinator state on disk
     let mut coord_state = CoordinatorState {
         enabled: true,
@@ -1179,45 +1452,67 @@ pub fn run_daemon(
     };
     coord_state.save(&dir);
 
+    // Ensure the .coordinator cycle task exists in the graph (Phase 2).
+    ensure_coordinator_task(&dir);
+
+    // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
+    if config.agency.auto_evolve {
+        let agency_dir = dir.join("agency");
+        let roles_dir = agency_dir.join("cache/roles");
+        if !roles_dir.exists()
+            || agency::load_all_roles(&roles_dir)
+                .map(|r| r.is_empty())
+                .unwrap_or(true)
+        {
+            logger.info("auto_evolve enabled but agency not initialized — bootstrapping agency");
+            match super::agency_init::run(&dir) {
+                Ok(()) => logger.info("Agency auto-bootstrap complete"),
+                Err(e) => logger.warn(&format!("Agency auto-bootstrap failed: {}", e)),
+            }
+        }
+    }
+
     // Create the shared event log for coordinator context refresh.
     // The daemon records events (task completions, agent spawns, etc.) and the
     // coordinator agent reads them when building context for each interaction.
     let event_log = coordinator_agent::new_event_log();
 
-    // Spawn the persistent coordinator agent (LLM session for chat).
-    // The coordinator agent is a long-lived Claude CLI session that interprets
-    // user intent, replacing the simple stub responses.
+    // Spawn the persistent coordinator agent(s) (LLM sessions for chat).
+    // Each coordinator gets its own Claude CLI session. Coordinator 0 is
+    // spawned at startup; additional coordinators are created on-demand via
+    // the CreateCoordinator IPC request.
     // Enabled by default; disable with --no-coordinator-agent or
     // coordinator.coordinator_agent = false in config.toml.
     let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
-    let coordinator_agent = if enable_coordinator_agent {
+    let mut coordinator_agents: std::collections::HashMap<
+        u32,
+        coordinator_agent::CoordinatorAgent,
+    > = std::collections::HashMap::new();
+    if enable_coordinator_agent {
         match coordinator_agent::CoordinatorAgent::spawn(
             &dir,
+            0, // coordinator ID
             daemon_cfg.model.as_deref(),
             &logger,
             event_log.clone(),
         ) {
             Ok(agent) => {
-                logger.info("Coordinator agent spawned successfully");
-                Some(agent)
+                logger.info("Coordinator agent 0 spawned successfully");
+                coordinator_agents.insert(0, agent);
             }
             Err(e) => {
                 logger.warn(&format!(
-                    "Failed to spawn coordinator agent: {}. Chat will use stub responses.",
+                    "Failed to spawn coordinator agent 0: {}. Chat will use stub responses.",
                     e
                 ));
-                None
             }
         }
+    } else if no_coordinator_agent {
+        logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
     } else {
-        if no_coordinator_agent {
-            logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
-        } else {
-            logger.info(
-                "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
-            );
-        }
-        None
+        logger.info(
+            "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
+        );
     };
 
     // Track last coordinator tick time - run immediately on start
@@ -1232,6 +1527,12 @@ pub fn run_daemon(
     // This flag bypasses both the settling delay and the paused state, because
     // chat is a user-facing interaction that expects sub-second acknowledgement.
     let mut urgent_wake = false;
+    let mut pending_coordinator_ids: Vec<u32> = Vec::new();
+
+    // Load max_coordinators limit from config
+    let max_coordinators = config.coordinator.max_coordinators;
+
+    let mut compaction_error_count: u64 = 0;
 
     while running {
         // Reap zombie child processes (agents that have exited).
@@ -1245,16 +1546,29 @@ pub fn run_daemon(
             Ok((stream, _)) => {
                 let mut wake_coordinator = false;
                 let mut conn_urgent_wake = false;
+                let mut conn_delete_coordinator_ids = Vec::new();
                 if let Err(e) = ipc::handle_connection(
                     &dir,
                     stream,
                     &mut running,
                     &mut wake_coordinator,
                     &mut conn_urgent_wake,
+                    &mut pending_coordinator_ids,
+                    &mut conn_delete_coordinator_ids,
                     &mut daemon_cfg,
                     &logger,
                 ) {
                     logger.error(&format!("Error handling connection: {}", e));
+                }
+                // Stop and remove any coordinator agents marked for deletion.
+                for cid in conn_delete_coordinator_ids {
+                    if let Some(agent) = coordinator_agents.remove(&cid) {
+                        logger.info(&format!(
+                            "Shutting down coordinator agent {} (deleted via IPC)",
+                            cid
+                        ));
+                        agent.shutdown();
+                    }
                 }
                 if conn_urgent_wake {
                     urgent_wake = true;
@@ -1299,28 +1613,77 @@ pub fn run_daemon(
         if urgent_wake {
             urgent_wake = false;
 
-            if let Some(ref agent) = coordinator_agent {
-                // Route chat messages to the persistent coordinator agent.
-                // Read new inbox messages and send them to the agent thread.
-                match route_chat_to_agent(&dir, agent, &logger) {
-                    Ok(count) if count > 0 => {
+            if enable_coordinator_agent {
+                // Lazy-spawn coordinator agents for any pending coordinator IDs
+                // that don't already have a running agent.
+                for &cid in &pending_coordinator_ids {
+                    if !coordinator_agents.contains_key(&cid) {
+                        if coordinator_agents.len() >= max_coordinators {
+                            logger.warn(&format!(
+                                "Cannot spawn coordinator {}: at max_coordinators limit ({})",
+                                cid, max_coordinators
+                            ));
+                            continue;
+                        }
                         logger.info(&format!(
-                            "Routed {} chat message(s) to coordinator agent",
-                            count
+                            "Lazy-spawning coordinator agent {} (first message received)",
+                            cid
                         ));
-                    }
-                    Ok(_) => {} // No new messages
-                    Err(e) => {
-                        logger.error(&format!("Failed to route chat to agent: {}", e));
-                        // Fall through to tick for stub response
-                        should_tick = true;
+                        match coordinator_agent::CoordinatorAgent::spawn(
+                            &dir,
+                            cid,
+                            daemon_cfg.model.as_deref(),
+                            &logger,
+                            event_log.clone(),
+                        ) {
+                            Ok(agent) => {
+                                logger.info(&format!(
+                                    "Coordinator agent {} spawned successfully ({}/{} coordinators)",
+                                    cid,
+                                    coordinator_agents.len() + 1,
+                                    max_coordinators
+                                ));
+                                coordinator_agents.insert(cid, agent);
+                            }
+                            Err(e) => {
+                                logger.warn(&format!(
+                                    "Failed to lazy-spawn coordinator agent {}: {}",
+                                    cid, e
+                                ));
+                            }
+                        }
                     }
                 }
+                pending_coordinator_ids.clear();
+
+                if !coordinator_agents.is_empty() {
+                    // Route chat messages to all active coordinator agents.
+                    // Each coordinator checks its own inbox for pending messages.
+                    match route_chat_to_all_agents(&dir, &coordinator_agents, &logger) {
+                        Ok(count) if count > 0 => {
+                            logger.info(&format!(
+                                "Routed {} chat message(s) to coordinator agent(s)",
+                                count
+                            ));
+                        }
+                        Ok(_) => {} // No new messages
+                        Err(e) => {
+                            logger.error(&format!("Failed to route chat to agents: {}", e));
+                            // Fall through to tick for stub response
+                            should_tick = true;
+                        }
+                    }
+                } else {
+                    // All coordinator agent spawns failed — fall through to stub
+                    should_tick = true;
+                    logger.info("Urgent wake (all coordinator spawns failed): using stub response");
+                }
             } else {
-                // No coordinator agent — fall through to coordinator tick
+                pending_coordinator_ids.clear();
+                // No coordinator agents — fall through to coordinator tick
                 // which will use the stub response via process_chat_inbox.
                 should_tick = true;
-                logger.info("Urgent wake (no coordinator agent): running coordinator tick");
+                logger.info("Urgent wake (coordinator agents disabled): running coordinator tick");
             }
         }
 
@@ -1376,10 +1739,8 @@ pub fn run_daemon(
                     coord_state.agents_spawned = result.agents_spawned;
                     coord_state.save(&dir);
 
-                    // Record agent spawn events in the event log
-                    if result.agents_spawned > 0 {
-                        record_tick_events(&dir, &event_log, &logger);
-                    }
+                    // Record tick events (spawns, completions, failures, zero-output kills)
+                    record_tick_events(&dir, &event_log, &logger);
 
                     logger.info(&format!(
                         "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}",
@@ -1388,6 +1749,9 @@ pub fn run_daemon(
 
                     // Dispatch notifications for task state changes (failures, blocks)
                     try_dispatch_notifications(&dir, &logger);
+
+                    // Compaction: run when .compact-0 is graph-ready (cycle-driven)
+                    run_graph_compaction(&dir, &mut compaction_error_count, &logger);
                 }
                 Err(e) => {
                     coord_state.ticks += 1;
@@ -1400,10 +1764,14 @@ pub fn run_daemon(
 
     logger.info("Daemon shutting down");
 
-    // Shut down the coordinator agent
-    if let Some(agent) = coordinator_agent {
-        logger.info("Shutting down coordinator agent");
+    // Shut down all coordinator agents
+    let agent_count = coordinator_agents.len();
+    for (cid, agent) in coordinator_agents {
+        logger.info(&format!("Shutting down coordinator agent {}", cid));
         agent.shutdown();
+    }
+    if agent_count > 0 {
+        logger.info(&format!("Shut down {} coordinator agent(s)", agent_count));
     }
 
     // Cleanup
@@ -1431,9 +1799,25 @@ pub fn run_daemon(
     anyhow::bail!("Daemon is only supported on Unix systems")
 }
 
+/// Check if the caller is an agent and refuse stop/pause operations.
+/// Returns `Err` if `WG_AGENT_ID` is set, `Ok(())` otherwise.
+fn guard_agent_stop_pause() -> Result<()> {
+    if std::env::var("WG_AGENT_ID").is_ok() {
+        anyhow::bail!("agents cannot stop/pause the service. Use `wg service restart` instead.");
+    }
+    Ok(())
+}
+
 /// Stop the service daemon
 #[cfg(unix)]
 pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
+    guard_agent_stop_pause()?;
+    run_stop_inner(dir, force, kill_agents, json)
+}
+
+/// Inner stop logic (no agent guard) — used by `run_restart` to bypass the guard.
+#[cfg(unix)]
+fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {
@@ -1522,6 +1906,46 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
 
 #[cfg(not(unix))]
 pub fn run_stop(_dir: &Path, _force: bool, _kill_agents: bool, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Restart the service daemon: graceful stop (agents kept alive) then start.
+///
+/// Reads the running daemon's effective config (max_agents, executor, model,
+/// poll_interval) before stopping, and passes it to the new daemon so the
+/// restart is transparent.
+#[cfg(unix)]
+pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
+    // Capture the current daemon's effective config before stopping.
+    let prior_config = CoordinatorState::load(dir);
+
+    // Stop gracefully — agents continue running independently.
+    // Use inner variant to bypass the agent guard (agents may restart).
+    run_stop_inner(dir, false, false, json)?;
+
+    // Derive start parameters from the previous daemon's state.
+    let (max_agents, executor, interval, model) = match &prior_config {
+        Some(cs) => (
+            Some(cs.max_agents),
+            Some(cs.executor.as_str()),
+            Some(cs.poll_interval),
+            cs.model.as_deref(),
+        ),
+        None => (None, None, None, None),
+    };
+
+    // Start a new daemon with the same config.
+    run_start(
+        dir, None, // socket — use default
+        None, // port
+        max_agents, executor, interval, model, json,
+        true,  // force — clean up any leftover state
+        false, // no_coordinator_agent — use default
+    )
+}
+
+#[cfg(not(unix))]
+pub fn run_restart(_dir: &Path, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -1786,6 +2210,8 @@ pub fn run_reload(
 /// Pause the coordinator (no new agent spawns, running agents unaffected)
 #[cfg(unix)]
 pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
+    guard_agent_stop_pause()?;
+
     let response = send_request(dir, &IpcRequest::Pause)?;
 
     if !response.ok {
@@ -1848,6 +2274,131 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
 
 #[cfg(not(unix))]
 pub fn run_resume(_dir: &Path, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Create a new coordinator session via IPC
+#[cfg(unix)]
+pub fn run_create_coordinator(dir: &Path, name: Option<&str>, json: bool) -> Result<()> {
+    let response = send_request(
+        dir,
+        &IpcRequest::CreateCoordinator {
+            name: name.map(|s| s.to_string()),
+        },
+    )?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_create_coordinator(_dir: &Path, _name: Option<&str>, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Delete a coordinator session via IPC
+#[cfg(unix)]
+pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::DeleteCoordinator { coordinator_id })?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_delete_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Archive a coordinator session via IPC (mark as Done)
+#[cfg(unix)]
+pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::ArchiveCoordinator { coordinator_id })?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_archive_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Stop a coordinator session via IPC (kill agent, reset to Open)
+#[cfg(unix)]
+pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::StopCoordinator { coordinator_id })?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
@@ -2185,5 +2736,242 @@ mod tests {
             status_line
         );
         assert!(status_line.contains("0 alive"));
+    }
+
+    #[test]
+    fn test_guard_agent_stop_pause_blocks_when_agent() {
+        // SAFETY: test-only env manipulation; these tests are not parallel-safe
+        // but each test restores the var before returning.
+        unsafe { std::env::set_var("WG_AGENT_ID", "test-agent") };
+        let result = guard_agent_stop_pause();
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("agents cannot stop/pause the service"),
+            "Expected agent guard message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_guard_agent_stop_pause_allows_when_not_agent() {
+        // Ensure WG_AGENT_ID is not set
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+        let result = guard_agent_stop_pause();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_compaction_cycle() {
+        use workgraph::graph::Status;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gp = dir.join("graph.jsonl");
+
+        // Initialize an empty graph
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &gp).unwrap();
+
+        // Run ensure_coordinator_task — should create both .coordinator-0 and .compact-0
+        ensure_coordinator_task(dir);
+
+        let graph = load_graph(&gp).unwrap();
+
+        // .coordinator-0 should exist with cycle_config
+        let coord = graph
+            .get_task(".coordinator-0")
+            .expect(".coordinator-0 should exist");
+        assert_eq!(coord.status, Status::InProgress);
+        assert!(
+            coord.cycle_config.is_some(),
+            "coordinator should have cycle_config"
+        );
+        assert!(
+            coord.after.contains(&".compact-0".to_string()),
+            "coordinator should have back-edge to .compact-0"
+        );
+        assert!(
+            coord.tags.contains(&"coordinator-loop".to_string()),
+            "coordinator should have coordinator-loop tag"
+        );
+
+        // .compact-0 should exist with proper edges
+        let compact = graph
+            .get_task(".compact-0")
+            .expect(".compact-0 should exist");
+        assert_eq!(compact.status, Status::Open);
+        assert!(
+            compact.after.contains(&".coordinator-0".to_string()),
+            "compact should depend on .coordinator-0"
+        );
+        assert!(
+            compact.tags.contains(&"compact-loop".to_string()),
+            "compact should have compact-loop tag"
+        );
+
+        // The two tasks should form a cycle (SCC)
+        let cycle_analysis = graph.compute_cycle_analysis();
+        assert!(
+            cycle_analysis.task_to_cycle.contains_key(".coordinator-0"),
+            "coordinator should be part of a detected cycle"
+        );
+        assert!(
+            cycle_analysis.task_to_cycle.contains_key(".compact-0"),
+            "compact should be part of a detected cycle"
+        );
+        // Both should be in the same cycle
+        assert_eq!(
+            cycle_analysis.task_to_cycle.get(".coordinator-0"),
+            cycle_analysis.task_to_cycle.get(".compact-0"),
+            "coordinator and compact should be in the same cycle"
+        );
+    }
+
+    #[test]
+    fn test_compaction_cycle_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gp = dir.join("graph.jsonl");
+
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &gp).unwrap();
+
+        // Run twice — should be idempotent
+        ensure_coordinator_task(dir);
+        ensure_coordinator_task(dir);
+
+        let graph = load_graph(&gp).unwrap();
+        assert!(graph.get_task(".coordinator-0").is_some());
+        assert!(graph.get_task(".compact-0").is_some());
+
+        // Only one back-edge, not duplicated
+        let coord = graph.get_task(".coordinator-0").unwrap();
+        let compact_refs: Vec<_> = coord.after.iter().filter(|a| *a == ".compact-0").collect();
+        assert_eq!(compact_refs.len(), 1, "back-edge should not be duplicated");
+    }
+
+    #[test]
+    fn test_run_graph_compaction_updates_task() {
+        use workgraph::graph::{Node, Status, Task};
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gp = dir.join("graph.jsonl");
+
+        // Create a graph with .compact-0 (no deps → immediately ready)
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            status: Status::Open,
+            tags: vec!["compact-loop".to_string()],
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &gp).unwrap();
+
+        // Create a logger for the test
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let mut error_count = 0u64;
+        // .compact-0 is Open with no deps → graph-ready → compaction fires
+        // It will fail (no LLM) but we verify the task status gets updated
+        run_graph_compaction(dir, &mut error_count, &logger);
+
+        // After the call, .compact-0 should be Open (failed, reverted to Open)
+        let graph = load_graph(&gp).unwrap();
+        let compact = graph.get_task(".compact-0").unwrap();
+        // The task should have log entries from the compaction attempt
+        assert!(
+            compact.log.len() > 0,
+            "compact task should have log entries after compaction attempt"
+        );
+    }
+
+    #[test]
+    fn test_compaction_fires_when_compact_ready() {
+        use workgraph::graph::{Node, Status, Task};
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gp = dir.join("graph.jsonl");
+
+        // Create a graph: .coordinator-0 (Done) → .compact-0 (Open, after .coordinator-0)
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: ".coordinator-0".to_string(),
+            title: "Coordinator 0".to_string(),
+            status: Status::Done,
+            ..Default::default()
+        }));
+        graph.add_node(Node::Task(Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            status: Status::Open,
+            after: vec![".coordinator-0".to_string()],
+            tags: vec!["compact-loop".to_string()],
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &gp).unwrap();
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        let mut error_count = 0u64;
+
+        // .compact-0 is Open and dep (.coordinator-0) is Done → should fire
+        run_graph_compaction(dir, &mut error_count, &logger);
+
+        let graph = load_graph(&gp).unwrap();
+        let compact = graph.get_task(".compact-0").unwrap();
+        // Compaction attempted (will fail due to no LLM, but log entries prove it fired)
+        assert!(
+            !compact.log.is_empty(),
+            "compaction should fire when .compact-0 is graph-ready"
+        );
+    }
+
+    #[test]
+    fn test_compaction_blocked_when_dep_not_done() {
+        use workgraph::graph::{Node, Status, Task};
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gp = dir.join("graph.jsonl");
+
+        // Create a graph: .coordinator-0 (InProgress) → .compact-0 (Open, after .coordinator-0)
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: ".coordinator-0".to_string(),
+            title: "Coordinator 0".to_string(),
+            status: Status::InProgress,
+            ..Default::default()
+        }));
+        graph.add_node(Node::Task(Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            status: Status::Open,
+            after: vec![".coordinator-0".to_string()],
+            tags: vec!["compact-loop".to_string()],
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &gp).unwrap();
+
+        let logger = DaemonLogger::open(dir).unwrap();
+        let mut error_count = 0u64;
+
+        // .compact-0 is Open but dep (.coordinator-0) is InProgress → should NOT fire
+        run_graph_compaction(dir, &mut error_count, &logger);
+
+        let graph = load_graph(&gp).unwrap();
+        let compact = graph.get_task(".compact-0").unwrap();
+        assert!(
+            compact.log.is_empty(),
+            "compaction should NOT fire when .compact-0 deps are not terminal"
+        );
+        assert_eq!(
+            compact.status,
+            Status::Open,
+            ".compact-0 should remain Open when blocked"
+        );
     }
 }

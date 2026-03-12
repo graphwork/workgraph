@@ -324,21 +324,29 @@ fn main() -> Result<()> {
             context_scope,
             exec_mode,
             paused,
-            immediate,
+            no_place,
+            place_near,
+            place_before,
             delay,
             not_before,
         } => {
-            // Determine effective paused state:
-            // - --paused always pauses
-            // - --immediate always skips draft mode
-            // - Default: paused (draft) in interactive mode, immediate in agent context
+            // Determine effective paused/unplaced state:
+            // - --paused always pauses (user-managed draft, skips placement)
+            // - --no-place: unplaced=true, paused=false (immediate dispatch)
+            // - System tasks (dot-prefix): never draft, never placed
+            // - Agent context (WG_TASK_ID set): default to --no-place behavior
+            // - Default (interactive): paused=true (draft-by-default, needs placement)
+            let is_system_task = title.starts_with('.');
+            let is_agent_context =
+                std::env::var("WG_TASK_ID").is_ok() || std::env::var("WG_AGENT_ID").is_ok();
+            let effective_no_place = no_place || is_system_task || is_agent_context;
             let effective_paused = if paused {
                 true
-            } else if immediate {
+            } else if effective_no_place {
                 false
             } else {
-                // Draft by default for interactive use; agents get immediate mode
-                std::env::var("WG_AGENT_ID").is_err()
+                // Draft by default for interactive use
+                true
             };
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -383,6 +391,9 @@ fn main() -> Result<()> {
                     context_scope.as_deref(),
                     exec_mode.as_deref(),
                     effective_paused,
+                    effective_no_place,
+                    &place_near,
+                    &place_before,
                     delay.as_deref(),
                     not_before.as_deref(),
                 )
@@ -411,6 +422,7 @@ fn main() -> Result<()> {
             exec_mode,
             delay,
             not_before,
+            verify,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -435,6 +447,7 @@ fn main() -> Result<()> {
             exec_mode.as_deref(),
             delay.as_deref(),
             not_before.as_deref(),
+            verify.as_deref(),
         ),
         Commands::Done {
             id,
@@ -452,10 +465,14 @@ fn main() -> Result<()> {
                 commands::fail::run(&workgraph_dir, &id, reason.as_deref())
             }
         }
-        Commands::Abandon { id, reason } => {
-            commands::abandon::run(&workgraph_dir, &id, reason.as_deref())
-        }
+        Commands::Abandon {
+            id,
+            reason,
+            superseded_by,
+        } => commands::abandon::run(&workgraph_dir, &id, reason.as_deref(), &superseded_by),
         Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),
+        Commands::Approve { id } => commands::approve::run(&workgraph_dir, &id),
+        Commands::Reject { id, reason } => commands::reject::run(&workgraph_dir, &id, &reason),
         Commands::Claim { id, actor } => {
             commands::claim::claim(&workgraph_dir, &id, actor.as_deref())
         }
@@ -524,6 +541,7 @@ fn main() -> Result<()> {
                     format: commands::viz::OutputFormat::Ascii,
                     output: None,
                     show_internal,
+                    show_internal_running_only: false,
                     focus,
                     tui_mode: true,
                     layout: layout_mode,
@@ -549,6 +567,7 @@ fn main() -> Result<()> {
                     format: fmt,
                     output,
                     show_internal,
+                    show_internal_running_only: false,
                     focus,
                     tui_mode: false,
                     layout: layout_mode,
@@ -587,6 +606,9 @@ fn main() -> Result<()> {
             dry_run,
             older,
             list,
+            yes,
+            undo,
+            ids,
             command,
         } => match command {
             Some(cli::ArchiveCommands::Search { query, limit }) => {
@@ -596,7 +618,19 @@ fn main() -> Result<()> {
                 commands::archive::restore(&workgraph_dir, &task_id, reopen)
             }
             None => {
-                commands::archive::run(&workgraph_dir, dry_run, older.as_deref(), list, cli.json)
+                if undo {
+                    commands::archive::undo(&workgraph_dir)
+                } else {
+                    commands::archive::run(
+                        &workgraph_dir,
+                        dry_run,
+                        older.as_deref(),
+                        list,
+                        yes,
+                        &ids,
+                        cli.json,
+                    )
+                }
             }
         },
         Commands::Gc {
@@ -899,6 +933,7 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Tokens { id, json } => commands::tokens::run(&workgraph_dir, &id, &json),
         Commands::Msg { command } => {
             let agent_id_from_env = std::env::var("WG_AGENT_ID").ok();
             match command {
@@ -955,18 +990,19 @@ fn main() -> Result<()> {
             clear,
             timeout,
             attachment,
+            coordinator,
         } => {
             if clear {
-                commands::chat::run_clear(&workgraph_dir)
+                commands::chat::run_clear(&workgraph_dir, coordinator)
             } else if history {
-                commands::chat::run_history(&workgraph_dir, cli.json)
+                commands::chat::run_history(&workgraph_dir, cli.json, coordinator)
             } else if interactive {
-                commands::chat::run_interactive(&workgraph_dir, timeout)
+                commands::chat::run_interactive(&workgraph_dir, timeout, coordinator)
             } else if let Some(msg) = message {
-                commands::chat::run_send(&workgraph_dir, &msg, timeout, &attachment)
+                commands::chat::run_send(&workgraph_dir, &msg, timeout, &attachment, coordinator)
             } else {
                 // No message and no flags → default to interactive
-                commands::chat::run_interactive(&workgraph_dir, timeout)
+                commands::chat::run_interactive(&workgraph_dir, timeout, coordinator)
             }
         }
         Commands::Resource { command } => match command {
@@ -1159,7 +1195,8 @@ fn main() -> Result<()> {
             task,
             agent_hash,
             clear,
-        } => commands::assign::run(&workgraph_dir, &task, agent_hash.as_deref(), clear),
+            auto,
+        } => commands::assign::run(&workgraph_dir, &task, agent_hash.as_deref(), clear, auto),
         Commands::Match { task } => commands::match_cmd::run(&workgraph_dir, &task, cli.json),
         Commands::Heartbeat {
             agent,
@@ -1210,6 +1247,7 @@ fn main() -> Result<()> {
                 )
             }
         }
+        Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
                 if remove {
@@ -1434,6 +1472,8 @@ fn main() -> Result<()> {
             creator_model,
             retention_heuristics,
             auto_triage,
+            auto_place,
+            auto_create,
             triage_model,
             triage_timeout,
             triage_max_log_bytes,
@@ -1449,11 +1489,30 @@ fn main() -> Result<()> {
             flip_verification_model,
             chat_history,
             chat_history_max,
+            tui_counters,
+            show_registry,
+            registry_add,
+            registry_remove,
+            show_tiers,
+            set_tier,
+            reg_id,
+            reg_provider,
+            reg_model,
+            reg_tier,
+            reg_endpoint,
+            reg_context_window,
+            cost_input,
+            cost_output,
             show_models,
             set_model,
             set_provider,
             role_model,
             role_provider,
+            retry_context_tokens,
+            check_key,
+            install_global,
+            force,
+            max_coordinators,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -1463,6 +1522,73 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --check-key
+            if check_key {
+                return commands::config_cmd::check_key(&workgraph_dir, cli.json);
+            }
+
+            // Handle --install-global
+            if install_global {
+                return commands::config_cmd::install_global(&workgraph_dir, force);
+            }
+
+            // Handle --registry (list)
+            if show_registry {
+                return commands::config_cmd::show_registry(&workgraph_dir, cli.json);
+            }
+
+            // Handle --registry-add
+            if registry_add {
+                let id = reg_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--registry-add requires --id <ID>"))?;
+                let provider = reg_provider.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--registry-add requires --provider <PROVIDER>")
+                })?;
+                let model_name = reg_model.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--registry-add requires --reg-model <MODEL>")
+                })?;
+                let tier = reg_tier
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--registry-add requires --reg-tier <TIER>"))?;
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                return commands::config_cmd::add_registry_entry(
+                    &workgraph_dir,
+                    write_scope,
+                    id,
+                    provider,
+                    model_name,
+                    tier,
+                    reg_endpoint.as_deref(),
+                    reg_context_window,
+                    cost_input,
+                    cost_output,
+                );
+            }
+
+            // Handle --registry-remove
+            if let Some(ref id) = registry_remove {
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                return commands::config_cmd::remove_registry_entry(
+                    &workgraph_dir,
+                    write_scope,
+                    id,
+                    force,
+                    cli.json,
+                );
+            }
+
+            // Handle --tiers (show)
+            if show_tiers {
+                return commands::config_cmd::show_tiers(&workgraph_dir, cli.json);
+            }
+
+            // Handle --tier <tier>=<model-id>
+            if let Some(ref tier_spec) = set_tier {
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                return commands::config_cmd::set_tier(&workgraph_dir, write_scope, tier_spec);
+            }
 
             // Handle Matrix configuration
             if matrix
@@ -1538,6 +1664,7 @@ fn main() -> Result<()> {
                     && model.is_none()
                     && set_interval.is_none()
                     && max_agents.is_none()
+                    && max_coordinators.is_none()
                     && coordinator_interval.is_none()
                     && poll_interval.is_none()
                     && coordinator_executor.is_none()
@@ -1553,6 +1680,8 @@ fn main() -> Result<()> {
                     && creator_model.is_none()
                     && retention_heuristics.is_none()
                     && auto_triage.is_none()
+                    && auto_place.is_none()
+                    && auto_create.is_none()
                     && triage_model.is_none()
                     && triage_timeout.is_none()
                     && triage_max_log_bytes.is_none()
@@ -1567,7 +1696,9 @@ fn main() -> Result<()> {
                     && flip_verification_threshold.is_none()
                     && flip_verification_model.is_none()
                     && chat_history.is_none()
-                    && chat_history_max.is_none())
+                    && chat_history_max.is_none()
+                    && tui_counters.is_none()
+                    && retry_context_tokens.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -1580,6 +1711,7 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     set_interval,
                     max_agents,
+                    max_coordinators,
                     coordinator_interval,
                     poll_interval,
                     coordinator_executor.as_deref(),
@@ -1595,6 +1727,8 @@ fn main() -> Result<()> {
                     creator_model.as_deref(),
                     retention_heuristics.as_deref(),
                     auto_triage,
+                    auto_place,
+                    auto_create,
                     triage_model.as_deref(),
                     triage_timeout,
                     triage_max_log_bytes,
@@ -1610,6 +1744,8 @@ fn main() -> Result<()> {
                     flip_verification_model.as_deref(),
                     chat_history,
                     chat_history_max,
+                    tui_counters.as_deref(),
+                    retry_context_tokens,
                 )
             }
         }
@@ -1633,6 +1769,9 @@ fn main() -> Result<()> {
                 // Default to check
                 commands::dead_agents::run_check(&workgraph_dir, threshold, cli.json)
             }
+        }
+        Commands::Sweep { dry_run } => {
+            commands::sweep::run(&workgraph_dir, dry_run, cli.json).map(|_| ())
         }
         Commands::Agents {
             alive,
@@ -1687,6 +1826,7 @@ fn main() -> Result<()> {
             ServiceCommands::Stop { force, kill_agents } => {
                 commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
             }
+            ServiceCommands::Restart => commands::service::run_restart(&workgraph_dir, cli.json),
             ServiceCommands::Status => commands::service::run_status(&workgraph_dir, cli.json),
             ServiceCommands::Reload {
                 max_agents,
@@ -1714,6 +1854,18 @@ fn main() -> Result<()> {
                 executor.as_deref(),
                 model.as_deref(),
             ),
+            ServiceCommands::CreateCoordinator { name } => {
+                commands::service::run_create_coordinator(&workgraph_dir, name.as_deref(), cli.json)
+            }
+            ServiceCommands::DeleteCoordinator { id } => {
+                commands::service::run_delete_coordinator(&workgraph_dir, id, cli.json)
+            }
+            ServiceCommands::ArchiveCoordinator { id } => {
+                commands::service::run_archive_coordinator(&workgraph_dir, id, cli.json)
+            }
+            ServiceCommands::StopCoordinator { id } => {
+                commands::service::run_stop_coordinator(&workgraph_dir, id, cli.json)
+            }
             ServiceCommands::Daemon {
                 socket,
                 max_agents,
@@ -1740,6 +1892,7 @@ fn main() -> Result<()> {
                 format: commands::viz::OutputFormat::Ascii,
                 output: None,
                 show_internal: false,
+                show_internal_running_only: false,
                 focus: vec![],
                 tui_mode: true,
                 layout: commands::viz::LayoutMode::default(),
@@ -1752,6 +1905,7 @@ fn main() -> Result<()> {
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
+        Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify {
             task,
@@ -1788,11 +1942,59 @@ fn main() -> Result<()> {
             }
             TelegramCommands::Status => commands::telegram::run_status(cli.json),
         },
+        Commands::Models { command } => match command {
+            ModelsCommands::List { tier } => {
+                commands::models::run_list(&workgraph_dir, tier.as_deref(), cli.json)
+            }
+            ModelsCommands::Search {
+                query,
+                tools,
+                no_cache,
+                limit,
+            } => commands::models::run_search(
+                &workgraph_dir,
+                &query,
+                tools,
+                no_cache,
+                limit,
+                cli.json,
+            ),
+            ModelsCommands::Remote {
+                tools,
+                no_cache,
+                limit,
+            } => {
+                commands::models::run_list_remote(&workgraph_dir, tools, no_cache, limit, cli.json)
+            }
+            ModelsCommands::Add {
+                id,
+                provider,
+                cost_in,
+                cost_out,
+                context_window,
+                capability,
+                tier,
+            } => commands::models::run_add(
+                &workgraph_dir,
+                &id,
+                provider.as_deref(),
+                cost_in,
+                cost_out,
+                context_window,
+                &capability,
+                &tier,
+            ),
+            ModelsCommands::SetDefault { id } => {
+                commands::models::run_set_default(&workgraph_dir, &id)
+            }
+            ModelsCommands::Init => commands::models::run_init(&workgraph_dir),
+        },
         Commands::NativeExec {
             prompt_file,
             exec_mode,
             task_id,
             model,
+            provider,
             max_turns,
         } => commands::native_exec::run(
             &workgraph_dir,
@@ -1800,6 +2002,7 @@ fn main() -> Result<()> {
             &exec_mode,
             &task_id,
             model.as_deref(),
+            provider.as_deref(),
             max_turns,
         ),
     }

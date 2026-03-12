@@ -263,6 +263,16 @@ fn build_assign_subgraph(dir: &Path) {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
+            unplaced: false,
+            place_near: vec![],
+            place_before: vec![],
         };
 
         mutable_graph.add_node(Node::Task(assign_task));

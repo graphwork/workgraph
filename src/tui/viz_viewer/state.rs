@@ -46,6 +46,24 @@ pub fn editor_clear(state: &mut EditorState) {
     *state = new_emacs_editor();
 }
 
+/// Insert-mode paste: inserts text at cursor and leaves cursor after the
+/// inserted text.  This replaces edtui's `on_paste_event` which uses Vim
+/// Normal-mode semantics (`append_str`) and leaves the cursor one position
+/// short.
+pub fn paste_insert_mode(text: &str, state: &mut EditorState) {
+    use edtui::actions::{
+        Execute,
+        insert::{InsertChar, LineBreak},
+    };
+    for ch in text.chars() {
+        if ch == '\n' {
+            LineBreak(1).execute(state);
+        } else {
+            InsertChar(ch).execute(state);
+        }
+    }
+}
+
 pub fn create_editor_handler() -> EditorEventHandler {
     use edtui::actions::delete::DeleteToEndOfLine;
     use edtui::actions::{
@@ -204,7 +222,7 @@ fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
         Status::Open => (200, 200, 80),       // yellow
         Status::Blocked => (180, 120, 60),    // orange
         Status::Abandoned => (140, 100, 160), // muted purple
-        Status::Waiting => (60, 160, 220),    // blue
+        Status::Waiting | Status::PendingValidation => (60, 160, 220), // blue
     }
 }
 
@@ -217,6 +235,54 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
         AnimationKind::Revealed => (120, 120, 140), // soft gray-blue
+    }
+}
+
+/// Direction of an inspector panel slide animation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlideDirection {
+    /// New view slides in from the right (forward cycling).
+    Forward,
+    /// New view slides in from the left (backward cycling).
+    Backward,
+}
+
+/// Active slide animation on the inspector panel.
+#[derive(Clone)]
+pub struct SlideAnimation {
+    /// When the animation started.
+    pub start: Instant,
+    /// Direction of the slide.
+    pub direction: SlideDirection,
+}
+
+impl SlideAnimation {
+    /// Duration of the slide animation in seconds.
+    const DURATION_SECS: f64 = 0.15;
+
+    /// Returns the animation progress (0.0 = start, 1.0 = done).
+    pub fn progress(&self) -> f64 {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        (elapsed / Self::DURATION_SECS).min(1.0)
+    }
+
+    /// Whether the animation has completed.
+    pub fn is_done(&self) -> bool {
+        self.progress() >= 1.0
+    }
+
+    /// Returns the x-offset in columns for the panel content.
+    /// Starts at +/- panel_width and eases to 0.
+    pub fn x_offset(&self, panel_width: u16) -> i16 {
+        let t = self.progress();
+        // Ease-out quadratic: 1 - (1-t)^2
+        let eased = 1.0 - (1.0 - t) * (1.0 - t);
+        let full = panel_width as f64;
+        let remaining = full * (1.0 - eased);
+        match self.direction {
+            SlideDirection::Forward => remaining as i16,
+            SlideDirection::Backward => -(remaining as i16),
+        }
     }
 }
 
@@ -253,7 +319,7 @@ pub enum InspectorSubFocus {
 }
 
 /// Which tab is active in the right panel.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RightPanelTab {
     Chat,     // 0
     Detail,   // 1
@@ -263,6 +329,7 @@ pub enum RightPanelTab {
     Config,   // 5
     Files,    // 6
     CoordLog, // 7
+    Firehose, // 8
 }
 
 impl RightPanelTab {
@@ -276,6 +343,7 @@ impl RightPanelTab {
             Self::Config => "Config",
             Self::Files => "Files",
             Self::CoordLog => "Coord",
+            Self::Firehose => "Fire",
         }
     }
 
@@ -289,6 +357,7 @@ impl RightPanelTab {
             Self::Config => 5,
             Self::Files => 6,
             Self::CoordLog => 7,
+            Self::Firehose => 8,
         }
     }
 
@@ -302,19 +371,20 @@ impl RightPanelTab {
             5 => Some(Self::Config),
             6 => Some(Self::Files),
             7 => Some(Self::CoordLog),
+            8 => Some(Self::Firehose),
             _ => None,
         }
     }
 
     pub fn next(&self) -> Self {
-        Self::from_index((self.index() + 1) % 8).unwrap()
+        Self::from_index((self.index() + 1) % Self::ALL.len()).unwrap()
     }
 
     pub fn prev(&self) -> Self {
-        Self::from_index((self.index() + 7) % 8).unwrap()
+        Self::from_index((self.index() + Self::ALL.len() - 1) % Self::ALL.len()).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 8] = [
+    pub const ALL: [RightPanelTab; 9] = [
         Self::Chat,
         Self::Detail,
         Self::Log,
@@ -323,6 +393,7 @@ impl RightPanelTab {
         Self::Config,
         Self::Files,
         Self::CoordLog,
+        Self::Firehose,
     ];
 }
 
@@ -433,6 +504,7 @@ impl LayoutMode {
         }
     }
 
+    #[allow(dead_code)]
     pub fn cycle_reverse(&self) -> Self {
         match self {
             Self::ThirdInspector => Self::Off,
@@ -514,6 +586,8 @@ pub enum InputMode {
     Confirm(ConfirmAction),
     /// Text prompt dialog (e.g., fail reason, message text).
     TextPrompt(TextPromptAction),
+    /// Choice dialog (e.g., coordinator removal options).
+    ChoiceDialog(ChoiceDialogState),
     /// Config panel text editing mode.
     ConfigEdit,
 }
@@ -533,6 +607,44 @@ pub enum TextPromptAction {
     SendMessage(String), // task_id
     EditDescription(String), // task_id
     AttachFile,         // attach a file to the next chat message
+    CreateCoordinator,  // prompt for optional coordinator name
+}
+
+/// What action a choice dialog will perform when an option is selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChoiceDialogAction {
+    /// Remove/archive/stop a coordinator by its ID.
+    RemoveCoordinator(u32),
+}
+
+/// State for a choice dialog with multiple selectable options.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChoiceDialogState {
+    pub action: ChoiceDialogAction,
+    /// Index of the currently highlighted option.
+    pub selected: usize,
+    /// Each option: (hotkey, label, description).
+    pub options: Vec<(char, String, String)>,
+}
+
+/// Hit area for a single coordinator tab in the tab bar.
+#[derive(Clone, Debug)]
+pub struct CoordinatorTabHit {
+    pub cid: u32,
+    /// Column range for the entire tab (clicking switches coordinator).
+    pub tab_start: u16,
+    pub tab_end: u16,
+    /// Column range for the close button (clicking deletes coordinator).
+    /// If close_start == close_end, there is no close button.
+    pub close_start: u16,
+    pub close_end: u16,
+}
+
+/// Column range for the [+] button in the coordinator tab bar.
+#[derive(Clone, Debug, Default)]
+pub struct CoordinatorPlusHit {
+    pub start: u16,
+    pub end: u16,
 }
 
 /// State for the task creation form overlay.
@@ -660,6 +772,20 @@ pub struct ChatState {
     pub viewport_height: usize,
     /// Scroll offset from top (set each frame by renderer for scrollbar dragging).
     pub scroll_from_top: usize,
+    /// Index of the message currently being edited (None = not in edit mode).
+    pub editing_index: Option<usize>,
+    /// Saved text from the input box before entering edit mode (restored on cancel).
+    pub edit_saved_input: String,
+    /// History navigation cursor: index into the list of editable user messages.
+    /// None = not navigating history (fresh input).
+    pub history_cursor: Option<usize>,
+    /// Mapping from rendered line index to message index (set each frame by renderer).
+    /// Used for click-to-edit: determines which message a clicked line belongs to.
+    pub line_to_message: Vec<Option<usize>>,
+    /// Per-coordinator input mode (ChatInput/MessageInput); saved/restored on coordinator switch.
+    pub input_mode: InputMode,
+    /// Whether the user explicitly dismissed chat input with Esc (per-coordinator).
+    pub chat_input_dismissed: bool,
 }
 
 impl Default for ChatState {
@@ -676,6 +802,12 @@ impl Default for ChatState {
             total_rendered_lines: 0,
             viewport_height: 0,
             scroll_from_top: 0,
+            editing_index: None,
+            edit_saved_input: String::new(),
+            history_cursor: None,
+            line_to_message: Vec::new(),
+            input_mode: InputMode::Normal,
+            chat_input_dismissed: false,
         }
     }
 }
@@ -701,6 +833,11 @@ pub struct ChatMessage {
     pub full_text: Option<String>,
     /// Attachment filenames for display (just the filename portion).
     pub attachments: Vec<String>,
+    /// Whether this message was edited by the user.
+    pub edited: bool,
+    /// Inbox message ID (for user messages loaded from chat history).
+    /// Used to edit/delete the message in the inbox JSONL file.
+    pub inbox_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -720,6 +857,8 @@ struct PersistedChatMessage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     attachments: Vec<String>,
     timestamp: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    edited: bool,
 }
 
 /// Path to the persisted chat history file.
@@ -747,6 +886,7 @@ fn save_chat_history(workgraph_dir: &std::path::Path, messages: &[ChatMessage]) 
             full_text: m.full_text.clone(),
             attachments: m.attachments.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            edited: m.edited,
         })
         .collect();
     let path = chat_history_path(workgraph_dir);
@@ -781,6 +921,8 @@ fn load_persisted_chat_history(workgraph_dir: &std::path::Path) -> Vec<ChatMessa
             text: p.text,
             full_text: p.full_text,
             attachments: p.attachments,
+            edited: p.edited,
+            inbox_id: None,
         })
         .collect()
 }
@@ -808,6 +950,317 @@ pub struct AgentMonitorEntry {
     pub started_at: Option<String>,
     /// ISO 8601 completion timestamp (for Done/Failed/Dead agents)
     pub completed_at: Option<String>,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Service health indicator
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Health level for the service daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceHealthLevel {
+    /// Service running normally, no stuck tasks.
+    Green,
+    /// Degraded: paused, starting up (<30s uptime), or has stuck tasks.
+    Yellow,
+    /// Down or errored: socket unreachable or process dead.
+    Red,
+}
+
+/// A task that is in-progress but whose assigned agent PID is dead.
+#[derive(Clone, Debug)]
+pub struct StuckTask {
+    pub task_id: String,
+    pub task_title: String,
+    pub agent_id: String,
+}
+
+/// Which item is focused in the service control panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlPanelFocus {
+    StartStop,
+    PauseResume,
+    Restart,
+    PanicKill,
+    StuckAgent(usize),
+    KillAllDead,
+    RetryFailedEvals,
+}
+
+impl ControlPanelFocus {
+    pub fn next(&self, stuck_count: usize) -> Self {
+        match self {
+            Self::StartStop => Self::PauseResume,
+            Self::PauseResume => Self::Restart,
+            Self::Restart => Self::PanicKill,
+            Self::PanicKill => {
+                if stuck_count > 0 {
+                    Self::StuckAgent(0)
+                } else {
+                    Self::KillAllDead
+                }
+            }
+            Self::StuckAgent(i) => {
+                if *i + 1 < stuck_count {
+                    Self::StuckAgent(i + 1)
+                } else {
+                    Self::KillAllDead
+                }
+            }
+            Self::KillAllDead => Self::RetryFailedEvals,
+            Self::RetryFailedEvals => Self::StartStop,
+        }
+    }
+    pub fn prev(&self, stuck_count: usize) -> Self {
+        match self {
+            Self::StartStop => Self::RetryFailedEvals,
+            Self::PauseResume => Self::StartStop,
+            Self::Restart => Self::PauseResume,
+            Self::PanicKill => Self::Restart,
+            Self::StuckAgent(i) => {
+                if *i > 0 {
+                    Self::StuckAgent(i - 1)
+                } else {
+                    Self::PanicKill
+                }
+            }
+            Self::KillAllDead => {
+                if stuck_count > 0 {
+                    Self::StuckAgent(stuck_count - 1)
+                } else {
+                    Self::PanicKill
+                }
+            }
+            Self::RetryFailedEvals => Self::KillAllDead,
+        }
+    }
+}
+
+/// State for the service health badge in the status bar.
+pub struct ServiceHealthState {
+    /// Current health level (drives badge color).
+    pub level: ServiceHealthLevel,
+    /// Short label shown in the badge (e.g. "OK", "PAUSED", "DOWN").
+    pub label: String,
+    /// Service PID (if running).
+    pub pid: Option<u32>,
+    /// Human-readable uptime string.
+    pub uptime: Option<String>,
+    /// Socket path.
+    pub socket_path: Option<String>,
+    /// Agents alive / max.
+    pub agents_alive: usize,
+    pub agents_max: usize,
+    /// Total agents ever spawned.
+    pub agents_total: usize,
+    /// Whether coordinator is paused.
+    pub paused: bool,
+    /// Stuck tasks (in-progress with dead agent PID).
+    pub stuck_tasks: Vec<StuckTask>,
+    /// Recent errors from daemon log (last 5 lines containing ERROR/WARN).
+    pub recent_errors: Vec<String>,
+    /// Last poll time.
+    pub last_poll: Instant,
+    /// Whether the detail popup is open.
+    pub detail_open: bool,
+    /// Scroll offset within the detail popup.
+    pub detail_scroll: usize,
+    /// Uptime in seconds (for <30s starting detection).
+    pub uptime_secs: Option<u64>,
+    pub panel_open: bool,
+    pub panel_focus: ControlPanelFocus,
+    pub panic_confirm: bool,
+    pub feedback: Option<(String, Instant)>,
+}
+
+impl Default for ServiceHealthState {
+    fn default() -> Self {
+        Self {
+            level: ServiceHealthLevel::Red,
+            label: "DOWN".to_string(),
+            pid: None,
+            uptime: None,
+            socket_path: None,
+            agents_alive: 0,
+            agents_max: 0,
+            agents_total: 0,
+            paused: false,
+            stuck_tasks: Vec::new(),
+            recent_errors: Vec::new(),
+            last_poll: Instant::now(),
+            detail_open: false,
+            detail_scroll: 0,
+            uptime_secs: None,
+            panel_open: false,
+            panel_focus: ControlPanelFocus::StartStop,
+            panic_confirm: false,
+            feedback: None,
+        }
+    }
+}
+
+// Time counters
+pub struct TimeCounters {
+    pub service_uptime_secs: Option<u64>,
+    pub cumulative_secs: u64,
+    pub active_secs: u64,
+    pub active_agent_count: usize,
+    pub session_start: Instant,
+    pub last_refresh: Instant,
+    pub show_uptime: bool,
+    pub show_cumulative: bool,
+    pub show_active: bool,
+    pub show_session: bool,
+}
+impl TimeCounters {
+    pub fn new(config_counters: &str) -> Self {
+        let parts: Vec<&str> = config_counters.split(',').map(|s| s.trim()).collect();
+        Self {
+            service_uptime_secs: None,
+            cumulative_secs: 0,
+            active_secs: 0,
+            active_agent_count: 0,
+            session_start: Instant::now(),
+            last_refresh: Instant::now() - std::time::Duration::from_secs(60),
+            show_uptime: parts.contains(&"uptime"),
+            show_cumulative: parts.contains(&"cumulative"),
+            show_active: parts.contains(&"active"),
+            show_session: parts.contains(&"session"),
+        }
+    }
+    pub fn any_enabled(&self) -> bool {
+        self.show_uptime || self.show_cumulative || self.show_active || self.show_session
+    }
+}
+pub fn format_duration_compact(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m > 0 {
+            format!("{}h{}m", h, m)
+        } else {
+            format!("{}h", h)
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Archive browser
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A single entry in the archive browser.
+pub struct ArchiveEntry {
+    pub id: String,
+    pub title: String,
+    pub completed_at: Option<String>,
+    pub tags: Vec<String>,
+}
+
+/// State for the archive browser panel (toggled with 'A').
+#[derive(Default)]
+pub struct ArchiveBrowserState {
+    /// Whether the archive browser is currently open/visible.
+    pub active: bool,
+    /// All archived entries loaded from archive.jsonl.
+    pub entries: Vec<ArchiveEntry>,
+    /// Currently selected index in the (filtered) list.
+    pub selected: usize,
+    /// Scroll offset (first visible row).
+    pub scroll: usize,
+    /// Search/filter query (empty = show all).
+    pub filter: String,
+    /// Whether the user is typing a filter query.
+    pub filter_active: bool,
+    /// Indices into `entries` that match the current filter.
+    pub filtered_indices: Vec<usize>,
+}
+
+impl ArchiveBrowserState {
+    /// Reload entries from the archive.jsonl file.
+    pub fn load(&mut self, workgraph_dir: &std::path::Path) {
+        let archive_path = workgraph_dir.join("archive.jsonl");
+        self.entries.clear();
+        if let Ok(file) = std::fs::File::open(&archive_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                // Parse as JSON, extract task fields
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    // The archive stores Node::Task — the outer object has "kind":"task"
+                    // and the task fields at the top level.
+                    let id = val["id"].as_str().unwrap_or("").to_string();
+                    let title = val["title"].as_str().unwrap_or("").to_string();
+                    let completed_at = val["completed_at"].as_str().map(String::from);
+                    let tags: Vec<String> = val["tags"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !id.is_empty() {
+                        self.entries.push(ArchiveEntry {
+                            id,
+                            title,
+                            completed_at,
+                            tags,
+                        });
+                    }
+                }
+            }
+        }
+        self.apply_filter();
+    }
+
+    /// Apply the current filter to entries, updating filtered_indices.
+    pub fn apply_filter(&mut self) {
+        if self.filter.is_empty() {
+            self.filtered_indices = (0..self.entries.len()).collect();
+        } else {
+            let query = self.filter.to_lowercase();
+            self.filtered_indices = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.id.to_lowercase().contains(&query)
+                        || e.title.to_lowercase().contains(&query)
+                        || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        // Clamp selection
+        if self.filtered_indices.is_empty() {
+            self.selected = 0;
+        } else if self.selected >= self.filtered_indices.len() {
+            self.selected = self.filtered_indices.len() - 1;
+        }
+    }
+
+    /// Get the currently selected entry (if any).
+    pub fn selected_entry(&self) -> Option<&ArchiveEntry> {
+        self.filtered_indices
+            .get(self.selected)
+            .and_then(|&idx| self.entries.get(idx))
+    }
+
+    /// Number of visible (filtered) entries.
+    pub fn visible_count(&self) -> usize {
+        self.filtered_indices.len()
+    }
 }
 
 /// Live JSONL stream state for a single agent.
@@ -906,6 +1359,57 @@ impl Default for CoordLogState {
             last_offset: 0,
             viewport_height: 0,
             total_wrapped_lines: 0,
+        }
+    }
+}
+
+/// A single line in the firehose view — one output line from one agent.
+#[derive(Clone)]
+pub struct FirehoseLine {
+    /// Agent ID (e.g. "agent-7220").
+    pub agent_id: String,
+    /// Task ID the agent is working on.
+    pub task_id: String,
+    /// The output text (single line).
+    pub text: String,
+    /// Color index for this agent (cycles through a palette).
+    pub color_idx: usize,
+}
+
+/// Maximum number of lines kept in the firehose buffer.
+const FIREHOSE_MAX_LINES: usize = 1000;
+
+/// State for the Firehose panel (panel 8) — merged stream of all agent output.
+pub struct FirehoseState {
+    /// Scroll offset from the top.
+    pub scroll: usize,
+    /// Whether auto-scroll (tail mode) is active.
+    pub auto_tail: bool,
+    /// Merged, chronologically-ordered output lines from all agents.
+    pub lines: Vec<FirehoseLine>,
+    /// Per-agent file offset for incremental reads (agent_id → byte offset).
+    pub agent_offsets: HashMap<String, u64>,
+    /// Mapping from agent_id to a stable color index.
+    pub agent_colors: HashMap<String, usize>,
+    /// Next color index to assign.
+    pub next_color: usize,
+    /// Viewport height (set each frame by renderer).
+    pub viewport_height: usize,
+    /// Total rendered lines (set each frame by renderer, for scrollbar).
+    pub total_rendered_lines: usize,
+}
+
+impl Default for FirehoseState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            auto_tail: true,
+            lines: Vec::new(),
+            agent_offsets: HashMap::new(),
+            agent_colors: HashMap::new(),
+            next_color: 0,
+            viewport_height: 0,
+            total_rendered_lines: 0,
         }
     }
 }
@@ -1022,6 +1526,8 @@ pub enum ConfigSection {
     AgentDefaults,
     Agency,
     Guardrails,
+    ModelRouting,
+    Actions,
 }
 
 impl ConfigSection {
@@ -1034,6 +1540,8 @@ impl ConfigSection {
             Self::AgentDefaults => "Agent Defaults",
             Self::Agency => "Agency",
             Self::Guardrails => "Guardrails",
+            Self::ModelRouting => "Model Routing",
+            Self::Actions => "Actions",
         }
     }
 
@@ -1047,6 +1555,7 @@ impl ConfigSection {
             Self::AgentDefaults,
             Self::Agency,
             Self::Guardrails,
+            Self::Actions,
         ]
     }
 }
@@ -1112,6 +1621,14 @@ pub enum CommandEffect {
     /// A chat response arrived from `wg chat` — output is the coordinator's response text.
     /// The String is the request_id for correlation.
     ChatResponse(String),
+    /// A new coordinator was created. Triggers switching to the new coordinator.
+    CreateCoordinator,
+    /// A coordinator was deleted. On success, clean up local state and switch to coordinator 0.
+    DeleteCoordinator(u32),
+    /// A coordinator was archived (marked done). On success, clean up like delete.
+    ArchiveCoordinator(u32),
+    /// A coordinator's agent was stopped. On success, show notification.
+    StopCoordinator(u32),
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -1159,6 +1676,7 @@ pub struct TaskCounts {
     pub in_progress: usize,
     pub failed: usize,
     pub blocked: usize,
+    pub archived: usize,
 }
 
 /// A single fuzzy match result for a line.
@@ -1227,6 +1745,8 @@ pub struct VizApp {
     // ── System task visibility ──
     /// When true, show system tasks (dot-prefixed) in the graph view.
     pub show_system_tasks: bool,
+    /// When true, show only running (in-progress/open) system tasks in the graph view.
+    pub show_running_system_tasks: bool,
     /// Set to true when system task visibility was just toggled, so that
     /// newly appearing tasks get a `Revealed` animation instead of `NewTask`.
     pub system_tasks_just_toggled: bool,
@@ -1234,6 +1754,9 @@ pub struct VizApp {
     // ── Mouse capture ──
     /// Whether mouse capture is currently enabled.
     pub mouse_enabled: bool,
+    /// Whether mode 1003 (any-event tracking) is enabled for touch support.
+    /// Auto-set when running in Termux without mosh.
+    pub any_motion_mouse: bool,
 
     // ── Layout areas (set each frame by the renderer, for mouse hit-testing) ──
     /// The graph/viz content area from the last render frame.
@@ -1248,6 +1771,16 @@ pub struct VizApp {
     pub last_chat_input_area: Rect,
     /// The chat message history area from the last render frame (for click-to-focus).
     pub last_chat_message_area: Rect,
+    /// The coordinator tab bar area from the last render frame (for click support).
+    pub last_coordinator_bar_area: Rect,
+    /// Per-tab hit areas for coordinator tab bar click testing.
+    /// Each entry: (coordinator_id, tab_start_col, tab_end_col, close_start_col, close_end_col).
+    /// close_start == close_end means no close button.
+    pub coordinator_tab_hits: Vec<CoordinatorTabHit>,
+    /// Hit area for the [+] button in the coordinator tab bar.
+    pub coordinator_plus_hit: CoordinatorPlusHit,
+    /// The message input area from the last render frame (for click-to-type).
+    pub last_message_input_area: Rect,
 
     /// The text prompt overlay area from the last render frame (for mouse scroll).
     pub last_text_prompt_area: Rect,
@@ -1344,12 +1877,29 @@ pub struct VizApp {
     pub text_prompt: TextPromptState,
 
     // ── Chat state ──
+    /// Active coordinator ID (the chat tab currently being viewed).
+    pub active_coordinator_id: u32,
+    /// Per-coordinator chat states. Coordinator 0 is always present.
+    pub coordinator_chats: HashMap<u32, ChatState>,
+    /// Backward-compatible accessor: mutable reference to the active coordinator's chat state.
+    /// This field is kept in sync with `coordinator_chats[active_coordinator_id]`.
     pub chat: ChatState,
 
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
     pub agent_streams: HashMap<String, AgentStreamInfo>,
+
+    // ── Service health indicator ──
+    pub service_health: ServiceHealthState,
+    /// Hit-test area for the service health badge (set each frame by renderer).
+    pub last_service_badge_area: Rect,
+
+    // Time counters
+    pub time_counters: TimeCounters,
+
+    // ── Firehose state (panel 8) ──
+    pub firehose: FirehoseState,
 
     // ── Agency lifecycle for selected task ──
     pub agency_lifecycle: Option<AgencyLifecycle>,
@@ -1362,9 +1912,14 @@ pub struct VizApp {
 
     // ── Messages panel state (panel 3) ──
     pub messages_panel: MessagesPanelState,
+    /// Per-task message drafts: persists unsent text across task/panel switches.
+    pub message_drafts: HashMap<String, String>,
 
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
+
+    // ── Archive browser state ──
+    pub archive_browser: ArchiveBrowserState,
 
     // ── File browser state (panel 6) ──
     pub file_browser: Option<super::file_browser::FileBrowser>,
@@ -1402,6 +1957,8 @@ pub struct VizApp {
     pub task_snapshots: HashMap<String, TaskSnapshot>,
     /// Animation mode (from config: normal/fast/slow/reduced/off).
     pub animation_mode: AnimationMode,
+    /// Active slide animation on the inspector panel (for Alt+arrow view cycling).
+    pub slide_animation: Option<SlideAnimation>,
     /// Cached: name length threshold for inline vs above-line display.
     pub message_name_threshold: u16,
     /// Cached: indent for message body when name is on its own line.
@@ -1416,6 +1973,8 @@ pub struct VizApp {
     // ── Scrollbar drag state ──
     /// Which scrollbar (if any) is currently being dragged.
     pub scrollbar_drag: Option<ScrollbarDragTarget>,
+    /// Last mouse position during a graph-body drag-to-pan gesture (col, row).
+    pub graph_pan_last: Option<(u16, u16)>,
 
     /// Vertical scrollbar area for the graph pane (set each frame by renderer).
     pub last_graph_scrollbar_area: Rect,
@@ -1510,14 +2069,20 @@ impl VizApp {
             show_total_tokens: false,
             show_help: false,
             show_system_tasks: false,
+            show_running_system_tasks: config.tui.show_running_system_tasks,
             system_tasks_just_toggled: false,
             mouse_enabled,
+            any_motion_mouse: super::event::detect_termux_touch(),
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_coordinator_bar_area: Rect::default(),
+            coordinator_tab_hits: Vec::new(),
+            coordinator_plus_hit: CoordinatorPlusHit::default(),
+            last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
@@ -1561,14 +2126,22 @@ impl VizApp {
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
+            active_coordinator_id: 0,
+            coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            service_health: ServiceHealthState::default(),
+            last_service_badge_area: Rect::default(),
+            time_counters: TimeCounters::new(&config.tui.counters),
+            firehose: FirehoseState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
+            message_drafts: HashMap::new(),
             config_panel: ConfigPanelState::default(),
+            archive_browser: ArchiveBrowserState::default(),
             file_browser: None,
             cmd_rx,
             cmd_tx,
@@ -1580,11 +2153,13 @@ impl VizApp {
             splash_animations: HashMap::new(),
             task_snapshots: HashMap::new(),
             animation_mode,
+            slide_animation: None,
             message_name_threshold: config.tui.message_name_threshold,
             message_indent: config.tui.message_indent,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            graph_pan_last: None,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,
@@ -1602,6 +2177,8 @@ impl VizApp {
         app.load_stats();
         app.load_agent_monitor();
         app.check_coordinator_status();
+        app.update_service_health();
+        app.update_time_counters();
         app.load_chat_history();
         app
     }
@@ -1809,6 +2386,7 @@ impl VizApp {
     fn generate_viz(&self) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
         opts.show_internal = self.show_system_tasks;
+        opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
         crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
     }
 
@@ -1870,6 +2448,7 @@ impl VizApp {
         };
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1886,6 +2465,7 @@ impl VizApp {
         };
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1900,6 +2480,7 @@ impl VizApp {
         };
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1915,6 +2496,7 @@ impl VizApp {
         };
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1925,6 +2507,7 @@ impl VizApp {
         }
         self.selected_task_idx = Some(0);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1935,6 +2518,7 @@ impl VizApp {
         }
         self.selected_task_idx = Some(self.task_order.len() - 1);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         self.scroll_to_selected_task();
     }
 
@@ -1996,7 +2580,36 @@ impl VizApp {
         self.invalidate_hud();
         self.invalidate_agency_lifecycle();
         self.invalidate_log_pane();
+        // Save message draft before invalidating — invalidate clears task_id.
+        self.save_message_draft();
         self.invalidate_messages_panel();
+    }
+
+    /// If the currently selected task is a coordinator task, switch to that
+    /// coordinator and show the Chat tab. Call this only from user-initiated
+    /// selection changes (keyboard / mouse), NOT from automatic graph refreshes.
+    fn sync_coordinator_from_selection(&mut self) {
+        let selected_id = match self.selected_task_idx {
+            Some(idx) => match self.task_order.get(idx) {
+                Some(id) => id.clone(),
+                None => return,
+            },
+            None => return,
+        };
+        if let Some(cid) = selected_id
+            .strip_prefix(".coordinator-")
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            if cid != self.active_coordinator_id {
+                self.switch_coordinator(cid);
+            }
+            self.right_panel_tab = RightPanelTab::Chat;
+        } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
+            self.switch_coordinator(0);
+            self.right_panel_tab = RightPanelTab::Chat;
+        } else if selected_id == ".coordinator" {
+            self.right_panel_tab = RightPanelTab::Chat;
+        }
     }
 
     /// Scroll the viewport so the selected task stays within the middle 60% of
@@ -2061,6 +2674,7 @@ impl VizApp {
         };
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
+        self.sync_coordinator_from_selection();
         true
     }
 
@@ -2440,7 +3054,7 @@ impl VizApp {
                 Status::Failed => counts.failed += 1,
                 Status::Blocked => counts.blocked += 1,
                 Status::Abandoned => counts.done += 1, // count with done
-                Status::Waiting => counts.blocked += 1, // count with blocked
+                Status::Waiting | Status::PendingValidation => counts.blocked += 1, // count with blocked
             }
 
             // Use stored token_usage if available, otherwise check live agent data
@@ -2523,6 +3137,21 @@ impl VizApp {
             new_snapshots.insert(task.id.clone(), snapshot);
         }
 
+        // Count archived tasks
+        let archive_path = self.workgraph_dir.join("archive.jsonl");
+        counts.archived = if archive_path.exists() {
+            std::fs::File::open(&archive_path)
+                .map(|f| {
+                    BufReader::new(f)
+                        .lines()
+                        .filter(|l| l.as_ref().is_ok_and(|s| !s.trim().is_empty()))
+                        .count()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         self.task_snapshots = new_snapshots;
         self.task_counts = counts;
         self.total_usage = total_usage;
@@ -2533,9 +3162,10 @@ impl VizApp {
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
-    pub fn maybe_refresh(&mut self) {
+    /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
+    pub fn maybe_refresh(&mut self) -> bool {
         if self.last_refresh.elapsed() < self.refresh_interval {
-            return;
+            return false;
         }
 
         let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
@@ -2563,6 +3193,10 @@ impl VizApp {
             self.load_stats();
             self.load_agent_monitor();
             self.update_agent_streams();
+            // Update firehose with new agent output if Firehose tab is active.
+            if self.right_panel_tab == RightPanelTab::Firehose {
+                self.update_firehose();
+            }
             // Preserve HUD scroll position when the selected task hasn't changed.
             self.invalidate_hud();
             // Eagerly reload so we can restore scroll before render.
@@ -2578,7 +3212,10 @@ impl VizApp {
                 self.load_log_pane();
             }
             // Reload messages panel if Messages tab is active.
+            // Save draft BEFORE invalidating — invalidate clears task_id,
+            // which would prevent save_message_draft() from finding the task.
             if self.right_panel_tab == RightPanelTab::Messages {
+                self.save_message_draft();
                 self.invalidate_messages_panel();
                 self.load_messages_panel();
             }
@@ -2606,7 +3243,102 @@ impl VizApp {
             self.poll_chat_messages();
         }
 
+        // Poll service health every ~5 seconds.
+        if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(5) {
+            self.update_service_health();
+        }
+        if self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10) {
+            self.update_time_counters();
+        }
+
         self.last_refresh = Instant::now();
+        true
+    }
+
+    /// Whether a refresh tick is due (enough time has elapsed since last refresh).
+    pub fn is_refresh_due(&self) -> bool {
+        self.last_refresh.elapsed() >= self.refresh_interval
+    }
+
+    /// Whether any time-based UI elements are active and need periodic redraws
+    /// (animations, fading notifications, scrollbar timeouts, etc.).
+    pub fn has_timed_ui_elements(&self) -> bool {
+        // Active splash animations (flash-and-fade on tasks)
+        if self.has_active_animations() {
+            return true;
+        }
+        // Slide animation on inspector panel
+        if self.slide_animation.as_ref().is_some_and(|a| !a.is_done()) {
+            return true;
+        }
+        // Jump target highlight (fades after 2s)
+        if self.jump_target.is_some() {
+            return true;
+        }
+        // Notification (cleared after 3s in drain_commands)
+        if self.notification.is_some() {
+            return true;
+        }
+        // Scrollbar fade timers (visible for 2s after scroll activity)
+        let scroll_active = |when: Option<Instant>| {
+            when.is_some_and(|w| w.elapsed() < std::time::Duration::from_secs(3))
+        };
+        if scroll_active(self.graph_scroll_activity)
+            || scroll_active(self.panel_scroll_activity)
+            || scroll_active(self.graph_hscroll_activity)
+            || scroll_active(self.panel_hscroll_activity)
+        {
+            return true;
+        }
+        // Config save notification (shown for 2s)
+        if self
+            .config_panel
+            .save_notification
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
+        {
+            return true;
+        }
+        // Service health feedback (shown for 5s)
+        if self
+            .service_health
+            .feedback
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() < std::time::Duration::from_secs(6))
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Compute the ideal poll timeout based on current UI activity.
+    /// Short (50ms) during animations for smooth rendering, longer when idle.
+    pub fn next_poll_timeout(&self) -> std::time::Duration {
+        // During animations, keep frame rate high for smooth visuals
+        if self.has_active_animations()
+            || self.slide_animation.as_ref().is_some_and(|a| !a.is_done())
+        {
+            return std::time::Duration::from_millis(50);
+        }
+
+        // When time-based UI elements are active (notifications, scrollbar fades),
+        // use a moderate rate — they don't need 20fps but should update reasonably
+        if self.has_timed_ui_elements() {
+            return std::time::Duration::from_millis(200);
+        }
+
+        // When time counters are displayed (session timer, uptime), update ~1/sec
+        if self.time_counters.any_enabled() {
+            let until_refresh = self
+                .refresh_interval
+                .saturating_sub(self.last_refresh.elapsed());
+            return until_refresh.min(std::time::Duration::from_secs(1));
+        }
+
+        // Fully idle: wait until next refresh is due, capped at 1 second
+        let until_refresh = self
+            .refresh_interval
+            .saturating_sub(self.last_refresh.elapsed());
+        until_refresh.min(std::time::Duration::from_secs(1))
     }
 
     /// Cycle through layout modes (tree ↔ diamond).
@@ -2683,6 +3415,7 @@ impl VizApp {
                 if !self.task_order.is_empty() {
                     self.selected_task_idx = Some(0);
                     self.recompute_trace();
+                    self.sync_coordinator_from_selection();
                 }
             }
             SortMode::ReverseChronological => {
@@ -2690,6 +3423,7 @@ impl VizApp {
                 if !self.task_order.is_empty() {
                     self.selected_task_idx = Some(self.task_order.len() - 1);
                     self.recompute_trace();
+                    self.sync_coordinator_from_selection();
                 }
             }
             SortMode::StatusGrouped => {
@@ -2697,6 +3431,7 @@ impl VizApp {
                 if !self.task_order.is_empty() {
                     self.selected_task_idx = Some(0);
                     self.recompute_trace();
+                    self.sync_coordinator_from_selection();
                     self.scroll_to_selected_task();
                 }
             }
@@ -2736,7 +3471,7 @@ impl VizApp {
                                 Status::Blocked => 3,
                                 Status::Done => 4,
                                 Status::Abandoned => 5,
-                                Status::Waiting => 3, // same priority as blocked
+                                Status::Waiting | Status::PendingValidation => 3, // same priority as blocked
                             };
                             (t.id.clone(), priority)
                         })
@@ -2862,17 +3597,13 @@ impl VizApp {
         if let Some(output_path) = output_path {
             if self.detail_raw_json {
                 lines.push("── Output (raw) ── [R: human-readable]".to_string());
-            } else {
-                lines.push("── Output ── [R: raw JSON]".to_string());
-            }
-            if let Ok(content) = std::fs::read_to_string(&output_path) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-                    {
-                        if self.detail_raw_json {
-                            // Raw mode: pretty-printed JSON
+                // Raw mode: pretty-printed JSON
+                if let Ok(content) = std::fs::read_to_string(&output_path) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                            && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+                        {
                             if let Ok(pretty) = serde_json::to_string_pretty(&val) {
                                 for pline in pretty.lines() {
                                     lines.push(format!("  {}", pline));
@@ -2881,11 +3612,21 @@ impl VizApp {
                                 lines.push(format!("  {}", line));
                             }
                         } else {
-                            // Human-readable mode: extract key/value pairs
-                            flatten_json_to_lines(&val, "  ", &mut lines);
+                            lines.push(format!("  {}", line));
                         }
+                    }
+                }
+            } else {
+                lines.push("── Output ── [R: raw JSON]".to_string());
+                // Human-readable mode: extract assistant text as markdown
+                if let Ok(content) = std::fs::read_to_string(&output_path) {
+                    let extracted = extract_assistant_text_from_log(&content);
+                    if extracted.is_empty() {
+                        lines.push("  (no assistant output)".to_string());
                     } else {
-                        lines.push(format!("  {}", line));
+                        for line in extracted.lines() {
+                            lines.push(format!("  {}", line));
+                        }
                     }
                 }
             }
@@ -2940,23 +3681,13 @@ impl VizApp {
         if let Some(ref usage) = task.token_usage {
             lines.push("── Tokens ──".to_string());
             let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+            lines.push(format!("  Input:  →{}", format_tokens(usage.input_tokens)));
+            lines.push(format!("  Output: ←{}", format_tokens(usage.output_tokens)));
             if cache_total > 0 {
                 lines.push(format!(
-                    "  Input:  {} new + {} cached",
-                    format_tokens(usage.input_tokens),
-                    format_tokens(cache_total)
-                ));
-            } else {
-                lines.push(format!("  Input:  {}", format_tokens(usage.input_tokens)));
-            }
-            lines.push(format!("  Output: {}", format_tokens(usage.output_tokens)));
-            if usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 {
-                lines.push(format!(
-                    "  Cache read:  {}",
-                    format_tokens(usage.cache_read_input_tokens)
-                ));
-                lines.push(format!(
-                    "  Cache write: {}",
+                    "  Cached: {} (read: {}, write: {})",
+                    format_tokens(cache_total),
+                    format_tokens(usage.cache_read_input_tokens),
                     format_tokens(usage.cache_creation_input_tokens)
                 ));
             }
@@ -2966,72 +3697,72 @@ impl VizApp {
             lines.push(String::new());
         }
 
-        // ── Assignment + Evaluation costs ──
+        // ── Agency lifecycle costs (per-task breakdown) ──
         {
             let agents_dir = self.workgraph_dir.join("agents");
-            let assign_task_id = format!(".assign-{}", task.id);
-            let legacy_assign_id = format!("assign-{}", task.id);
-            let eval_task_id = format!(".evaluate-{}", task.id);
-            let legacy_eval_id = format!("evaluate-{}", task.id);
 
-            let assign_usage = graph
-                .tasks()
-                .find(|t| t.id == assign_task_id || t.id == legacy_assign_id)
-                .and_then(|t| {
-                    t.token_usage.clone().or_else(|| {
-                        let agent_id = t.assigned.as_deref()?;
-                        let log_path = agents_dir.join(agent_id).join("output.log");
-                        parse_token_usage_live(&log_path)
-                    })
-                });
-            let eval_usage = graph
-                .tasks()
-                .find(|t| t.id == eval_task_id || t.id == legacy_eval_id)
-                .and_then(|t| {
-                    t.token_usage.clone().or_else(|| {
-                        let agent_id = t.assigned.as_deref()?;
-                        let log_path = agents_dir.join(agent_id).join("output.log");
-                        parse_token_usage_live(&log_path)
-                    })
-                });
+            let get_usage = |t: &workgraph::graph::Task| -> Option<TokenUsage> {
+                t.token_usage.clone().or_else(|| {
+                    let agent_id = t.assigned.as_deref()?;
+                    let log_path = agents_dir.join(agent_id).join("output.log");
+                    parse_token_usage_live(&log_path)
+                })
+            };
 
-            if assign_usage.is_some() || eval_usage.is_some() {
-                lines.push("── Phase Costs ──".to_string());
-                if let Some(ref u) = assign_usage {
+            // Lifecycle task prefixes with labels
+            let lifecycle_tasks: Vec<(&str, String)> = vec![
+                ("⊳ Assignment", format!(".assign-{}", task.id)),
+                ("⊳ Assignment", format!("assign-{}", task.id)),
+                ("∴ Evaluation", format!(".evaluate-{}", task.id)),
+                ("∴ Evaluation", format!("evaluate-{}", task.id)),
+                ("⤿ FLIP", format!(".flip-{}", task.id)),
+                ("⤿ FLIP", format!("flip-{}", task.id)),
+                ("✓ Verify", format!(".verify-{}", task.id)),
+                ("✓ Verify", format!("verify-{}", task.id)),
+            ];
+
+            let mut phase_entries: Vec<(String, TokenUsage)> = Vec::new();
+            let mut agency_total = TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            };
+
+            for (label, tid) in &lifecycle_tasks {
+                if let Some(t) = graph.tasks().find(|t| t.id == *tid)
+                    && let Some(u) = get_usage(t)
+                {
+                    agency_total.accumulate(&u);
+                    phase_entries.push((label.to_string(), u));
+                }
+            }
+
+            if !phase_entries.is_empty() {
+                lines.push("── § Agency Costs ──".to_string());
+                for (label, u) in &phase_entries {
                     let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                     let mut detail = format!(
-                        "  ⊳ Assignment: →{} ←{}",
+                        "  {} →{} ←{}",
+                        label,
                         format_tokens(u.input_tokens),
                         format_tokens(u.output_tokens)
                     );
                     if cache > 0 {
-                        detail.push_str(&format!(" +{} cached", format_tokens(cache)));
+                        detail.push_str(&format!("  (cached: {})", format_tokens(cache)));
                     }
                     if u.cost_usd > 0.0 {
                         detail.push_str(&format!(" ${:.4}", u.cost_usd));
                     }
                     lines.push(detail);
                 }
-                if let Some(ref u) = eval_usage {
-                    let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
-                    let mut detail = format!(
-                        "  ∴ Evaluation: →{} ←{}",
-                        format_tokens(u.input_tokens),
-                        format_tokens(u.output_tokens)
-                    );
-                    if cache > 0 {
-                        detail.push_str(&format!(" +{} cached", format_tokens(cache)));
-                    }
-                    if u.cost_usd > 0.0 {
-                        detail.push_str(&format!(" ${:.4}", u.cost_usd));
-                    }
-                    lines.push(detail);
-                }
-                // Show combined total
+                // Show aggregated agency total (novel only)
+                let agency_overhead = agency_total.input_tokens + agency_total.output_tokens;
+                lines.push(format!("  § Total: {}", format_tokens(agency_overhead)));
+                // Show combined total cost (execution + agency)
                 let exec_cost = task.token_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
-                let total_cost = exec_cost
-                    + assign_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0)
-                    + eval_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+                let total_cost = exec_cost + agency_total.cost_usd;
                 if total_cost > 0.0 {
                     lines.push(format!("  Total cost: ${:.4}", total_cost));
                 }
@@ -3158,19 +3889,11 @@ impl VizApp {
         if let Some(output_path) = output_path {
             lines.push("── Output ──".to_string());
             if let Ok(content) = std::fs::read_to_string(&output_path) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-                    {
-                        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                            for pline in pretty.lines() {
-                                lines.push(format!("  {}", pline));
-                            }
-                        } else {
-                            lines.push(format!("  {}", line));
-                        }
-                    } else {
+                let extracted = extract_assistant_text_from_log(&content);
+                if extracted.is_empty() {
+                    lines.push("  (no assistant output)".to_string());
+                } else {
+                    for line in extracted.lines() {
                         lines.push(format!("  {}", line));
                     }
                 }
@@ -3182,23 +3905,13 @@ impl VizApp {
         if let Some(ref usage) = task.token_usage {
             lines.push("── Tokens ──".to_string());
             let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+            lines.push(format!("  Input:  →{}", format_tokens(usage.input_tokens)));
+            lines.push(format!("  Output: ←{}", format_tokens(usage.output_tokens)));
             if cache_total > 0 {
                 lines.push(format!(
-                    "  Input:  {} new + {} cached",
-                    format_tokens(usage.input_tokens),
-                    format_tokens(cache_total)
-                ));
-            } else {
-                lines.push(format!("  Input:  {}", format_tokens(usage.input_tokens)));
-            }
-            lines.push(format!("  Output: {}", format_tokens(usage.output_tokens)));
-            if usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 {
-                lines.push(format!(
-                    "  Cache read:  {}",
-                    format_tokens(usage.cache_read_input_tokens)
-                ));
-                lines.push(format!(
-                    "  Cache write: {}",
+                    "  Cached: {} (read: {}, write: {})",
+                    format_tokens(cache_total),
+                    format_tokens(usage.cache_read_input_tokens),
                     format_tokens(usage.cache_creation_input_tokens)
                 ));
             }
@@ -3603,10 +4316,12 @@ impl VizApp {
         let task_id = match self.selected_task_id() {
             Some(id) => id.to_string(),
             None => {
+                self.save_message_draft();
                 self.messages_panel.rendered_lines.clear();
                 self.messages_panel.entries.clear();
                 self.messages_panel.summary = MessageSummary::default();
                 self.messages_panel.task_id = None;
+                editor_clear(&mut self.messages_panel.editor);
                 return;
             }
         };
@@ -3615,6 +4330,9 @@ impl VizApp {
         if self.messages_panel.task_id.as_deref() == Some(&task_id) {
             return;
         }
+
+        // Save draft for the old task before switching.
+        self.save_message_draft();
 
         self.messages_panel.rendered_lines.clear();
         self.messages_panel.entries.clear();
@@ -3717,11 +4435,39 @@ impl VizApp {
         }
 
         self.messages_panel.task_id = Some(task_id);
+
+        // Restore draft for the new task.
+        self.restore_message_draft();
     }
 
     /// Force reload of messages panel content.
     pub fn invalidate_messages_panel(&mut self) {
         self.messages_panel.task_id = None;
+    }
+
+    /// Save the current message editor text as a draft for the current task.
+    pub fn save_message_draft(&mut self) {
+        if let Some(task_id) = self.messages_panel.task_id.clone() {
+            let text = editor_text(&self.messages_panel.editor);
+            if text.is_empty() {
+                self.message_drafts.remove(&task_id);
+            } else {
+                self.message_drafts.insert(task_id, text);
+            }
+        }
+    }
+
+    /// Restore a saved draft into the message editor for the current task.
+    pub fn restore_message_draft(&mut self) {
+        if let Some(task_id) = &self.messages_panel.task_id {
+            if let Some(draft) = self.message_drafts.get(task_id).cloned() {
+                self.messages_panel.editor = new_emacs_editor_with(&draft);
+            } else {
+                editor_clear(&mut self.messages_panel.editor);
+            }
+        } else {
+            editor_clear(&mut self.messages_panel.editor);
+        }
     }
 
     /// Construct a VizApp from pre-built VizOutput for unit testing.
@@ -3773,14 +4519,20 @@ impl VizApp {
             show_total_tokens: false,
             show_help: false,
             show_system_tasks: false,
+            show_running_system_tasks: false,
             system_tasks_just_toggled: false,
             mouse_enabled: false,
+            any_motion_mouse: false,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_coordinator_bar_area: Rect::default(),
+            coordinator_tab_hits: Vec::new(),
+            coordinator_plus_hit: CoordinatorPlusHit::default(),
+            last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
@@ -3820,13 +4572,20 @@ impl VizApp {
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
+            active_coordinator_id: 0,
+            coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            service_health: ServiceHealthState::default(),
+            last_service_badge_area: Rect::default(),
+            time_counters: TimeCounters::new("uptime,cumulative,active"),
+            firehose: FirehoseState::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
+            message_drafts: HashMap::new(),
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,
             notification: None,
@@ -3837,11 +4596,13 @@ impl VizApp {
             splash_animations: HashMap::new(),
             task_snapshots: HashMap::new(),
             animation_mode: AnimationMode::Normal,
+            slide_animation: None,
             message_name_threshold: 8,
             message_indent: 2,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            graph_pan_last: None,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,
@@ -3854,6 +4615,7 @@ impl VizApp {
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
             refresh_interval: std::time::Duration::from_secs(3600),
+            archive_browser: ArchiveBrowserState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
         }
@@ -3933,6 +4695,7 @@ impl VizApp {
     }
 
     /// Cycle layout mode in reverse: off → full → 2/3 → 1/2 → 1/3 → off.
+    #[allow(dead_code)]
     pub fn cycle_layout_mode_reverse(&mut self) {
         self.apply_layout_mode(self.layout_mode.cycle_reverse());
     }
@@ -3956,6 +4719,119 @@ impl VizApp {
                 self.right_panel_visible = false;
                 self.focused_panel = FocusedPanel::Graph;
             }
+        }
+    }
+
+    /// Cycle inspector view forward: closed → Chat → Detail → ... → CoordLog → closed.
+    /// Opens the panel (if closed) and advances to the next tab, or closes if on the last tab.
+    pub fn cycle_inspector_view_forward(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Panel is closed → open with first tab
+            self.right_panel_tab = RightPanelTab::ALL[0];
+            if self.layout_mode == LayoutMode::Off {
+                self.apply_layout_mode(LayoutMode::TwoThirdsInspector);
+            } else {
+                self.right_panel_visible = true;
+            }
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Forward,
+            });
+        } else if self.right_panel_tab == *RightPanelTab::ALL.last().unwrap() {
+            // On last tab → close
+            self.apply_layout_mode(LayoutMode::Off);
+            self.slide_animation = None;
+        } else {
+            // Advance to next tab
+            self.right_panel_tab = self.right_panel_tab.next();
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Forward,
+            });
+        }
+    }
+
+    /// Cycle inspector view backward: closed → CoordLog → ... → Detail → Chat → closed.
+    pub fn cycle_inspector_view_backward(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Panel is closed → open with last tab
+            self.right_panel_tab = *RightPanelTab::ALL.last().unwrap();
+            if self.layout_mode == LayoutMode::Off {
+                self.apply_layout_mode(LayoutMode::TwoThirdsInspector);
+            } else {
+                self.right_panel_visible = true;
+            }
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Backward,
+            });
+        } else if self.right_panel_tab == RightPanelTab::ALL[0] {
+            // On first tab → close
+            self.apply_layout_mode(LayoutMode::Off);
+            self.slide_animation = None;
+        } else {
+            // Move to previous tab
+            self.right_panel_tab = self.right_panel_tab.prev();
+            self.slide_animation = Some(SlideAnimation {
+                start: Instant::now(),
+                direction: SlideDirection::Backward,
+            });
+        }
+    }
+
+    /// Grow the viz (right) pane by 10% of panel_percent, wrapping around when past max.
+    /// Steps: 10 → 20 → 30 → ... → 90 → 100 → 10 (wraps back to minimum).
+    pub fn grow_viz_pane(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Open panel at minimum size first
+            self.right_panel_visible = true;
+            self.layout_mode = LayoutMode::ThirdInspector;
+            self.right_panel_percent = 10;
+            return;
+        }
+        let next = self.right_panel_percent + 10;
+        if next > 100 {
+            // Wrap around to minimum
+            self.right_panel_percent = 10;
+            self.layout_mode = LayoutMode::ThirdInspector;
+        } else {
+            self.right_panel_percent = next;
+            self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
+        }
+    }
+
+    /// Shrink the viz (right) pane by 10%, wrapping around when at min.
+    /// Steps: 100 → 90 → ... → 20 → 10 → 100 (wraps to max).
+    pub fn shrink_viz_pane(&mut self) {
+        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
+            // Open panel at max size first
+            self.right_panel_visible = true;
+            self.layout_mode = LayoutMode::FullInspector;
+            self.right_panel_percent = 100;
+            self.focused_panel = FocusedPanel::RightPanel;
+            return;
+        }
+        if self.right_panel_percent <= 10 {
+            // Wrap around to maximum
+            self.right_panel_percent = 100;
+            self.layout_mode = LayoutMode::FullInspector;
+            self.focused_panel = FocusedPanel::RightPanel;
+        } else {
+            self.right_panel_percent = self.right_panel_percent.saturating_sub(10).max(10);
+            self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
+        }
+    }
+
+    /// Map a percentage to the nearest LayoutMode bracket.
+    fn layout_mode_for_percent(pct: u16) -> LayoutMode {
+        if pct >= 100 {
+            LayoutMode::FullInspector
+        } else if pct >= 59 {
+            LayoutMode::TwoThirdsInspector
+        } else if pct >= 42 {
+            LayoutMode::HalfInspector
+        } else {
+            LayoutMode::ThirdInspector
         }
     }
 
@@ -3999,8 +4875,11 @@ impl VizApp {
     }
 
     /// Drain any completed background commands and apply their effects.
-    pub fn drain_commands(&mut self) {
+    /// Returns `true` if any commands were processed.
+    pub fn drain_commands(&mut self) -> bool {
+        let mut drained = false;
         while let Ok(result) = self.cmd_rx.try_recv() {
+            drained = true;
             match result.effect {
                 CommandEffect::Refresh => {
                     self.force_refresh();
@@ -4020,6 +4899,9 @@ impl VizApp {
                 }
                 CommandEffect::RefreshAndNotify(msg) => {
                     self.force_refresh();
+                    if self.archive_browser.active {
+                        self.archive_browser.load(&self.workgraph_dir);
+                    }
                     let msg = if result.success {
                         msg
                     } else {
@@ -4048,6 +4930,8 @@ impl VizApp {
                             text: format!("Error: {}", error_line),
                             full_text: None,
                             attachments: vec![],
+                            edited: false,
+                            inbox_id: None,
                         });
                         save_chat_history(&self.workgraph_dir, &self.chat.messages);
                     }
@@ -4062,6 +4946,109 @@ impl VizApp {
                     // Refresh graph in case coordinator created tasks.
                     self.force_refresh();
                 }
+                CommandEffect::CreateCoordinator => {
+                    if result.success {
+                        // Parse the new coordinator ID from the output
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output)
+                        {
+                            if let Some(cid) = data["coordinator_id"].as_u64() {
+                                // Refresh graph so the new coordinator task appears
+                                self.force_refresh();
+                                self.switch_coordinator(cid as u32);
+                                // Auto-switch to Chat tab so the user sees the new coordinator
+                                self.right_panel_tab = RightPanelTab::Chat;
+                                self.notification = Some((
+                                    format!("Coordinator {} created", cid),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        } else {
+                            // Non-JSON output — look for coordinator ID in the last line
+                            self.notification = Some((
+                                "New coordinator created".to_string(),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to create coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                    self.force_refresh();
+                }
+                CommandEffect::DeleteCoordinator(cid) => {
+                    if result.success {
+                        // Switch to coordinator 0 if we deleted the active one
+                        if cid == self.active_coordinator_id {
+                            self.switch_coordinator(0);
+                        }
+                        // Remove stored chat state for this coordinator
+                        self.coordinator_chats.remove(&cid);
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Closed coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to delete coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                CommandEffect::ArchiveCoordinator(cid) => {
+                    if result.success {
+                        if cid == self.active_coordinator_id {
+                            self.switch_coordinator(0);
+                        }
+                        self.coordinator_chats.remove(&cid);
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Archived coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to archive coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                CommandEffect::StopCoordinator(cid) => {
+                    if result.success {
+                        self.force_refresh();
+                        self.notification = Some((
+                            format!("Stopped coordinator {}", cid),
+                            std::time::Instant::now(),
+                        ));
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.notification = Some((
+                            format!("Failed to stop coordinator: {}", err),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
             }
         }
         // Clear expired notifications (after 3 seconds).
@@ -4069,7 +5056,9 @@ impl VizApp {
             && when.elapsed() > std::time::Duration::from_secs(3)
         {
             self.notification = None;
+            drained = true; // need redraw to remove the notification
         }
+        drained
     }
 
     /// Load agent monitor data from the agent registry.
@@ -4288,6 +5277,99 @@ impl VizApp {
         }
     }
 
+    /// Update the firehose view by reading new lines from all active agents' output.log files.
+    /// Each non-empty line is appended to the firehose buffer. The buffer is capped at
+    /// FIREHOSE_MAX_LINES to prevent memory growth.
+    pub fn update_firehose(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let agents_dir = self.workgraph_dir.join("agents");
+
+        // Collect active agent IDs and their task IDs from the monitor.
+        let active_agents: Vec<(String, String)> = self
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|a| matches!(a.status, AgentStatus::Working))
+            .map(|a| (a.agent_id.clone(), a.task_id.clone().unwrap_or_default()))
+            .collect();
+
+        let mut new_lines: Vec<FirehoseLine> = Vec::new();
+
+        for (agent_id, task_id) in &active_agents {
+            let log_path = agents_dir.join(agent_id).join("output.log");
+            if !log_path.exists() {
+                continue;
+            }
+
+            let offset = self
+                .firehose
+                .agent_offsets
+                .entry(agent_id.clone())
+                .or_insert(0);
+
+            let mut file = match std::fs::File::open(&log_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+
+            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            if file_len <= *offset {
+                continue;
+            }
+
+            if file.seek(SeekFrom::Start(*offset)).is_err() {
+                continue;
+            }
+
+            let mut new_data = String::new();
+            if file.read_to_string(&mut new_data).is_err() {
+                continue;
+            }
+
+            *offset = file_len;
+
+            // Assign a stable color index for this agent.
+            let color_idx = *self
+                .firehose
+                .agent_colors
+                .entry(agent_id.clone())
+                .or_insert_with(|| {
+                    let idx = self.firehose.next_color;
+                    self.firehose.next_color += 1;
+                    idx
+                });
+
+            for line in new_data.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                new_lines.push(FirehoseLine {
+                    agent_id: agent_id.clone(),
+                    task_id: task_id.clone(),
+                    text: line.to_string(),
+                    color_idx,
+                });
+            }
+        }
+
+        if !new_lines.is_empty() {
+            self.firehose.lines.extend(new_lines);
+            // Cap buffer.
+            if self.firehose.lines.len() > FIREHOSE_MAX_LINES {
+                let drain = self.firehose.lines.len() - FIREHOSE_MAX_LINES;
+                self.firehose.lines.drain(..drain);
+                // Adjust scroll offset to account for removed lines.
+                self.firehose.scroll = self.firehose.scroll.saturating_sub(drain);
+            }
+            // Auto-scroll to bottom if tail mode is active.
+            if self.firehose.auto_tail {
+                self.firehose.scroll = usize::MAX;
+            }
+        }
+    }
+
     /// Load the agency lifecycle (assign → execute → evaluate) for the currently selected task.
     pub fn load_agency_lifecycle(&mut self) {
         let task_id = match self.selected_task_id() {
@@ -4398,14 +5480,29 @@ impl VizApp {
         // Execution phase (the task itself)
         let execution = Some(build_phase(&task, "Execution"));
 
-        // Evaluation phase
+        // Evaluation phase: combine .evaluate-* and .flip-* token usage
         let eval_task_id = format!(".evaluate-{}", task_id);
         let legacy_eval_id = format!("evaluate-{}", task_id);
-        let evaluation = graph
+        let flip_task_id = format!(".flip-{}", task_id);
+        let eval_task = graph
             .tasks()
-            .find(|t| t.id == eval_task_id || t.id == legacy_eval_id)
+            .find(|t| t.id == eval_task_id || t.id == legacy_eval_id);
+        let flip_task = graph.tasks().find(|t| t.id == flip_task_id);
+        let evaluation = eval_task
             .map(|t| {
                 let mut phase = build_phase(t, "Evaluation");
+
+                // Accumulate FLIP task token usage into evaluation phase
+                if let Some(ft) = flip_task {
+                    let flip_phase = build_phase(ft, "FLIP");
+                    if let Some(flip_usage) = flip_phase.token_usage {
+                        if let Some(ref mut eval_usage) = phase.token_usage {
+                            eval_usage.accumulate(&flip_usage);
+                        } else {
+                            phase.token_usage = Some(flip_usage);
+                        }
+                    }
+                }
 
                 // Load evaluation results from agency/evaluations/
                 let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
@@ -4431,6 +5528,10 @@ impl VizApp {
                 }
 
                 phase
+            })
+            .or_else(|| {
+                // If no evaluate task but flip task exists, show flip as evaluation phase
+                flip_task.map(|ft| build_phase(ft, "Evaluation"))
             });
 
         self.agency_lifecycle = Some(AgencyLifecycle {
@@ -4455,6 +5556,292 @@ impl VizApp {
             .ok()
             .flatten()
             .is_some_and(|s| is_service_alive(s.pid));
+    }
+
+    /// Poll service health: read state files to determine health level,
+    /// stuck tasks, and recent errors.
+    pub fn update_service_health(&mut self) {
+        use crate::commands::service::{
+            CoordinatorState, ServiceState, is_service_alive, log_file_path,
+        };
+
+        let dir = &self.workgraph_dir;
+
+        // 1. Load service state
+        let state = ServiceState::load(dir).ok().flatten();
+        let Some(state) = state else {
+            self.service_health.level = ServiceHealthLevel::Red;
+            self.service_health.label = "DOWN".to_string();
+            self.service_health.pid = None;
+            self.service_health.uptime = None;
+            self.service_health.socket_path = None;
+            self.service_health.uptime_secs = None;
+            self.service_health.agents_alive = 0;
+            self.service_health.agents_total = 0;
+            self.service_health.paused = false;
+            self.service_health.stuck_tasks.clear();
+            self.service_health.recent_errors.clear();
+            self.service_health.last_poll = Instant::now();
+            return;
+        };
+
+        // 2. Check if PID is alive
+        if !is_service_alive(state.pid) {
+            self.service_health.level = ServiceHealthLevel::Red;
+            self.service_health.label = "DOWN".to_string();
+            self.service_health.pid = Some(state.pid);
+            self.service_health.socket_path = Some(state.socket_path);
+            self.service_health.uptime = None;
+            self.service_health.uptime_secs = None;
+            self.service_health.last_poll = Instant::now();
+            return;
+        }
+
+        // Service is alive — gather details
+        self.service_health.pid = Some(state.pid);
+        self.service_health.socket_path = Some(state.socket_path);
+
+        // Compute uptime
+        let uptime_secs = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+            .ok()
+            .map(|started| {
+                let now = chrono::Utc::now();
+                (now - started.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    .max(0) as u64
+            });
+        self.service_health.uptime_secs = uptime_secs;
+        self.service_health.uptime = uptime_secs.map(|s| {
+            if s < 60 {
+                format!("{}s", s)
+            } else if s < 3600 {
+                format!("{}m{}s", s / 60, s % 60)
+            } else {
+                format!("{}h{}m", s / 3600, (s % 3600) / 60)
+            }
+        });
+
+        // Load coordinator state
+        let coord = CoordinatorState::load_or_default(dir);
+        self.service_health.paused = coord.paused;
+        self.service_health.agents_max = coord.max_agents;
+
+        // Load agent registry for alive count and stuck task detection
+        let registry = workgraph::AgentRegistry::load_or_warn(dir);
+        let alive = registry.active_count();
+        self.service_health.agents_alive = alive;
+        self.service_health.agents_total = registry.agents.len();
+
+        // Detect stuck tasks: in-progress tasks whose agent PID is dead
+        let graph_path = dir.join("graph.jsonl");
+        let mut stuck = Vec::new();
+        if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+            for task in graph.tasks() {
+                if task.status == workgraph::graph::Status::InProgress
+                    && let Some(ref agent_id) = task.agent
+                    && let Some(agent) = registry.agents.get(agent_id)
+                    && !crate::commands::is_process_alive(agent.pid)
+                {
+                    stuck.push(StuckTask {
+                        task_id: task.id.clone(),
+                        task_title: task.title.clone(),
+                        agent_id: agent_id.clone(),
+                    });
+                }
+            }
+        }
+        self.service_health.stuck_tasks = stuck;
+
+        // Read recent errors from daemon log (last 5 ERROR/WARN lines within 10 minutes)
+        let log_path = log_file_path(dir);
+        let mut recent_errors = Vec::new();
+        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(10);
+        if let Ok(content) = std::fs::read_to_string(&log_path) {
+            for line in content.lines().rev() {
+                if line.contains("ERROR") || line.contains("WARN") {
+                    // Parse timestamp from line start: "2026-03-08T12:59:07.285Z [LEVEL] ..."
+                    let ts_end = line.find(' ').unwrap_or(0);
+                    if ts_end == 0 {
+                        continue;
+                    }
+                    let ts_str = &line[..ts_end];
+                    let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                        continue;
+                    };
+                    if ts.with_timezone(&chrono::Utc) < cutoff {
+                        // Past the 10-minute window; since we're iterating newest-first, stop
+                        break;
+                    }
+                    recent_errors.push(line.to_string());
+                    if recent_errors.len() >= 5 {
+                        break;
+                    }
+                }
+            }
+            recent_errors.reverse();
+        }
+        self.service_health.recent_errors = recent_errors;
+
+        // Determine health level
+        let stuck_count = self.service_health.stuck_tasks.len();
+        let count_label = format!("{}/{}", alive, coord.max_agents);
+        if coord.paused
+            || uptime_secs.is_some_and(|s| s < 30)
+            || stuck_count > 0
+            || !self.service_health.recent_errors.is_empty()
+        {
+            self.service_health.level = ServiceHealthLevel::Yellow;
+        } else {
+            self.service_health.level = ServiceHealthLevel::Green;
+        }
+        self.service_health.label = if coord.paused {
+            "PAUSED".to_string()
+        } else {
+            count_label
+        };
+
+        self.service_health.last_poll = Instant::now();
+    }
+
+    pub fn update_time_counters(&mut self) {
+        if !self.time_counters.any_enabled() {
+            return;
+        }
+        self.time_counters.service_uptime_secs = self.service_health.uptime_secs;
+        let registry = workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir);
+        let now = chrono::Utc::now();
+        let (mut cumulative, mut active, mut active_count) = (0i64, 0i64, 0usize);
+        for agent in registry.agents.values() {
+            let start = chrono::DateTime::parse_from_rfc3339(&agent.started_at)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc));
+            let Some(start) = start else { continue };
+            if agent.is_alive() {
+                let e = (now - start).num_seconds().max(0);
+                cumulative += e;
+                active += e;
+                active_count += 1;
+            } else if let Some(ref end_str) = agent.completed_at {
+                if let Ok(end) = chrono::DateTime::parse_from_rfc3339(end_str) {
+                    cumulative += (end.with_timezone(&chrono::Utc) - start)
+                        .num_seconds()
+                        .max(0);
+                }
+            } else if let Ok(hb) = chrono::DateTime::parse_from_rfc3339(&agent.last_heartbeat) {
+                cumulative += (hb.with_timezone(&chrono::Utc) - start)
+                    .num_seconds()
+                    .max(0);
+            }
+        }
+        self.time_counters.cumulative_secs = cumulative as u64;
+        self.time_counters.active_secs = active as u64;
+        self.time_counters.active_agent_count = active_count;
+        self.time_counters.last_refresh = Instant::now();
+    }
+
+    /// Open or close the service control panel.
+    pub fn toggle_service_control_panel(&mut self) {
+        if self.service_health.panel_open {
+            self.close_service_control_panel();
+        } else {
+            self.service_health.detail_open = false;
+            self.service_health.panel_open = true;
+            self.service_health.panel_focus = ControlPanelFocus::StartStop;
+            self.service_health.panic_confirm = false;
+        }
+    }
+
+    pub fn close_service_control_panel(&mut self) {
+        self.service_health.panel_open = false;
+        self.service_health.panic_confirm = false;
+    }
+
+    pub fn set_service_feedback(&mut self, msg: String) {
+        self.service_health.feedback = Some((msg, Instant::now()));
+    }
+
+    pub fn execute_service_action(&mut self) {
+        let health = &self.service_health;
+        let is_running = health.pid.is_some() && health.level != ServiceHealthLevel::Red;
+        match health.panel_focus.clone() {
+            ControlPanelFocus::StartStop => {
+                if is_running {
+                    self.exec_command(
+                        vec!["service".into(), "stop".into()],
+                        CommandEffect::RefreshAndNotify("Service stopped".into()),
+                    );
+                    self.set_service_feedback("Service stopped".into());
+                } else {
+                    self.exec_command(
+                        vec!["service".into(), "start".into()],
+                        CommandEffect::RefreshAndNotify("Service started".into()),
+                    );
+                    self.set_service_feedback("Service starting...".into());
+                }
+            }
+            ControlPanelFocus::PauseResume => {
+                if health.paused {
+                    self.exec_command(
+                        vec!["service".into(), "resume".into()],
+                        CommandEffect::RefreshAndNotify("Launches resumed".into()),
+                    );
+                    self.set_service_feedback("Resumed".into());
+                } else {
+                    self.exec_command(
+                        vec!["service".into(), "pause".into()],
+                        CommandEffect::RefreshAndNotify("Launches paused".into()),
+                    );
+                    self.set_service_feedback("Paused".into());
+                }
+            }
+            ControlPanelFocus::Restart => {
+                self.exec_command(
+                    vec!["service".into(), "restart".into()],
+                    CommandEffect::RefreshAndNotify("Service restarted".into()),
+                );
+                self.set_service_feedback("Restarting...".into());
+            }
+            ControlPanelFocus::PanicKill => {}
+            ControlPanelFocus::StuckAgent(idx) => {
+                if let Some(st) = health.stuck_tasks.get(idx) {
+                    let aid = st.agent_id.clone();
+                    self.exec_command(
+                        vec!["kill".into(), aid.clone(), "--force".into()],
+                        CommandEffect::RefreshAndNotify(format!("Killed {}", aid)),
+                    );
+                    self.set_service_feedback(format!("Killed {}", aid));
+                }
+            }
+            ControlPanelFocus::KillAllDead => {
+                self.exec_command(
+                    vec!["kill".into(), "--all".into(), "--force".into()],
+                    CommandEffect::RefreshAndNotify("Killed all dead agents".into()),
+                );
+                self.set_service_feedback("Killed all dead agents".into());
+            }
+            ControlPanelFocus::RetryFailedEvals => {
+                self.exec_command(
+                    vec!["retry".into(), "--failed-evals".into()],
+                    CommandEffect::RefreshAndNotify("Retrying failed evals".into()),
+                );
+                self.set_service_feedback("Retrying failed evals...".into());
+            }
+        }
+    }
+
+    pub fn execute_panic_kill(&mut self) {
+        let n = self.service_health.agents_alive;
+        self.exec_command(
+            vec![
+                "service".into(),
+                "stop".into(),
+                "--force".into(),
+                "--kill-agents".into(),
+            ],
+            CommandEffect::RefreshAndNotify(format!("PANIC: killed {} agents", n)),
+        );
+        self.service_health.panic_confirm = false;
+        self.set_service_feedback(format!("PANIC KILL: {} agents killed, service stopped", n));
     }
 
     /// Load chat history on startup.
@@ -4485,11 +5872,18 @@ impl VizApp {
                             .to_string()
                     })
                     .collect();
+                let inbox_id = if role == ChatRole::User {
+                    Some(msg.id)
+                } else {
+                    None
+                };
                 self.chat.messages.push(ChatMessage {
                     role,
                     text: msg.content.clone(),
                     full_text: msg.full_response.clone(),
                     attachments: att_names,
+                    edited: false,
+                    inbox_id,
                 });
             }
 
@@ -4508,8 +5902,9 @@ impl VizApp {
     /// Poll for new coordinator responses in the outbox.
     /// Called during refresh ticks.
     pub fn poll_chat_messages(&mut self) {
-        let new_msgs = match workgraph::chat::read_outbox_since(
+        let new_msgs = match workgraph::chat::read_outbox_since_for(
             &self.workgraph_dir,
+            self.active_coordinator_id,
             self.chat.outbox_cursor,
         ) {
             Ok(msgs) => msgs,
@@ -4537,6 +5932,8 @@ impl VizApp {
                 text: msg.content.clone(),
                 full_text: msg.full_response.clone(),
                 attachments: att_names,
+                edited: false,
+                inbox_id: None,
             });
         }
 
@@ -4591,6 +5988,8 @@ impl VizApp {
             text: text.clone(),
             full_text: None,
             attachments: att_names,
+            edited: false,
+            inbox_id: None,
         });
 
         // Persist updated chat history.
@@ -4603,8 +6002,12 @@ impl VizApp {
         self.chat.awaiting_response = true;
         self.chat.last_request_id = Some(request_id.clone());
 
-        // Build `wg chat` command args, including --attachment flags.
+        // Build `wg chat` command args, including --attachment and --coordinator flags.
         let mut args = vec!["chat".to_string(), text];
+        if self.active_coordinator_id != 0 {
+            args.push("--coordinator".to_string());
+            args.push(self.active_coordinator_id.to_string());
+        }
         for att in &self.chat.pending_attachments {
             args.push("--attachment".to_string());
             args.push(att.stored_path.clone());
@@ -4646,6 +6049,318 @@ impl VizApp {
                     Some((format!("Attach failed: {}", e), std::time::Instant::now()));
             }
         }
+    }
+
+    /// Check whether a user message at the given index has been consumed by the coordinator.
+    /// A message is consumed if there's any coordinator message after it in the display list.
+    pub fn is_chat_message_consumed(&self, index: usize) -> bool {
+        if index >= self.chat.messages.len() {
+            return true;
+        }
+        if self.chat.messages[index].role != ChatRole::User {
+            return true; // only user messages can be unconsumed
+        }
+        // If any coordinator message follows this one, it's consumed.
+        self.chat.messages[index + 1..]
+            .iter()
+            .any(|m| m.role == ChatRole::Coordinator)
+    }
+
+    /// Enter edit mode for a user message at the given index.
+    /// Loads the message text into the editor and saves the current input.
+    pub fn enter_chat_edit_mode(&mut self, index: usize) {
+        if index >= self.chat.messages.len() {
+            return;
+        }
+        if self.chat.messages[index].role != ChatRole::User {
+            return;
+        }
+        if self.is_chat_message_consumed(index) {
+            return;
+        }
+        // Save current input
+        self.chat.edit_saved_input = editor_text(&self.chat.editor);
+        self.chat.editing_index = Some(index);
+        // Load the message text into the editor
+        self.chat.editor = new_emacs_editor_with(&self.chat.messages[index].text);
+        // Reset scroll to bottom so the input is visible
+        self.chat.scroll = 0;
+    }
+
+    /// Cancel edit mode, restoring the previous input.
+    pub fn cancel_chat_edit_mode(&mut self) {
+        if self.chat.editing_index.is_some() {
+            let saved = std::mem::take(&mut self.chat.edit_saved_input);
+            if saved.is_empty() {
+                editor_clear(&mut self.chat.editor);
+            } else {
+                self.chat.editor = new_emacs_editor_with(&saved);
+            }
+            self.chat.editing_index = None;
+            self.chat.history_cursor = None;
+        }
+    }
+
+    /// Commit the edit: update the original message with the editor text.
+    pub fn commit_chat_edit(&mut self) {
+        if let Some(idx) = self.chat.editing_index {
+            let new_text = editor_text(&self.chat.editor);
+            if new_text.trim().is_empty() {
+                // Empty edit = delete the message
+                self.delete_chat_message(idx);
+            } else if idx < self.chat.messages.len() {
+                let old_text = self.chat.messages[idx].text.clone();
+                if new_text != old_text {
+                    self.chat.messages[idx].text = new_text.clone();
+                    self.chat.messages[idx].edited = true;
+                    // Update inbox if we have an ID
+                    if let Some(inbox_id) = self.chat.messages[idx].inbox_id {
+                        let _ = workgraph::chat::edit_inbox_message_for(
+                            &self.workgraph_dir,
+                            self.active_coordinator_id,
+                            inbox_id,
+                            &new_text,
+                        );
+                    }
+                    save_chat_history(&self.workgraph_dir, &self.chat.messages);
+                }
+            }
+            editor_clear(&mut self.chat.editor);
+            self.chat.editing_index = None;
+            self.chat.history_cursor = None;
+            self.chat.edit_saved_input.clear();
+        }
+    }
+
+    /// Delete a chat message at the given index.
+    pub fn delete_chat_message(&mut self, index: usize) {
+        if index >= self.chat.messages.len() {
+            return;
+        }
+        if self.is_chat_message_consumed(index) {
+            return;
+        }
+        // Delete from inbox if we have an ID
+        if let Some(inbox_id) = self.chat.messages[index].inbox_id {
+            let _ = workgraph::chat::delete_inbox_message_for(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+                inbox_id,
+            );
+        }
+        self.chat.messages.remove(index);
+        save_chat_history(&self.workgraph_dir, &self.chat.messages);
+        // Clear edit state
+        self.chat.editing_index = None;
+        self.chat.history_cursor = None;
+        editor_clear(&mut self.chat.editor);
+        self.notification = Some(("Message deleted".to_string(), std::time::Instant::now()));
+    }
+
+    /// Get the indices of editable (unconsumed) user messages, in order.
+    pub fn editable_user_message_indices(&self) -> Vec<usize> {
+        self.chat
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| m.role == ChatRole::User && !self.is_chat_message_consumed(*i))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Navigate to the previous user message in history (Up arrow).
+    /// Returns true if navigation happened.
+    pub fn chat_history_up(&mut self) -> bool {
+        let editable = self.editable_user_message_indices();
+        if editable.is_empty() {
+            return false;
+        }
+        match self.chat.history_cursor {
+            None => {
+                // Save current input and start from the most recent editable message
+                self.chat.edit_saved_input = editor_text(&self.chat.editor);
+                let msg_idx = *editable.last().unwrap();
+                self.chat.history_cursor = Some(editable.len() - 1);
+                self.chat.editing_index = Some(msg_idx);
+                self.chat.editor = new_emacs_editor_with(&self.chat.messages[msg_idx].text);
+                true
+            }
+            Some(cursor) => {
+                if cursor > 0 {
+                    let new_cursor = cursor - 1;
+                    let msg_idx = editable[new_cursor];
+                    self.chat.history_cursor = Some(new_cursor);
+                    self.chat.editing_index = Some(msg_idx);
+                    self.chat.editor = new_emacs_editor_with(&self.chat.messages[msg_idx].text);
+                    true
+                } else {
+                    false // already at oldest
+                }
+            }
+        }
+    }
+
+    /// Navigate to the next user message in history (Down arrow).
+    /// Returns true if navigation happened.
+    pub fn chat_history_down(&mut self) -> bool {
+        let editable = self.editable_user_message_indices();
+        if let Some(cursor) = self.chat.history_cursor {
+            if cursor + 1 < editable.len() {
+                let new_cursor = cursor + 1;
+                let msg_idx = editable[new_cursor];
+                self.chat.history_cursor = Some(new_cursor);
+                self.chat.editing_index = Some(msg_idx);
+                self.chat.editor = new_emacs_editor_with(&self.chat.messages[msg_idx].text);
+                true
+            } else {
+                // Past the end: restore original input
+                self.chat.history_cursor = None;
+                self.chat.editing_index = None;
+                let saved = std::mem::take(&mut self.chat.edit_saved_input);
+                if saved.is_empty() {
+                    editor_clear(&mut self.chat.editor);
+                } else {
+                    self.chat.editor = new_emacs_editor_with(&saved);
+                }
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Switch to a different coordinator session.
+    /// Saves the current chat state to the coordinator_chats map and loads the target.
+    pub fn switch_coordinator(&mut self, target_id: u32) {
+        if target_id == self.active_coordinator_id {
+            return;
+        }
+        // Save per-coordinator input mode and dismissed flag into the outgoing chat state
+        let mut current = std::mem::take(&mut self.chat);
+        if matches!(
+            self.input_mode,
+            InputMode::ChatInput | InputMode::MessageInput
+        ) {
+            current.input_mode = self.input_mode.clone();
+        }
+        current.chat_input_dismissed = self.chat_input_dismissed;
+        self.coordinator_chats
+            .insert(self.active_coordinator_id, current);
+
+        // Load target chat state (or create new default)
+        self.chat = self
+            .coordinator_chats
+            .remove(&target_id)
+            .unwrap_or_default();
+
+        // Restore per-coordinator input mode: if the target had a chat-related mode, restore it;
+        // otherwise if we were in a chat-related mode from the previous coordinator, reset to Normal.
+        if matches!(
+            self.chat.input_mode,
+            InputMode::ChatInput | InputMode::MessageInput
+        ) {
+            self.input_mode = self.chat.input_mode.clone();
+        } else if matches!(
+            self.input_mode,
+            InputMode::ChatInput | InputMode::MessageInput
+        ) {
+            self.input_mode = InputMode::Normal;
+        }
+        self.chat_input_dismissed = self.chat.chat_input_dismissed;
+
+        self.active_coordinator_id = target_id;
+
+        // Sync: highlight the corresponding coordinator task in the graph.
+        let coord_task_id = if target_id == 0 {
+            ".coordinator".to_string()
+        } else {
+            format!(".coordinator-{}", target_id)
+        };
+        if let Some(idx) = self.task_order.iter().position(|id| *id == coord_task_id) {
+            self.selected_task_idx = Some(idx);
+            // Don't call recompute_trace() here to avoid infinite recursion
+            // (recompute_trace calls switch_coordinator for coordinator tasks).
+            // Just update the selection visually.
+            self.scroll_to_selected_task();
+        }
+    }
+
+    /// Create a new coordinator session via IPC and switch to it.
+    pub fn create_coordinator(&mut self, name: Option<String>) {
+        // Send CreateCoordinator IPC in background; the response will contain the new ID.
+        let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
+        if let Some(ref n) = name {
+            args.push("--name".to_string());
+            args.push(n.clone());
+        }
+        self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Delete a coordinator session via IPC. Coordinator 0 cannot be deleted.
+    /// Sends the delete command to the backend; on success the effect handler
+    /// cleans up local chat state, switches to coordinator 0, and refreshes.
+    pub fn delete_coordinator(&mut self, cid: u32) {
+        if cid == 0 {
+            return;
+        }
+        let args = vec![
+            "service".to_string(),
+            "delete-coordinator".to_string(),
+            cid.to_string(),
+        ];
+        self.exec_command(args, CommandEffect::DeleteCoordinator(cid));
+    }
+
+    /// Get a list of known coordinator IDs from the graph.
+    pub fn list_coordinator_ids(&self) -> Vec<u32> {
+        self.list_coordinator_ids_and_labels()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Get coordinator IDs with display labels from the graph.
+    /// Returns Vec of (id, label) where label is the task title if available,
+    /// otherwise "C{id}".
+    pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match workgraph::parser::load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return vec![(0, "C0".to_string())],
+        };
+        let mut entries: Vec<(u32, String)> = graph
+            .tasks()
+            .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+            .filter(|t| !matches!(t.status, Status::Abandoned))
+            .filter_map(|t| {
+                let cid =
+                    t.id.strip_prefix(".coordinator-")
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .or_else(|| {
+                            if t.id == ".coordinator" {
+                                Some(0)
+                            } else {
+                                None
+                            }
+                        })?;
+                // Use task title as label if it's not a generic "Coordinator" title
+                let label = if !t.title.is_empty()
+                    && t.title != "Coordinator"
+                    && !t.title.starts_with("coordinator")
+                {
+                    t.title.clone()
+                } else {
+                    format!("C{}", cid)
+                };
+                Some((cid, label))
+            })
+            .collect();
+        entries.sort_by_key(|(id, _)| *id);
+        entries.dedup_by_key(|(id, _)| *id);
+        if entries.is_empty() {
+            entries.push((0, "C0".to_string()));
+        }
+        entries
     }
 
     /// Try to paste an image from the system clipboard.
@@ -4690,6 +6405,35 @@ impl VizApp {
     pub fn close_task_form(&mut self) {
         self.task_form = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Toggle the archive browser view.
+    pub fn toggle_archive_browser(&mut self) {
+        if self.archive_browser.active {
+            self.archive_browser.active = false;
+            self.archive_browser.filter_active = false;
+        } else {
+            self.archive_browser.load(&self.workgraph_dir);
+            self.archive_browser.active = true;
+            self.archive_browser.filter_active = false;
+        }
+    }
+
+    /// Restore the currently selected archived task back into the graph.
+    pub fn restore_archive_entry(&mut self) {
+        let task_id = match self.archive_browser.selected_entry() {
+            Some(e) => e.id.clone(),
+            None => return,
+        };
+        self.exec_command(
+            vec![
+                "archive".to_string(),
+                "restore".to_string(),
+                task_id.clone(),
+                "--reopen".to_string(),
+            ],
+            CommandEffect::RefreshAndNotify(format!("Restored '{}'", task_id)),
+        );
     }
 
     /// Submit the task creation form — runs `wg add` in background.
@@ -4785,6 +6529,8 @@ impl VizApp {
     pub fn load_config_panel(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
         let model_choices = load_model_choices(&self.workgraph_dir);
+        let mut model_choices_with_default = vec!["(default)".to_string()];
+        model_choices_with_default.extend(model_choices.iter().cloned());
         let mut entries = Vec::new();
 
         // ── 1. LLM Endpoints ──
@@ -4937,6 +6683,13 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::Service,
         });
+        entries.push(ConfigEntry {
+            key: "coordinator.max_coordinators".into(),
+            label: "Max coordinators".into(),
+            value: config.coordinator.max_coordinators.to_string(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Service,
+        });
 
         // ── 4. TUI Settings ──
         entries.push(ConfigEntry {
@@ -5037,6 +6790,42 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::TuiSettings,
         });
+        entries.push(ConfigEntry {
+            key: "tui.chat_history".into(),
+            label: "Chat history".into(),
+            value: if config.tui.chat_history {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::TuiSettings,
+        });
+        entries.push(ConfigEntry {
+            key: "tui.chat_history_max".into(),
+            label: "Chat history max".into(),
+            value: config.tui.chat_history_max.to_string(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::TuiSettings,
+        });
+        entries.push(ConfigEntry {
+            key: "tui.counters".into(),
+            label: "Counters".into(),
+            value: config.tui.counters.clone(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::TuiSettings,
+        });
+        entries.push(ConfigEntry {
+            key: "tui.show_running_system_tasks".into(),
+            label: "Show running system tasks".into(),
+            value: if config.tui.show_running_system_tasks {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::TuiSettings,
+        });
 
         // ── 5. Agent Defaults ──
         entries.push(ConfigEntry {
@@ -5112,13 +6901,6 @@ impl VizApp {
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
-            key: "agency.run_mode".into(),
-            label: "Run mode".into(),
-            value: format!("{:.1}", config.agency.run_mode),
-            edit_kind: ConfigEditKind::TextInput,
-            section: ConfigSection::Agency,
-        });
-        entries.push(ConfigEntry {
             key: "agency.assigner_model".into(),
             label: "Assigner model".into(),
             value: config
@@ -5126,12 +6908,7 @@ impl VizApp {
                 .assigner_model
                 .clone()
                 .unwrap_or_else(|| "(default)".into()),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "(default)".into(),
-                "opus".into(),
-                "sonnet".into(),
-                "haiku".into(),
-            ]),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
@@ -5142,12 +6919,7 @@ impl VizApp {
                 .evaluator_model
                 .clone()
                 .unwrap_or_else(|| "(default)".into()),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "(default)".into(),
-                "opus".into(),
-                "sonnet".into(),
-                "haiku".into(),
-            ]),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
@@ -5158,12 +6930,7 @@ impl VizApp {
                 .evolver_model
                 .clone()
                 .unwrap_or_else(|| "(default)".into()),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "(default)".into(),
-                "opus".into(),
-                "sonnet".into(),
-                "haiku".into(),
-            ]),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
@@ -5174,12 +6941,7 @@ impl VizApp {
                 .creator_model
                 .clone()
                 .unwrap_or_else(|| "(default)".into()),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "(default)".into(),
-                "opus".into(),
-                "sonnet".into(),
-                "haiku".into(),
-            ]),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
@@ -5190,12 +6952,7 @@ impl VizApp {
                 .triage_model
                 .clone()
                 .unwrap_or_else(|| "(default)".into()),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "(default)".into(),
-                "opus".into(),
-                "sonnet".into(),
-                "haiku".into(),
-            ]),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
@@ -5282,6 +7039,86 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::Agency,
         });
+        entries.push(ConfigEntry {
+            key: "agency.flip_enabled".into(),
+            label: "FLIP enabled".into(),
+            value: if config.agency.flip_enabled {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.flip_verification_threshold".into(),
+            label: "FLIP verify threshold".into(),
+            value: config
+                .agency
+                .flip_verification_threshold
+                .map(|t| format!("{:.2}", t))
+                .unwrap_or_else(|| "(disabled)".into()),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.flip_verification_model".into(),
+            label: "FLIP verify model".into(),
+            value: config.agency.flip_verification_model.clone(),
+            edit_kind: ConfigEditKind::Choice(model_choices.clone()),
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.flip_inference_model".into(),
+            label: "FLIP inference model".into(),
+            value: config
+                .agency
+                .flip_inference_model
+                .clone()
+                .unwrap_or_else(|| "(default)".into()),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.flip_comparison_model".into(),
+            label: "FLIP comparison model".into(),
+            value: config
+                .agency
+                .flip_comparison_model
+                .clone()
+                .unwrap_or_else(|| "(default)".into()),
+            edit_kind: ConfigEditKind::Choice(model_choices_with_default.clone()),
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.eval_gate_threshold".into(),
+            label: "Eval gate threshold".into(),
+            value: config
+                .agency
+                .eval_gate_threshold
+                .map(|t| format!("{:.2}", t))
+                .unwrap_or_else(|| "(disabled)".into()),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "agency.eval_gate_all".into(),
+            label: "Eval gate all".into(),
+            value: if config.agency.eval_gate_all {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "checkpoint.retry_context_tokens".into(),
+            label: "Retry context tokens".into(),
+            value: config.checkpoint.retry_context_tokens.to_string(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
 
         // ── 7. Guardrails ──
         entries.push(ConfigEntry {
@@ -5299,9 +7136,92 @@ impl VizApp {
             section: ConfigSection::Guardrails,
         });
 
+        // ── 8. Model Routing ──
+        {
+            use workgraph::config::DispatchRole;
+            let roles = [
+                (DispatchRole::Default, "Default"),
+                (DispatchRole::TaskAgent, "Task agent"),
+                (DispatchRole::Evaluator, "Evaluator"),
+                (DispatchRole::FlipInference, "FLIP inference"),
+                (DispatchRole::FlipComparison, "FLIP comparison"),
+                (DispatchRole::Assigner, "Assigner"),
+                (DispatchRole::Evolver, "Evolver"),
+                (DispatchRole::Verification, "Verification"),
+                (DispatchRole::Triage, "Triage"),
+                (DispatchRole::Creator, "Creator"),
+                (DispatchRole::Compactor, "Compactor"),
+            ];
+            for (role, label) in roles {
+                let role_cfg = config.models.get_role(role);
+                let model_val = role_cfg
+                    .and_then(|c| c.model.clone())
+                    .unwrap_or_else(|| "(inherit)".into());
+                let provider_val = role_cfg
+                    .and_then(|c| c.provider.clone())
+                    .unwrap_or_else(|| "(inherit)".into());
+                entries.push(ConfigEntry {
+                    key: format!("models.{}.model", role),
+                    label: format!("{} model", label),
+                    value: model_val,
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::ModelRouting,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("models.{}.provider", role),
+                    label: format!("{} provider", label),
+                    value: provider_val,
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::ModelRouting,
+                });
+            }
+        }
+
+        // ── 9. Actions ──
+        entries.push(ConfigEntry {
+            key: "action.install_global".into(),
+            label: "Install as Global".into(),
+            value: "▸".into(),
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::Actions,
+        });
+
         self.config_panel.entries = entries;
         if self.config_panel.selected >= self.config_panel.entries.len() {
             self.config_panel.selected = 0;
+        }
+    }
+
+    /// Install the current project config as the global default (force mode).
+    pub fn install_config_as_global(&mut self) {
+        use crate::commands::config_cmd::install_global_to;
+
+        let global_path = match Config::global_config_path() {
+            Ok(p) => p,
+            Err(e) => {
+                self.notification = Some((format!("Error: {}", e), std::time::Instant::now()));
+                return;
+            }
+        };
+        let global_dir = match Config::global_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                self.notification = Some((format!("Error: {}", e), std::time::Instant::now()));
+                return;
+            }
+        };
+        match install_global_to(&self.workgraph_dir, &global_path, &global_dir, true) {
+            Ok(()) => {
+                self.config_panel.save_notification = Some(std::time::Instant::now());
+                self.notification = Some((
+                    "Installed project config as global default".to_string(),
+                    std::time::Instant::now(),
+                ));
+            }
+            Err(e) => {
+                self.notification =
+                    Some((format!("Install failed: {}", e), std::time::Instant::now()));
+            }
         }
     }
 
@@ -5363,11 +7283,6 @@ impl VizApp {
             "agency.auto_assign" => config.agency.auto_assign = new_value == "on",
             "agency.auto_triage" => config.agency.auto_triage = new_value == "on",
             "agency.auto_create" => config.agency.auto_create = new_value == "on",
-            "agency.run_mode" => {
-                if let Ok(v) = new_value.parse::<f64>() {
-                    config.agency.run_mode = v.clamp(0.0, 1.0);
-                }
-            }
             "agency.assigner_model" => {
                 config.agency.assigner_model = if new_value == "(default)" {
                     None
@@ -5490,7 +7405,97 @@ impl VizApp {
                     config.guardrails.max_task_depth = v;
                 }
             }
+            "coordinator.max_coordinators" => {
+                if let Ok(v) = new_value.parse::<usize>() {
+                    config.coordinator.max_coordinators = v;
+                }
+            }
+            "tui.chat_history" => config.tui.chat_history = new_value == "on",
+            "tui.chat_history_max" => {
+                if let Ok(v) = new_value.parse::<usize>() {
+                    config.tui.chat_history_max = v;
+                }
+            }
+            "tui.counters" => config.tui.counters = new_value,
+            "tui.show_running_system_tasks" => {
+                config.tui.show_running_system_tasks = new_value == "on";
+            }
+            "agency.flip_enabled" => config.agency.flip_enabled = new_value == "on",
+            "agency.flip_verification_threshold" => {
+                config.agency.flip_verification_threshold =
+                    if new_value == "(disabled)" || new_value.is_empty() {
+                        None
+                    } else {
+                        new_value.parse::<f64>().ok()
+                    };
+            }
+            "agency.flip_verification_model" => {
+                config.agency.flip_verification_model = new_value;
+            }
+            "agency.flip_inference_model" => {
+                config.agency.flip_inference_model = if new_value == "(default)" {
+                    None
+                } else {
+                    Some(new_value)
+                };
+            }
+            "agency.flip_comparison_model" => {
+                config.agency.flip_comparison_model = if new_value == "(default)" {
+                    None
+                } else {
+                    Some(new_value)
+                };
+            }
+            "agency.eval_gate_threshold" => {
+                config.agency.eval_gate_threshold =
+                    if new_value == "(disabled)" || new_value.is_empty() {
+                        None
+                    } else {
+                        new_value.parse::<f64>().ok()
+                    };
+            }
+            "agency.eval_gate_all" => config.agency.eval_gate_all = new_value == "on",
+            "checkpoint.retry_context_tokens" => {
+                if let Ok(v) = new_value.parse::<u32>() {
+                    config.checkpoint.retry_context_tokens = v;
+                }
+            }
             _ => {
+                // Model routing fields: models.<role>.<field>
+                if let Some(rest) = key.strip_prefix("models.") {
+                    let parts: Vec<&str> = rest.rsplitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        let field = parts[0]; // "model" or "provider"
+                        let role_str = parts[1];
+                        if let Ok(role) = role_str.parse::<workgraph::config::DispatchRole>() {
+                            let is_inherit = new_value == "(inherit)" || new_value.is_empty();
+                            match field {
+                                "model" => {
+                                    if is_inherit {
+                                        let slot = config.models.get_role_mut(role);
+                                        if let Some(c) = slot {
+                                            c.model = None;
+                                        }
+                                    } else {
+                                        config.models.set_model(role, &new_value);
+                                    }
+                                }
+                                "provider" => {
+                                    if is_inherit {
+                                        let slot = config.models.get_role_mut(role);
+                                        if let Some(c) = slot {
+                                            c.provider = None;
+                                        }
+                                    } else {
+                                        config.models.set_provider(role, &new_value);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 // Endpoint fields: endpoint.N.field
                 if let Some(rest) = key.strip_prefix("endpoint.") {
                     let parts: Vec<&str> = rest.splitn(2, '.').collect();
@@ -5576,6 +7581,12 @@ impl VizApp {
             return;
         }
 
+        // Handle install-as-global action
+        if key == "action.install_global" {
+            self.install_config_as_global();
+            return;
+        }
+
         let new_val = if self.config_panel.entries[idx].value == "on" {
             "off"
         } else {
@@ -5590,6 +7601,12 @@ impl VizApp {
             "agency.auto_triage" => config.agency.auto_triage = new_val == "on",
             "agency.auto_create" => config.agency.auto_create = new_val == "on",
             "tui.show_token_counts" => config.tui.show_token_counts = new_val == "on",
+            "tui.chat_history" => config.tui.chat_history = new_val == "on",
+            "tui.show_running_system_tasks" => {
+                config.tui.show_running_system_tasks = new_val == "on";
+            }
+            "agency.flip_enabled" => config.agency.flip_enabled = new_val == "on",
+            "agency.eval_gate_all" => config.agency.eval_gate_all = new_val == "on",
             _ => {}
         }
         if config.save(&self.workgraph_dir).is_ok() {
@@ -6121,100 +8138,88 @@ fn find_latest_archive(
     None
 }
 
-/// Format an ISO 8601 timestamp for HUD display (shorter, local time).
-/// Flatten a JSON value into human-readable key/value lines.
-/// Strings are displayed directly, objects show "Key: Value", arrays are listed.
-/// Nested objects recurse with increased indent.
-fn flatten_json_to_lines(val: &serde_json::Value, indent: &str, lines: &mut Vec<String>) {
-    match val {
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                match value {
-                    serde_json::Value::String(s) => {
-                        // Capitalize the key nicely
-                        let label = humanize_key(key);
-                        for (i, line) in s.lines().enumerate() {
-                            if i == 0 {
-                                lines.push(format!("{}{}: {}", indent, label, line));
-                            } else {
-                                let continuation = " ".repeat(indent.len() + label.len() + 2);
-                                lines.push(format!("{}{}", continuation, line));
-                            }
+/// Extract assistant text content from a JSON stream log (output.log / raw_stream.jsonl).
+///
+/// Parses each JSON line, finds `"type": "assistant"` events, and extracts text
+/// from `message.content[].text` blocks. Returns the concatenated markdown text
+/// with tool-use blocks rendered as compact summaries.
+fn extract_assistant_text_from_log(content: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if msg_type != "assistant" {
+            continue;
+        }
+
+        let content_arr = match val
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for block in content_arr {
+            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match block_type {
+                "text" => {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        let trimmed_text = text.trim();
+                        if !trimmed_text.is_empty() {
+                            parts.push(trimmed_text.to_string());
                         }
-                    }
-                    serde_json::Value::Number(n) => {
-                        lines.push(format!("{}{}: {}", indent, humanize_key(key), n));
-                    }
-                    serde_json::Value::Bool(b) => {
-                        lines.push(format!("{}{}: {}", indent, humanize_key(key), b));
-                    }
-                    serde_json::Value::Null => {
-                        lines.push(format!("{}{}: null", indent, humanize_key(key)));
-                    }
-                    serde_json::Value::Array(arr) => {
-                        lines.push(format!("{}{}:", indent, humanize_key(key)));
-                        let child_indent = format!("{}  ", indent);
-                        for item in arr {
-                            match item {
-                                serde_json::Value::String(s) => {
-                                    lines.push(format!("{}- {}", child_indent, s));
-                                }
-                                serde_json::Value::Object(_) => {
-                                    flatten_json_to_lines(item, &child_indent, lines);
-                                    lines.push(String::new());
-                                }
-                                other => {
-                                    lines.push(format!("{}- {}", child_indent, other));
-                                }
-                            }
-                        }
-                    }
-                    serde_json::Value::Object(_) => {
-                        lines.push(format!("{}{}:", indent, humanize_key(key)));
-                        let child_indent = format!("{}  ", indent);
-                        flatten_json_to_lines(value, &child_indent, lines);
                     }
                 }
+                "tool_use" => {
+                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                    let detail = match name {
+                        "Bash" => block
+                            .get("input")
+                            .and_then(|i| i.get("command"))
+                            .and_then(|v| v.as_str())
+                            .map(|c| {
+                                let c = c.trim();
+                                if c.len() > 80 {
+                                    format!("{}…", &c[..c.floor_char_boundary(80)])
+                                } else {
+                                    c.to_string()
+                                }
+                            }),
+                        "Read" | "Write" | "Edit" => block
+                            .get("input")
+                            .and_then(|i| i.get("file_path"))
+                            .and_then(|v| v.as_str())
+                            .map(|p| p.to_string()),
+                        "Grep" | "Glob" => block
+                            .get("input")
+                            .and_then(|i| i.get("pattern"))
+                            .and_then(|v| v.as_str())
+                            .map(|p| p.to_string()),
+                        _ => None,
+                    };
+                    let summary = match detail {
+                        Some(d) => format!("┌─ {} ────\n│ {}\n└─", name, d),
+                        None => format!("┌─ {} ────\n└─", name),
+                    };
+                    parts.push(summary);
+                }
+                _ => {}
             }
-        }
-        serde_json::Value::Array(arr) => {
-            for item in arr {
-                flatten_json_to_lines(item, indent, lines);
-                lines.push(String::new());
-            }
-        }
-        serde_json::Value::String(s) => {
-            lines.push(format!("{}{}", indent, s));
-        }
-        other => {
-            lines.push(format!("{}{}", indent, other));
         }
     }
-}
 
-/// Convert a snake_case or camelCase JSON key to a human-readable label.
-fn humanize_key(key: &str) -> String {
-    // Replace underscores and split camelCase, then capitalize first letter.
-    let mut result = String::new();
-    let mut prev_lower = false;
-    for (i, c) in key.chars().enumerate() {
-        if c == '_' || c == '-' {
-            result.push(' ');
-            prev_lower = false;
-        } else if c.is_uppercase() && prev_lower {
-            result.push(' ');
-            result.push(c.to_lowercase().next().unwrap_or(c));
-            prev_lower = false;
-        } else {
-            if i == 0 {
-                result.push(c.to_uppercase().next().unwrap_or(c));
-            } else {
-                result.push(c);
-            }
-            prev_lower = c.is_lowercase();
-        }
-    }
-    result
+    parts.join("\n\n")
 }
 
 fn format_timestamp(ts: &str) -> String {
@@ -6417,7 +8422,6 @@ mod hud_tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -6575,12 +8579,7 @@ mod hud_tests {
                 .iter()
                 .any(|l| l.contains("Cost: $0.05"))
         );
-        assert!(
-            detail
-                .rendered_lines
-                .iter()
-                .any(|l| l.contains("Cache read:"))
-        );
+        assert!(detail.rendered_lines.iter().any(|l| l.contains("Cached:")));
     }
 
     #[test]
@@ -6980,7 +8979,6 @@ mod hud_tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7035,7 +9033,6 @@ mod hud_tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7086,7 +9083,6 @@ mod hud_tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7110,5 +9106,1334 @@ mod hud_tests {
         // Collapsed state stays even if we reload hud_detail
         app.load_hud_detail();
         assert!(app.detail_collapsed_sections.contains("Description"));
+    }
+}
+
+#[cfg(test)]
+mod extract_assistant_text_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_text_from_assistant_messages() {
+        let log = concat!(
+            r#"{"type":"system","subtype":"init","cwd":"/tmp"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Heading here\n\nThis is **bold** text."}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Second message."}]}}"#,
+        );
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("Heading here"));
+        assert!(result.contains("**bold**"));
+        assert!(result.contains("Second message."));
+    }
+
+    #[test]
+    fn extracts_tool_use_summaries() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("┌─ Bash"));
+        assert!(result.contains("cargo test"));
+        assert!(result.contains("└─"));
+    }
+
+    #[test]
+    fn handles_read_tool_summary() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("┌─ Read"));
+        assert!(result.contains("/src/main.rs"));
+    }
+
+    #[test]
+    fn handles_grep_tool_summary() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn main"}}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("┌─ Grep"));
+        assert!(result.contains("fn main"));
+    }
+
+    #[test]
+    fn ignores_non_assistant_messages() {
+        let log = r#"{"type":"system","subtype":"init"}
+{"type":"user","message":{"content":[{"type":"text","text":"user text"}]}}
+{"type":"rate_limit_event","rate_limit_info":{}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn skips_empty_text_blocks() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"  \n  "}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn handles_mixed_text_and_tool_use() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check."},{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("Let me check."));
+        assert!(result.contains("┌─ Bash"));
+        assert!(result.contains("ls -la"));
+    }
+
+    #[test]
+    fn unknown_tool_shows_name_only() {
+        let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"CustomTool","input":{"foo":"bar"}}]}}"#;
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.contains("┌─ CustomTool"));
+        assert!(result.contains("└─"));
+        // No detail line for unknown tools
+        assert!(!result.contains("│ "));
+    }
+
+    #[test]
+    fn handles_malformed_json_gracefully() {
+        let log = "not json at all\n{broken json\n";
+        let result = extract_assistant_text_from_log(log);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn truncates_long_bash_commands() {
+        let long_cmd = "x".repeat(200);
+        let log = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
+            long_cmd
+        );
+        let result = extract_assistant_text_from_log(&log);
+        assert!(result.contains("┌─ Bash"));
+        // Should be truncated with …
+        assert!(result.contains('…'));
+    }
+}
+
+#[cfg(test)]
+mod remap_panel_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+
+    fn build_test_app() -> VizApp {
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a", "Task A", Status::Open);
+        graph.add_node(Node::Task(a));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let gpath = tmp.path().join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        // Keep tempdir alive by leaking — tests are short-lived
+        std::mem::forget(tmp);
+        app
+    }
+
+    // ── Cycle inspector view forward ──
+
+    #[test]
+    fn cycle_inspector_view_forward_opens_first_tab() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        app.cycle_inspector_view_forward();
+
+        assert!(app.right_panel_visible);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert!(app.slide_animation.is_some());
+    }
+
+    #[test]
+    fn cycle_inspector_view_forward_advances_tab() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::TwoThirdsInspector;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        app.cycle_inspector_view_forward();
+
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert!(app.slide_animation.is_some());
+    }
+
+    #[test]
+    fn cycle_inspector_view_forward_closes_on_last_tab() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::TwoThirdsInspector;
+        app.right_panel_tab = RightPanelTab::Firehose; // last tab
+
+        app.cycle_inspector_view_forward();
+
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.layout_mode, LayoutMode::Off);
+    }
+
+    // ── Cycle inspector view backward ──
+
+    #[test]
+    fn cycle_inspector_view_backward_opens_last_tab() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        app.cycle_inspector_view_backward();
+
+        assert!(app.right_panel_visible);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Firehose);
+        assert!(app.slide_animation.is_some());
+    }
+
+    #[test]
+    fn cycle_inspector_view_backward_closes_on_first_tab() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::TwoThirdsInspector;
+        app.right_panel_tab = RightPanelTab::Chat; // first tab
+
+        app.cycle_inspector_view_backward();
+
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.layout_mode, LayoutMode::Off);
+    }
+
+    // ── Full forward cycle: 10 presses returns to closed ──
+
+    #[test]
+    fn cycle_inspector_view_forward_full_cycle() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        // 9 tabs + 1 close = 10 presses
+        let expected_tabs = [
+            Some(RightPanelTab::Chat),
+            Some(RightPanelTab::Detail),
+            Some(RightPanelTab::Log),
+            Some(RightPanelTab::Messages),
+            Some(RightPanelTab::Agency),
+            Some(RightPanelTab::Config),
+            Some(RightPanelTab::Files),
+            Some(RightPanelTab::CoordLog),
+            Some(RightPanelTab::Firehose),
+            None, // closed
+        ];
+
+        for (i, expected) in expected_tabs.iter().enumerate() {
+            app.cycle_inspector_view_forward();
+            match expected {
+                Some(tab) => {
+                    assert!(app.right_panel_visible, "press {i}: should be visible");
+                    assert_eq!(app.right_panel_tab, *tab, "press {i}: wrong tab");
+                }
+                None => {
+                    assert!(!app.right_panel_visible, "press {i}: should be closed");
+                }
+            }
+        }
+    }
+
+    // ── Grow viz pane ──
+
+    #[test]
+    fn grow_viz_pane_increases_by_10_percent() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::ThirdInspector;
+        app.right_panel_percent = 10;
+
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 20);
+
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 30);
+    }
+
+    #[test]
+    fn grow_viz_pane_reaches_full_screen() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::ThirdInspector;
+        app.right_panel_percent = 90;
+
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 100);
+        assert_eq!(app.layout_mode, LayoutMode::FullInspector);
+    }
+
+    #[test]
+    fn grow_viz_pane_wraps_at_max() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::FullInspector;
+        app.right_panel_percent = 100;
+
+        // 100 + 10 = 110 > 100, wraps to 10
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 10);
+    }
+
+    #[test]
+    fn grow_viz_pane_full_roundtrip() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        // First press opens at 10%
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 10);
+        assert!(app.right_panel_visible);
+
+        // 9 more presses: 20, 30, 40, 50, 60, 70, 80, 90, 100
+        for expected in (20..=100).step_by(10) {
+            app.grow_viz_pane();
+            assert_eq!(app.right_panel_percent, expected);
+        }
+        assert_eq!(app.layout_mode, LayoutMode::FullInspector);
+
+        // One more wraps back to 10
+        app.grow_viz_pane();
+        assert_eq!(app.right_panel_percent, 10);
+    }
+
+    #[test]
+    fn grow_viz_pane_opens_panel_when_closed() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        app.grow_viz_pane();
+
+        assert!(app.right_panel_visible);
+        assert_eq!(app.right_panel_percent, 10);
+    }
+
+    // ── Shrink viz pane ──
+
+    #[test]
+    fn shrink_viz_pane_decreases_by_10_percent() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::TwoThirdsInspector;
+        app.right_panel_percent = 70;
+
+        app.shrink_viz_pane();
+        assert_eq!(app.right_panel_percent, 60);
+
+        app.shrink_viz_pane();
+        assert_eq!(app.right_panel_percent, 50);
+    }
+
+    #[test]
+    fn shrink_viz_pane_wraps_at_min() {
+        let mut app = build_test_app();
+        app.right_panel_visible = true;
+        app.layout_mode = LayoutMode::ThirdInspector;
+        app.right_panel_percent = 10;
+
+        // At min → wraps to 100
+        app.shrink_viz_pane();
+        assert_eq!(app.right_panel_percent, 100);
+    }
+
+    #[test]
+    fn shrink_viz_pane_opens_panel_when_closed() {
+        let mut app = build_test_app();
+        app.right_panel_visible = false;
+        app.layout_mode = LayoutMode::Off;
+
+        app.shrink_viz_pane();
+
+        assert!(app.right_panel_visible);
+        assert_eq!(app.right_panel_percent, 100);
+    }
+
+    // ── SlideAnimation ──
+
+    #[test]
+    fn slide_animation_progress_and_done() {
+        let anim = SlideAnimation {
+            start: Instant::now() - std::time::Duration::from_millis(200),
+            direction: SlideDirection::Forward,
+        };
+        assert!(
+            anim.is_done(),
+            "animation should be done after 200ms (duration=150ms)"
+        );
+        assert!((anim.progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn slide_animation_x_offset_at_start() {
+        let anim = SlideAnimation {
+            start: Instant::now(),
+            direction: SlideDirection::Forward,
+        };
+        let offset = anim.x_offset(100);
+        // At start, offset should be near panel_width (100)
+        assert!(
+            offset > 80,
+            "forward offset at start should be near panel_width, got {offset}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod firehose_tests {
+    use super::*;
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+    use std::collections::{HashMap, HashSet};
+    use std::io::Write;
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::test_helpers::make_task_with_status;
+
+    fn write_registry(workgraph_dir: &std::path::Path, agents_json: &str) {
+        let svc_dir = workgraph_dir.join("service");
+        std::fs::create_dir_all(&svc_dir).unwrap();
+        std::fs::write(
+            svc_dir.join("registry.json"),
+            format!(r#"{{"agents":{{{agents_json}}},"next_agent_id":100}}"#),
+        )
+        .unwrap();
+    }
+
+    fn agent_entry(id: &str, task_id: &str) -> String {
+        format!(
+            r#""{id}":{{"id":"{id}","pid":1,"task_id":"{task_id}","executor":"claude","started_at":"2026-03-07T00:00:00Z","last_heartbeat":"2026-03-07T00:00:00Z","status":"working","output_file":"agents/{id}/output.log"}}"#,
+        )
+    }
+
+    fn build_test_app() -> VizApp {
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a", "Task A", Status::Open);
+        graph.add_node(Node::Task(a));
+        let tmp = tempfile::tempdir().unwrap();
+        let gpath = tmp.path().join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        std::mem::forget(tmp);
+        app
+    }
+
+    #[test]
+    fn firehose_tab_in_panel_cycle() {
+        assert_eq!(RightPanelTab::Firehose.index(), 8);
+        assert_eq!(RightPanelTab::Firehose.label(), "Fire");
+        assert_eq!(RightPanelTab::from_index(8), Some(RightPanelTab::Firehose));
+        assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Firehose);
+        assert_eq!(RightPanelTab::Firehose.next(), RightPanelTab::Chat);
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Firehose);
+    }
+
+    #[test]
+    fn firehose_update_reads_output_logs() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents").join("agent-1234");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        {
+            let mut f = std::fs::File::create(agents_dir.join("output.log")).unwrap();
+            writeln!(f, "Starting task...").unwrap();
+            writeln!(f, "Processing data...").unwrap();
+            writeln!(f, "Done.").unwrap();
+        }
+        write_registry(&app.workgraph_dir, &agent_entry("agent-1234", "test-task"));
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 3);
+        assert_eq!(app.firehose.lines[0].agent_id, "agent-1234");
+        assert_eq!(app.firehose.lines[0].task_id, "test-task");
+        assert_eq!(app.firehose.lines[0].text, "Starting task...");
+        assert_eq!(app.firehose.lines[2].text, "Done.");
+    }
+
+    #[test]
+    fn firehose_incremental_read() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents").join("agent-5678");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("output.log"), "Line 1\n").unwrap();
+        write_registry(&app.workgraph_dir, &agent_entry("agent-5678", "t"));
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 1);
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(agents_dir.join("output.log"))
+                .unwrap();
+            writeln!(f, "Line 2").unwrap();
+            writeln!(f, "Line 3").unwrap();
+        }
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 3);
+        assert_eq!(app.firehose.lines[1].text, "Line 2");
+        assert_eq!(app.firehose.lines[2].text, "Line 3");
+    }
+
+    #[test]
+    fn firehose_buffer_cap() {
+        let mut app = build_test_app();
+        for i in 0..1200 {
+            app.firehose.lines.push(FirehoseLine {
+                agent_id: "agent-0".to_string(),
+                task_id: "t".to_string(),
+                text: format!("line {i}"),
+                color_idx: 0,
+            });
+        }
+        if app.firehose.lines.len() > FIREHOSE_MAX_LINES {
+            let drain = app.firehose.lines.len() - FIREHOSE_MAX_LINES;
+            app.firehose.lines.drain(..drain);
+        }
+        assert_eq!(app.firehose.lines.len(), FIREHOSE_MAX_LINES);
+        assert_eq!(app.firehose.lines[0].text, "line 200");
+    }
+
+    #[test]
+    fn firehose_distinct_colors_per_agent() {
+        let mut app = build_test_app();
+        let c1 = *app
+            .firehose
+            .agent_colors
+            .entry("a1".into())
+            .or_insert_with(|| {
+                let i = app.firehose.next_color;
+                app.firehose.next_color += 1;
+                i
+            });
+        let c2 = *app
+            .firehose
+            .agent_colors
+            .entry("a2".into())
+            .or_insert_with(|| {
+                let i = app.firehose.next_color;
+                app.firehose.next_color += 1;
+                i
+            });
+        let c1b = *app
+            .firehose
+            .agent_colors
+            .entry("a1".into())
+            .or_insert_with(|| {
+                let i = app.firehose.next_color;
+                app.firehose.next_color += 1;
+                i
+            });
+        assert_ne!(c1, c2);
+        assert_eq!(c1, c1b);
+    }
+
+    #[test]
+    fn firehose_multiple_agents_interleaved() {
+        let mut app = build_test_app();
+        let agents_dir = app.workgraph_dir.join("agents");
+        let dir_a = agents_dir.join("agent-a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(dir_a.join("output.log"), "A1\nA2\n").unwrap();
+        let dir_b = agents_dir.join("agent-b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_b.join("output.log"), "B1\nB2\n").unwrap();
+        let entries = format!(
+            "{},{}",
+            agent_entry("agent-a", "ta"),
+            agent_entry("agent-b", "tb")
+        );
+        write_registry(&app.workgraph_dir, &entries);
+        app.load_agent_monitor();
+        app.update_firehose();
+        assert_eq!(app.firehose.lines.len(), 4);
+        let ids: HashSet<&str> = app
+            .firehose
+            .lines
+            .iter()
+            .map(|l| l.agent_id.as_str())
+            .collect();
+        assert!(ids.contains("agent-a"));
+        assert!(ids.contains("agent-b"));
+        let ca = app
+            .firehose
+            .lines
+            .iter()
+            .find(|l| l.agent_id == "agent-a")
+            .unwrap()
+            .color_idx;
+        let cb = app
+            .firehose
+            .lines
+            .iter()
+            .find(|l| l.agent_id == "agent-b")
+            .unwrap()
+            .color_idx;
+        assert_ne!(ca, cb);
+    }
+}
+
+#[cfg(test)]
+mod service_health_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_red_down() {
+        let health = ServiceHealthState::default();
+        assert_eq!(health.level, ServiceHealthLevel::Red);
+        assert_eq!(health.label, "DOWN");
+        assert!(health.pid.is_none());
+        assert!(!health.detail_open);
+        assert!(health.stuck_tasks.is_empty());
+        assert!(health.recent_errors.is_empty());
+    }
+
+    #[test]
+    fn level_equality() {
+        assert_eq!(ServiceHealthLevel::Green, ServiceHealthLevel::Green);
+        assert_ne!(ServiceHealthLevel::Green, ServiceHealthLevel::Yellow);
+        assert_ne!(ServiceHealthLevel::Yellow, ServiceHealthLevel::Red);
+    }
+
+    #[test]
+    fn stuck_task_fields() {
+        let stuck = StuckTask {
+            task_id: "build-ui".to_string(),
+            task_title: "Build the UI component".to_string(),
+            agent_id: "agent-42".to_string(),
+        };
+        assert_eq!(stuck.task_id, "build-ui");
+        assert_eq!(stuck.task_title, "Build the UI component");
+        assert_eq!(stuck.agent_id, "agent-42");
+    }
+
+    #[test]
+    fn toggle_detail() {
+        let mut health = ServiceHealthState::default();
+        assert!(!health.detail_open);
+        health.detail_open = !health.detail_open;
+        assert!(health.detail_open);
+        health.detail_open = !health.detail_open;
+        assert!(!health.detail_open);
+    }
+
+    #[test]
+    fn uptime_format_logic() {
+        let fmt = |s: u64| -> String {
+            if s < 60 {
+                format!("{}s", s)
+            } else if s < 3600 {
+                format!("{}m{}s", s / 60, s % 60)
+            } else {
+                format!("{}h{}m", s / 3600, (s % 3600) / 60)
+            }
+        };
+        assert_eq!(fmt(0), "0s");
+        assert_eq!(fmt(29), "29s");
+        assert_eq!(fmt(60), "1m0s");
+        assert_eq!(fmt(90), "1m30s");
+        assert_eq!(fmt(3600), "1h0m");
+        assert_eq!(fmt(3661), "1h1m");
+    }
+
+    #[test]
+    fn yellow_paused() {
+        let mut h = ServiceHealthState::default();
+        h.paused = true;
+        h.level = ServiceHealthLevel::Yellow;
+        h.label = "PAUSED".to_string();
+        assert_eq!(h.level, ServiceHealthLevel::Yellow);
+        assert_eq!(h.label, "PAUSED");
+    }
+
+    #[test]
+    fn yellow_stuck_tasks() {
+        let mut h = ServiceHealthState::default();
+        h.stuck_tasks = vec![
+            StuckTask {
+                task_id: "t1".into(),
+                task_title: "T1".into(),
+                agent_id: "a1".into(),
+            },
+            StuckTask {
+                task_id: "t2".into(),
+                task_title: "T2".into(),
+                agent_id: "a2".into(),
+            },
+        ];
+        h.level = ServiceHealthLevel::Yellow;
+        h.label = format!("OK ({} stuck)", h.stuck_tasks.len());
+        assert_eq!(h.label, "OK (2 stuck)");
+    }
+
+    #[test]
+    fn green_state() {
+        let mut h = ServiceHealthState::default();
+        h.level = ServiceHealthLevel::Green;
+        h.agents_alive = 3;
+        h.agents_max = 6;
+        h.label = format!("{}/{}", h.agents_alive, h.agents_max);
+        assert_eq!(h.label, "3/6");
+    }
+
+    #[test]
+    fn detail_scroll_bounds() {
+        let mut h = ServiceHealthState::default();
+        h.detail_scroll = h.detail_scroll.saturating_add(3);
+        assert_eq!(h.detail_scroll, 3);
+        h.detail_scroll = h.detail_scroll.saturating_sub(100);
+        assert_eq!(h.detail_scroll, 0);
+    }
+
+    #[test]
+    fn no_service_state_file_is_red() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("service")).unwrap();
+        use crate::commands::service::ServiceState;
+        assert!(ServiceState::load(temp.path()).ok().flatten().is_none());
+    }
+
+    #[test]
+    fn control_panel_defaults() {
+        let h = ServiceHealthState::default();
+        assert!(!h.panel_open);
+        assert_eq!(h.panel_focus, ControlPanelFocus::StartStop);
+        assert!(!h.panic_confirm);
+        assert!(h.feedback.is_none());
+    }
+
+    #[test]
+    fn control_panel_focus_navigation() {
+        let f = ControlPanelFocus::StartStop;
+        assert_eq!(f.next(0), ControlPanelFocus::PauseResume);
+        assert_eq!(f.next(0).next(0), ControlPanelFocus::Restart);
+    }
+
+    #[test]
+    fn control_panel_focus_with_stuck() {
+        let f = ControlPanelFocus::PanicKill;
+        assert_eq!(f.next(2), ControlPanelFocus::StuckAgent(0));
+        assert_eq!(f.next(0), ControlPanelFocus::KillAllDead);
+    }
+
+    #[test]
+    fn control_panel_focus_prev_wraps() {
+        let f = ControlPanelFocus::StartStop;
+        assert_eq!(f.prev(0), ControlPanelFocus::RetryFailedEvals);
+    }
+
+    #[test]
+    fn no_degraded_label() {
+        let h = ServiceHealthState::default();
+        assert!(!h.label.contains("DEGRADED"));
+    }
+}
+
+#[cfg(test)]
+mod tui_config_panel_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::config::Config;
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+
+    /// Create a minimal VizApp with a real temp directory for config round-trip testing.
+    fn build_config_test_app() -> (VizApp, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a", "Task A", Status::Open);
+        graph.add_node(Node::Task(a));
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp.path().to_path_buf();
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let graph_path = wg_dir.join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+        // Save a default config so load_config_panel can read it
+        let config = Config::default();
+        config.save(&wg_dir).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = wg_dir;
+        (app, temp)
+    }
+
+    #[test]
+    fn test_config_panel_all_entries_save_roundtrip() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        // Collect all keys for verification
+        let keys: Vec<String> = app
+            .config_panel
+            .entries
+            .iter()
+            .map(|e| e.key.clone())
+            .collect();
+        assert!(!keys.is_empty(), "load_config_panel should produce entries");
+
+        // For each entry, set a valid value, save, reload, and verify.
+        for i in 0..app.config_panel.entries.len() {
+            let entry = &app.config_panel.entries[i];
+            let key = entry.key.clone();
+
+            // Skip entries that are read-only or special
+            if key.starts_with("apikey.")
+                || key == "endpoint.add"
+                || key.ends_with(".remove")
+                || key.ends_with(".is_default")
+                || key.starts_with("action.")
+            {
+                continue;
+            }
+            // Skip endpoint entries (they need an existing endpoint)
+            if key.starts_with("endpoint.") {
+                continue;
+            }
+
+            match &entry.edit_kind {
+                ConfigEditKind::Toggle => {
+                    // Test toggle: toggle once, reload, check it changed
+                    let old_val = app.config_panel.entries[i].value.clone();
+                    app.config_panel.selected = i;
+                    app.toggle_config_entry();
+
+                    let expected = if old_val == "on" { "off" } else { "on" };
+                    assert_eq!(
+                        app.config_panel.entries[i].value, expected,
+                        "Toggle for '{}' should flip from '{}' to '{}'",
+                        key, old_val, expected
+                    );
+
+                    // Reload and verify persistence
+                    app.load_config_panel();
+                    let reloaded = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .find(|e| e.key == key)
+                        .unwrap();
+                    assert_eq!(
+                        reloaded.value, expected,
+                        "Toggle for '{}' did not persist after reload",
+                        key
+                    );
+
+                    // Toggle back to original
+                    let idx = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .position(|e| e.key == key)
+                        .unwrap();
+                    app.config_panel.selected = idx;
+                    app.toggle_config_entry();
+                    app.load_config_panel();
+                }
+                ConfigEditKind::TextInput | ConfigEditKind::SecretInput => {
+                    // Set a test value
+                    let test_value = match key.as_str() {
+                        "coordinator.max_agents"
+                        | "coordinator.poll_interval"
+                        | "coordinator.settling_delay_ms"
+                        | "coordinator.max_coordinators"
+                        | "agent.heartbeat_timeout"
+                        | "agency.auto_create_threshold"
+                        | "agency.triage_timeout"
+                        | "agency.triage_max_log_bytes"
+                        | "tui.message_name_threshold"
+                        | "guardrails.max_child_tasks_per_agent"
+                        | "guardrails.max_task_depth"
+                        | "tui.chat_history_max"
+                        | "checkpoint.retry_context_tokens" => "42",
+                        "tui.message_indent" => "4", // clamped to max 8
+                        "agency.flip_verification_threshold" | "agency.eval_gate_threshold" => {
+                            "0.85"
+                        }
+                        "coordinator.agent_timeout" => "45m",
+                        "tui.counters" => "uptime,active",
+                        _ => "test-value",
+                    };
+
+                    app.config_panel.selected = i;
+                    app.config_panel.editing = true;
+                    app.config_panel.edit_buffer = test_value.to_string();
+                    app.save_config_entry();
+
+                    // Reload and verify
+                    app.load_config_panel();
+                    let reloaded = app.config_panel.entries.iter().find(|e| e.key == key);
+                    assert!(reloaded.is_some(), "Entry '{}' missing after reload", key);
+                    let reloaded = reloaded.unwrap();
+                    // For numeric fields, the saved value may be formatted differently
+                    match key.as_str() {
+                        "agency.flip_verification_threshold" | "agency.eval_gate_threshold" => {
+                            assert_eq!(
+                                reloaded.value, "0.85",
+                                "TextInput for '{}' did not round-trip",
+                                key
+                            );
+                        }
+                        _ => {
+                            assert_eq!(
+                                reloaded.value, test_value,
+                                "TextInput for '{}' did not round-trip",
+                                key
+                            );
+                        }
+                    }
+                }
+                ConfigEditKind::Choice(choices) => {
+                    if choices.len() < 2 {
+                        continue;
+                    }
+                    // Cycle through choices
+                    let original_value = app.config_panel.entries[i].value.clone();
+                    let original_idx = choices
+                        .iter()
+                        .position(|c| c == &original_value)
+                        .unwrap_or(0);
+                    let next_idx = (original_idx + 1) % choices.len();
+                    let next_value = choices[next_idx].clone();
+
+                    app.config_panel.selected = i;
+                    app.config_panel.editing = true;
+                    app.config_panel.choice_index = next_idx;
+                    app.save_config_entry();
+
+                    // Reload and verify
+                    app.load_config_panel();
+                    let reloaded = app.config_panel.entries.iter().find(|e| e.key == key);
+                    assert!(reloaded.is_some(), "Entry '{}' missing after reload", key);
+                    let reloaded = reloaded.unwrap();
+                    assert_eq!(
+                        reloaded.value, next_value,
+                        "Choice for '{}' did not round-trip: expected '{}', got '{}'",
+                        key, next_value, reloaded.value
+                    );
+
+                    // Restore original value
+                    let idx = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .position(|e| e.key == key)
+                        .unwrap();
+                    app.config_panel.selected = idx;
+                    app.config_panel.editing = true;
+                    app.config_panel.choice_index = original_idx;
+                    app.save_config_entry();
+                    app.load_config_panel();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_config_panel_has_all_required_keys() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        let keys: HashSet<String> = app
+            .config_panel
+            .entries
+            .iter()
+            .map(|e| e.key.clone())
+            .collect();
+
+        // All the keys that must exist in the config panel
+        let required_keys = vec![
+            // Service
+            "coordinator.max_agents",
+            "coordinator.poll_interval",
+            "coordinator.executor",
+            "coordinator.model",
+            "coordinator.agent_timeout",
+            "coordinator.settling_delay_ms",
+            "coordinator.max_coordinators",
+            // TUI
+            "tui.mouse_mode",
+            "viz.animations",
+            "tui.default_layout",
+            "tui.default_inspector_size",
+            "tui.color_theme",
+            "tui.timestamp_format",
+            "tui.show_token_counts",
+            "viz.edge_color",
+            "tui.message_name_threshold",
+            "tui.message_indent",
+            "tui.chat_history",
+            "tui.chat_history_max",
+            "tui.counters",
+            "tui.show_running_system_tasks",
+            // Agent
+            "agent.heartbeat_timeout",
+            "agent.executor",
+            "agent.model",
+            // Agency
+            "agency.auto_assign",
+            "agency.auto_evaluate",
+            "agency.auto_triage",
+            "agency.auto_create",
+            "agency.assigner_model",
+            "agency.evaluator_model",
+            "agency.evolver_model",
+            "agency.creator_model",
+            "agency.triage_model",
+            "agency.assigner_agent",
+            "agency.evaluator_agent",
+            "agency.evolver_agent",
+            "agency.creator_agent",
+            "agency.auto_create_threshold",
+            "agency.triage_timeout",
+            "agency.triage_max_log_bytes",
+            "agency.retention_heuristics",
+            "agency.flip_enabled",
+            "agency.flip_verification_threshold",
+            "agency.flip_verification_model",
+            "agency.flip_inference_model",
+            "agency.flip_comparison_model",
+            "agency.eval_gate_threshold",
+            "agency.eval_gate_all",
+            "checkpoint.retry_context_tokens",
+            // Guardrails
+            "guardrails.max_child_tasks_per_agent",
+            "guardrails.max_task_depth",
+            // Model routing
+            "models.default.model",
+            "models.default.provider",
+            "models.task_agent.model",
+            "models.evaluator.model",
+            "models.flip_inference.model",
+            "models.flip_comparison.model",
+            "models.assigner.model",
+            "models.evolver.model",
+            "models.verification.model",
+            "models.triage.model",
+            "models.creator.model",
+            "models.compactor.model",
+        ];
+
+        for required in &required_keys {
+            assert!(
+                keys.contains(*required),
+                "Missing required config panel key: '{}'",
+                required
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_panel_every_entry_has_save_handler() {
+        // This test verifies that save_config_entry handles every key in load_config_panel
+        // by setting a value and checking it doesn't silently no-op.
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        for i in 0..app.config_panel.entries.len() {
+            let entry = &app.config_panel.entries[i];
+            let key = entry.key.clone();
+
+            // Skip known read-only/special entries
+            if key.starts_with("apikey.")
+                || key == "endpoint.add"
+                || key.ends_with(".remove")
+                || key.ends_with(".is_default")
+                || key.starts_with("endpoint.")
+                || key.starts_with("action.")
+            {
+                continue;
+            }
+
+            // For Toggle entries, verify toggle_config_entry has a handler
+            if matches!(entry.edit_kind, ConfigEditKind::Toggle) {
+                let old = app.config_panel.entries[i].value.clone();
+                app.config_panel.selected = i;
+                app.toggle_config_entry();
+                let new = app.config_panel.entries[i].value.clone();
+                assert_ne!(
+                    old, new,
+                    "toggle_config_entry for '{}' did not change the value (no handler?)",
+                    key
+                );
+                // Toggle back
+                app.config_panel.selected = i;
+                app.toggle_config_entry();
+                app.load_config_panel();
+            }
+        }
+    }
+
+    #[test]
+    fn test_config_panel_model_routing_roundtrip() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        // Set a model routing entry
+        let key = "models.default.model";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "sonnet".to_string();
+        app.save_config_entry();
+
+        // Use Config::load (local-only) to avoid global config bleeding in
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let default_model = config.models.default.as_ref().and_then(|c| c.model.clone());
+        assert_eq!(default_model, Some("sonnet".to_string()));
+
+        // Set a provider
+        app.load_config_panel();
+        let key = "models.default.provider";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "openrouter".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let default_provider = config
+            .models
+            .default
+            .as_ref()
+            .and_then(|c| c.provider.clone());
+        assert_eq!(default_provider, Some("openrouter".to_string()));
+
+        // Set to inherit (clear)
+        app.load_config_panel();
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == "models.default.model")
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "(inherit)".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let default_model = config.models.default.as_ref().and_then(|c| c.model.clone());
+        assert_eq!(default_model, None);
+    }
+}
+
+#[cfg(test)]
+mod archive_browser_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn create_archive(dir: &std::path::Path, entries: &[(&str, &str, &str, &[&str])]) {
+        let archive_path = dir.join("archive.jsonl");
+        let mut file = std::fs::File::create(&archive_path).unwrap();
+        for (id, title, completed, tags) in entries {
+            let tags_json: Vec<String> = tags.iter().map(|t| format!("\"{}\"", t)).collect();
+            writeln!(
+                file,
+                r#"{{"kind":"task","id":"{}","title":"{}","status":"done","completed_at":"{}","tags":[{}]}}"#,
+                id, title, completed, tags_json.join(",")
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_tui_archive_load_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("task-1", "First task", "2026-01-15T00:00:00Z", &["bug"]),
+                (
+                    "task-2",
+                    "Second task",
+                    "2026-02-20T00:00:00Z",
+                    &["feature", "ui"],
+                ),
+                ("task-3", "Third task", "2026-03-01T00:00:00Z", &[]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.entries.len(), 3);
+        assert_eq!(ab.entries[0].id, "task-1");
+        assert_eq!(ab.entries[0].title, "First task");
+        assert_eq!(ab.entries[0].tags, vec!["bug"]);
+        assert_eq!(ab.entries[1].id, "task-2");
+        assert_eq!(ab.entries[2].id, "task-3");
+        assert_eq!(ab.visible_count(), 3);
+    }
+
+    #[test]
+    fn test_tui_archive_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("task-1", "Fix login bug", "2026-01-15T00:00:00Z", &["bug"]),
+                (
+                    "task-2",
+                    "Add dashboard",
+                    "2026-02-20T00:00:00Z",
+                    &["feature"],
+                ),
+                ("task-3", "Fix signup bug", "2026-03-01T00:00:00Z", &["bug"]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        // Filter by title
+        ab.filter = "Fix".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 2);
+        assert_eq!(ab.filtered_indices, vec![0, 2]);
+
+        // Filter by tag
+        ab.filter = "feature".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 1);
+        assert_eq!(ab.filtered_indices, vec![1]);
+
+        // Filter by id
+        ab.filter = "task-3".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 1);
+        assert_eq!(ab.filtered_indices, vec![2]);
+
+        // No matches
+        ab.filter = "nonexistent".to_string();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 0);
+
+        // Clear filter
+        ab.filter.clear();
+        ab.apply_filter();
+        assert_eq!(ab.visible_count(), 3);
+    }
+
+    #[test]
+    fn test_tui_archive_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(
+            tmp.path(),
+            &[
+                ("a", "Alpha", "2026-01-01T00:00:00Z", &[]),
+                ("b", "Beta", "2026-02-01T00:00:00Z", &[]),
+                ("c", "Gamma", "2026-03-01T00:00:00Z", &[]),
+            ],
+        );
+
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.selected, 0);
+        assert_eq!(ab.selected_entry().unwrap().id, "a");
+
+        ab.selected = 2;
+        assert_eq!(ab.selected_entry().unwrap().id, "c");
+
+        // With filter active
+        ab.filter = "Beta".to_string();
+        ab.apply_filter();
+        // selected gets clamped to 0 (only 1 result)
+        assert_eq!(ab.selected, 0);
+        assert_eq!(ab.selected_entry().unwrap().id, "b");
+    }
+
+    #[test]
+    fn test_tui_archive_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No archive file exists
+        let mut ab = ArchiveBrowserState::default();
+        ab.load(tmp.path());
+
+        assert_eq!(ab.entries.len(), 0);
+        assert_eq!(ab.visible_count(), 0);
+        assert!(ab.selected_entry().is_none());
+    }
+
+    #[test]
+    fn test_tui_archive_toggle() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_archive(tmp.path(), &[("x", "Test", "2026-01-01T00:00:00Z", &[])]);
+
+        let mut ab = ArchiveBrowserState::default();
+        assert!(!ab.active);
+
+        // Simulate toggle on
+        ab.load(tmp.path());
+        ab.active = true;
+        assert!(ab.active);
+        assert_eq!(ab.entries.len(), 1);
+
+        // Toggle off
+        ab.active = false;
+        ab.filter_active = false;
+        assert!(!ab.active);
     }
 }

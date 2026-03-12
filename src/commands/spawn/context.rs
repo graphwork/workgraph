@@ -233,7 +233,7 @@ pub(crate) fn build_graph_summary(
             Status::Done => done += 1,
             Status::Failed => failed += 1,
             Status::Blocked => blocked += 1,
-            Status::Abandoned | Status::Waiting => {}
+            Status::Abandoned | Status::Waiting | Status::PendingValidation => {}
         }
     }
     parts.push(format!(
@@ -423,6 +423,155 @@ pub(crate) fn resolve_task_scope(
         task.context_scope.as_deref(),
         role_scope.as_deref(),
         config.coordinator.default_context_scope.as_deref(),
+    )
+}
+
+/// Build previous attempt context for retry injection.
+///
+/// When a task has `retry_count > 0`, looks for the most recent archived agent
+/// attempt and extracts context in priority order:
+/// 1. Checkpoint summary (auto or explicit)
+/// 2. Truncated output.log tail
+/// 3. Task log entries
+///
+/// Returns empty string if no previous attempt context is found or retry_count is 0.
+pub(crate) fn build_previous_attempt_context(
+    task: &workgraph::graph::Task,
+    workgraph_dir: &Path,
+    max_tokens: u32,
+) -> String {
+    if task.retry_count == 0 || max_tokens == 0 {
+        return String::new();
+    }
+
+    // Find the most recent archived agent for this task
+    let archive_base = workgraph_dir.join("log").join("agents").join(&task.id);
+
+    if !archive_base.exists() {
+        return String::new();
+    }
+
+    // Get the most recent archive directory (sorted by timestamp)
+    let mut archives: Vec<_> = match fs::read_dir(&archive_base) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect(),
+        Err(_) => return String::new(),
+    };
+
+    if archives.is_empty() {
+        return String::new();
+    }
+
+    // Sort by directory name (ISO timestamps sort lexicographically)
+    archives.sort_by_key(|e| e.file_name());
+    let latest_archive = archives.last().unwrap().path();
+    let archive_timestamp = archives
+        .last()
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .to_string();
+
+    // Estimate max bytes (~4 chars per token as rough heuristic)
+    let max_bytes = (max_tokens as usize) * 4;
+
+    // Priority 1: Look for checkpoint summary from the previous agent
+    let checkpoint_context = find_checkpoint_for_task(task, workgraph_dir);
+    if let Some(summary) = checkpoint_context
+        && !summary.is_empty()
+    {
+        return format_previous_context(&archive_timestamp, &summary, max_bytes);
+    }
+
+    // Priority 2: Truncated output.log from the archive
+    let output_path = latest_archive.join("output.txt");
+    if output_path.exists()
+        && let Ok(content) = fs::read_to_string(&output_path)
+        && !content.trim().is_empty()
+    {
+        let tail = truncate_to_tail(&content, max_bytes);
+        return format_previous_context(&archive_timestamp, &tail, max_bytes);
+    }
+
+    // Priority 3: Task log entries
+    if !task.log.is_empty() {
+        let log_context = task
+            .log
+            .iter()
+            .map(|entry| {
+                format!(
+                    "[{}] {}: {}",
+                    entry.timestamp,
+                    entry.actor.as_deref().unwrap_or("system"),
+                    entry.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if !log_context.is_empty() {
+            let truncated = truncate_to_tail(&log_context, max_bytes);
+            return format_previous_context(&archive_timestamp, &truncated, max_bytes);
+        }
+    }
+
+    String::new()
+}
+
+/// Find the most recent checkpoint for a task from any previously assigned agent.
+fn find_checkpoint_for_task(task: &workgraph::graph::Task, workgraph_dir: &Path) -> Option<String> {
+    let mut prev_agents: Vec<String> = Vec::new();
+    for entry in &task.log {
+        if let Some(ref actor) = entry.actor
+            && actor.starts_with("agent-")
+            && !prev_agents.contains(actor)
+        {
+            prev_agents.push(actor.clone());
+        }
+    }
+
+    for agent_id in prev_agents.iter().rev() {
+        if let Ok(Some(checkpoint)) =
+            crate::commands::checkpoint::load_latest(workgraph_dir, agent_id)
+        {
+            return Some(format!(
+                "Checkpoint ({:?}, agent {}): {}",
+                checkpoint.checkpoint_type, checkpoint.agent_id, checkpoint.summary
+            ));
+        }
+    }
+
+    None
+}
+
+/// Truncate a string to its last `max_bytes` bytes, preserving valid UTF-8 boundaries.
+fn truncate_to_tail(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    let start = s.len() - max_bytes;
+    let start = s.ceil_char_boundary(start);
+    format!("... (truncated)\n{}", &s[start..])
+}
+
+/// Format the previous attempt context section for injection into the prompt.
+fn format_previous_context(timestamp: &str, content: &str, max_bytes: usize) -> String {
+    let truncated_content = if content.len() > max_bytes {
+        truncate_to_tail(content, max_bytes)
+    } else {
+        content.to_string()
+    };
+
+    format!(
+        "## Previous Attempt Context\n\
+         This task was previously attempted (archived at {}).\n\
+         Here is context from that attempt:\n\n\
+         {}\n\n\
+         Continue from where they left off. Do not repeat work already done.",
+        timestamp, truncated_content
     )
 }
 
@@ -913,5 +1062,258 @@ mod tests {
             ContextScope::Graph,
             "Config scope should be used as fallback"
         );
+    }
+
+    // =========================================================================
+    // Previous attempt context tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_previous_attempt_context_zero_retry_count() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        let task = make_task("t1", "Test task");
+        // retry_count is 0 by default
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(result.is_empty(), "Should return empty for retry_count 0");
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_disabled_by_zero_tokens() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        let result = build_previous_attempt_context(&task, wg_dir, 0);
+        assert!(
+            result.is_empty(),
+            "Should return empty when max_tokens is 0"
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_no_archive() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.is_empty(),
+            "Should return empty when no archive exists"
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_with_archive_output() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        // Create an archive with output
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(
+            archive_dir.join("output.txt"),
+            "Agent started working on task t1\nCompleted analysis of requirements\nFound 3 issues",
+        )
+        .unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.contains("Previous Attempt Context"),
+            "Should contain header"
+        );
+        assert!(
+            result.contains("2026-03-07T10:00:00Z"),
+            "Should contain archive timestamp"
+        );
+        assert!(
+            result.contains("Found 3 issues"),
+            "Should contain output content"
+        );
+        assert!(
+            result.contains("Continue from where they left off"),
+            "Should contain continuation instruction"
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_empty_output_skipped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        // Create an archive with empty output
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("output.txt"), "   \n\n  ").unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        // No checkpoint, empty output, no logs => empty result
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.is_empty(),
+            "Should return empty for whitespace-only output"
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_uses_most_recent_archive() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        // Create two archives (older and newer)
+        let old_archive = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-06T10:00:00Z");
+        std::fs::create_dir_all(&old_archive).unwrap();
+        std::fs::write(old_archive.join("output.txt"), "Old agent output").unwrap();
+
+        let new_archive = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&new_archive).unwrap();
+        std::fs::write(new_archive.join("output.txt"), "New agent output").unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 2;
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.contains("New agent output"),
+            "Should use most recent archive"
+        );
+        assert!(
+            !result.contains("Old agent output"),
+            "Should not use old archive"
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_with_checkpoint() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        // Create an archive
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("output.txt"), "Some output").unwrap();
+
+        // Create a checkpoint for the agent
+        let cp_dir = wg_dir.join("agents").join("agent-99").join("checkpoints");
+        std::fs::create_dir_all(&cp_dir).unwrap();
+        let checkpoint = serde_json::json!({
+            "task_id": "t1",
+            "agent_id": "agent-99",
+            "timestamp": "2026-03-07T10:30:00Z",
+            "type": "auto",
+            "summary": "Completed web search, found 5 relevant docs",
+            "files_modified": [],
+            "artifacts_registered": []
+        });
+        std::fs::write(
+            cp_dir.join("2026-03-07T10-30-00.000Z.json"),
+            serde_json::to_string(&checkpoint).unwrap(),
+        )
+        .unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        task.log = vec![LogEntry {
+            timestamp: "2026-03-07T09:00:00Z".to_string(),
+            actor: Some("agent-99".to_string()),
+            message: "Spawned by coordinator".to_string(),
+        }];
+
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.contains("Completed web search"),
+            "Should use checkpoint summary. Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_build_previous_attempt_context_falls_back_to_logs() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+
+        // Create an archive directory but NO output.txt
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        task.log = vec![
+            LogEntry {
+                timestamp: "2026-03-07T09:00:00Z".to_string(),
+                actor: Some("agent-50".to_string()),
+                message: "Started research".to_string(),
+            },
+            LogEntry {
+                timestamp: "2026-03-07T09:30:00Z".to_string(),
+                actor: Some("agent-50".to_string()),
+                message: "Found key insight about X".to_string(),
+            },
+        ];
+
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.contains("Found key insight"),
+            "Should fall back to task log entries. Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_truncate_to_tail() {
+        let short = "Hello";
+        assert_eq!(truncate_to_tail(short, 100), "Hello");
+
+        let long = "A".repeat(1000);
+        let truncated = truncate_to_tail(&long, 500);
+        assert!(truncated.len() <= 520, "Should be roughly max_bytes");
+        assert!(truncated.starts_with("... (truncated)"));
+    }
+
+    #[test]
+    fn test_format_previous_context_structure() {
+        let result = format_previous_context("2026-03-07T10:00:00Z", "Some work done", 8000);
+        assert!(result.starts_with("## Previous Attempt Context"));
+        assert!(result.contains("2026-03-07T10:00:00Z"));
+        assert!(result.contains("Some work done"));
+        assert!(result.contains("Continue from where they left off"));
     }
 }

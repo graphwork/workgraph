@@ -429,6 +429,36 @@ pub(crate) fn build_evolver_prompt(
     out.push_str("- **meta_compose_agent**: Compose a new agent for a meta-agent slot from scratch. Requires: meta_role, role_id, tradeoff_id.\n\n");
     out.push_str("**Safety:** Operations targeting `meta_role: \"evolver\"` are automatically deferred for human approval.\n\n");
 
+    // Coordinator prompt evolution section
+    out.push_str("### Coordinator Prompt Evolution\n\n");
+    out.push_str(
+        "The coordinator agent's prompt is composed from files in `.workgraph/agency/coordinator-prompt/`. \
+         You can modify the mutable files to improve coordinator behavior based on evaluation data.\n\n",
+    );
+    out.push_str("- **modify_coordinator_prompt**: Modify a coordinator prompt file. Requires: target_id (\"evolved-amendments\" or \"common-patterns\"), new_content (full file content).\n\n");
+    out.push_str(
+        "**Immutable files (do NOT target):** `base-system-prompt.md`, `behavioral-rules.md`\n",
+    );
+    out.push_str("**Mutable files:** `evolved-amendments.md` (add rules/heuristics), `common-patterns.md` (add/update examples)\n\n");
+
+    // Include current coordinator prompt files for context
+    let prompt_dir = agency_dir.join("coordinator-prompt");
+    if prompt_dir.is_dir() {
+        let mutable_files = ["evolved-amendments.md", "common-patterns.md"];
+        for filename in &mutable_files {
+            let path = prompt_dir.join(filename);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    out.push_str(&format!(
+                        "**Current `{}`:**\n```\n{}\n```\n\n",
+                        filename, trimmed
+                    ));
+                }
+            }
+        }
+    }
+
     out.push_str("**Important:** Each new/modified entity gets lineage tracking automatically. Just provide the IDs.\n");
 
     out

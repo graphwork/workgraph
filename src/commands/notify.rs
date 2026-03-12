@@ -202,6 +202,7 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
         Status::Failed => "❌",
         Status::Abandoned => "🗑️",
         Status::Waiting => "⏸️",
+        Status::PendingValidation => "🔍",
     };
 
     let status_str = task.status.to_string();
@@ -358,6 +359,16 @@ mod tests {
             checkpoint: None,
             resurrection_count: 0,
             last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            superseded_by: vec![],
+            supersedes: None,
+            unplaced: false,
+            place_near: vec![],
+            place_before: vec![],
         }
     }
 

@@ -74,6 +74,11 @@ impl ModelEntry {
     pub fn short_name(&self) -> &str {
         self.id.rsplit('/').next().unwrap_or(&self.id)
     }
+
+    /// Whether this model supports tool use (function calling).
+    pub fn supports_tool_use(&self) -> bool {
+        self.capabilities.iter().any(|c| c == "tool_use")
+    }
 }
 
 fn default_provider() -> String {
@@ -114,6 +119,7 @@ impl ModelRegistry {
                     "analysis".into(),
                     "creative".into(),
                     "reasoning".into(),
+                    "tool_use".into(),
                 ],
                 tier: ModelTier::Frontier,
             },
@@ -123,7 +129,12 @@ impl ModelRegistry {
                 cost_per_1m_input: 3.0,
                 cost_per_1m_output: 15.0,
                 context_window: 1_000_000,
-                capabilities: vec!["coding".into(), "analysis".into(), "creative".into()],
+                capabilities: vec![
+                    "coding".into(),
+                    "analysis".into(),
+                    "creative".into(),
+                    "tool_use".into(),
+                ],
                 tier: ModelTier::Mid,
             },
             ModelEntry {
@@ -132,7 +143,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.80,
                 cost_per_1m_output: 4.0,
                 context_window: 200_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -141,7 +152,12 @@ impl ModelRegistry {
                 cost_per_1m_input: 2.50,
                 cost_per_1m_output: 10.0,
                 context_window: 128_000,
-                capabilities: vec!["coding".into(), "analysis".into(), "creative".into()],
+                capabilities: vec![
+                    "coding".into(),
+                    "analysis".into(),
+                    "creative".into(),
+                    "tool_use".into(),
+                ],
                 tier: ModelTier::Mid,
             },
             ModelEntry {
@@ -150,7 +166,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.15,
                 cost_per_1m_output: 0.60,
                 context_window: 128_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -159,7 +175,12 @@ impl ModelRegistry {
                 cost_per_1m_input: 2.0,
                 cost_per_1m_output: 8.0,
                 context_window: 200_000,
-                capabilities: vec!["coding".into(), "analysis".into(), "reasoning".into()],
+                capabilities: vec![
+                    "coding".into(),
+                    "analysis".into(),
+                    "reasoning".into(),
+                    "tool_use".into(),
+                ],
                 tier: ModelTier::Frontier,
             },
             ModelEntry {
@@ -173,6 +194,7 @@ impl ModelRegistry {
                     "analysis".into(),
                     "creative".into(),
                     "reasoning".into(),
+                    "tool_use".into(),
                 ],
                 tier: ModelTier::Mid,
             },
@@ -182,7 +204,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.10,
                 cost_per_1m_output: 0.40,
                 context_window: 1_000_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -191,7 +213,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.30,
                 cost_per_1m_output: 0.88,
                 context_window: 164_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -209,7 +231,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.20,
                 cost_per_1m_output: 0.60,
                 context_window: 1_000_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -218,7 +240,7 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.10,
                 cost_per_1m_output: 0.30,
                 context_window: 512_000,
-                capabilities: vec!["coding".into(), "analysis".into()],
+                capabilities: vec!["coding".into(), "analysis".into(), "tool_use".into()],
                 tier: ModelTier::Budget,
             },
             ModelEntry {
@@ -227,7 +249,12 @@ impl ModelRegistry {
                 cost_per_1m_input: 0.20,
                 cost_per_1m_output: 0.60,
                 context_window: 131_072,
-                capabilities: vec!["coding".into(), "analysis".into(), "reasoning".into()],
+                capabilities: vec![
+                    "coding".into(),
+                    "analysis".into(),
+                    "reasoning".into(),
+                    "tool_use".into(),
+                ],
                 tier: ModelTier::Budget,
             },
         ];
@@ -297,6 +324,18 @@ impl ModelRegistry {
     /// Add or update a model entry
     pub fn add(&mut self, entry: ModelEntry) {
         self.models.insert(entry.id.clone(), entry);
+    }
+
+    /// Check if a model supports tool use by its ID.
+    ///
+    /// Returns `true` if the model has the `tool_use` capability, or if the
+    /// model is not in the registry (unknown models default to tool support
+    /// to avoid silently breaking existing behavior).
+    pub fn supports_tool_use(&self, model_id: &str) -> bool {
+        match self.models.get(model_id) {
+            Some(entry) => entry.supports_tool_use(),
+            None => true, // Unknown models default to tool support
+        }
     }
 
     /// List all models, optionally filtered by tier
@@ -476,6 +515,48 @@ mod tests {
 
         assert_eq!(parsed.default_model, reg.default_model);
         assert_eq!(parsed.models.len(), reg.models.len());
+    }
+
+    #[test]
+    fn test_supports_tool_use() {
+        let reg = ModelRegistry::with_defaults();
+
+        // Models with tool_use capability
+        assert!(reg.supports_tool_use("anthropic/claude-opus-4-6"));
+        assert!(reg.supports_tool_use("openai/gpt-4o"));
+        assert!(reg.supports_tool_use("google/gemini-2.5-pro"));
+        assert!(reg.supports_tool_use("deepseek/deepseek-chat-v3"));
+
+        // DeepSeek R1 reasoning model does NOT support tools
+        assert!(!reg.supports_tool_use("deepseek/deepseek-r1"));
+
+        // Unknown models default to true
+        assert!(reg.supports_tool_use("unknown/model-xyz"));
+    }
+
+    #[test]
+    fn test_model_entry_supports_tool_use() {
+        let with_tools = ModelEntry {
+            id: "test/with-tools".into(),
+            provider: "test".into(),
+            cost_per_1m_input: 1.0,
+            cost_per_1m_output: 2.0,
+            context_window: 32_000,
+            capabilities: vec!["coding".into(), "tool_use".into()],
+            tier: ModelTier::Mid,
+        };
+        assert!(with_tools.supports_tool_use());
+
+        let without_tools = ModelEntry {
+            id: "test/no-tools".into(),
+            provider: "test".into(),
+            cost_per_1m_input: 1.0,
+            cost_per_1m_output: 2.0,
+            context_window: 32_000,
+            capabilities: vec!["coding".into(), "reasoning".into()],
+            tier: ModelTier::Mid,
+        };
+        assert!(!without_tools.supports_tool_use());
     }
 
     #[test]
