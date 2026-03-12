@@ -3665,10 +3665,62 @@ impl VizApp {
                         }
                     }
                     if let Some(dims) = eval.get("dimensions").and_then(|v| v.as_object()) {
-                        let dim_strs: Vec<String> = dims
+                        let is_flip = eval
+                            .get("source")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s == "flip")
+                            .unwrap_or(false);
+
+                        let priority_order: &[&str] = if is_flip {
+                            &[
+                                "semantic_match",
+                                "requirement_coverage",
+                                "specificity_match",
+                                "hallucination_rate",
+                            ]
+                        } else {
+                            &[
+                                "intent_fidelity",
+                                "correctness",
+                                "completeness",
+                                "efficiency",
+                                "style_adherence",
+                                "downstream_usability",
+                                "coordination_overhead",
+                                "blocking_impact",
+                            ]
+                        };
+
+                        let mut dim_strs: Vec<String> = Vec::new();
+
+                        // For FLIP evals, prepend intent_fidelity from top-level score
+                        if is_flip && !dims.contains_key("intent_fidelity") {
+                            if let Some(score) = eval.get("score").and_then(|v| v.as_f64()) {
+                                dim_strs.push(format!("intent_fidelity: {:.2}", score));
+                            }
+                        }
+
+                        // Add dims in priority order first
+                        for key in priority_order {
+                            if let Some(v) = dims.get(*key) {
+                                dim_strs.push(format!(
+                                    "{}: {:.2}",
+                                    key,
+                                    v.as_f64().unwrap_or(0.0)
+                                ));
+                            }
+                        }
+
+                        // Add any remaining dims alphabetically
+                        let mut remaining: Vec<(&String, &serde_json::Value)> = dims
                             .iter()
-                            .map(|(k, v)| format!("{}:{:.2}", k, v.as_f64().unwrap_or(0.0)))
+                            .filter(|(k, _)| !priority_order.contains(&k.as_str()))
                             .collect();
+                        remaining.sort_by_key(|(k, _)| k.as_str());
+                        for (k, v) in remaining {
+                            dim_strs.push(format!("{}: {:.2}", k, v.as_f64().unwrap_or(0.0)));
+                        }
+
                         lines.push(format!("  Dims: {}", dim_strs.join(", ")));
                     }
                     lines.push(String::new());
