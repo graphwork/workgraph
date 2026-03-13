@@ -342,6 +342,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     if app.service_health.detail_open && !app.service_health.panel_open {
         draw_service_health_detail(frame, app);
     }
+
+    // Pipeline toasts (agency events: assignment, placement, spawn)
+    if !app.pipeline_toasts.is_empty() {
+        draw_pipeline_toasts(frame, app);
+    }
 }
 
 /// Determine the line-level trace category for a given original line index.
@@ -5051,6 +5056,18 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ));
         }
+        if tc.show_compact && tc.compact_threshold > 0 {
+            let pct = (tc.compact_accumulated as f64 / tc.compact_threshold as f64 * 100.0) as u64;
+            cp.push(Span::styled(
+                format!(
+                    "C:{}/{}({}%)",
+                    format_tokens(tc.compact_accumulated),
+                    format_tokens(tc.compact_threshold),
+                    pct
+                ),
+                Style::default().fg(if pct >= 80 { Color::Red } else { Color::Blue }),
+            ));
+        }
         if !cp.is_empty() {
             spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
             for (i, p) in cp.into_iter().enumerate() {
@@ -5210,6 +5227,79 @@ fn draw_service_health_badge(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 /// Draw the service health detail popup — anchored below the badge.
+/// Draw transient pipeline toast notifications in the bottom-right of the graph area.
+/// Toasts stack upward from the bottom, each fading out over 3 seconds.
+fn draw_pipeline_toasts(frame: &mut Frame, app: &VizApp) {
+    if app.pipeline_toasts.is_empty() {
+        return;
+    }
+
+    let graph_area = app.last_graph_area;
+    if graph_area.width < 20 || graph_area.height < 3 {
+        return;
+    }
+
+    // Render toasts from bottom to top (newest at bottom).
+    let max_width = 60.min(graph_area.width.saturating_sub(4));
+    let mut y_offset: u16 = 0;
+
+    for (msg, when) in app.pipeline_toasts.iter().rev() {
+        let elapsed_ms = when.elapsed().as_millis() as u64;
+        let toast_duration_ms: u64 = 3000;
+        if elapsed_ms >= toast_duration_ms {
+            continue;
+        }
+
+        // Fade: full opacity for first 2s, then fade out over last 1s.
+        let fade = if elapsed_ms < 2000 {
+            1.0_f64
+        } else {
+            1.0 - ((elapsed_ms - 2000) as f64 / 1000.0)
+        };
+
+        // Truncate message to fit within max_width (with 2 chars padding).
+        let display_msg = if msg.width() > (max_width as usize).saturating_sub(2) {
+            let limit = (max_width as usize).saturating_sub(5);
+            let truncated: String = msg.chars().take(limit).collect();
+            format!("{}...", truncated)
+        } else {
+            msg.clone()
+        };
+
+        let toast_width = (display_msg.width() as u16 + 2).min(max_width);
+        let toast_height: u16 = 1;
+
+        // Position: bottom-right of graph area, stacking upward.
+        let x = graph_area.x + graph_area.width.saturating_sub(toast_width + 1);
+        let y = graph_area.y + graph_area.height.saturating_sub(2 + y_offset);
+
+        if y <= graph_area.y {
+            break; // No more room to stack.
+        }
+
+        let area = Rect::new(x, y, toast_width, toast_height);
+
+        // Color: magenta/purple tint for agency events, fading with time.
+        let fg_r = (200.0 * fade) as u8;
+        let fg_g = (160.0 * fade) as u8;
+        let fg_b = (255.0 * fade) as u8;
+        let bg_r = (30.0 * fade) as u8;
+        let bg_g = (20.0 * fade) as u8;
+        let bg_b = (40.0 * fade) as u8;
+
+        frame.render_widget(Clear, area);
+        let para = Paragraph::new(Line::from(Span::styled(
+            format!(" {} ", display_msg),
+            Style::default()
+                .fg(Color::Rgb(fg_r, fg_g, fg_b))
+                .bg(Color::Rgb(bg_r, bg_g, bg_b)),
+        )));
+        frame.render_widget(para, area);
+
+        y_offset += 1;
+    }
+}
+
 fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
     let size = frame.area();
     let health = &app.service_health;

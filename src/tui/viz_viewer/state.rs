@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
@@ -1157,6 +1157,9 @@ pub struct TimeCounters {
     pub show_cumulative: bool,
     pub show_active: bool,
     pub show_session: bool,
+    pub show_compact: bool,
+    pub compact_accumulated: u64,
+    pub compact_threshold: u64,
 }
 impl TimeCounters {
     pub fn new(config_counters: &str) -> Self {
@@ -1172,10 +1175,17 @@ impl TimeCounters {
             show_cumulative: parts.contains(&"cumulative"),
             show_active: parts.contains(&"active"),
             show_session: parts.contains(&"session"),
+            show_compact: parts.contains(&"compact"),
+            compact_accumulated: 0,
+            compact_threshold: 0,
         }
     }
     pub fn any_enabled(&self) -> bool {
-        self.show_uptime || self.show_cumulative || self.show_active || self.show_session
+        self.show_uptime
+            || self.show_cumulative
+            || self.show_active
+            || self.show_session
+            || self.show_compact
     }
 }
 pub fn format_duration_compact(secs: u64) -> String {
@@ -2020,6 +2030,11 @@ pub struct VizApp {
     /// Notification message to display (transient, cleared after a few seconds).
     pub notification: Option<(String, Instant)>,
 
+    // ── Pipeline toasts ──
+    /// Transient toast notifications for agency pipeline events (assignment, placement, spawn).
+    /// Each entry is (message, timestamp). Toasts expire after 3 seconds. Max 4 visible.
+    pub pipeline_toasts: VecDeque<(String, Instant)>,
+
     // ── Double-tap detection ──
     /// Timestamp of the last Tab key press, for double-tap recenter detection.
     #[allow(dead_code)]
@@ -2251,6 +2266,7 @@ impl VizApp {
             cmd_rx,
             cmd_tx,
             notification: None,
+            pipeline_toasts: VecDeque::new(),
             last_tab_press: None,
             sort_mode: SortMode::Chronological,
             smart_follow_active: true,
@@ -2927,6 +2943,24 @@ impl VizApp {
             .any(|anim| anim.start.elapsed() < cutoff)
     }
 
+    /// Push a pipeline toast notification. Keeps at most 4 active toasts.
+    pub fn push_pipeline_toast(&mut self, msg: String) {
+        const MAX_PIPELINE_TOASTS: usize = 4;
+        self.pipeline_toasts.push_back((msg, Instant::now()));
+        while self.pipeline_toasts.len() > MAX_PIPELINE_TOASTS {
+            self.pipeline_toasts.pop_front();
+        }
+    }
+
+    /// Remove expired pipeline toasts (older than 3 seconds).
+    pub fn cleanup_pipeline_toasts(&mut self) -> bool {
+        let cutoff = std::time::Duration::from_secs(3);
+        let before = self.pipeline_toasts.len();
+        self.pipeline_toasts
+            .retain(|(_, when)| when.elapsed() < cutoff);
+        self.pipeline_toasts.len() != before
+    }
+
     /// Remove expired splash animations.
     pub fn cleanup_splash_animations(&mut self) {
         let duration = self.animation_mode.speed().duration_secs();
@@ -3274,6 +3308,45 @@ impl VizApp {
                             kind: AnimationKind::StatusChange,
                         },
                     );
+
+                    // Generate pipeline toasts for agency events.
+                    if snapshot.status == Status::Done {
+                        if let Some(source_id) = task.id.strip_prefix(".assign-") {
+                            // Extract assignment summary from task description.
+                            let msg = task
+                                .description
+                                .as_deref()
+                                .and_then(|d| d.lines().next())
+                                .map(|line| {
+                                    // Description format: "Lightweight assignment: AgentName (hash) → 'task'"
+                                    line.strip_prefix("Lightweight assignment: ")
+                                        .unwrap_or(line)
+                                        .to_string()
+                                })
+                                .unwrap_or_else(|| format!("assigned → {}", source_id));
+                            self.push_pipeline_toast(format!("\u{26a1} Assigned: {}", msg));
+                        } else if let Some(source_id) = task.id.strip_prefix(".place-") {
+                            self.push_pipeline_toast(format!(
+                                "\u{26a1} Placed: {}",
+                                source_id
+                            ));
+                        }
+                    }
+                    // Agent spawn: non-system task went to InProgress.
+                    if snapshot.status == Status::InProgress
+                        && !workgraph::graph::is_system_task(&task.id)
+                        && let Some(ref agent_id) = task.assigned
+                    {
+                        let short = if agent_id.len() > 10 {
+                            &agent_id[..10]
+                        } else {
+                            agent_id
+                        };
+                        self.push_pipeline_toast(format!(
+                            "\u{26a1} Spawned: {} on {}",
+                            short, task.id
+                        ));
+                    }
                 }
                 // Agent assignment change.
                 else if old.assigned != snapshot.assigned && snapshot.assigned.is_some() {
@@ -3650,6 +3723,10 @@ impl VizApp {
         }
         // Notification (cleared after 3s in drain_commands)
         if self.notification.is_some() {
+            return true;
+        }
+        // Pipeline toasts (cleared after 3s in drain_commands)
+        if !self.pipeline_toasts.is_empty() {
             return true;
         }
         // Scrollbar fade timers (visible for 2s after scroll activity)
@@ -5081,6 +5158,7 @@ impl VizApp {
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,
             notification: None,
+            pipeline_toasts: VecDeque::new(),
             last_tab_press: None,
             sort_mode: SortMode::ReverseChronological,
             smart_follow_active: true,
@@ -5585,6 +5663,10 @@ impl VizApp {
         {
             self.notification = None;
             drained = true; // need redraw to remove the notification
+        }
+        // Clear expired pipeline toasts.
+        if self.cleanup_pipeline_toasts() {
+            drained = true;
         }
         drained
     }
@@ -6264,6 +6346,16 @@ impl VizApp {
         self.time_counters.cumulative_secs = cumulative as u64;
         self.time_counters.active_secs = active as u64;
         self.time_counters.active_agent_count = active_count;
+
+        // Compaction progress
+        if self.time_counters.show_compact {
+            use crate::commands::service::CoordinatorState;
+            let cs = CoordinatorState::load_or_default(&self.workgraph_dir);
+            let config = Config::load(&self.workgraph_dir).unwrap_or_default();
+            self.time_counters.compact_accumulated = cs.accumulated_tokens;
+            self.time_counters.compact_threshold = config.effective_compaction_threshold();
+        }
+
         self.time_counters.last_refresh = Instant::now();
     }
 
