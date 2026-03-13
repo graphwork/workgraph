@@ -938,6 +938,21 @@ impl ModelRoutingConfig {
             });
         }
     }
+
+    /// Set the tier override for a role.
+    pub fn set_tier(&mut self, role: DispatchRole, tier: Tier) {
+        let slot = self.get_role_mut(role);
+        if let Some(cfg) = slot {
+            cfg.tier = Some(tier);
+        } else {
+            *slot = Some(RoleModelConfig {
+                provider: None,
+                model: None,
+                tier: Some(tier),
+                endpoint: None,
+            });
+        }
+    }
 }
 
 /// Resolved model+provider for a dispatch.

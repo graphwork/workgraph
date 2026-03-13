@@ -1421,6 +1421,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.install_config_as_global();
         }
 
+        // Config tab: 't' tests the selected endpoint's connectivity
+        KeyCode::Char('t') if app.right_panel_tab == RightPanelTab::Config => {
+            app.test_selected_endpoint();
+        }
+
         // Config tab: 'a' starts the add-endpoint flow
         KeyCode::Char('a') if app.right_panel_tab == RightPanelTab::Config => {
             app.config_panel.adding_endpoint = true;

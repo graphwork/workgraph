@@ -8,9 +8,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::{
     ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus,
-    CoordinatorPlusHit, CoordinatorTabHit, FocusedPanel, InputMode, LayoutMode, RightPanelTab,
-    ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
-    extract_section_name, format_duration_compact,
+    CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel, InputMode, LayoutMode,
+    RightPanelTab, ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction,
+    VizApp, extract_section_name, format_duration_compact,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -5650,6 +5650,18 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
+    // Precompute endpoint index → name for test status display.
+    let endpoint_names: HashMap<usize, String> = {
+        let config = workgraph::config::Config::load_or_default(&app.workgraph_dir);
+        config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .enumerate()
+            .map(|(i, ep)| (i, ep.name.clone()))
+            .collect()
+    };
+
     // Build display lines grouped by section with collapsible headers.
     let mut lines: Vec<(Line, bool)> = Vec::new(); // (line, is_selectable)
     let mut entry_line_map: Vec<usize> = Vec::new(); // entry_idx -> display line index
@@ -5812,11 +5824,63 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             "  "
         };
 
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(cursor, style),
             Span::styled(label, style),
             Span::styled(value_display, value_style),
-        ]);
+        ];
+
+        // Show endpoint test status inline for endpoint name entries.
+        if entry.key.ends_with(".name") && entry.section == ConfigSection::Endpoints {
+            if let Some(ep_idx) = entry
+                .key
+                .strip_prefix("endpoint.")
+                .and_then(|r| r.strip_suffix(".name"))
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                if let Some(ep_name) = endpoint_names.get(&ep_idx) {
+                    if let Some(status) = app.config_panel.endpoint_test_results.get(ep_name) {
+                        match status {
+                            EndpointTestStatus::Testing => {
+                                spans.push(Span::styled(
+                                    " ⟳ Testing...".to_string(),
+                                    Style::default()
+                                        .fg(Color::Yellow)
+                                        .add_modifier(Modifier::BOLD),
+                                ));
+                            }
+                            EndpointTestStatus::Ok => {
+                                spans.push(Span::styled(
+                                    " ✓ Connected".to_string(),
+                                    Style::default()
+                                        .fg(Color::Green)
+                                        .add_modifier(Modifier::BOLD),
+                                ));
+                            }
+                            EndpointTestStatus::Error(msg) => {
+                                spans.push(Span::styled(
+                                    " ✗ ".to_string(),
+                                    Style::default()
+                                        .fg(Color::Red)
+                                        .add_modifier(Modifier::BOLD),
+                                ));
+                                let truncated = if msg.len() > 40 {
+                                    format!("{}...", &msg[..40])
+                                } else {
+                                    msg.clone()
+                                };
+                                spans.push(Span::styled(
+                                    truncated,
+                                    Style::default().fg(Color::Red),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let line = Line::from(spans);
 
         lines.push((line, true));
     }
@@ -5851,7 +5915,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {
-            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  g: install global  r: reload"
+            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  t: test endpoint  g: install global  r: reload"
         };
         lines.push((
             Line::from(Span::styled(

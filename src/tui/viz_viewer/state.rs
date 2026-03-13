@@ -1562,6 +1562,7 @@ pub enum ConfigSection {
     AgentDefaults,
     Agency,
     Guardrails,
+    ModelTiers,
     ModelRouting,
     Actions,
 }
@@ -1576,6 +1577,7 @@ impl ConfigSection {
             Self::AgentDefaults => "Agent Defaults",
             Self::Agency => "Agency",
             Self::Guardrails => "Guardrails",
+            Self::ModelTiers => "Model Tiers",
             Self::ModelRouting => "Model Routing",
             Self::Actions => "Actions",
         }
@@ -1591,6 +1593,7 @@ impl ConfigSection {
             Self::AgentDefaults,
             Self::Agency,
             Self::Guardrails,
+            Self::ModelTiers,
             Self::Actions,
         ]
     }
@@ -1625,6 +1628,19 @@ pub struct ConfigPanelState {
     pub service_running: bool,
     /// Service PID if running.
     pub service_pid: Option<u32>,
+    /// Per-endpoint test results, keyed by endpoint name.
+    pub endpoint_test_results: HashMap<String, EndpointTestStatus>,
+}
+
+/// Status of an endpoint connectivity test.
+#[derive(Clone)]
+pub enum EndpointTestStatus {
+    /// Test is in progress.
+    Testing,
+    /// Test succeeded.
+    Ok,
+    /// Test failed with an error message.
+    Error(String),
 }
 
 /// Fields for the "add new endpoint" form.
@@ -1665,6 +1681,8 @@ pub enum CommandEffect {
     ArchiveCoordinator(u32),
     /// A coordinator's agent was stopped. On success, show notification.
     StopCoordinator(u32),
+    /// An endpoint connectivity test completed. String is the endpoint name.
+    EndpointTest(String),
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -5204,6 +5222,23 @@ impl VizApp {
                         ));
                     }
                 }
+                CommandEffect::EndpointTest(ep_name) => {
+                    if result.success {
+                        self.config_panel
+                            .endpoint_test_results
+                            .insert(ep_name, EndpointTestStatus::Ok);
+                    } else {
+                        let err_msg = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("connection failed")
+                            .to_string();
+                        self.config_panel
+                            .endpoint_test_results
+                            .insert(ep_name, EndpointTestStatus::Error(err_msg));
+                    }
+                }
             }
         }
         // Clear expired notifications (after 3 seconds).
@@ -7291,9 +7326,41 @@ impl VizApp {
             section: ConfigSection::Guardrails,
         });
 
-        // ── 8. Model Routing ──
+        // ── 8. Model Tiers ──
+        {
+            let effective = config.effective_tiers_public();
+            entries.push(ConfigEntry {
+                key: "tiers.fast".into(),
+                label: "Fast".into(),
+                value: effective.fast.clone().unwrap_or_else(|| "haiku".into()),
+                edit_kind: ConfigEditKind::TextInput,
+                section: ConfigSection::ModelTiers,
+            });
+            entries.push(ConfigEntry {
+                key: "tiers.standard".into(),
+                label: "Standard".into(),
+                value: effective.standard.clone().unwrap_or_else(|| "sonnet".into()),
+                edit_kind: ConfigEditKind::TextInput,
+                section: ConfigSection::ModelTiers,
+            });
+            entries.push(ConfigEntry {
+                key: "tiers.premium".into(),
+                label: "Premium".into(),
+                value: effective.premium.clone().unwrap_or_else(|| "opus".into()),
+                edit_kind: ConfigEditKind::TextInput,
+                section: ConfigSection::ModelTiers,
+            });
+        }
+
+        // ── 9. Model Routing ──
         {
             use workgraph::config::DispatchRole;
+            let tier_choices = vec![
+                "(inherit)".to_string(),
+                "fast".to_string(),
+                "standard".to_string(),
+                "premium".to_string(),
+            ];
             let roles = [
                 (DispatchRole::Default, "Default"),
                 (DispatchRole::TaskAgent, "Task agent"),
@@ -7309,30 +7376,65 @@ impl VizApp {
             ];
             for (role, label) in roles {
                 let role_cfg = config.models.get_role(role);
+                let resolved = config.resolve_model_for_role(role);
+                let source = config.resolve_model_source(role);
+                let resolved_display = format!(
+                    "{} ({})",
+                    resolved.model,
+                    source
+                );
                 let model_val = role_cfg
                     .and_then(|c| c.model.clone())
                     .unwrap_or_else(|| "(inherit)".into());
                 let provider_val = role_cfg
                     .and_then(|c| c.provider.clone())
                     .unwrap_or_else(|| "(inherit)".into());
+                let tier_val = role_cfg
+                    .and_then(|c| c.tier.map(|t| t.to_string()))
+                    .unwrap_or_else(|| "(inherit)".into());
+                let endpoint_val = role_cfg
+                    .and_then(|c| c.endpoint.clone())
+                    .unwrap_or_else(|| "(inherit)".into());
+                // Resolved display (read-only info line)
+                entries.push(ConfigEntry {
+                    key: format!("models.{}.resolved", role),
+                    label: format!("{}  → {}", label, resolved_display),
+                    value: String::new(),
+                    edit_kind: ConfigEditKind::TextInput, // shown but not meaningfully editable
+                    section: ConfigSection::ModelRouting,
+                });
                 entries.push(ConfigEntry {
                     key: format!("models.{}.model", role),
-                    label: format!("{} model", label),
+                    label: format!("  {} model", label),
                     value: model_val,
                     edit_kind: ConfigEditKind::TextInput,
                     section: ConfigSection::ModelRouting,
                 });
                 entries.push(ConfigEntry {
+                    key: format!("models.{}.tier", role),
+                    label: format!("  {} tier", label),
+                    value: tier_val,
+                    edit_kind: ConfigEditKind::Choice(tier_choices.clone()),
+                    section: ConfigSection::ModelRouting,
+                });
+                entries.push(ConfigEntry {
                     key: format!("models.{}.provider", role),
-                    label: format!("{} provider", label),
+                    label: format!("  {} provider", label),
                     value: provider_val,
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::ModelRouting,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("models.{}.endpoint", role),
+                    label: format!("  {} endpoint", label),
+                    value: endpoint_val,
                     edit_kind: ConfigEditKind::TextInput,
                     section: ConfigSection::ModelRouting,
                 });
             }
         }
 
-        // ── 9. Actions ──
+        // ── 10. Actions ──
         entries.push(ConfigEntry {
             key: "action.install_global".into(),
             label: "Install as Global".into(),
@@ -7615,13 +7717,27 @@ impl VizApp {
                     config.checkpoint.retry_context_tokens = v;
                 }
             }
+            "tiers.fast" => {
+                config.tiers.fast = Some(new_value);
+            }
+            "tiers.standard" => {
+                config.tiers.standard = Some(new_value);
+            }
+            "tiers.premium" => {
+                config.tiers.premium = Some(new_value);
+            }
             _ => {
                 // Model routing fields: models.<role>.<field>
                 if let Some(rest) = key.strip_prefix("models.") {
                     let parts: Vec<&str> = rest.rsplitn(2, '.').collect();
                     if parts.len() == 2 {
-                        let field = parts[0]; // "model" or "provider"
+                        let field = parts[0]; // "model", "provider", "tier", "endpoint", or "resolved"
                         let role_str = parts[1];
+                        if field == "resolved" {
+                            // Read-only display line — don't save
+                            self.config_panel.editing = false;
+                            return;
+                        }
                         if let Ok(role) = role_str.parse::<workgraph::config::DispatchRole>() {
                             let is_inherit = new_value == "(inherit)" || new_value.is_empty();
                             match field {
@@ -7643,6 +7759,35 @@ impl VizApp {
                                         }
                                     } else {
                                         config.models.set_provider(role, &new_value);
+                                    }
+                                }
+                                "tier" => {
+                                    let slot = config.models.get_role_mut(role);
+                                    if is_inherit {
+                                        if let Some(c) = slot {
+                                            c.tier = None;
+                                        }
+                                    } else if let Ok(tier) = new_value.parse::<workgraph::config::Tier>() {
+                                        if let Some(c) = slot {
+                                            c.tier = Some(tier);
+                                        } else {
+                                            *slot = Some(workgraph::config::RoleModelConfig {
+                                                provider: None,
+                                                model: None,
+                                                tier: Some(tier),
+                                                endpoint: None,
+                                            });
+                                        }
+                                    }
+                                }
+                                "endpoint" => {
+                                    if is_inherit {
+                                        let slot = config.models.get_role_mut(role);
+                                        if let Some(c) = slot {
+                                            c.endpoint = None;
+                                        }
+                                    } else {
+                                        config.models.set_endpoint(role, &new_value);
                                     }
                                 }
                                 _ => {}
@@ -7814,6 +7959,43 @@ impl VizApp {
         self.config_panel.new_endpoint = NewEndpointFields::default();
         self.config_panel.new_endpoint_field = 0;
         self.load_config_panel();
+    }
+
+    /// Test the endpoint associated with the currently selected config entry.
+    /// Looks up the endpoint index from the entry key and runs `wg endpoints test <name>`.
+    pub fn test_selected_endpoint(&mut self) {
+        let idx = self.config_panel.selected;
+        if idx >= self.config_panel.entries.len() {
+            return;
+        }
+        let key = &self.config_panel.entries[idx].key;
+        // Extract endpoint index from keys like "endpoint.N.name", "endpoint.N.model", etc.
+        let ep_idx = if let Some(rest) = key.strip_prefix("endpoint.") {
+            rest.split('.').next().and_then(|s| s.parse::<usize>().ok())
+        } else {
+            None
+        };
+        let Some(ep_idx) = ep_idx else {
+            return;
+        };
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let Some(ep) = config.llm_endpoints.endpoints.get(ep_idx) else {
+            return;
+        };
+        let ep_name = ep.name.clone();
+        // Mark as testing
+        self.config_panel
+            .endpoint_test_results
+            .insert(ep_name.clone(), EndpointTestStatus::Testing);
+        // Run test in background
+        self.exec_command(
+            vec![
+                "endpoints".to_string(),
+                "test".to_string(),
+                ep_name.clone(),
+            ],
+            CommandEffect::EndpointTest(ep_name),
+        );
     }
 
     /// Toggle collapse state for a config section.
@@ -10101,6 +10283,7 @@ mod tui_config_panel_tests {
                 || key.ends_with(".remove")
                 || key.ends_with(".is_default")
                 || key.starts_with("action.")
+                || key.ends_with(".resolved")
             {
                 continue;
             }
@@ -10317,19 +10500,66 @@ mod tui_config_panel_tests {
             // Guardrails
             "guardrails.max_child_tasks_per_agent",
             "guardrails.max_task_depth",
-            // Model routing
+            // Model tiers
+            "tiers.fast",
+            "tiers.standard",
+            "tiers.premium",
+            // Model routing (resolved + model + tier + provider + endpoint per role)
+            "models.default.resolved",
             "models.default.model",
+            "models.default.tier",
             "models.default.provider",
+            "models.default.endpoint",
+            "models.task_agent.resolved",
             "models.task_agent.model",
+            "models.task_agent.tier",
+            "models.task_agent.provider",
+            "models.task_agent.endpoint",
+            "models.evaluator.resolved",
             "models.evaluator.model",
+            "models.evaluator.tier",
+            "models.evaluator.provider",
+            "models.evaluator.endpoint",
+            "models.flip_inference.resolved",
             "models.flip_inference.model",
+            "models.flip_inference.tier",
+            "models.flip_inference.provider",
+            "models.flip_inference.endpoint",
+            "models.flip_comparison.resolved",
             "models.flip_comparison.model",
+            "models.flip_comparison.tier",
+            "models.flip_comparison.provider",
+            "models.flip_comparison.endpoint",
+            "models.assigner.resolved",
             "models.assigner.model",
+            "models.assigner.tier",
+            "models.assigner.provider",
+            "models.assigner.endpoint",
+            "models.evolver.resolved",
             "models.evolver.model",
+            "models.evolver.tier",
+            "models.evolver.provider",
+            "models.evolver.endpoint",
+            "models.verification.resolved",
             "models.verification.model",
+            "models.verification.tier",
+            "models.verification.provider",
+            "models.verification.endpoint",
+            "models.triage.resolved",
             "models.triage.model",
+            "models.triage.tier",
+            "models.triage.provider",
+            "models.triage.endpoint",
+            "models.creator.resolved",
             "models.creator.model",
+            "models.creator.tier",
+            "models.creator.provider",
+            "models.creator.endpoint",
+            "models.compactor.resolved",
             "models.compactor.model",
+            "models.compactor.tier",
+            "models.compactor.provider",
+            "models.compactor.endpoint",
         ];
 
         for required in &required_keys {
@@ -10359,6 +10589,7 @@ mod tui_config_panel_tests {
                 || key.ends_with(".is_default")
                 || key.starts_with("endpoint.")
                 || key.starts_with("action.")
+                || key.ends_with(".resolved")
             {
                 continue;
             }
@@ -10443,6 +10674,175 @@ mod tui_config_panel_tests {
         let config = Config::load(&app.workgraph_dir).unwrap();
         let default_model = config.models.default.as_ref().and_then(|c| c.model.clone());
         assert_eq!(default_model, None);
+    }
+
+    #[test]
+    fn test_config_panel_tier_roundtrip() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        // Set fast tier to a custom model
+        let key = "tiers.fast";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "custom-fast-model".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(config.tiers.fast, Some("custom-fast-model".to_string()));
+
+        // Set standard tier
+        app.load_config_panel();
+        let key = "tiers.standard";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "custom-standard".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(config.tiers.standard, Some("custom-standard".to_string()));
+
+        // Set premium tier
+        app.load_config_panel();
+        let key = "tiers.premium";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "custom-premium".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(config.tiers.premium, Some("custom-premium".to_string()));
+    }
+
+    #[test]
+    fn test_config_panel_model_routing_tier_and_endpoint() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        // Set a tier override for triage role
+        let key = "models.triage.tier";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        // Tier is a Choice: (inherit), fast, standard, premium
+        // Select "premium" (index 3)
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.choice_index = 3; // "premium"
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let triage_tier = config
+            .models
+            .triage
+            .as_ref()
+            .and_then(|c| c.tier);
+        assert_eq!(triage_tier, Some(workgraph::config::Tier::Premium));
+
+        // Set an endpoint for evaluator
+        app.load_config_panel();
+        let key = "models.evaluator.endpoint";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "openrouter".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let eval_endpoint = config
+            .models
+            .evaluator
+            .as_ref()
+            .and_then(|c| c.endpoint.clone());
+        assert_eq!(eval_endpoint, Some("openrouter".to_string()));
+
+        // Clear the tier (set to inherit)
+        app.load_config_panel();
+        let key = "models.triage.tier";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.choice_index = 0; // "(inherit)"
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let triage_tier = config
+            .models
+            .triage
+            .as_ref()
+            .and_then(|c| c.tier);
+        assert_eq!(triage_tier, None);
+
+        // Clear endpoint (set to inherit)
+        app.load_config_panel();
+        let key = "models.evaluator.endpoint";
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
+        app.config_panel.selected = idx;
+        app.config_panel.editing = true;
+        app.config_panel.edit_buffer = "(inherit)".to_string();
+        app.save_config_entry();
+
+        let config = Config::load(&app.workgraph_dir).unwrap();
+        let eval_endpoint = config
+            .models
+            .evaluator
+            .as_ref()
+            .and_then(|c| c.endpoint.clone());
+        assert_eq!(eval_endpoint, None);
+    }
+
+    #[test]
+    fn test_config_panel_resolved_model_display() {
+        let (mut app, _temp) = build_config_test_app();
+        app.load_config_panel();
+
+        // The resolved entry for triage should exist and show the resolved model
+        let resolved_key = "models.triage.resolved";
+        let entry = app
+            .config_panel
+            .entries
+            .iter()
+            .find(|e| e.key == resolved_key)
+            .expect("resolved entry for triage should exist");
+        // Label should contain "Triage" and an arrow
+        assert!(entry.label.contains("Triage"), "label should contain role name");
+        assert!(entry.label.contains("→"), "label should contain arrow for resolved display");
     }
 }
 
