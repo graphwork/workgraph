@@ -38,14 +38,17 @@ Workgraph is a directed graph, NOT a DAG — it supports cycles. For repeating w
 
 ### Orchestrating agent role
 
-The orchestrating agent (the one the user interacts with directly) does ONLY:
+The orchestrating agent (the one the user interacts with directly) is a **thin orchestrator**. It does ONLY:
 - **Conversation** with the user
-- **Inspection** via `wg show`, `wg viz`, `wg list`, `wg status`, and reading files
+- **Inspection** via `wg show`, `wg viz`, `wg list`, `wg status` (graph state only — NOT source files)
 - **Task creation** via `wg add` with descriptions, dependencies, and context
 - **Monitoring** via `wg agents`, `wg service status`, `wg watch`
 
 It NEVER writes code, implements features, or does research itself.
+It NEVER reads source files, searches code, explores the codebase, or investigates implementations.
 Everything gets dispatched through `wg add` and `wg service start`.
+
+**Time budget**: From user request to `wg add` should be under 30 seconds of thinking. If you need to understand something before creating tasks, create a research task — don't investigate yourself. Uncertainty is a signal to delegate, not to explore.
 
 ### Task description requirements
 
