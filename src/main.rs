@@ -1423,6 +1423,11 @@ fn main() -> Result<()> {
                 strategy,
                 budget,
                 model,
+                autopoietic,
+                max_iterations,
+                cycle_delay,
+                force_fanout,
+                single_shot,
             } => commands::evolve::run(
                 &workgraph_dir,
                 dry_run,
@@ -1430,6 +1435,11 @@ fn main() -> Result<()> {
                 budget,
                 model.as_deref(),
                 cli.json,
+                autopoietic,
+                max_iterations,
+                cycle_delay,
+                force_fanout,
+                single_shot,
             ),
             EvolveCommands::Review {
                 command: review_cmd,

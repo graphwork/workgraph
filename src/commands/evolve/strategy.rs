@@ -35,7 +35,29 @@ impl Strategy {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    /// Returns all individual strategies (excludes `All`).
+    pub fn all_individual() -> Vec<Self> {
+        vec![
+            Self::Mutation,
+            Self::Crossover,
+            Self::GapAnalysis,
+            Self::Retirement,
+            Self::MotivationTuning,
+            Self::ComponentMutation,
+            Self::Randomisation,
+            Self::BizarreIdeation,
+        ]
+    }
+
+    /// Whether this strategy can produce useful output without any evaluations.
+    pub fn needs_no_evals(self) -> bool {
+        matches!(
+            self,
+            Self::GapAnalysis | Self::Randomisation | Self::BizarreIdeation
+        )
+    }
+
+    pub fn label(self) -> &'static str {
         match self {
             Self::Mutation => "mutation",
             Self::Crossover => "crossover",
@@ -211,6 +233,15 @@ pub struct EvolverOperation {
     /// For bizarre ideation: the prompt used to generate the new primitive.
     #[serde(default)]
     pub ideation_prompt: Option<String>,
+
+    // -- Fan-out analyzer fields --
+    /// Analyzer's confidence in this operation (0.0-1.0).
+    /// Used by synthesizer for priority scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// Expected impact description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_impact: Option<String>,
 }
 
 /// Top-level structured output from the evolver agent.

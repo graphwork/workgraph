@@ -1821,6 +1821,26 @@ pub enum EvolveCommands {
         /// Model to use for the evolver agent
         #[arg(long)]
         model: Option<String>,
+
+        /// Enable autopoietic cycle mode (back-edge from evaluate to partition)
+        #[arg(long, alias = "cycle")]
+        autopoietic: bool,
+
+        /// Max cycle iterations (default: 3, requires --autopoietic)
+        #[arg(long)]
+        max_iterations: Option<u32>,
+
+        /// Seconds between cycle iterations (default: 3600, requires --autopoietic)
+        #[arg(long)]
+        cycle_delay: Option<u64>,
+
+        /// Force fan-out mode even with <50 evaluations
+        #[arg(long)]
+        force_fanout: bool,
+
+        /// Force legacy single-shot mode even with ≥50 evaluations
+        #[arg(long, conflicts_with = "force_fanout")]
+        single_shot: bool,
     },
 
     /// Review deferred evolver operations (list, approve, reject)

@@ -1,6 +1,8 @@
 mod deferred;
+mod fanout;
 mod meta;
 mod operations;
+pub(crate) mod partition;
 mod parser;
 mod prompt;
 mod strategy;
@@ -27,6 +29,7 @@ use parser::parse_evolver_output;
 use prompt::{build_evolver_prompt, build_performance_summary, load_evolver_skills};
 
 /// Run `wg evolve` — trigger an evolution cycle on agency roles and tradeoffs.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     dir: &Path,
     dry_run: bool,
@@ -34,6 +37,11 @@ pub fn run(
     budget: Option<u32>,
     model: Option<&str>,
     json: bool,
+    autopoietic: bool,
+    max_iterations: Option<u32>,
+    cycle_delay: Option<u64>,
+    force_fanout: bool,
+    single_shot: bool,
 ) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
@@ -92,11 +100,44 @@ pub fn run(
         bail!("No roles or tradeoffs found. Run `wg agency init` to seed starters.");
     }
 
+    // Load config for evolver identity and model (needed for routing decision)
+    let config = Config::load_or_default(dir);
+
+    // Route to fan-out mode or single-shot mode based on eval count and flags
+    let use_fanout = if single_shot {
+        false
+    } else if autopoietic || force_fanout {
+        true
+    } else {
+        evaluations.len() >= fanout::FANOUT_THRESHOLD
+    };
+
+    if use_fanout {
+        let strategy_str = match strategy {
+            Strategy::All => None,
+            other => Some(other.label()),
+        };
+        return fanout::run_fanout(
+            dir,
+            dry_run,
+            strategy_str,
+            budget,
+            model,
+            json,
+            autopoietic,
+            max_iterations,
+            cycle_delay,
+            &roles,
+            &tradeoffs,
+            &evaluations,
+            &config,
+        );
+    }
+
+    // === Single-shot legacy mode ===
+
     // Load evolver skill documents
     let skill_docs = load_evolver_skills(&skills_dir, strategy)?;
-
-    // Load config for evolver identity and model
-    let config = Config::load_or_default(dir);
 
     // Determine model: CLI flag > model routing > legacy config > agent.model
     let model = model
