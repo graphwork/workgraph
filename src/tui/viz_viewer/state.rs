@@ -2267,8 +2267,15 @@ impl VizApp {
             last_chat_outbox_mtime: None,
         };
         app.start_fs_watcher();
-        app.load_viz();
-        app.load_stats();
+        // Load graph once for both viz and stats on startup.
+        let graph_path = app.workgraph_dir.join("graph.jsonl");
+        if let Ok(graph) = load_graph(&graph_path) {
+            app.load_viz_from_graph(&graph);
+            app.load_stats_from_graph(&graph);
+        } else {
+            app.load_viz();
+            app.load_stats();
+        }
         app.load_agent_monitor();
         app.check_coordinator_status();
         app.update_service_health();
@@ -2279,6 +2286,18 @@ impl VizApp {
 
     /// Load viz output by calling the viz module directly.
     pub fn load_viz(&mut self) {
+        let viz_result = self.generate_viz();
+        self.apply_viz_result(viz_result);
+    }
+
+    /// Load viz output from a pre-loaded graph, avoiding a redundant disk read.
+    pub fn load_viz_from_graph(&mut self, graph: &workgraph::graph::WorkGraph) {
+        let viz_result = self.generate_viz_from_graph(graph);
+        self.apply_viz_result(viz_result);
+    }
+
+    /// Apply a viz result (shared implementation for load_viz and load_viz_from_graph).
+    fn apply_viz_result(&mut self, viz_result: Result<VizOutput>) {
         // Smart-follow: snapshot whether the user is at the bottom before reloading.
         let was_at_bottom = self.smart_follow_active || self.initial_load;
 
@@ -2292,7 +2311,7 @@ impl VizApp {
             Some(visible_pos as isize - old_offset_y as isize)
         });
 
-        match self.generate_viz() {
+        match viz_result {
             Ok(viz_output) => {
                 self.lines = viz_output
                     .text
@@ -2484,6 +2503,17 @@ impl VizApp {
         opts.show_internal = self.show_system_tasks;
         opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
         crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
+    }
+
+    /// Generate viz output from a pre-loaded graph, avoiding a redundant disk read.
+    fn generate_viz_from_graph(
+        &self,
+        graph: &workgraph::graph::WorkGraph,
+    ) -> Result<VizOutput> {
+        let mut opts = self.viz_options.clone();
+        opts.show_internal = self.show_system_tasks;
+        opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
+        crate::commands::viz::generate_viz_output_from_graph(graph, &self.workgraph_dir, &opts)
     }
 
     /// Update scroll content bounds based on current filter state.
@@ -3147,7 +3177,11 @@ impl VizApp {
                 return;
             }
         };
+        self.load_stats_from_graph(&graph);
+    }
 
+    /// Load task counts and token usage from a pre-loaded graph.
+    pub fn load_stats_from_graph(&mut self, graph: &workgraph::graph::WorkGraph) {
         let mut counts = TaskCounts::default();
         let mut total_usage = TokenUsage {
             cost_usd: 0.0,
@@ -3454,74 +3488,10 @@ impl VizApp {
             return false;
         }
 
-        let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-            .and_then(|m| m.modified())
-            .ok();
-
-        let graph_changed = current_mtime != self.last_graph_mtime;
-        let needs_token_refresh = self.task_counts.in_progress > 0;
-
-        if graph_changed || needs_token_refresh {
-            // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
-            // recompute_trace() -> invalidate_hud() clears hud_detail.
-            let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-            let prev_hud_scroll = self.hud_scroll;
-
-            if graph_changed {
-                self.last_graph_mtime = current_mtime;
-                // Update smart-follow state before reloading: track if user is at bottom.
-                self.smart_follow_active = self.scroll.is_at_bottom();
-                self.load_viz();
-                if !self.search_input.is_empty() {
-                    self.rerun_search();
-                }
-            }
-            self.load_stats();
-            self.load_agent_monitor();
-            self.update_agent_streams();
-            // Update firehose with new agent output if Firehose tab is active.
-            if self.right_panel_tab == RightPanelTab::Firehose {
-                self.update_firehose();
-            }
-            // Preserve HUD scroll position when the selected task hasn't changed.
-            self.invalidate_hud();
-            // Eagerly reload so we can restore scroll before render.
-            self.load_hud_detail();
-            if prev_hud_task.is_some()
-                && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-            {
-                self.hud_scroll = prev_hud_scroll;
-            }
-            // Reload log pane content if Log tab is active.
-            if self.right_panel_tab == RightPanelTab::Log {
-                self.invalidate_log_pane();
-                self.load_log_pane();
-            }
-            // Reload messages panel if Messages tab is active.
-            // Save draft BEFORE invalidating — invalidate clears task_id,
-            // which would prevent save_message_draft() from finding the task.
-            if self.right_panel_tab == RightPanelTab::Messages {
-                self.save_message_draft();
-                self.invalidate_messages_panel();
-                self.load_messages_panel();
-            }
-            // Reload agency lifecycle if Agency tab is active.
-            if self.right_panel_tab == RightPanelTab::Agency {
-                self.invalidate_agency_lifecycle();
-                self.load_agency_lifecycle();
-            }
-            // Refresh file browser tree if Files tab is active.
-            if self.right_panel_tab == RightPanelTab::Files
-                && let Some(ref mut fb) = self.file_browser
-            {
-                fb.refresh();
-            }
-            // Refresh coordinator log if CoordLog tab is active.
-            if self.right_panel_tab == RightPanelTab::CoordLog {
-                self.load_coord_log();
-            }
-            self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
-        }
+        // --- Lightweight timer updates (always run on 1-second tick) ---
+        // These must execute BEFORE the heavy graph reload so activity
+        // indicators stay fresh even when the reload is slow.
+        self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
 
         // Update coordinator status and poll for new chat messages on every refresh tick.
         if self.chat.awaiting_response || self.right_panel_tab == RightPanelTab::Chat {
@@ -3537,7 +3507,97 @@ impl VizApp {
             self.update_time_counters();
         }
 
+        // --- Heavy data refresh (graph-dependent) ---
+        let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
+            .and_then(|m| m.modified())
+            .ok();
+
+        let graph_changed = current_mtime != self.last_graph_mtime;
+        let needs_token_refresh = self.task_counts.in_progress > 0;
+
+        if graph_changed || needs_token_refresh {
+            // Load graph once and share between viz and stats (avoids double read+parse).
+            let graph_path = self.workgraph_dir.join("graph.jsonl");
+            if let Ok(graph) = load_graph(&graph_path) {
+                // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
+                // recompute_trace() -> invalidate_hud() clears hud_detail.
+                let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
+                let prev_hud_scroll = self.hud_scroll;
+
+                if graph_changed {
+                    self.last_graph_mtime = current_mtime;
+                    // Update smart-follow state before reloading: track if user is at bottom.
+                    self.smart_follow_active = self.scroll.is_at_bottom();
+                    self.load_viz_from_graph(&graph);
+                    if !self.search_input.is_empty() {
+                        self.rerun_search();
+                    }
+                }
+                self.load_stats_from_graph(&graph);
+                self.load_agent_monitor();
+                self.update_agent_streams();
+                // Update firehose with new agent output if Firehose tab is active.
+                if self.right_panel_tab == RightPanelTab::Firehose {
+                    self.update_firehose();
+                }
+                // Preserve HUD scroll position when the selected task hasn't changed.
+                self.invalidate_hud();
+                // Eagerly reload so we can restore scroll before render.
+                self.load_hud_detail();
+                if prev_hud_task.is_some()
+                    && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
+                {
+                    self.hud_scroll = prev_hud_scroll;
+                }
+                // Reload log pane content if Log tab is active.
+                if self.right_panel_tab == RightPanelTab::Log {
+                    self.invalidate_log_pane();
+                    self.load_log_pane();
+                }
+                // Reload messages panel if Messages tab is active.
+                // Save draft BEFORE invalidating — invalidate clears task_id,
+                // which would prevent save_message_draft() from finding the task.
+                if self.right_panel_tab == RightPanelTab::Messages {
+                    self.save_message_draft();
+                    self.invalidate_messages_panel();
+                    self.load_messages_panel();
+                }
+                // Reload agency lifecycle if Agency tab is active.
+                if self.right_panel_tab == RightPanelTab::Agency {
+                    self.invalidate_agency_lifecycle();
+                    self.load_agency_lifecycle();
+                }
+                // Refresh file browser tree if Files tab is active.
+                if self.right_panel_tab == RightPanelTab::Files
+                    && let Some(ref mut fb) = self.file_browser
+                {
+                    fb.refresh();
+                }
+                // Refresh coordinator log if CoordLog tab is active.
+                if self.right_panel_tab == RightPanelTab::CoordLog {
+                    self.load_coord_log();
+                }
+            }
+        }
+
         self.last_refresh = Instant::now();
+
+        // Re-check: if changes arrived during the refresh, reload once more
+        // so rapid-fire changes don't require a full extra tick to propagate.
+        if self.fs_change_pending.swap(false, Ordering::Relaxed) {
+            let fresh_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
+                .and_then(|m| m.modified())
+                .ok();
+            if fresh_mtime != self.last_graph_mtime {
+                self.last_graph_mtime = fresh_mtime;
+                let graph_path = self.workgraph_dir.join("graph.jsonl");
+                if let Ok(graph) = load_graph(&graph_path) {
+                    self.load_viz_from_graph(&graph);
+                    self.load_stats_from_graph(&graph);
+                }
+            }
+        }
+
         true
     }
 
@@ -5042,11 +5102,21 @@ impl VizApp {
             .and_then(|m| m.modified())
             .ok();
         self.smart_follow_active = self.scroll.is_at_bottom();
-        self.load_viz();
-        if !self.search_input.is_empty() {
-            self.rerun_search();
+        // Load graph once and share between viz and stats.
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        if let Ok(graph) = load_graph(&graph_path) {
+            self.load_viz_from_graph(&graph);
+            if !self.search_input.is_empty() {
+                self.rerun_search();
+            }
+            self.load_stats_from_graph(&graph);
+        } else {
+            self.load_viz();
+            if !self.search_input.is_empty() {
+                self.rerun_search();
+            }
+            self.load_stats();
         }
-        self.load_stats();
         self.load_agent_monitor();
         self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
         self.last_refresh = Instant::now();
