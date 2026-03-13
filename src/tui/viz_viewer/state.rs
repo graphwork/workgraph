@@ -2739,13 +2739,18 @@ impl VizApp {
             self.cycle_set = members.clone();
         }
 
-        // Invalidate HUD, lifecycle, and messages panel so they reload for the new selection.
+        // Invalidate HUD, lifecycle, and log pane so they reload for the new selection.
         self.invalidate_hud();
         self.invalidate_agency_lifecycle();
         self.invalidate_log_pane();
-        // Save message draft before invalidating — invalidate clears task_id.
-        self.save_message_draft();
-        self.invalidate_messages_panel();
+        // Only invalidate the messages panel when the selected task actually changed.
+        // Unconditional invalidation caused the editor to be re-created on every
+        // graph tick (via save_draft → invalidate → load → restore_draft), which
+        // reset the cursor to position 0 and made typing impossible.
+        if self.messages_panel.task_id.as_deref() != Some(&selected_id) {
+            self.save_message_draft();
+            self.invalidate_messages_panel();
+        }
     }
 
     /// Compute annotation hit regions from `plain_lines`, `annotation_map`, and `node_line_map`.
@@ -3653,14 +3658,11 @@ impl VizApp {
                     self.invalidate_log_pane();
                     self.load_log_pane();
                 }
-                // Reload messages panel if Messages tab is active.
-                // Save draft BEFORE invalidating — invalidate clears task_id,
-                // which would prevent save_message_draft() from finding the task.
-                if self.right_panel_tab == RightPanelTab::Messages {
-                    self.save_message_draft();
-                    self.invalidate_messages_panel();
-                    self.load_messages_panel();
-                }
+                // Messages panel: NOT reloaded here. Message changes are detected
+                // by the fast-path mtime check (above), and task-selection changes
+                // are handled by recompute_trace (inside load_viz_from_graph).
+                // Reloading here on every tick caused the editor to be re-created
+                // each second, resetting the cursor to position 0.
                 // Reload agency lifecycle if Agency tab is active.
                 if self.right_panel_tab == RightPanelTab::Agency {
                     self.invalidate_agency_lifecycle();
