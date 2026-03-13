@@ -2199,11 +2199,95 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             )));
             line_to_message.push(None);
         } else {
-            // Show progressive streaming text from the coordinator.
-            let style = Style::default().fg(Color::Cyan);
-            for line in app.chat.streaming_text.lines() {
-                rendered_lines.push(Line::from(Span::styled(format!("  {}", line), style)));
-                line_to_message.push(None);
+            // Show progressive streaming text from the coordinator with markdown
+            // rendering and word wrapping, matching finalized coordinator messages.
+            let prefix = "↯ ";
+            let prefix_len = prefix.width();
+            let indent = " ".repeat(prefix_len);
+            let text_width = content_width.saturating_sub(prefix_len);
+
+            let md_lines = markdown_to_lines(&app.chat.streaming_text, text_width);
+
+            // Wrap with tool-box awareness (same logic as finalized coordinator messages).
+            let border_style = Style::default().fg(Color::DarkGray);
+            let tool_name_style = Style::default()
+                .fg(Color::Indexed(75))
+                .add_modifier(Modifier::BOLD);
+            let tool_content_style = Style::default().fg(Color::Indexed(252));
+
+            let wrapped: Vec<Line> = if md_lines.is_empty() {
+                vec![Line::from("")]
+            } else {
+                let mut out: Vec<Line> = Vec::new();
+                for line in &md_lines {
+                    let lt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    if lt.starts_with("┌─") {
+                        let after_prefix = lt.get(7..).unwrap_or("");
+                        let name_end =
+                            after_prefix.find(['─', ' ']).unwrap_or(after_prefix.len());
+                        let tool_name = after_prefix[..name_end].trim();
+                        let rest_start = 7 + name_end;
+                        let rest = lt.get(rest_start..).unwrap_or("");
+                        out.push(Line::from(vec![
+                            Span::styled("┌─ ", border_style),
+                            Span::styled(tool_name.to_string(), tool_name_style),
+                            Span::styled(format!(" {}", rest.trim_start()), border_style),
+                        ]));
+                    } else if lt.starts_with("└─") {
+                        out.push(Line::from(Span::styled(lt, border_style)));
+                    } else if lt.starts_with("│ ") {
+                        let content = lt.get(4..).unwrap_or("");
+                        let pipe_display_w: usize = 2;
+                        let cont_display_w: usize = 4;
+                        let wrap_w = text_width.saturating_sub(cont_display_w);
+                        if wrap_w == 0
+                            || content.width() <= text_width.saturating_sub(pipe_display_w)
+                        {
+                            out.push(Line::from(vec![
+                                Span::styled("│ ", border_style),
+                                Span::styled(content.to_string(), tool_content_style),
+                            ]));
+                        } else {
+                            let wrapped_content = word_wrap(content, wrap_w);
+                            for (i, w) in wrapped_content.iter().enumerate() {
+                                if i == 0 {
+                                    out.push(Line::from(vec![
+                                        Span::styled("│ ", border_style),
+                                        Span::styled(w.to_string(), tool_content_style),
+                                    ]));
+                                } else {
+                                    out.push(Line::from(vec![
+                                        Span::styled("│   ", border_style),
+                                        Span::styled(w.to_string(), tool_content_style),
+                                    ]));
+                                }
+                            }
+                        }
+                    } else {
+                        out.extend(wrap_line_spans(std::slice::from_ref(line), text_width));
+                    }
+                }
+                out
+            };
+
+            // Render with prefix on first line, indent on continuation lines.
+            let role_style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            let mut first_line = true;
+            for line in &wrapped {
+                if first_line {
+                    let mut spans = vec![Span::styled(prefix, role_style)];
+                    spans.extend(line.spans.iter().cloned());
+                    rendered_lines.push(Line::from(spans));
+                    line_to_message.push(None);
+                    first_line = false;
+                } else {
+                    let mut spans = vec![Span::raw(indent.clone())];
+                    spans.extend(line.spans.iter().cloned());
+                    rendered_lines.push(Line::from(spans));
+                    line_to_message.push(None);
+                }
             }
             // Append a blinking cursor to indicate still generating.
             rendered_lines.push(Line::from(Span::styled(
