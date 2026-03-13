@@ -532,7 +532,7 @@ pub fn run(
 mod tests {
     use super::operations::apply_operation;
     use super::parser::extract_json;
-    use super::prompt::{build_evolver_prompt, build_performance_summary};
+    use super::prompt::{build_analyzer_prompt, build_evolver_prompt, build_performance_summary};
     use super::strategy::{EvolverOperation, EvolverOutput};
     use super::*;
     use workgraph::agency::{AccessControl, Lineage, PerformanceRecord, Role, TradeoffConfig};
@@ -557,7 +557,160 @@ mod tests {
             Strategy::MotivationTuning
         );
         assert_eq!(Strategy::from_str("all").unwrap(), Strategy::All);
+        assert_eq!(
+            Strategy::from_str("coordinator").unwrap(),
+            Strategy::CoordinatorEvolution
+        );
+        assert_eq!(
+            Strategy::from_str("coordinator-evolution").unwrap(),
+            Strategy::CoordinatorEvolution
+        );
         assert!(Strategy::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_build_analyzer_prompt_per_strategy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agency_dir = tmp.path().join("agency");
+        std::fs::create_dir_all(&agency_dir).unwrap();
+
+        let strategies = Strategy::all_individual();
+        let mut prompts = Vec::new();
+
+        for strategy in &strategies {
+            let prompt = build_analyzer_prompt(
+                *strategy,
+                "test-run-001",
+                "# Test Skill Doc\nSome guidelines.",
+                "10 roles, 50 evaluations",
+                &agency_dir,
+            );
+
+            // Each prompt should mention its strategy
+            assert!(
+                prompt.contains(strategy.label()),
+                "Prompt for {} should mention its label",
+                strategy.label()
+            );
+
+            // Each prompt should have the output format section
+            assert!(
+                prompt.contains("Required Output Format"),
+                "Prompt for {} should have output format",
+                strategy.label()
+            );
+
+            // Each prompt should reference the run ID
+            assert!(
+                prompt.contains("test-run-001"),
+                "Prompt for {} should reference run ID",
+                strategy.label()
+            );
+
+            // Each prompt should have analysis instructions
+            assert!(
+                prompt.contains("Analysis Instructions"),
+                "Prompt for {} should have analysis instructions",
+                strategy.label()
+            );
+
+            // Each prompt should have available operations
+            assert!(
+                prompt.contains("Available Operations"),
+                "Prompt for {} should list available operations",
+                strategy.label()
+            );
+
+            // Each prompt should have guardrails
+            assert!(
+                prompt.contains("Guardrails"),
+                "Prompt for {} should have guardrails",
+                strategy.label()
+            );
+
+            prompts.push(prompt);
+        }
+
+        // Verify prompts are distinct (different analysis instructions per strategy)
+        for i in 0..prompts.len() {
+            for j in (i + 1)..prompts.len() {
+                assert_ne!(
+                    prompts[i], prompts[j],
+                    "Prompts for {} and {} should be different",
+                    strategies[i].label(),
+                    strategies[j].label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_analyzer_prompt_coordinator_includes_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agency_dir = tmp.path().join("agency");
+        let prompt_dir = agency_dir.join("coordinator-prompt");
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        std::fs::write(
+            prompt_dir.join("evolved-amendments.md"),
+            "## Existing Amendment\nSome rule here.",
+        )
+        .unwrap();
+
+        let prompt = build_analyzer_prompt(
+            Strategy::CoordinatorEvolution,
+            "test-run-002",
+            "5 coordinator evaluations",
+            "",
+            &agency_dir,
+        );
+
+        // Should include the existing coordinator prompt file content
+        assert!(
+            prompt.contains("Existing Amendment"),
+            "Coordinator prompt should include current evolved-amendments content"
+        );
+        assert!(
+            prompt.contains("modify_coordinator_prompt"),
+            "Coordinator prompt should mention the modify operation"
+        );
+    }
+
+    #[test]
+    fn test_analyzer_prompt_mutation_operations() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agency_dir = tmp.path().join("agency");
+        std::fs::create_dir_all(&agency_dir).unwrap();
+
+        let prompt = build_analyzer_prompt(
+            Strategy::Mutation,
+            "test-run-003",
+            "5 roles with moderate scores",
+            "# Role Mutation\nGuidelines here.",
+            &agency_dir,
+        );
+
+        assert!(prompt.contains("wording_mutation"));
+        assert!(prompt.contains("component_substitution"));
+        assert!(prompt.contains("Do not mutate roles with fewer than 3"));
+    }
+
+    #[test]
+    fn test_analyzer_prompt_retirement_operations() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agency_dir = tmp.path().join("agency");
+        std::fs::create_dir_all(&agency_dir).unwrap();
+
+        let prompt = build_analyzer_prompt(
+            Strategy::Retirement,
+            "test-run-004",
+            "3 low-performing roles",
+            "# Retirement\nGuidelines.",
+            &agency_dir,
+        );
+
+        assert!(prompt.contains("retire_role"));
+        assert!(prompt.contains("retire_motivation"));
+        assert!(prompt.contains("conservative"));
     }
 
     #[test]

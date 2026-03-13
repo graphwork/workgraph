@@ -192,6 +192,7 @@ pub(crate) fn load_evolver_skills(
         Strategy::ComponentMutation => vec!["component-mutation.md"],
         Strategy::Randomisation => vec!["randomisation.md"],
         Strategy::BizarreIdeation => vec!["bizarre-ideation.md"],
+        Strategy::CoordinatorEvolution => vec!["coordinator-evolution.md"],
         Strategy::All => vec![
             "role-mutation.md",
             "role-crossover.md",
@@ -201,6 +202,7 @@ pub(crate) fn load_evolver_skills(
             "component-mutation.md",
             "randomisation.md",
             "bizarre-ideation.md",
+            "coordinator-evolution.md",
         ],
     };
 
@@ -462,4 +464,337 @@ pub(crate) fn build_evolver_prompt(
     out.push_str("**Important:** Each new/modified entity gets lineage tracking automatically. Just provide the IDs.\n");
 
     out
+}
+
+/// Build a per-strategy analyzer prompt for fan-out mode.
+///
+/// Unlike `build_evolver_prompt` (which is the monolithic single-shot prompt),
+/// this produces a focused prompt for a single strategy analyzer task, including
+/// only the operations and instructions relevant to that strategy.
+pub(crate) fn build_analyzer_prompt(
+    strategy: Strategy,
+    run_id: &str,
+    skill_doc: &str,
+    slice_summary: &str,
+    agency_dir: &Path,
+) -> String {
+    let mut out = String::new();
+
+    // Header
+    out.push_str(&format!(
+        "# Evolver Analyzer: {}\n\n",
+        strategy.label()
+    ));
+    out.push_str(&format!(
+        "You are a specialized evolution analyzer focused on the **{}** strategy.\n\
+         Your job is to analyze a pre-filtered data slice and propose concrete operations.\n\n",
+        strategy.label()
+    ));
+
+    // Strategy-specific analysis instructions
+    out.push_str("## Analysis Instructions\n\n");
+    out.push_str(&strategy_specific_instructions(strategy));
+    out.push('\n');
+
+    // Input data
+    out.push_str("## Input Data\n\n");
+    out.push_str(&format!(
+        "Read your data slice from: `.workgraph/evolve-runs/{}/{}-slice.json`\n\n",
+        run_id,
+        strategy.label()
+    ));
+    out.push_str(&format!("Summary: {}\n\n", slice_summary));
+
+    // Skill document
+    if !skill_doc.is_empty() {
+        out.push_str("## Strategy Skill Document\n\n");
+        out.push_str(
+            "Follow these guidelines carefully — they define valid operations and guardrails.\n\n",
+        );
+        out.push_str(skill_doc);
+        out.push_str("\n\n");
+    }
+
+    // Strategy-specific context (e.g., coordinator prompt files)
+    let extra_context = strategy_specific_context(strategy, agency_dir);
+    if !extra_context.is_empty() {
+        out.push_str("## Additional Context\n\n");
+        out.push_str(&extra_context);
+        out.push('\n');
+    }
+
+    // Available operations for this strategy
+    out.push_str("## Available Operations\n\n");
+    out.push_str(&strategy_allowed_operations(strategy));
+    out.push('\n');
+
+    // Output format
+    out.push_str("## Required Output Format\n\n");
+    out.push_str(&format!(
+        "Write a JSON file to `.workgraph/evolve-runs/{}/{}-proposals.json`:\n\n",
+        run_id,
+        strategy.label()
+    ));
+    out.push_str(
+        "```json\n\
+         {\n  \
+           \"strategy\": \"<strategy-label>\",\n  \
+           \"run_id\": \"<run-id>\",\n  \
+           \"operations\": [\n    \
+             {\n      \
+               \"op\": \"<operation_type>\",\n      \
+               \"target_id\": \"<existing entity ID>\",\n      \
+               \"rationale\": \"<why this operation>\",\n      \
+               \"confidence\": <0.0-1.0>,\n      \
+               \"expected_impact\": \"<what improvement is expected>\"\n      \
+               // ... strategy-specific fields per skill doc\n    \
+             }\n  \
+           ],\n  \
+           \"analysis_summary\": \"<brief summary of findings>\"\n\
+         }\n\
+         ```\n\n",
+    );
+
+    // Guardrails
+    out.push_str("## Guardrails\n\n");
+    out.push_str(&strategy_guardrails(strategy));
+
+    out
+}
+
+fn strategy_specific_instructions(strategy: Strategy) -> String {
+    match strategy {
+        Strategy::Mutation => "\
+1. Read the data slice — it contains roles with **moderate** scores (0.25–0.70) that have room for improvement.
+2. For each role, examine dimensional scores to find specific weaknesses (fidelity, correctness, etc.).
+3. Propose **targeted mutations**: wording changes to descriptions, component swaps, or outcome refinements.
+4. Prefer minimal perturbations — change one thing at a time per role so improvements can be attributed.
+5. Focus on roles where the improvement signal is clearest (large gap between best and worst dimensions).
+".to_string(),
+
+        Strategy::Crossover => "\
+1. Read the data slice — it contains **high-performing** roles (≥0.55 avg) that are candidates for crossover.
+2. Identify pairs of roles with **complementary strengths**: one excels where the other is weaker.
+3. Propose crossover operations that combine the best components/descriptions from each parent.
+4. The child role should address a gap that neither parent fills alone.
+5. Avoid crossing roles that are too similar — diversity is the goal.
+".to_string(),
+
+        Strategy::GapAnalysis => "\
+1. Read the data slice — it contains the full role and tradeoff inventory (no raw evaluations).
+2. Analyze **coverage gaps**: what task types, skills, or problem domains lack a well-suited role?
+3. Look for missing combinations: are there tradeoffs without any high-performing role pairing?
+4. Propose **new roles** (`create_role`) or **new tradeoffs** (`create_motivation`) to fill gaps.
+5. Consider the project's actual workload — what kind of tasks appear in evaluations?
+".to_string(),
+
+        Strategy::Retirement => "\
+1. Read the data slice — it contains roles and tradeoffs with **poor** performance (<0.35 avg, ≥5 tasks).
+2. Verify the signal is real: enough evaluations, consistent low scores (not just one bad run).
+3. Check for dependencies: is this role/tradeoff used by a meta-agent (assigner/evaluator/evolver)?
+4. Propose `retire_role` or `retire_motivation` for entities that are clearly underperforming.
+5. This is a **conservative** operation — only retire when confident. When in doubt, leave it for mutation instead.
+".to_string(),
+
+        Strategy::MotivationTuning => "\
+1. Read the data slice — it contains tradeoffs with sufficient evaluation data (≥2 tasks).
+2. For each tradeoff, analyze which roles it pairs well with and which it doesn't.
+3. Look for tradeoffs whose constraints are too tight (blocking good work) or too loose (not providing enough guidance).
+4. Propose `modify_motivation` to adjust acceptable/unacceptable tradeoffs lists.
+5. Consider creating new tradeoff variants for specific role pairings that consistently underperform.
+".to_string(),
+
+        Strategy::ComponentMutation => "\
+1. Read the data slice — it contains roles that have components (skills) and evaluation data.
+2. Analyze which components correlate with strong/weak dimensional scores.
+3. Look for components that appear in low-scoring roles but not high-scoring ones (and vice versa).
+4. Propose `component_substitution`, `config_add_component`, or `config_remove_component`.
+5. Prefer swapping one component at a time to isolate the effect.
+".to_string(),
+
+        Strategy::Randomisation => "\
+1. Read the data slice — it contains the full inventory of roles and tradeoffs.
+2. Propose **random compositions**: new agents from existing role+tradeoff combinations not yet tried.
+3. Use `random_compose_role` to create roles from random component subsets.
+4. Use `random_compose_agent` to create agents from novel role+tradeoff pairings.
+5. The goal is exploration — these compositions test unexplored regions of the design space.
+".to_string(),
+
+        Strategy::BizarreIdeation => "\
+1. Read the data slice — it contains a curated context of top and bottom performers.
+2. Generate **novel, unconventional** primitives that break existing patterns.
+3. Use `bizarre_ideation` operations to create components, outcomes, or tradeoffs that are deliberately different.
+4. Think laterally: what skills, constraints, or goals has the system never considered?
+5. High creativity is more important than high confidence — the synthesizer will filter.
+".to_string(),
+
+        Strategy::CoordinatorEvolution => "\
+1. Read the data slice — it contains coordinator-relevant evaluations and the full role/tradeoff inventory.
+2. Analyze patterns in task decomposition quality, dependency accuracy, and description completeness.
+3. Look for recurring issues: over-decomposition, missing edges, vague task descriptions, poor prioritization.
+4. Propose `modify_coordinator_prompt` operations to update the mutable coordinator prompt files.
+5. Can also propose `modify_role` or `create_role` for coordinator-specific role variants.
+6. **Mutable files**: `evolved-amendments.md` (rules/heuristics), `common-patterns.md` (examples).
+7. **Immutable files**: `base-system-prompt.md`, `behavioral-rules.md` — do NOT target these.
+".to_string(),
+
+        Strategy::All => "Analyze the data using all available strategies and propose the most impactful operations.\n".to_string(),
+    }
+}
+
+fn strategy_allowed_operations(strategy: Strategy) -> String {
+    match strategy {
+        Strategy::Mutation => "\
+- `wording_mutation` — Change a component or outcome description. Fields: `entity_type`, `target_id`, `new_description`, optionally `new_name`, `new_content`, `new_category`.
+- `component_substitution` — Swap one component for another. Fields: `target_id` (role), `remove_component_id`, `add_component_id`.
+- `config_add_component` — Add a component to a role. Fields: `target_id` (role), `add_component_id`.
+- `config_remove_component` — Remove a component from a role. Fields: `target_id` (role), `remove_component_id`.
+- `config_swap_outcome` — Change a role's outcome (deferred for human approval). Fields: `target_id` (role), `new_outcome_id`.
+- `modify_role` — Create a derived role with updated skills/description. Fields: `target_id`, `name`, `description`, `component_ids`/`skills`, `outcome_id`/`desired_outcome`.
+".to_string(),
+
+        Strategy::Crossover => "\
+- `modify_role` — Create a child role from two parents. Set `target_id` to `\"parent-a,parent-b\"`. Fields: `target_id`, `name`, `description`, `component_ids`/`skills`, `outcome_id`/`desired_outcome`.
+".to_string(),
+
+        Strategy::GapAnalysis => "\
+- `create_role` — Create a brand new role. Fields: `new_id`, `name`, `description`, `component_ids`/`skills`, `outcome_id`/`desired_outcome`.
+- `create_motivation` — Create a new tradeoff. Fields: `new_id`, `name`, `description`, `acceptable_tradeoffs`, `unacceptable_tradeoffs`.
+".to_string(),
+
+        Strategy::Retirement => "\
+- `retire_role` — Retire a poorly-performing role. Fields: `target_id`.
+- `retire_motivation` — Retire a poorly-performing tradeoff. Fields: `target_id`.
+".to_string(),
+
+        Strategy::MotivationTuning => "\
+- `modify_motivation` — Adjust a tradeoff's constraints. Fields: `target_id`, `name`, `description`, `acceptable_tradeoffs`, `unacceptable_tradeoffs`.
+- `create_motivation` — Create a new tradeoff variant. Fields: `new_id`, `name`, `description`, `acceptable_tradeoffs`, `unacceptable_tradeoffs`.
+".to_string(),
+
+        Strategy::ComponentMutation => "\
+- `component_substitution` — Swap one component for another in a role. Fields: `target_id` (role), `remove_component_id`, `add_component_id`.
+- `config_add_component` — Add a component to a role. Fields: `target_id` (role), `add_component_id`.
+- `config_remove_component` — Remove a component from a role. Fields: `target_id` (role), `remove_component_id`.
+- `wording_mutation` — Mutate a component's description. Fields: `entity_type: \"component\"`, `target_id`, `new_description`.
+".to_string(),
+
+        Strategy::Randomisation => "\
+- `random_compose_role` — Create a role from random component subsets. Fields: `component_ids`, `outcome_id`, `selection_method`.
+- `random_compose_agent` — Create an agent from a novel role+tradeoff pairing. Fields: `role_id`, `tradeoff_id`, `selection_method`.
+".to_string(),
+
+        Strategy::BizarreIdeation => "\
+- `bizarre_ideation` — Create a novel primitive. Fields: `entity_type`, `new_name`, `new_description`, `ideation_prompt`, and type-specific fields (`new_content`, `new_category`, `new_success_criteria`, `new_acceptable_tradeoffs`, `new_unacceptable_tradeoffs`).
+".to_string(),
+
+        Strategy::CoordinatorEvolution => "\
+- `modify_coordinator_prompt` — Modify a mutable coordinator prompt file. Fields: `target_id` (\"evolved-amendments\" or \"common-patterns\"), `new_content` (full file content).
+- `modify_role` — Adjust the coordinator's role. Fields: `target_id`, `name`, `description`, `component_ids`/`skills`, `outcome_id`/`desired_outcome`.
+- `create_role` — Create a specialized coordinator variant. Fields: `new_id`, `name`, `description`, `component_ids`/`skills`, `outcome_id`/`desired_outcome`.
+".to_string(),
+
+        Strategy::All => "\
+All operation types are available. See the strategy skill documents for details.\n".to_string(),
+    }
+}
+
+fn strategy_guardrails(strategy: Strategy) -> String {
+    match strategy {
+        Strategy::Mutation => "\
+- Do not mutate roles with fewer than 3 evaluations.
+- Prefer one mutation per role per run.
+- Keep descriptions concise (under ~200 words).
+- Outcome swaps (`config_swap_outcome`) are automatically deferred for human review.
+".to_string(),
+
+        Strategy::Crossover => "\
+- Both parents must have at least 3 evaluations each.
+- Do not cross roles that share >70% of their components (too similar).
+- The child must have a distinct name and description — don't just concatenate parents.
+".to_string(),
+
+        Strategy::GapAnalysis => "\
+- Only propose new entities, never modifications or retirements.
+- New roles need valid component IDs and outcome IDs from the inventory.
+- Don't create roles that overlap significantly with existing high performers.
+".to_string(),
+
+        Strategy::Retirement => "\
+- Only retire entities with at least 5 evaluations and avg score below 0.35.
+- Never retire an entity used by a meta-agent (assigner, evaluator, evolver) without flagging it.
+- When in doubt, leave for mutation rather than retiring.
+".to_string(),
+
+        Strategy::MotivationTuning => "\
+- Keep tradeoff lists focused — more than 5 items per list loses specificity.
+- Don't remove all constraints — a tradeoff with no unacceptable items provides no guidance.
+- Preserve the core intent of the tradeoff when tuning.
+".to_string(),
+
+        Strategy::ComponentMutation => "\
+- Swap one component at a time to isolate effects.
+- Verify the replacement component exists in the inventory.
+- Don't leave a role with zero components.
+".to_string(),
+
+        Strategy::Randomisation => "\
+- Cap at 3 random compositions per run to avoid flooding the system.
+- Use `selection_method: \"performance_weighted_inverse\"` to bias toward underexplored areas.
+- All referenced component, outcome, role, and tradeoff IDs must exist in the inventory.
+".to_string(),
+
+        Strategy::BizarreIdeation => "\
+- High creativity is valued, but outputs must still be valid primitives.
+- Include an `ideation_prompt` explaining the creative reasoning.
+- Cap at 2-3 novel creations per run.
+".to_string(),
+
+        Strategy::CoordinatorEvolution => "\
+- **Never** target `base-system-prompt.md` or `behavioral-rules.md` — they are immutable.
+- Only target `evolved-amendments` or `common-patterns` as `target_id` for `modify_coordinator_prompt`.
+- `new_content` must be the full file content (it replaces the entire file).
+- Be conservative: small incremental improvements to coordinator behavior are better than sweeping changes.
+".to_string(),
+
+        Strategy::All => "Follow the guardrails specified in each strategy's skill document.\n".to_string(),
+    }
+}
+
+fn strategy_specific_context(strategy: Strategy, agency_dir: &Path) -> String {
+    match strategy {
+        Strategy::CoordinatorEvolution => {
+            let mut ctx = String::new();
+            let prompt_dir = agency_dir.join("coordinator-prompt");
+            if prompt_dir.is_dir() {
+                let mutable_files = ["evolved-amendments.md", "common-patterns.md"];
+                for filename in &mutable_files {
+                    let path = prompt_dir.join(filename);
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        let trimmed = content.trim();
+                        if !trimmed.is_empty() {
+                            ctx.push_str(&format!(
+                                "**Current `{}`:**\n```\n{}\n```\n\n",
+                                filename, trimmed
+                            ));
+                        } else {
+                            ctx.push_str(&format!(
+                                "**Current `{}`:** (empty — you can add initial content)\n\n",
+                                filename
+                            ));
+                        }
+                    } else {
+                        ctx.push_str(&format!(
+                            "**`{}`:** (file does not exist yet — you can create it)\n\n",
+                            filename
+                        ));
+                    }
+                }
+            } else {
+                ctx.push_str("Coordinator prompt directory does not exist yet. `modify_coordinator_prompt` operations will create it.\n\n");
+            }
+            ctx
+        }
+        _ => String::new(),
+    }
 }

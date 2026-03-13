@@ -77,6 +77,7 @@ pub fn partition_evaluations(
             Strategy::ComponentMutation => partition_component_mutation(evaluations, roles, tradeoffs, total_evals, run_id),
             Strategy::Randomisation => partition_randomisation(evaluations, roles, tradeoffs, total_evals, run_id),
             Strategy::BizarreIdeation => partition_bizarre_ideation(evaluations, roles, tradeoffs, total_evals, run_id),
+            Strategy::CoordinatorEvolution => partition_coordinator_evolution(evaluations, roles, tradeoffs, total_evals, run_id),
             Strategy::All => unreachable!("all_individual excludes All"),
         };
         slices.push((strategy, slice));
@@ -522,6 +523,56 @@ fn partition_bizarre_ideation(
     }
 }
 
+fn partition_coordinator_evolution(
+    evaluations: &[Evaluation],
+    roles: &[Role],
+    tradeoffs: &[TradeoffConfig],
+    total_evals: usize,
+    run_id: &str,
+) -> AnalyzerSlice {
+    // Coordinator evolution gets all roles/tradeoffs (to understand the landscape)
+    // but no raw evaluations — it works from aggregate patterns and coordinator prompt files.
+    // Evaluations with coordinator-specific dimensions are included if present.
+    let mut filtered_evals: Vec<Evaluation> = evaluations
+        .iter()
+        .filter(|e| {
+            e.dimensions
+                .keys()
+                .any(|k| k.starts_with("coord") || k.starts_with("decomposition") || k.starts_with("dispatch"))
+        })
+        .cloned()
+        .collect();
+
+    let truncated = filtered_evals.len() > MAX_EVALS_PER_SLICE;
+    filtered_evals.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    filtered_evals.truncate(MAX_EVALS_PER_SLICE);
+
+    let summary = format!(
+        "{} coordinator-relevant evaluations, {} roles, {} tradeoffs. Analyze coordinator behavior patterns.",
+        filtered_evals.len(),
+        roles.len(),
+        tradeoffs.len()
+    );
+
+    AnalyzerSlice {
+        strategy: "coordinator".to_string(),
+        run_id: run_id.to_string(),
+        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        evaluations: filtered_evals.clone(),
+        roles: roles.to_vec(),
+        tradeoffs: tradeoffs.to_vec(),
+        summary,
+        model_tier: ModelTier::Sonnet,
+        stats: SliceStats {
+            total_evaluations_in_system: total_evals,
+            evaluations_in_slice: filtered_evals.len(),
+            roles_in_slice: roles.len(),
+            tradeoffs_in_slice: tradeoffs.len(),
+            truncated,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +692,6 @@ mod tests {
         let evals = vec![make_eval("e1", "r1", "t1", 0.5)];
 
         let slices = partition_evaluations(&evals, &roles, &tradeoffs, Path::new("/tmp"), "test-run");
-        assert_eq!(slices.len(), 8); // all individual strategies
+        assert_eq!(slices.len(), 9); // all individual strategies
     }
 }

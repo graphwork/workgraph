@@ -13,6 +13,7 @@ pub enum Strategy {
     ComponentMutation,
     Randomisation,
     BizarreIdeation,
+    CoordinatorEvolution,
 }
 
 impl Strategy {
@@ -27,9 +28,10 @@ impl Strategy {
             "component-mutation" => Ok(Self::ComponentMutation),
             "randomisation" => Ok(Self::Randomisation),
             "bizarre-ideation" => Ok(Self::BizarreIdeation),
+            "coordinator" | "coordinator-evolution" => Ok(Self::CoordinatorEvolution),
             other => bail!(
                 "Unknown strategy '{}'. Valid: mutation, crossover, gap-analysis, retirement, \
-                 motivation-tuning, component-mutation, randomisation, bizarre-ideation, all",
+                 motivation-tuning, component-mutation, randomisation, bizarre-ideation, coordinator, all",
                 other
             ),
         }
@@ -46,6 +48,7 @@ impl Strategy {
             Self::ComponentMutation,
             Self::Randomisation,
             Self::BizarreIdeation,
+            Self::CoordinatorEvolution,
         ]
     }
 
@@ -53,7 +56,7 @@ impl Strategy {
     pub fn needs_no_evals(self) -> bool {
         matches!(
             self,
-            Self::GapAnalysis | Self::Randomisation | Self::BizarreIdeation
+            Self::GapAnalysis | Self::Randomisation | Self::BizarreIdeation | Self::CoordinatorEvolution
         )
     }
 
@@ -68,6 +71,7 @@ impl Strategy {
             Self::ComponentMutation => "component-mutation",
             Self::Randomisation => "randomisation",
             Self::BizarreIdeation => "bizarre-ideation",
+            Self::CoordinatorEvolution => "coordinator",
         }
     }
 }

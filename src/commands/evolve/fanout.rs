@@ -8,7 +8,7 @@ use workgraph::graph::{CycleConfig, Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 
 use super::partition::{self, AnalyzerSlice, ModelTier};
-use super::prompt::load_evolver_skills;
+use super::prompt::{build_analyzer_prompt, load_evolver_skills};
 use super::strategy::Strategy;
 
 /// Fan-out threshold: below this eval count, use single-shot mode.
@@ -145,54 +145,12 @@ pub fn run_fanout(
             ModelTier::Opus => "opus",
         };
 
-        let description = format!(
-            r#"## Evolver Analyzer: {strategy}
-
-Analyze the evaluation data for the **{strategy}** evolution strategy and propose operations.
-
-### Input
-Read your data slice from: `.workgraph/evolve-runs/{run_id}/{strategy}-slice.json`
-
-The file contains pre-filtered evaluations, roles, and tradeoffs relevant to your strategy.
-Summary: {summary}
-
-### Strategy Skill Document
-{skill_doc}
-
-### Instructions
-1. Read the data slice JSON file
-2. Analyze the data according to the {strategy} strategy guidelines
-3. Propose concrete operations (create/modify/retire/etc.)
-4. Write your output as a JSON artifact
-
-### Output Format
-Write a JSON file to `.workgraph/evolve-runs/{run_id}/{strategy}-proposals.json`:
-
-```json
-{{
-  "strategy": "{strategy}",
-  "run_id": "{run_id}",
-  "operations": [
-    {{
-      "op": "<operation_type>",
-      "target_id": "<existing entity ID>",
-      "rationale": "<why this operation>",
-      "confidence": <0.0-1.0>,
-      "expected_impact": "<what improvement is expected>"
-    }}
-  ],
-  "analysis_summary": "<brief summary of findings>"
-}}
-```
-
-## Validation
-- Output JSON is valid and follows the schema above
-- Each operation has a rationale and confidence score
-- Operations are compatible with the {strategy} strategy type"#,
-            strategy = strategy.label(),
-            run_id = run_id,
-            summary = slice.summary,
-            skill_doc = skill_doc,
+        let description = build_analyzer_prompt(
+            *strategy,
+            &run_id,
+            &skill_doc,
+            &slice.summary,
+            &agency_dir,
         );
 
         let analyzer_task = Task {
