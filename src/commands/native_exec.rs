@@ -23,6 +23,7 @@ use workgraph::models::ModelRegistry;
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250514";
 
 /// Run the native executor agent loop.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     workgraph_dir: &Path,
     prompt_file: &str,

@@ -155,6 +155,7 @@ pub enum AnimationKind {
     /// A previously hidden task was revealed (e.g. toggling system task visibility).
     Revealed,
     /// A phase annotation was clicked (brief flash on the annotation text).
+    #[allow(dead_code)]
     AnnotationClick,
 }
 
@@ -169,6 +170,7 @@ pub struct AnnotationHitRegion {
     /// End column (exclusive) of the annotation text in the plain line.
     pub col_end: usize,
     /// The parent task ID whose line contains this annotation.
+    #[allow(dead_code)]
     pub parent_task_id: String,
     /// The dot-task IDs that produced this annotation.
     pub dot_task_ids: Vec<String>,

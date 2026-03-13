@@ -481,6 +481,7 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
 
 /// Scaffold assign tasks for multiple task IDs at once (batch mode for publish).
 /// Returns the number of assign tasks created.
+#[allow(dead_code)]
 pub fn scaffold_assign_tasks_batch(
     graph: &mut WorkGraph,
     task_ids: &[(String, String)], // (id, title) pairs

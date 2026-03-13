@@ -6,6 +6,7 @@ mod parser;
 pub(crate) mod partition;
 mod prompt;
 mod strategy;
+#[allow(dead_code)]
 pub(crate) mod synthesize;
 
 use anyhow::{Context, Result, bail};

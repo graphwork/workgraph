@@ -63,6 +63,7 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
 }
 
 /// Add a new endpoint to the config.
+#[allow(clippy::too_many_arguments)]
 pub fn run_add(
     workgraph_dir: &Path,
     name: &str,
