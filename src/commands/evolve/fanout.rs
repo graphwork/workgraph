@@ -14,6 +14,10 @@ use super::strategy::Strategy;
 /// Fan-out threshold: below this eval count, use single-shot mode.
 pub const FANOUT_THRESHOLD: usize = 50;
 
+/// Convergence threshold for autopoietic cycle: if the overall score delta
+/// falls below this value, the cycle terminates. 0.01 = 1% absolute change.
+pub const CONVERGENCE_THRESHOLD: f64 = 0.01;
+
 /// Run the fan-out evolution mode, creating a task graph of analyzers.
 #[allow(clippy::too_many_arguments)]
 pub fn run_fanout(
@@ -106,15 +110,38 @@ pub fn run_fanout(
 
     // 1. Create partition task (marks the partitioning as done)
     let partition_task_id = format!(".evolve-partition-{}", run_id);
-    let partition_task = Task {
-        id: partition_task_id.clone(),
-        title: format!("Evolve partition ({})", run_id),
-        description: Some(format!(
+    let partition_description = if autopoietic {
+        format!(
+            "## Evolver Partition ({run_id})\n\n\
+             ### Iteration 0 (Pre-completed)\n\
+             Partitioned {n_evals} evaluations into {n_slices} strategy slices.\n\
+             Pre-evolution snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-0.json`\n\n\
+             ### On Re-Iteration\n\
+             When this task re-opens after a cycle reset:\n\
+             1. Read self-assessment from `.workgraph/evolve-runs/{run_id}/self-assessment-latest.json`\n\
+             2. Load current agency data (roles, tradeoffs, evaluations from `.workgraph/agency/`)\n\
+             3. Re-partition evaluations, prioritizing strategies the self-assessment identified as high-impact\n\
+             4. Update slice files in `.workgraph/evolve-runs/{run_id}/` (`<strategy>-slice.json`)\n\
+             5. Save new snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
+             6. If the self-assessment recommends new strategies, create additional analyzer tasks with `wg add`\n\n\
+             Run dir: .workgraph/evolve-runs/{run_id}",
+            run_id = run_id,
+            n_evals = evaluations.len(),
+            n_slices = slices.len(),
+        )
+    } else {
+        format!(
             "Partitioned {} evaluations into {} strategy slices.\nRun dir: .workgraph/evolve-runs/{}",
             evaluations.len(),
             slices.len(),
             run_id
-        )),
+        )
+    };
+
+    let partition_task = Task {
+        id: partition_task_id.clone(),
+        title: format!("Evolve partition ({})", run_id),
+        description: Some(partition_description),
         status: Status::Done, // Already done — we just did the partitioning
         tags: vec!["evolution".into(), "partition".into()],
         completed_at: Some(chrono::Utc::now().to_rfc3339()),
@@ -286,8 +313,57 @@ Read from: `.workgraph/evolve-runs/{run_id}/synthesis-result.json`
 
     // 5. Create evaluate task (depends on apply)
     let evaluate_task_id = format!(".evolve-evaluate-{}", run_id);
-    let evaluate_description = format!(
-        r#"## Evolver Evaluate
+    let evaluate_description = if autopoietic {
+        format!(
+            "## Evolver Evaluate ({run_id})\n\n\
+             Evaluate the impact of this evolution iteration and determine convergence.\n\n\
+             ### Input\n\
+             - Pre-evolution snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
+             - Apply results: `.workgraph/evolve-runs/{run_id}/apply-results.json`\n\
+             - Current agency data: `.workgraph/agency/`\n\n\
+             ### Instructions\n\
+             1. Determine current iteration from `wg show {evaluate_id}` → `loop_iteration`\n\
+             2. Load pre-iteration snapshot (`snapshot-iter-<loop_iteration>.json`)\n\
+             3. Load current agency data and compute new performance scores\n\
+             4. For each entity modified in this iteration:\n\
+                - Compare pre/post evaluation scores\n\
+                - Classify as improved, degraded, or neutral\n\
+             5. Compute overall score delta (average absolute change across all modified entities)\n\
+             6. Write self-assessment to `.workgraph/evolve-runs/{run_id}/self-assessment-latest.json`:\n\
+                ```json\n\
+                {{\n\
+                  \"iteration\": <N>,\n\
+                  \"overall_delta\": <float>,\n\
+                  \"improved\": [\"entity-id-1\"],\n\
+                  \"degraded\": [\"entity-id-2\"],\n\
+                  \"neutral\": [\"entity-id-3\"],\n\
+                  \"operations_applied\": <count>,\n\
+                  \"recommendations\": [\"strategy-level guidance for next iteration\"]\n\
+                }}\n\
+                ```\n\
+             7. Save post-iteration snapshot: `snapshot-iter-<N+1>.json`\n\n\
+             ### Convergence\n\
+             If the overall score delta is below {threshold} (less than {threshold_pct}% absolute change),\n\
+             the evolution has converged. Signal convergence:\n\
+             ```\n\
+             wg done {evaluate_id} --converged\n\
+             ```\n\
+             Otherwise, mark done normally to continue the cycle:\n\
+             ```\n\
+             wg done {evaluate_id}\n\
+             ```\n\n\
+             ## Validation\n\
+             - self-assessment written with all required fields\n\
+             - Before/after comparison covers all modified entities\n\
+             - Convergence decision is explicitly documented",
+            run_id = run_id,
+            evaluate_id = evaluate_task_id,
+            threshold = CONVERGENCE_THRESHOLD,
+            threshold_pct = (CONVERGENCE_THRESHOLD * 100.0) as u32,
+        )
+    } else {
+        format!(
+            r#"## Evolver Evaluate
 
 Evaluate the results of the evolution run.
 
@@ -304,8 +380,9 @@ Evaluate the results of the evolution run.
 ## Validation
 - Report covers all applied operations
 - Before/after comparison is included"#,
-        run_id = run_id,
-    );
+            run_id = run_id,
+        )
+    };
 
     let evaluate_task = Task {
         id: evaluate_task_id.clone(),
@@ -756,5 +833,291 @@ mod tests {
             .find(|t| t.id.contains("evolve-synthesize"))
             .expect("synthesize task should exist");
         assert!(!synthesize.after.is_empty());
+    }
+
+    #[test]
+    fn test_evolver_cycle_structure() {
+        let (_tmp, wg_dir) = setup_test_env();
+        let agency_dir = wg_dir.join("agency");
+        fs::create_dir_all(agency_dir.join("cache/roles")).unwrap();
+        fs::create_dir_all(agency_dir.join("primitives/tradeoffs")).unwrap();
+        fs::create_dir_all(agency_dir.join("evaluations")).unwrap();
+        fs::create_dir_all(agency_dir.join("evolver-skills")).unwrap();
+
+        let roles = vec![make_role("r1", Some(0.5), 5)];
+        let tradeoffs = vec![make_tradeoff("t1", Some(0.5), 5)];
+        let mut evals = Vec::new();
+        for i in 0..60 {
+            evals.push(make_eval(&format!("e{}", i), "r1", "t1", 0.5));
+        }
+
+        let config = Config::load_or_default(&wg_dir);
+        let result = run_fanout(
+            &wg_dir,
+            false,
+            None,
+            Some(10),
+            None,
+            false,
+            true,      // autopoietic = true
+            Some(5),   // max_iterations
+            Some(600), // cycle_delay
+            &roles,
+            &tradeoffs,
+            &evals,
+            &config,
+        );
+        assert!(result.is_ok(), "run_fanout failed: {:?}", result.err());
+
+        let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+
+        // Should have: partition + analyzers + synthesize + apply + evaluate
+        let task_count = graph.tasks().count();
+        assert!(
+            task_count >= 5,
+            "Expected at least 5 tasks, got {}",
+            task_count
+        );
+
+        // Find key tasks
+        let partition = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-partition"))
+            .expect("partition task should exist");
+        let synthesize = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-synthesize"))
+            .expect("synthesize task should exist");
+        let apply = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-apply"))
+            .expect("apply task should exist");
+        let evaluate = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-evaluate"))
+            .expect("evaluate task should exist");
+        let analyzers: Vec<_> = graph
+            .tasks()
+            .filter(|t| t.id.contains("evolve-analyze"))
+            .collect();
+        assert!(!analyzers.is_empty(), "Should have at least one analyzer");
+
+        // 1. Partition is Done for iteration 0 (pre-computed)
+        assert_eq!(
+            partition.status,
+            Status::Done,
+            "Partition should be Done for iteration 0"
+        );
+
+        // 2. All other tasks are Open
+        assert_eq!(synthesize.status, Status::Open);
+        assert_eq!(apply.status, Status::Open);
+        assert_eq!(evaluate.status, Status::Open);
+        for a in &analyzers {
+            assert_eq!(a.status, Status::Open, "Analyzer {} should be Open", a.id);
+        }
+
+        // 3. Dependency chain: analyzers → partition
+        for a in &analyzers {
+            assert!(
+                a.after.contains(&partition.id),
+                "Analyzer {} should depend on partition",
+                a.id
+            );
+        }
+
+        // 4. Synthesize depends on all analyzers
+        for a in &analyzers {
+            assert!(
+                synthesize.after.contains(&a.id),
+                "Synthesize should depend on analyzer {}",
+                a.id
+            );
+        }
+
+        // 5. Apply depends on synthesize
+        assert!(apply.after.contains(&synthesize.id));
+
+        // 6. Evaluate depends on apply
+        assert!(evaluate.after.contains(&apply.id));
+
+        // 7. Cycle config on evaluate
+        let cycle_config = evaluate
+            .cycle_config
+            .as_ref()
+            .expect("Evaluate should have CycleConfig");
+        assert_eq!(cycle_config.max_iterations, 5);
+        assert_eq!(cycle_config.delay, Some("600s".to_string()));
+        assert!(cycle_config.restart_on_failure);
+
+        // 8. Back-edge: evaluate depends on partition (creates cycle)
+        assert!(
+            evaluate.after.contains(&partition.id),
+            "Evaluate should have back-edge to partition"
+        );
+
+        // 9. Back-edge: partition depends on evaluate (bidirectional cycle)
+        assert!(
+            partition.after.contains(&evaluate.id),
+            "Partition should have back-edge to evaluate"
+        );
+
+        // 10. Evaluate description references self-assessment and convergence
+        let eval_desc = evaluate.description.as_ref().unwrap();
+        assert!(
+            eval_desc.contains("self-assessment"),
+            "Evaluate should reference self-assessment"
+        );
+        assert!(
+            eval_desc.contains("converg"),
+            "Evaluate should mention convergence"
+        );
+        assert!(
+            eval_desc.contains("score delta") || eval_desc.contains("overall_delta"),
+            "Evaluate should reference score delta for convergence"
+        );
+
+        // 11. Partition description references self-assessment feedback
+        let part_desc = partition.description.as_ref().unwrap();
+        assert!(
+            part_desc.contains("self-assessment"),
+            "Partition should reference self-assessment for feedback loop"
+        );
+
+        // 12. Partition description covers re-iteration behavior
+        assert!(
+            part_desc.contains("Re-Iteration") || part_desc.contains("re-partition"),
+            "Partition should describe re-iteration behavior"
+        );
+
+        // 13. Evaluate description includes convergence threshold
+        assert!(
+            eval_desc.contains("--converged"),
+            "Evaluate should instruct agent to use --converged"
+        );
+
+        // 14. Evaluate description includes the threshold value
+        assert!(
+            eval_desc.contains(&CONVERGENCE_THRESHOLD.to_string()),
+            "Evaluate should include the convergence threshold value"
+        );
+    }
+
+    #[test]
+    fn test_evolver_cycle_non_autopoietic_no_cycle() {
+        // Non-autopoietic mode should NOT create cycle config or self-assessment
+        let (_tmp, wg_dir) = setup_test_env();
+        let agency_dir = wg_dir.join("agency");
+        fs::create_dir_all(agency_dir.join("cache/roles")).unwrap();
+        fs::create_dir_all(agency_dir.join("primitives/tradeoffs")).unwrap();
+        fs::create_dir_all(agency_dir.join("evaluations")).unwrap();
+        fs::create_dir_all(agency_dir.join("evolver-skills")).unwrap();
+
+        let roles = vec![make_role("r1", Some(0.5), 5)];
+        let tradeoffs = vec![make_tradeoff("t1", Some(0.5), 5)];
+        let mut evals = Vec::new();
+        for i in 0..60 {
+            evals.push(make_eval(&format!("e{}", i), "r1", "t1", 0.5));
+        }
+
+        let config = Config::load_or_default(&wg_dir);
+        run_fanout(
+            &wg_dir,
+            false,
+            None,
+            None,
+            None,
+            false,
+            false, // autopoietic = false
+            None,
+            None,
+            &roles,
+            &tradeoffs,
+            &evals,
+            &config,
+        )
+        .unwrap();
+
+        let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+
+        let evaluate = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-evaluate"))
+            .unwrap();
+
+        // No CycleConfig in non-autopoietic mode
+        assert!(
+            evaluate.cycle_config.is_none(),
+            "Non-autopoietic evaluate should have no CycleConfig"
+        );
+
+        // Evaluate description should NOT reference self-assessment
+        let eval_desc = evaluate.description.as_ref().unwrap();
+        assert!(
+            !eval_desc.contains("self-assessment"),
+            "Non-autopoietic evaluate should not reference self-assessment"
+        );
+
+        // Partition description should NOT reference self-assessment
+        let partition = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-partition"))
+            .unwrap();
+        let part_desc = partition.description.as_ref().unwrap();
+        assert!(
+            !part_desc.contains("self-assessment"),
+            "Non-autopoietic partition should not reference self-assessment"
+        );
+    }
+
+    #[test]
+    fn test_evolver_cycle_default_iterations() {
+        // When max_iterations and cycle_delay are not specified, defaults should be used
+        let (_tmp, wg_dir) = setup_test_env();
+        let agency_dir = wg_dir.join("agency");
+        fs::create_dir_all(agency_dir.join("cache/roles")).unwrap();
+        fs::create_dir_all(agency_dir.join("primitives/tradeoffs")).unwrap();
+        fs::create_dir_all(agency_dir.join("evaluations")).unwrap();
+        fs::create_dir_all(agency_dir.join("evolver-skills")).unwrap();
+
+        let roles = vec![make_role("r1", Some(0.5), 5)];
+        let tradeoffs = vec![make_tradeoff("t1", Some(0.5), 5)];
+        let mut evals = Vec::new();
+        for i in 0..60 {
+            evals.push(make_eval(&format!("e{}", i), "r1", "t1", 0.5));
+        }
+
+        let config = Config::load_or_default(&wg_dir);
+        run_fanout(
+            &wg_dir,
+            false,
+            None,
+            None,
+            None,
+            false,
+            true,  // autopoietic
+            None,  // default max_iterations
+            None,  // default cycle_delay
+            &roles,
+            &tradeoffs,
+            &evals,
+            &config,
+        )
+        .unwrap();
+
+        let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+
+        let evaluate = graph
+            .tasks()
+            .find(|t| t.id.contains("evolve-evaluate"))
+            .unwrap();
+
+        let cycle_config = evaluate.cycle_config.as_ref().unwrap();
+        assert_eq!(cycle_config.max_iterations, 3, "Default max_iterations should be 3");
+        assert_eq!(
+            cycle_config.delay,
+            Some("3600s".to_string()),
+            "Default cycle_delay should be 3600s"
+        );
     }
 }
