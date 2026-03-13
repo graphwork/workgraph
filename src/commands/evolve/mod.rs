@@ -6,6 +6,7 @@ pub(crate) mod partition;
 mod parser;
 mod prompt;
 mod strategy;
+pub(crate) mod synthesize;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
