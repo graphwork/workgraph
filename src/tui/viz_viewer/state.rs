@@ -1194,19 +1194,18 @@ pub fn format_duration_compact(secs: u64) -> String {
     }
 }
 
-/// Spinner frames for the lightning-bolt animated indicator.
-/// Uses braille dots swirling around a lightning bolt to convey active processing.
-const SPINNER_FRAMES: &[&str] = &[
-    "⚡⠋", "⚡⠙", "⚡⠹", "⚡⠸", "⚡⠼", "⚡⠴", "⚡⠦", "⚡⠧", "⚡⠇", "⚡⠏",
-];
+/// The lightning bolt character for the wave animation (Greek koppa — reliably 1-cell wide).
+pub const WAVE_BOLT: &str = "ϟ";
 
-/// Interval between spinner frames in milliseconds.
-const SPINNER_FRAME_MS: u128 = 80;
+/// Number of lightning bolts in the wave animation.
+pub const WAVE_NUM_BOLTS: usize = 5;
 
-/// Returns the spinner frame string for the given elapsed duration.
-pub fn spinner_frame(elapsed: std::time::Duration) -> &'static str {
-    let idx = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len();
-    SPINNER_FRAMES[idx]
+/// Interval between wave frames in milliseconds.
+const WAVE_FRAME_MS: u128 = 120;
+
+/// Returns the current wave position (0..WAVE_NUM_BOLTS) for the given elapsed duration.
+pub fn spinner_wave_pos(elapsed: std::time::Duration) -> usize {
+    (elapsed.as_millis() / WAVE_FRAME_MS) as usize % WAVE_NUM_BOLTS
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

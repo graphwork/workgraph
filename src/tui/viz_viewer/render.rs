@@ -10,7 +10,8 @@ use super::state::{
     ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus,
     CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel, InputMode, LayoutMode,
     RightPanelTab, ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction,
-    VizApp, extract_section_name, format_duration_compact, spinner_frame,
+    VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact,
+    spinner_wave_pos,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};

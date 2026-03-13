@@ -236,7 +236,7 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
-    /// Comma-separated time counters to display: "uptime", "cumulative", "active"
+    /// Comma-separated counters to display: "uptime", "cumulative", "active", "session", "compact"
     #[serde(default = "default_counters")]
     pub counters: String,
     /// Show only running (in-progress/open) system tasks by default
@@ -272,7 +272,7 @@ fn default_chat_history_max() -> usize {
     1000
 }
 fn default_counters() -> String {
-    "uptime,cumulative,active".to_string()
+    "uptime,cumulative,active,compact".to_string()
 }
 
 impl Default for TuiConfig {
