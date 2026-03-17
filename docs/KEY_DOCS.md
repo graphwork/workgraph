@@ -20,6 +20,7 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 | `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
 | `docs/WORKTREE-ISOLATION.md` | Worktree-based isolation for concurrent agents | Operators, contributors |
 | `docs/COORDINATOR_ENTITY.md` | Design: coordinator as visible entity | Contributors |
+| `docs/models.md` | Model, endpoint, and API key management guide | Users, agents |
 | `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
 | `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
 

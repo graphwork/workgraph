@@ -16,6 +16,7 @@ Complete reference for all `wg` commands. Most query commands support `--json` f
 - [Service Commands](#service-commands)
 - [Monitoring Commands](#monitoring-commands)
 - [Communication Commands](#communication-commands)
+- [Model and Endpoint Management](#model-and-endpoint-management)
 - [Utility Commands](#utility-commands)
 
 ---
@@ -2341,6 +2342,96 @@ wg chat "Review this file" --attachment src/main.rs
 
 ---
 
+## Model and Endpoint Management
+
+See [docs/models.md](models.md) for the full guide including architecture, security model, and common configurations.
+
+### `wg models`
+
+Browse and search available models.
+
+```bash
+wg models <SUBCOMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List models from the local registry |
+| `search <QUERY>` | Search models from OpenRouter by name, ID, or description |
+| `remote` | List all models available on OpenRouter |
+| `add <ID>` | Add a custom model to the local registry |
+| `set-default <ID>` | Set the default model |
+| `init` | Initialize models.yaml with defaults |
+
+**Examples:**
+
+```bash
+# List all local models
+wg models list
+
+# Filter by tier
+wg models list --tier frontier
+
+# Search OpenRouter for Claude models
+wg models search claude
+
+# Search for tool-capable models only
+wg models search gemini --tools
+
+# Add a custom model
+wg models add "custom/my-model" --cost-in 1.0 --cost-out 5.0 --tier mid
+
+# Set default
+wg models set-default "anthropic/claude-sonnet-4-6"
+```
+
+---
+
+### `wg endpoints`
+
+Manage LLM endpoints (connection targets with URL + auth).
+
+```bash
+wg endpoints <SUBCOMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `add <NAME>` | Add a new endpoint |
+| `list` | List all configured endpoints |
+| `remove <NAME>` | Remove an endpoint by name |
+| `set-default <NAME>` | Set an endpoint as the default |
+| `test <NAME>` | Test endpoint connectivity |
+
+**Examples:**
+
+```bash
+# Add an OpenRouter endpoint
+wg endpoints add openrouter --provider openrouter --default
+
+# Add with a key file
+wg endpoints add anthropic --provider anthropic --api-key-file ~/.secrets/anthropic.key
+
+# Add a local Ollama endpoint
+wg endpoints add ollama --provider local --url http://localhost:11434/v1
+
+# List endpoints
+wg endpoints list
+
+# Test connectivity
+wg endpoints test openrouter
+
+# Remove an endpoint
+wg endpoints remove openai
+
+# Add to global config
+wg endpoints add openrouter --provider openrouter --global
+```
+
+---
+
 ## Utility Commands
 
 ### `wg init`
@@ -2537,6 +2628,19 @@ With no options (or `--show`), displays current configuration.
 | `--triage-model <MODEL>` | Set model for triage (default: haiku) |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |
 | `--triage-max-log-bytes <N>` | Set max bytes for triage log reading (default: 50000) |
+| `--models` | Show all model routing assignments (per-role model+provider) |
+| `--set-model <ROLE> <MODEL>` | Set model for a dispatch role |
+| `--set-provider <ROLE> <PROVIDER>` | Set provider for a dispatch role |
+| `--set-endpoint <ROLE> <ENDPOINT>` | Bind a named endpoint to a dispatch role |
+| `--role-model <ROLE=MODEL>` | Set model for a role (key=value syntax) |
+| `--role-provider <ROLE=PROVIDER>` | Set provider for a role (key=value syntax) |
+| `--registry` | Show all model registry entries (built-in + user-defined) |
+| `--registry-add` | Add a model to the registry (use with --id, --provider, etc.) |
+| `--registry-remove <ID>` | Remove a model from the registry |
+| `--tiers` | Show current tier→model assignments |
+| `--tier <TIER=MODEL_ID>` | Set which model a tier uses (e.g., `--tier standard=gpt-4o`) |
+| `--set-key <PROVIDER>` | Set API key file for a provider (use with `--file`) |
+| `--check-key` | Check OpenRouter API key validity and credit status |
 
 **Examples:**
 
@@ -2558,6 +2662,25 @@ wg config --auto-evaluate true --auto-assign true
 
 # Set per-role model overrides
 wg config --assigner-model haiku --evaluator-model opus --evolver-model opus
+
+# Model routing: show and set per-role model assignments
+wg config --models
+wg config --set-model evaluator sonnet
+wg config --set-model triage haiku
+wg config --role-model evaluator=sonnet
+
+# Tier management
+wg config --tiers
+wg config --tier fast=haiku
+wg config --tier standard=sonnet
+
+# Model registry
+wg config --registry
+wg config --registry-add --id gpt-4o --provider openai --reg-model gpt-4o --reg-tier standard
+
+# API key management
+wg config --set-key openrouter --file ~/.secrets/openrouter.key
+wg config --check-key
 ```
 
 ---
