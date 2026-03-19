@@ -730,8 +730,12 @@ pub fn run_start(
 
             std::thread::sleep(Duration::from_millis(FRAME_MS));
 
-            // Check if daemon is alive after minimum animation time
-            if start.elapsed() >= Duration::from_millis(600) && is_process_alive(pid) {
+            // Check if daemon is alive and socket is accepting connections
+            // after minimum animation time
+            if start.elapsed() >= Duration::from_millis(600)
+                && is_process_alive(pid)
+                && socket_accepting(&socket)
+            {
                 alive = true;
                 break;
             }
@@ -742,9 +746,17 @@ pub fn run_start(
         let _ = stdout.flush();
         alive
     } else {
-        // Non-TTY or JSON mode: just wait and check
-        std::thread::sleep(Duration::from_millis(500));
-        is_process_alive(pid)
+        // Non-TTY or JSON mode: wait for process alive + socket accepting
+        let start = Instant::now();
+        let mut alive = false;
+        while start.elapsed() < Duration::from_millis(3000) {
+            std::thread::sleep(Duration::from_millis(100));
+            if is_process_alive(pid) && socket_accepting(&socket) {
+                alive = true;
+                break;
+            }
+        }
+        alive
     };
 
     // Verify daemon started successfully
@@ -2533,6 +2545,12 @@ pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> R
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
+/// Check if a Unix socket is accepting connections by doing a quick connect+drop.
+#[cfg(unix)]
+fn socket_accepting(socket: &Path) -> bool {
+    UnixStream::connect(socket).is_ok()
+}
+
 /// Public wrapper: check if the service process is alive
 pub fn is_service_alive(pid: u32) -> bool {
     is_process_alive(pid)
@@ -2543,33 +2561,92 @@ pub fn is_service_paused(dir: &Path) -> bool {
     CoordinatorState::load(dir).is_some_and(|c| c.paused)
 }
 
-/// Send an IPC request to the running service
+/// Send an IPC request to the running service.
+///
+/// Retries transient connection failures (ECONNREFUSED, broken pipe) up to 2
+/// times with short exponential backoff (50ms, 100ms) before giving up.
+/// Distinguishes "daemon not running" from "daemon unreachable" in errors.
 #[cfg(unix)]
 pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
-    let state = ServiceState::load(dir)?.ok_or_else(|| anyhow::anyhow!("Service not running"))?;
+    let state = ServiceState::load(dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Service not running (no state file). Start it with 'wg service start'."
+        )
+    })?;
+
+    if !is_process_alive(state.pid) {
+        anyhow::bail!(
+            "Service daemon (PID {}) is not running. \
+             The state file is stale — start a new service with 'wg service start'.",
+            state.pid
+        );
+    }
 
     let socket = PathBuf::from(&state.socket_path);
-    let mut stream = UnixStream::connect(&socket)
-        .with_context(|| format!("Failed to connect to service at {:?}", socket))?;
+    if !socket.exists() {
+        anyhow::bail!(
+            "Service socket {:?} does not exist, but daemon PID {} is alive. \
+             The daemon may still be starting up — try again shortly, \
+             or restart with 'wg service start --force'.",
+            socket,
+            state.pid
+        );
+    }
 
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    // Retry transient connection failures with short backoff.
+    const MAX_RETRIES: u32 = 2;
+    const BASE_BACKOFF_MS: u64 = 50;
 
-    let json = serde_json::to_string(&request)?;
-    writeln!(stream, "{}", json)?;
-    stream.flush()?;
+    let mut last_err = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(BASE_BACKOFF_MS * (1 << (attempt - 1))));
+        }
 
-    let reader = BufReader::new(&stream);
-    for line in reader.lines() {
-        let line = line.context("Failed to read response")?;
-        if !line.is_empty() {
-            let response: IpcResponse =
-                serde_json::from_str(&line).context("Failed to parse response")?;
-            return Ok(response);
+        match UnixStream::connect(&socket) {
+            Ok(mut stream) => {
+                stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+                let json = serde_json::to_string(&request)?;
+                writeln!(stream, "{}", json)?;
+                stream.flush()?;
+
+                let reader = BufReader::new(&stream);
+                for line in reader.lines() {
+                    let line = line.context("Failed to read response")?;
+                    if !line.is_empty() {
+                        let response: IpcResponse =
+                            serde_json::from_str(&line).context("Failed to parse response")?;
+                        return Ok(response);
+                    }
+                }
+
+                anyhow::bail!("No response from service")
+            }
+            Err(e) => {
+                let retryable = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::BrokenPipe
+                );
+                if !retryable || attempt == MAX_RETRIES {
+                    last_err = Some(e);
+                    break;
+                }
+                last_err = Some(e);
+            }
         }
     }
 
-    anyhow::bail!("No response from service")
+    let err = last_err.unwrap();
+    anyhow::bail!(
+        "Could not connect to service at {:?} (PID {}, {} retries exhausted): {}. \
+         The daemon may be overloaded — try again, or restart with 'wg service start --force'.",
+        socket,
+        state.pid,
+        MAX_RETRIES,
+        err
+    )
 }
 
 #[cfg(not(unix))]
