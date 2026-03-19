@@ -30,6 +30,8 @@ When an agent is dispatched to a task, its role and motivation are resolved---sk
 
 Human agents participate in the same model. The only difference is the #emph[executor]: AI agents use `claude` (or another LLM backend); human agents use `matrix`, `email`, `shell`, or another human-facing channel. Human agents don't need roles or motivations---they bring their own judgment. But both human and AI agents are tracked, evaluated, and coordinated uniformly. The system does not distinguish between them in its bookkeeping; only the dispatch mechanism differs.
 
+AI tasks can also specify a #emph[provider]---`anthropic`, `openai`, `openrouter`, or `local`---and an #emph[exec-mode] that controls the agent's level of autonomy: `full` (complete tool access), `light` (read-only), `bare` (CLI only), or `shell` (no LLM). These per-task controls let you match the execution environment to the work: a sensitive review task might use a different provider and a read-only exec-mode, while an implementation task uses the default.
+
 Because identities are content-hashed, they travel well. Agency entities---roles, motivations, and their evaluation histories---can be shared across projects through federation, carrying lineage and performance data intact. A proven architect role in one project can be pulled into another without re-creation; the content-hash guarantees it is the same entity everywhere.
 
 == The Core Loop
@@ -94,7 +96,7 @@ Each step in this cycle can be manual or automated. A project might start with m
 
 The task graph and the agency are complementary systems with a clean separation. The graph defines _what_ needs to happen and _in what order_. The agency defines _who_ does it and _how they approach it_. Neither depends on the other for basic operation: you can run workgraph without the agency (every agent is generic), and you can define agency entities without a graph (though they have nothing to do). The power is in the combination.
 
-The coordinator sits at the intersection. It reads the graph to find ready work, reads the agency to resolve agent identities, dispatches the work, and---when evaluation is enabled---closes the feedback loop by scoring results and feeding data back into the agency. The graph is the skeleton; the agency is the musculature; the coordinator is the nervous system.
+The coordinator sits at the intersection. It reads the graph to find ready work, reads the agency to resolve agent identities, dispatches the work, and---when evaluation is enabled---closes the feedback loop by scoring results and feeding data back into the agency. A single service daemon can host multiple coordinator sessions, enabling parallel workstreams within the same project. The graph is the skeleton; the agency is the musculature; the coordinator is the nervous system.
 
 Workgraph is not a closed system. External tools---CI pipelines, portfolio trackers, peer organizations---can observe the graph through a real-time event stream and inject information back through several channels: recording evaluations with external source tags, importing trace data from peers, adding tasks, or updating state directly. Each task carries a #emph[visibility] field (`internal`, `public`, or `peer`) that controls what information crosses organizational boundaries when traces are exported. This boundary discipline makes collaboration possible without exposing internal deliberation.
 
