@@ -1108,8 +1108,7 @@ fn collect_response(
                     }
                     // Tool header
                     streaming_text.push_str(&format!("\n┌─ {} ", name));
-                    streaming_text
-                        .push_str(&"─".repeat(40usize.saturating_sub(name.len() + 4)));
+                    streaming_text.push_str(&"─".repeat(40usize.saturating_sub(name.len() + 4)));
                     streaming_text.push('\n');
                     // Tool input (same logic as format_full_response)
                     if name == "Bash" || name == "bash" {
@@ -2214,5 +2213,4 @@ mod tests {
         // But should still have graph summary
         assert!(ctx.contains("### Graph Summary"));
     }
-
 }

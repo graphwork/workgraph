@@ -1,18 +1,17 @@
 use anyhow::{Context, Result};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
-use workgraph::agency::{self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role, RoleComponent};
+use workgraph::agency::{
+    self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role,
+    RoleComponent,
+};
 
 use super::operations::apply_operation;
 use super::strategy::{EvolverOperation, EvolverOutput};
 
 /// Read synthesis-result.json, apply all operations, write apply-results.json.
-pub fn run_apply_synthesis(
-    dir: &Path,
-    synthesis_file: &Path,
-    output_file: &Path,
-) -> Result<()> {
+pub fn run_apply_synthesis(dir: &Path, synthesis_file: &Path, output_file: &Path) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
@@ -21,8 +20,12 @@ pub fn run_apply_synthesis(
         anyhow::bail!("Agency not initialized. Run `wg agency init` first.");
     }
 
-    let content = fs::read_to_string(synthesis_file)
-        .with_context(|| format!("Failed to read synthesis file: {}", synthesis_file.display()))?;
+    let content = fs::read_to_string(synthesis_file).with_context(|| {
+        format!(
+            "Failed to read synthesis file: {}",
+            synthesis_file.display()
+        )
+    })?;
     let output: EvolverOutput = serde_json::from_str(&content)
         .context("Failed to parse synthesis file as EvolverOutput")?;
 
@@ -39,13 +42,9 @@ pub fn run_apply_synthesis(
         println!("[{}/{}] Applying op '{}' ...", i + 1, total, op.op);
 
         let result = match op.op.as_str() {
-            "modify_role" | "create_role" => apply_role_op_from_synthesis(
-                op,
-                &existing_roles,
-                &run_id,
-                &roles_dir,
-                &agency_dir,
-            ),
+            "modify_role" | "create_role" => {
+                apply_role_op_from_synthesis(op, &existing_roles, &run_id, &roles_dir, &agency_dir)
+            }
             _ => apply_operation(
                 op,
                 &existing_roles,
@@ -61,7 +60,11 @@ pub fn run_apply_synthesis(
         match result {
             Ok(res) => {
                 let status = res["status"].as_str().unwrap_or("applied").to_string();
-                println!("  [+] {} — {:?}", status, res.get("new_id").or(res.get("existing_id")));
+                println!(
+                    "  [+] {} — {:?}",
+                    status,
+                    res.get("new_id").or(res.get("existing_id"))
+                );
                 results.push(serde_json::json!({
                     "op": op.op,
                     "target_id": op.target_id,
@@ -90,7 +93,10 @@ pub fn run_apply_synthesis(
 
     let applied = results.iter().filter(|r| r["status"] == "applied").count();
     let no_op = results.iter().filter(|r| r["status"] == "no_op").count();
-    let deferred = results.iter().filter(|r| r["status"] == "deferred_for_review").count();
+    let deferred = results
+        .iter()
+        .filter(|r| r["status"] == "deferred_for_review")
+        .count();
     let failed = results.iter().filter(|r| r["status"] == "failed").count();
 
     let output_json = serde_json::json!({
@@ -157,11 +163,7 @@ fn apply_role_with_direct_hashes(
     run_id: &str,
     roles_dir: &Path,
 ) -> Result<serde_json::Value> {
-    let mut component_ids: Vec<String> = op
-        .component_ids
-        .as_deref()
-        .unwrap_or_default()
-        .to_vec();
+    let mut component_ids: Vec<String> = op.component_ids.as_deref().unwrap_or_default().to_vec();
     component_ids.sort();
 
     let outcome_id = op.outcome_id.clone().unwrap_or_default();
@@ -213,7 +215,10 @@ fn apply_role_with_direct_hashes(
         }
     };
 
-    let name = op.name.clone().unwrap_or_else(|| new_role_id[..8].to_string());
+    let name = op
+        .name
+        .clone()
+        .unwrap_or_else(|| new_role_id[..8].to_string());
     let role = Role {
         id: new_role_id.clone(),
         name: name.clone(),

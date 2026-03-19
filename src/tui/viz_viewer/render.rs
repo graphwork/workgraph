@@ -2272,8 +2272,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     let lt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                     if lt.starts_with("┌─") {
                         let after_prefix = lt.get(7..).unwrap_or("");
-                        let name_end =
-                            after_prefix.find(['─', ' ']).unwrap_or(after_prefix.len());
+                        let name_end = after_prefix.find(['─', ' ']).unwrap_or(after_prefix.len());
                         let tool_name = after_prefix[..name_end].trim();
                         let rest_start = 7 + name_end;
                         let rest = lt.get(rest_start..).unwrap_or("");
@@ -5042,7 +5041,10 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         }
         if tc.show_cumulative {
             cp.push(Span::styled(
-                format!("\u{03A3}{}", format_duration_compact(tc.live_cumulative_secs())),
+                format!(
+                    "\u{03A3}{}",
+                    format_duration_compact(tc.live_cumulative_secs())
+                ),
                 Style::default().fg(Color::Magenta),
             ));
         }
@@ -6077,7 +6079,12 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
         // For API Keys entries, color the status icon (✓/✗/⚠) separately
         if entry.section == ConfigSection::ApiKeys && entry.label.len() >= 2 {
-            let icon = &entry.label[..entry.label.char_indices().nth(1).map(|(i, _)| i).unwrap_or(2)];
+            let icon = &entry.label[..entry
+                .label
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| i)
+                .unwrap_or(2)];
             let rest = &entry.label[icon.len()..];
             let icon_color = match icon.trim() {
                 "✓" => Color::Green,
@@ -6085,8 +6092,15 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 "⚠" => Color::Yellow,
                 _ => style.fg.unwrap_or(Color::White),
             };
-            let rest_padded = format!("{:<width$}", rest, width = label_width.saturating_sub(icon.len()));
-            spans.push(Span::styled(icon.to_string(), Style::default().fg(icon_color).add_modifier(Modifier::BOLD)));
+            let rest_padded = format!(
+                "{:<width$}",
+                rest,
+                width = label_width.saturating_sub(icon.len())
+            );
+            spans.push(Span::styled(
+                icon.to_string(),
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+            ));
             spans.push(Span::styled(rest_padded, style));
         } else {
             spans.push(Span::styled(label, style));

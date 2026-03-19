@@ -2830,8 +2830,7 @@ fn handle_add_model_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.input_mode = InputMode::Normal;
                 }
             } else {
-                app.config_panel.edit_buffer =
-                    get_model_field(&app.config_panel.new_model, field);
+                app.config_panel.edit_buffer = get_model_field(&app.config_panel.new_model, field);
                 app.config_panel.editing = true;
             }
         }

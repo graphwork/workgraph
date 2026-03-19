@@ -178,10 +178,7 @@ pub(crate) fn is_coordinator_task(task: &Task) -> bool {
 /// and `Waiting` mean the pipeline stage hasn't started yet and shouldn't be shown
 /// as an active indicator.
 fn is_pipeline_active(task: &Task) -> bool {
-    matches!(
-        task.status,
-        Status::InProgress | Status::PendingValidation
-    )
+    matches!(task.status, Status::InProgress | Status::PendingValidation)
 }
 
 /// Determine the phase annotation for a parent task based on its related internal tasks.
@@ -1322,10 +1319,19 @@ mod tests {
         let ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
         // Parent task should be visible
-        assert!(ids.contains("my-task"), "Parent task should be visible during placement");
+        assert!(
+            ids.contains("my-task"),
+            "Parent task should be visible during placement"
+        );
         // Internal tasks should be hidden
-        assert!(!ids.contains(".place-my-task"), "Internal place task should be hidden");
-        assert!(!ids.contains(".assign-my-task"), "Internal assign task should be hidden");
+        assert!(
+            !ids.contains(".place-my-task"),
+            "Internal place task should be hidden"
+        );
+        assert!(
+            !ids.contains(".assign-my-task"),
+            "Internal assign task should be hidden"
+        );
 
         // No annotations: Open pipeline tasks are pending, not active
         assert!(
@@ -1370,7 +1376,10 @@ mod tests {
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
 
         // Parent should have annotation only from the InProgress .place task
-        assert!(annots.contains_key("my-task"), "Expected annotation for my-task");
+        assert!(
+            annots.contains_key("my-task"),
+            "Expected annotation for my-task"
+        );
         let annot = &annots["my-task"];
         assert!(
             annot.text.contains("placing"),

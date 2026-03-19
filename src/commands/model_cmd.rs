@@ -257,7 +257,10 @@ mod tests {
         let tmp = setup_dir();
         let dir = tmp.path();
 
-        run_add(dir, "gpt-4o", "openai", None, "standard", None, None, None, None, false).unwrap();
+        run_add(
+            dir, "gpt-4o", "openai", None, "standard", None, None, None, None, false,
+        )
+        .unwrap();
 
         let config = Config::load(dir).unwrap();
         let entry = config
@@ -384,8 +387,10 @@ mod tests {
         let dir = tmp.path();
 
         // Add a model and set it as default
-        run_add(dir, "my-model", "openai", None, "standard", None, None, None, None, false)
-            .unwrap();
+        run_add(
+            dir, "my-model", "openai", None, "standard", None, None, None, None, false,
+        )
+        .unwrap();
         run_set_default(dir, "my-model", false).unwrap();
 
         // Verify it is the default

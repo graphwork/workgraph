@@ -1093,8 +1093,7 @@ fn resolve_model_via_registry(
             Some(entry.provider.clone()),
             entry.endpoint.clone(),
         ))
-    } else if task_model.is_some() && task_model.map(|s| s.as_str()) == effective_model.as_deref()
-    {
+    } else if task_model.is_some() && task_model.map(|s| s.as_str()) == effective_model.as_deref() {
         // Task explicitly specified a model that's not in the registry.
         // Error so the user knows they need to register it first.
         anyhow::bail!(
@@ -1472,7 +1471,10 @@ mod tests {
             dir,
         );
 
-        assert!(result.is_err(), "Should error when task model is not in registry");
+        assert!(
+            result.is_err(),
+            "Should error when task model is not in registry"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("not found in config"),

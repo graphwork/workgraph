@@ -59,10 +59,7 @@ pub fn run_set(
             // Set file permissions to 600
             fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
 
-            println!(
-                "Stored key securely in {} (mode 600)",
-                key_path.display()
-            );
+            println!("Stored key securely in {} (mode 600)", key_path.display());
             (None, Some(key_path.to_string_lossy().to_string()))
         } else {
             unreachable!()
@@ -334,10 +331,7 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "  {:<16}{:<40}{:<12}",
-        "PROVIDER", "SOURCE", "STATUS"
-    );
+    println!("  {:<16}{:<40}{:<12}", "PROVIDER", "SOURCE", "STATUS");
     for ep in &config.llm_endpoints.endpoints {
         let key = ep.resolve_api_key(Some(workgraph_dir));
         let (status_icon, status_text) = match &key {

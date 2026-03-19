@@ -50,10 +50,7 @@ pub(crate) fn check_self_mutation(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .collect();
-            if target_ids
-                .iter()
-                .any(|tid| entity_ids.contains(*tid))
-            {
+            if target_ids.iter().any(|tid| entity_ids.contains(*tid)) {
                 return Some(defer_self_mutation(op, dir, run_id).map(|task_id| {
                     serde_json::json!({
                         "op": op.op,

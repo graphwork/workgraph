@@ -1301,19 +1301,25 @@ mod model_management_config_persistence {
             },
         );
 
-        assert_eq!(
-            Config::load(dir).unwrap().llm_endpoints.endpoints.len(),
-            1
-        );
+        assert_eq!(Config::load(dir).unwrap().llm_endpoints.endpoints.len(), 1);
 
         // Remove
         {
             let mut config = Config::load(dir).unwrap();
-            config.llm_endpoints.endpoints.retain(|ep| ep.name != "temp-ep");
+            config
+                .llm_endpoints
+                .endpoints
+                .retain(|ep| ep.name != "temp-ep");
             config.save(dir).unwrap();
         }
 
-        assert!(Config::load(dir).unwrap().llm_endpoints.endpoints.is_empty());
+        assert!(
+            Config::load(dir)
+                .unwrap()
+                .llm_endpoints
+                .endpoints
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1328,12 +1334,8 @@ mod model_management_config_persistence {
             config
                 .models
                 .set_provider(DispatchRole::Evaluator, "openrouter");
-            config
-                .models
-                .set_endpoint(DispatchRole::Evaluator, "my-ep");
-            config
-                .models
-                .set_model(DispatchRole::Triage, "haiku");
+            config.models.set_endpoint(DispatchRole::Evaluator, "my-ep");
+            config.models.set_model(DispatchRole::Triage, "haiku");
             config.save(dir).unwrap();
         }
 

@@ -28,8 +28,8 @@ pub use ipc::{IpcRequest, IpcResponse};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::IsTerminal;
 use std::fs;
+use std::io::IsTerminal;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process;

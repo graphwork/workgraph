@@ -330,10 +330,7 @@ pub fn run(
                         | "random_compose_role"
                 ) && result["status"].as_str() == Some("applied")
                 {
-                    if let Some(role_id) = result["id"]
-                        .as_str()
-                        .or(result["new_id"].as_str())
-                    {
+                    if let Some(role_id) = result["id"].as_str().or(result["new_id"].as_str()) {
                         new_role_ids.push(role_id.to_string());
                     }
                 }
@@ -402,10 +399,7 @@ pub fn run(
             }
             let new_agent_id = agency::content_hash_agent(role_id, best_tradeoff_id);
             // Skip if the agent already exists (e.g. from a random_compose_agent op)
-            if agents_dir
-                .join(format!("{}.yaml", new_agent_id))
-                .exists()
-            {
+            if agents_dir.join(format!("{}.yaml", new_agent_id)).exists() {
                 continue;
             }
 
@@ -413,10 +407,7 @@ pub fn run(
                 id: new_agent_id.clone(),
                 role_id: role_id.clone(),
                 tradeoff_id: best_tradeoff_id.to_string(),
-                name: format!(
-                    "auto-agent-{}",
-                    &new_agent_id[..8.min(new_agent_id.len())]
-                ),
+                name: format!("auto-agent-{}", &new_agent_id[..8.min(new_agent_id.len())]),
                 performance: agency::PerformanceRecord::default(),
                 lineage: agency::Lineage {
                     parent_ids: vec![],
@@ -2811,10 +2802,7 @@ Let me know if you'd like me to adjust anything."#;
                 id: new_agent_id.clone(),
                 role_id: role_id.clone(),
                 tradeoff_id: best_tradeoff_id.to_string(),
-                name: format!(
-                    "auto-agent-{}",
-                    &new_agent_id[..8.min(new_agent_id.len())]
-                ),
+                name: format!("auto-agent-{}", &new_agent_id[..8.min(new_agent_id.len())]),
                 performance: PerformanceRecord::default(),
                 lineage: Lineage {
                     parent_ids: vec![],
@@ -2887,7 +2875,10 @@ Let me know if you'd like me to adjust anything."#;
             auto_created += 1;
         }
 
-        assert_eq!(auto_created, 0, "Should not create agent for already-paired role");
+        assert_eq!(
+            auto_created, 0,
+            "Should not create agent for already-paired role"
+        );
         let agents_after = agency::load_all_agents_or_warn(&agents_dir);
         assert_eq!(agents_after.len(), 1, "Should still have exactly one agent");
     }

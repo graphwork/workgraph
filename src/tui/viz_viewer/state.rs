@@ -2581,10 +2581,7 @@ impl VizApp {
     }
 
     /// Generate viz output from a pre-loaded graph, avoiding a redundant disk read.
-    fn generate_viz_from_graph(
-        &self,
-        graph: &workgraph::graph::WorkGraph,
-    ) -> Result<VizOutput> {
+    fn generate_viz_from_graph(&self, graph: &workgraph::graph::WorkGraph) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
         opts.show_internal = self.show_system_tasks;
         opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
@@ -3373,10 +3370,7 @@ impl VizApp {
                                 .unwrap_or_else(|| format!("assigned → {}", source_id));
                             self.push_pipeline_toast(format!("\u{26a1} Assigned: {}", msg));
                         } else if let Some(source_id) = task.id.strip_prefix(".place-") {
-                            self.push_pipeline_toast(format!(
-                                "\u{26a1} Placed: {}",
-                                source_id
-                            ));
+                            self.push_pipeline_toast(format!("\u{26a1} Placed: {}", source_id));
                         }
                     }
                     // Agent spawn: non-system task went to InProgress.
@@ -7294,11 +7288,12 @@ impl VizApp {
         let (openrouter_val, openrouter_status) = key_status("OPENROUTER_API_KEY");
         // Also check endpoint-configured keys
         let endpoint_has_key = |provider: &str| -> bool {
-            config
-                .llm_endpoints
-                .endpoints
-                .iter()
-                .any(|ep| ep.provider == provider && (ep.api_key.is_some() || ep.api_key_file.is_some() || ep.api_key_env.is_some()))
+            config.llm_endpoints.endpoints.iter().any(|ep| {
+                ep.provider == provider
+                    && (ep.api_key.is_some()
+                        || ep.api_key_file.is_some()
+                        || ep.api_key_env.is_some())
+            })
         };
         let key_label = |name: &str, status: &str, provider: &str| -> String {
             let icon = match status {
@@ -7333,10 +7328,11 @@ impl VizApp {
 
         // ── 3. Model Registry (from models.yaml) ──
         {
-            let registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
-                .unwrap_or_default();
+            let registry =
+                workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
             let default_id = registry.default_model.clone();
-            let mut models: Vec<&workgraph::models::ModelEntry> = registry.models.values().collect();
+            let mut models: Vec<&workgraph::models::ModelEntry> =
+                registry.models.values().collect();
             models.sort_by(|a, b| a.id.cmp(&b.id));
             for model in &models {
                 let is_default = default_id.as_deref() == Some(&*model.id);
@@ -7359,7 +7355,11 @@ impl VizApp {
                 entries.push(ConfigEntry {
                     key: format!("model.{}.set_default", model.id),
                     label: "  Set as default".into(),
-                    value: if is_default { "on".into() } else { "off".into() },
+                    value: if is_default {
+                        "on".into()
+                    } else {
+                        "off".into()
+                    },
                     edit_kind: ConfigEditKind::Toggle,
                     section: ConfigSection::Models,
                 });
@@ -8460,9 +8460,7 @@ impl VizApp {
         }
 
         // Handle model removal
-        if key.ends_with(".remove")
-            && key.starts_with("model.")
-        {
+        if key.ends_with(".remove") && key.starts_with("model.") {
             if let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".remove"))
@@ -8484,9 +8482,7 @@ impl VizApp {
         }
 
         // Handle model set-as-default
-        if key.ends_with(".set_default")
-            && key.starts_with("model.")
-        {
+        if key.ends_with(".set_default") && key.starts_with("model.") {
             if let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".set_default"))
@@ -8596,8 +8592,8 @@ impl VizApp {
             self.notification = Some(("Model ID is required".to_string(), Instant::now()));
             return;
         }
-        let mut registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
-            .unwrap_or_default();
+        let mut registry =
+            workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
         let tier = match fields.tier.to_lowercase().as_str() {
             "frontier" => workgraph::models::ModelTier::Frontier,
             "mid" => workgraph::models::ModelTier::Mid,

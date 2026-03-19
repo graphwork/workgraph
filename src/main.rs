@@ -1452,11 +1452,7 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|| std::path::Path::new("."))
                         .join("apply-results.json")
                 });
-                commands::evolve::run_apply_synthesis(
-                    &workgraph_dir,
-                    &synthesis_file,
-                    &output_path,
-                )
+                commands::evolve::run_apply_synthesis(&workgraph_dir, &synthesis_file, &output_path)
             }
             EvolveCommands::Review {
                 command: review_cmd,
@@ -2102,9 +2098,7 @@ fn main() -> Result<()> {
             ModelCommands::SetDefault { alias, global } => {
                 commands::model_cmd::run_set_default(&workgraph_dir, &alias, global)
             }
-            ModelCommands::Routing => {
-                commands::model_cmd::run_routing(&workgraph_dir, cli.json)
-            }
+            ModelCommands::Routing => commands::model_cmd::run_routing(&workgraph_dir, cli.json),
             ModelCommands::Set {
                 role,
                 model,
