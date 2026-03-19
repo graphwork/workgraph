@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-03-07 (verified by doc-audit-inventory)
+Last updated: 2026-03-19 (verified by ds3-ds2-doc-sync-spec)
 
 ---
 
@@ -23,6 +23,7 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 | `docs/models.md` | Model, endpoint, and API key management guide | Users, agents |
 | `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
 | `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
+| `docs/guides/openrouter-setup.md` | OpenRouter provider setup guide | Users, operators |
 
 ## Embedded Documentation
 
@@ -59,6 +60,12 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 | `docs/reports/self-hosting-integration-validation.md` | Self-hosting integration validation | Current |
 | `docs/reports/messaging-research-report.md` | Messaging system research report | Current |
 | `docs/reports/amplifier-research-report.md` | Amplifier research report | Current |
+| `docs/reports/openrouter-research.md` | OpenRouter integration research | Current |
+| `docs/reports/openrouter-validation.md` | OpenRouter validation report | Current |
+| `docs/reports/openrouter-design.md` | OpenRouter design report | Current |
+| `docs/reports/or-audit-results.md` | OpenRouter audit results | Current |
+| `docs/reports/or-agent-model-design.md` | OpenRouter agent model design | Current |
+| `docs/reports/or-integration-report.md` | OpenRouter integration report | Current |
 
 ## Design Documents
 
@@ -78,6 +85,9 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 | `docs/design/smooth-integration.md` | Smooth integration design | Reference |
 | `docs/design/vx-integration-response.md` | Veracity exchange integration | Design |
 | `docs/design/spec-vx-integration-impl.md` | VX integration implementation spec | Design |
+| `docs/design/outbound-edge-viz.md` | Outbound edge visualization design | Implemented |
+| `docs/design/reopen-on-new-dep.md` | Reopen on new dependency design | Implemented |
+| `docs/design/cycle-delay-semantics.md` | Cycle delay semantics design | Implemented |
 
 ## Research Documents
 
