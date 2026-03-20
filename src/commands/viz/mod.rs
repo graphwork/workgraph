@@ -172,30 +172,108 @@ pub(crate) fn is_coordinator_task(task: &Task) -> bool {
     task.tags.iter().any(|t| t == "coordinator-loop")
 }
 
-/// Returns true if a pipeline task is actively running (not just existing/pending).
-///
-/// Only `InProgress` and `PendingValidation` count as active — `Open`, `Blocked`,
-/// and `Waiting` mean the pipeline stage hasn't started yet and shouldn't be shown
-/// as an active indicator.
-fn is_pipeline_active(task: &Task) -> bool {
-    matches!(task.status, Status::InProgress | Status::PendingValidation)
+/// Pipeline stages in execution order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PipelineStage {
+    Place,
+    Assign,
+    Flip,
+    Validate,
 }
 
-/// Determine the phase annotation for a parent task based on its related internal tasks.
-///
-/// - If an assignment task is actively running → "[assigning]"
-/// - If an evaluation task is actively running → "[evaluating]"
-fn compute_phase_annotation(internal_task: &Task) -> &'static str {
-    let id = &internal_task.id;
+/// Map a system task ID to its pipeline stage (if any).
+fn pipeline_stage_for_task(id: &str) -> Option<PipelineStage> {
     if id.starts_with(".place-") || id.starts_with("place-") {
-        "[⊞ placing]"
+        Some(PipelineStage::Place)
     } else if id.starts_with(".assign-") || id.starts_with("assign-") {
-        "[⊞ assigning]"
-    } else if id.starts_with(".verify-") || id.starts_with("verify-") {
-        "[∴ validating]"
+        Some(PipelineStage::Assign)
+    } else if id.starts_with(".flip-") || id.starts_with("flip-") {
+        Some(PipelineStage::Flip)
+    } else if id.starts_with(".evaluate-") || id.starts_with("evaluate-")
+        || id.starts_with(".verify-") || id.starts_with("verify-")
+    {
+        Some(PipelineStage::Validate)
     } else {
-        "[∴ evaluating]"
+        None
     }
+}
+
+/// Convert a pipeline stage status to a display symbol.
+fn stage_symbol(status: Status) -> &'static str {
+    match status {
+        Status::Done => "✓",
+        Status::InProgress | Status::PendingValidation => "●",
+        Status::Failed | Status::Abandoned => "✗",
+        _ => "○", // Open, Blocked, Waiting
+    }
+}
+
+/// Get the short label for a pipeline stage.
+fn stage_label(stage: PipelineStage) -> &'static str {
+    match stage {
+        PipelineStage::Place => "place",
+        PipelineStage::Assign => "assign",
+        PipelineStage::Flip => "flip",
+        PipelineStage::Validate => "validate",
+    }
+}
+
+/// Build the compact pipeline status display for a parent task.
+///
+/// Shows all 4 stages with status symbols: `✓place ✓assign ●flip ○validate`
+/// - ✓ = done, ● = active, ✗ = failed, ○ = pending/not created
+fn compute_pipeline_display(stages: &HashMap<PipelineStage, Status>) -> String {
+    use PipelineStage::*;
+    let all_stages = [Place, Assign, Flip, Validate];
+    let parts: Vec<String> = all_stages
+        .iter()
+        .map(|s| {
+            let sym = stages.get(s).copied().map(stage_symbol).unwrap_or("○");
+            format!("{}{}", sym, stage_label(*s))
+        })
+        .collect();
+    parts.join(" ")
+}
+
+/// Determine whether a pipeline should be shown based on its stage statuses.
+///
+/// Shows the pipeline when at least one stage is active (InProgress/PendingValidation)
+/// or has failed/been abandoned. Hides when all stages are Done (complete) or all are
+/// Open/Blocked/Waiting (not yet started).
+fn should_show_pipeline(stages: &HashMap<PipelineStage, Status>) -> bool {
+    stages.values().any(|s| {
+        matches!(
+            s,
+            Status::InProgress | Status::PendingValidation | Status::Failed | Status::Abandoned
+        )
+    }) || {
+        // Also show when there's a mix of done and non-done (partial progress)
+        let any_done = stages.values().any(|s| matches!(s, Status::Done));
+        let all_done = stages.values().all(|s| matches!(s, Status::Done));
+        any_done && !all_done
+    }
+}
+
+/// Build pipeline annotations for all parent tasks from collected stage data.
+fn build_pipeline_annotations(
+    pipeline_stages: &HashMap<String, HashMap<PipelineStage, Status>>,
+    pipeline_dot_ids: &HashMap<String, Vec<String>>,
+) -> HashMap<String, AnnotationInfo> {
+    let mut annotations = HashMap::new();
+    for (pid, stages) in pipeline_stages {
+        if !should_show_pipeline(stages) {
+            continue;
+        }
+        let display = compute_pipeline_display(stages);
+        annotations.insert(
+            pid.clone(),
+            AnnotationInfo {
+                text: display,
+                dot_task_ids: pipeline_dot_ids.get(pid).cloned().unwrap_or_default(),
+            },
+        );
+    }
+    annotations
 }
 
 /// Extract the parent task ID from a system task ID.
@@ -221,18 +299,19 @@ fn system_task_parent_id(id: &str) -> Option<String> {
     None
 }
 
-/// Filter out internal tasks and compute phase annotations for their parent tasks.
+/// Filter out internal tasks and compute pipeline status annotations for their parent tasks.
 ///
 /// Returns:
 /// - The filtered list of tasks (internal tasks removed)
-/// - A map of parent_task_id → AnnotationInfo (display text + source dot-task IDs)
+/// - A map of parent_task_id → AnnotationInfo (pipeline status display + source dot-task IDs)
 pub(crate) fn filter_internal_tasks<'a>(
     _graph: &'a WorkGraph,
     tasks: Vec<&'a Task>,
     _existing_annotations: &HashMap<String, AnnotationInfo>,
 ) -> (Vec<&'a Task>, HashMap<String, AnnotationInfo>) {
-    let mut annotations: HashMap<String, AnnotationInfo> = HashMap::new();
     let mut internal_ids: HashSet<&str> = HashSet::new();
+    let mut pipeline_stages: HashMap<String, HashMap<PipelineStage, Status>> = HashMap::new();
+    let mut pipeline_dot_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     for task in &tasks {
         if !is_internal_task(task) {
@@ -240,23 +319,21 @@ pub(crate) fn filter_internal_tasks<'a>(
         }
         internal_ids.insert(task.id.as_str());
 
-        if let Some(pid) = system_task_parent_id(&task.id)
-            && is_pipeline_active(task)
-        {
-            let annotation = compute_phase_annotation(task);
-            annotations
-                .entry(pid)
-                .and_modify(|existing| {
-                    existing.text.push(' ');
-                    existing.text.push_str(annotation);
-                    existing.dot_task_ids.push(task.id.clone());
-                })
-                .or_insert_with(|| AnnotationInfo {
-                    text: annotation.to_string(),
-                    dot_task_ids: vec![task.id.clone()],
-                });
+        if let Some(pid) = system_task_parent_id(&task.id) {
+            if let Some(stage) = pipeline_stage_for_task(&task.id) {
+                pipeline_stages
+                    .entry(pid.clone())
+                    .or_default()
+                    .insert(stage, task.status);
+                pipeline_dot_ids
+                    .entry(pid)
+                    .or_default()
+                    .push(task.id.clone());
+            }
         }
     }
+
+    let annotations = build_pipeline_annotations(&pipeline_stages, &pipeline_dot_ids);
 
     // Second pass: filter out internal tasks and fix edges
     // For tasks that were blocked by internal tasks, rewire to the internal task's blockers
@@ -275,30 +352,29 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
     tasks: Vec<&'a Task>,
     _existing_annotations: &HashMap<String, AnnotationInfo>,
 ) -> (Vec<&'a Task>, HashMap<String, AnnotationInfo>) {
-    let mut annotations: HashMap<String, AnnotationInfo> = HashMap::new();
+    let mut pipeline_stages: HashMap<String, HashMap<PipelineStage, Status>> = HashMap::new();
+    let mut pipeline_dot_ids: HashMap<String, Vec<String>> = HashMap::new();
 
-    // Compute phase annotations only for actively-running internal tasks
+    // Collect pipeline stage info for all internal tasks
     for task in &tasks {
         if !is_internal_task(task) {
             continue;
         }
-        if let Some(pid) = system_task_parent_id(&task.id)
-            && is_pipeline_active(task)
-        {
-            let annotation = compute_phase_annotation(task);
-            annotations
-                .entry(pid)
-                .and_modify(|existing| {
-                    existing.text.push(' ');
-                    existing.text.push_str(annotation);
-                    existing.dot_task_ids.push(task.id.clone());
-                })
-                .or_insert_with(|| AnnotationInfo {
-                    text: annotation.to_string(),
-                    dot_task_ids: vec![task.id.clone()],
-                });
+        if let Some(pid) = system_task_parent_id(&task.id) {
+            if let Some(stage) = pipeline_stage_for_task(&task.id) {
+                pipeline_stages
+                    .entry(pid.clone())
+                    .or_default()
+                    .insert(stage, task.status);
+                pipeline_dot_ids
+                    .entry(pid)
+                    .or_default()
+                    .push(task.id.clone());
+            }
         }
     }
+
+    let annotations = build_pipeline_annotations(&pipeline_stages, &pipeline_dot_ids);
 
     let filtered: Vec<&'a Task> = tasks
         .into_iter()
@@ -1031,10 +1107,14 @@ mod tests {
         assert!(task_ids.contains("b"));
         assert!(!task_ids.contains("assign-b"));
 
-        // b should show [assigning] annotation with the source dot-task ID
+        // b should show pipeline status with assign active
         assert!(annots.contains_key("b"));
         let b_annot = &annots["b"];
-        assert!(b_annot.text.contains("assigning"));
+        assert!(
+            b_annot.text.contains("●assign"),
+            "Expected '●assign' in annotation, got: {}",
+            b_annot.text
+        );
         assert!(b_annot.dot_task_ids.contains(&"assign-b".to_string()));
     }
 
@@ -1263,21 +1343,22 @@ mod tests {
         assert!(ids.contains(".place-b"));
         assert!(ids.contains(".assign-b"));
 
-        // Only the in-progress .place-b should produce an annotation, not the open .assign-b
+        // Pipeline should show with place active and assign pending
         assert!(annots.contains_key("b"), "Expected annotation for task b");
         let b_annot = &annots["b"];
         assert!(
-            b_annot.text.contains("placing"),
-            "Expected 'placing' in annotation, got: {}",
+            b_annot.text.contains("●place"),
+            "Expected '●place' (active) in annotation, got: {}",
             b_annot.text
         );
         assert!(
-            !b_annot.text.contains("assigning"),
-            "Open .assign-b should NOT produce annotation, got: {}",
+            b_annot.text.contains("○assign"),
+            "Expected '○assign' (pending) in annotation, got: {}",
             b_annot.text
         );
+        // Both pipeline tasks should be in dot_task_ids
         assert!(b_annot.dot_task_ids.contains(&".place-b".to_string()));
-        assert!(!b_annot.dot_task_ids.contains(&".assign-b".to_string()));
+        assert!(b_annot.dot_task_ids.contains(&".assign-b".to_string()));
     }
 
     #[test]
@@ -1375,20 +1456,20 @@ mod tests {
         let (_filtered, annots) =
             filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
 
-        // Parent should have annotation only from the InProgress .place task
+        // Parent should have pipeline annotation showing place active, assign pending
         assert!(
             annots.contains_key("my-task"),
             "Expected annotation for my-task"
         );
         let annot = &annots["my-task"];
         assert!(
-            annot.text.contains("placing"),
-            "Expected 'placing' annotation, got: {}",
+            annot.text.contains("●place"),
+            "Expected '●place' (active) annotation, got: {}",
             annot.text
         );
         assert!(
-            !annot.text.contains("assigning"),
-            "Open .assign should not produce annotation, got: {}",
+            annot.text.contains("○assign"),
+            "Expected '○assign' (pending) in pipeline, got: {}",
             annot.text
         );
     }
