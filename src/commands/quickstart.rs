@@ -166,7 +166,8 @@ TASK STATE COMMANDS
     --until "task:dep-a=done"   # Wait for another task to reach a status
     --until "timer:5m"          # Wait for a timer (e.g., 5m, 1h, 2d)
     --until "message"           # Wait for a message to arrive
-    --until "human"             # Wait for manual intervention
+    --until "human-input"       # Wait for a human message
+    --until "file:path/to/file" # Wait for a file to change
 
   wg reschedule <task-id> --after 24   # Ready after 24 hours from now
   wg reschedule <task-id> --at <ISO>   # Ready at a specific timestamp
@@ -570,7 +571,8 @@ fn json_output() -> serde_json::Value {
             "task": "wg wait <id> --until \"task:dep-a=done\"",
             "timer": "wg wait <id> --until \"timer:5m\"",
             "message": "wg wait <id> --until \"message\"",
-            "human": "wg wait <id> --until \"human\""
+            "human-input": "wg wait <id> --until \"human-input\"",
+            "file": "wg wait <id> --until \"file:path/to/file\""
         },
         "discovery_publishing": {
             "discover": "wg discover",

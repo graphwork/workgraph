@@ -580,7 +580,7 @@ wg wait <TASK> --until <UNTIL> [OPTIONS]
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--until <UNTIL>` | Condition to wait for: `task:<id>=done`, `timer:<duration>`, `message` (required) |
+| `--until <UNTIL>` | Condition to wait for: `task:<id>=<status>`, `timer:<duration>`, `message`, `human-input`, `file:<path>` (required) |
 | `--checkpoint <CHECKPOINT>` | Checkpoint summary of progress so far |
 
 **Examples:**
@@ -593,6 +593,12 @@ wg wait my-task --until "timer:5m"
 
 wg wait my-task --until "message" --checkpoint "Completed phase 1, waiting for review feedback"
 # Park until a message arrives, saving a checkpoint of progress
+
+wg wait my-task --until "human-input"
+# Park until a human sends a message
+
+wg wait my-task --until "file:path/to/file"
+# Park until a file changes
 ```
 
 ---

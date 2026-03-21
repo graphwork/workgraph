@@ -284,6 +284,8 @@ wg service resume           # Resume dispatching
 | `wg wait <id> --until "task:dep=done"` | Wait for another task to complete |
 | `wg wait <id> --until "timer:5m"` | Wait for a timer duration |
 | `wg wait <id> --until "message"` | Wait for a message |
+| `wg wait <id> --until "human-input"` | Wait for a human message |
+| `wg wait <id> --until "file:path"` | Wait for a file to change |
 | `wg wait <id> --checkpoint "summary"` | Save progress checkpoint when parking |
 | `wg fail <id> --reason "why"` | Mark task failed |
 | `wg retry <id>` | Retry failed task |
