@@ -5,7 +5,7 @@
 A generic AI assistant is a blank slate. It has no declared priorities, no persistent
 personality, no way to accumulate craft. Every session starts from zero. The agency
 system exists to change this. It gives agents _composable identities_---a role that
-defines what the agent does, paired with a motivation that defines why it acts the way
+defines what the agent does, paired with a motivation (called a _tradeoff_ in the CLI---`wg tradeoff`) that defines why it acts the way
 it does. The same role combined with a different motivation produces a different agent.
 This is the key insight: identity is not a name tag, it is a _function_---the
 Cartesian product of competence and intent.
@@ -36,9 +36,10 @@ It carries three identity-defining fields:
 A role also carries mutable operational fields that do not affect its identity:
 a _name_ (a human-readable label like "Programmer" or "Architect"), a _performance_
 record (aggregated evaluation scores), _lineage_ metadata (evolutionary history),
-and an optional _context scope_ default (`clean`, `task`, `graph`, or `full`). When
-an agent with this role is dispatched, the role's context scope is used as a fallback
-if the task does not specify one (see the resolution priority chain in @sec-coordination).
+an optional _context scope_ default (`clean`, `task`, `graph`, or `full`), and an
+optional _exec-mode_ default (`full`, `light`, `bare`, or `shell`). When an agent with
+this role is dispatched, the role's context scope and exec-mode are used as fallbacks
+if the task does not specify them (see the resolution priority chains in @sec-coordination).
 The name is for humans. The identity is for the system.
 
 Consider two roles: one describes a code reviewer who checks for correctness, testing
@@ -48,6 +49,11 @@ and desired outcomes differ, so they produce different content-hash IDs---differ
 identities, different agents, different behaviors when paired with the same motivation.
 
 == Motivations <motivations>
+
+#block(
+  stroke: (left: 2pt + gray),
+  inset: (left: 12pt, y: 4pt),
+)[*Terminology note:* The CLI uses the command `wg tradeoff` for this concept. This manual uses "motivation" when discussing the conceptual model and "tradeoff" when referencing CLI commands.]
 
 A motivation answers the complementary question: _why does this agent act the way it does?_
 

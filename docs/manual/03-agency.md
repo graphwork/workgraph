@@ -1,6 +1,6 @@
 # The Agency Model
 
-A generic AI assistant is a blank slate. It has no declared priorities, no persistent personality, no way to accumulate craft. Every session starts from zero. The agency system exists to change this. It gives agents *composable identities*—a role that defines what the agent does, paired with a motivation that defines why it acts the way it does. The same role combined with a different motivation produces a different agent. This is the key insight: identity is not a name tag, it is a *function*—the Cartesian product of competence and intent.
+A generic AI assistant is a blank slate. It has no declared priorities, no persistent personality, no way to accumulate craft. Every session starts from zero. The agency system exists to change this. It gives agents *composable identities*—a role that defines what the agent does, paired with a motivation (called a *tradeoff* in the CLI—`wg tradeoff`) that defines why it acts the way it does. The same role combined with a different motivation produces a different agent. This is the key insight: identity is not a name tag, it is a *function*—the Cartesian product of competence and intent.
 
 The result is an identity space that grows combinatorially. Four roles and four motivations yield sixteen distinct agents, each with its own behavioral signature. These identities are not administrative labels. They are content-hashed, immutable, evaluable, and evolvable. An agent’s identity is a mathematical fact, verifiable by anyone who knows the hash.
 
@@ -16,11 +16,13 @@ It carries three identity-defining fields:
 
 - **Desired outcome.** What good output looks like. This is the standard against which the agent’s work will be evaluated—not a vague aspiration, but a crisp definition of success.
 
-A role also carries mutable operational fields that do not affect its identity: a *name* (a human-readable label like “Programmer” or “Architect”), a *performance* record (aggregated evaluation scores), *lineage* metadata (evolutionary history), and an optional *context scope* default (`clean`, `task`, `graph`, or `full`). When an agent with this role is dispatched, the role’s context scope is used as a fallback if the task does not specify one (see the resolution priority chain in *Section 4*). The name is for humans. The identity is for the system.
+A role also carries mutable operational fields that do not affect its identity: a *name* (a human-readable label like “Programmer” or “Architect”), a *performance* record (aggregated evaluation scores), *lineage* metadata (evolutionary history), an optional *context scope* default (`clean`, `task`, `graph`, or `full`), and an optional *exec-mode* default (`full`, `light`, `bare`, or `shell`). When an agent with this role is dispatched, the role’s context scope and exec-mode are used as fallbacks if the task does not specify them (see the resolution priority chains in *Section 4*). The name is for humans. The identity is for the system.
 
 Consider two roles: one describes a code reviewer who checks for correctness, testing gaps, and style violations; the other describes an architect who evaluates structural decisions and dependency management. They may share some skills, but their descriptions and desired outcomes differ, so they produce different content-hash IDs—different identities, different agents, different behaviors when paired with the same motivation.
 
 ## Motivations
+
+> **Terminology note:** The CLI uses the command `wg tradeoff` for this concept. This manual uses "motivation" when discussing the conceptual model and "tradeoff" when referencing CLI commands.
 
 A motivation answers the complementary question: *why does this agent act the way it does?*
 

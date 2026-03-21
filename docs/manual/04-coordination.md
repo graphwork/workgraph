@@ -18,36 +18,58 @@ One detail matters more than it might seem: agents spawned by the daemon are *de
 
 The coordinator's heartbeat is the *tick*—a single pass through the scheduling logic. Two things trigger ticks: IPC events (immediate, reactive) and a background poll timer (a safety net that catches manual edits to the graph file). The poll interval defaults to 60 seconds and is configurable via `config.toml` or `wg service reload --poll-interval N`.
 
-Each tick has six phases:
+Each tick proceeds through a series of phases. A preliminary phase zero processes the coordinator's chat inbox (user-facing messages that arrived since the last tick). Then the numbered phases run:
 
-1. **Reap zombies.** Even though agents run in their own sessions, they remain children of the daemon process. When an agent exits, it becomes a zombie until the parent calls `waitpid`. The tick begins by reaping all zombies so that subsequent PID checks return accurate results.
+1. **Clean up dead agents and count slots.** The coordinator walks the agent registry and checks each alive agent's PID. If the process is gone, the agent is dead. Dead agents have their tasks unclaimed—the task status reverts to open, ready for re-dispatch. The coordinator then counts truly alive agents (not just registry entries, but processes with running PIDs) and compares against `max_agents`. If all slots are full, the tick ends early.
 
-2. **Clean up dead agents and count slots.** The coordinator walks the agent registry and checks each alive agent's PID. If the process is gone, the agent is dead. Dead agents have their tasks unclaimed—the task status reverts to open, ready for re-dispatch. The coordinator then counts truly alive agents (not just registry entries, but processes with running PIDs) and compares against `max_agents`. If all slots are full, the tick ends early.
+1.3. **Zero-output agent detection.** Agents alive for five or more minutes with zero bytes written to their output stream are considered zombies—processes that launched but never produced work (typically due to API failures or stuck sessions). The coordinator kills these agents and unclaims their tasks. A three-layer circuit breaker prevents cascading waste: at the *agent* level, the zombie is killed immediately; at the *per-task* level, after two consecutive zero-output spawns for the same task, the task is failed rather than retried; at the *global* level, if 50% or more of alive agents are zero-output, the coordinator pauses all spawning with exponential backoff (60 seconds up to a 15-minute maximum), preventing the system from burning compute against a downed API.
+
+1.5. **Auto-checkpoint alive agents.** The coordinator saves a checkpoint for agents that have exceeded a configured turn count or elapsed time threshold. This preserves context for recovery if the agent is later killed or dies unexpectedly. A replacement agent can resume from the checkpoint rather than starting from scratch.
+
+2. **Load graph.** The graph file is read from disk.
+
+2.5. **Cycle iteration evaluation.** If all members of a structural cycle are done and the cycle has not converged or hit `max_iterations`, the coordinator re-opens all members for the next iteration.
+
+2.6. **Cycle failure restart.** If a cycle member has failed and `restart_on_failure` is true (the default in `CycleConfig`), the coordinator re-activates the cycle for another attempt. This prevents a single transient failure from permanently halting an iterative workflow.
+
+2.7. **Wait/resume evaluation.** The coordinator checks all tasks in *waiting* status for satisfied conditions—another task reaching a specified state, a timer expiring, a message arriving, or a human signal. Satisfied tasks transition back to *open*. The coordinator also detects and fails circular waits (task A waiting on task B waiting on task A).
+
+2.8. **Message-triggered resurrection.** Done tasks that have unread messages from whitelisted senders (the user, the coordinator, or dependent-task agents) are reopened so the next agent can address the message. Rate-limited to a maximum of three resurrections per task with a cooldown period.
 
 3. **Build auto-assign meta-tasks.** If `auto_assign` is enabled in the agency configuration, the coordinator scans for ready tasks that have no agent identity bound to them. For each, it creates an `assign-{task-id}` meta-task that the original task is after. This meta-task, when dispatched, will spawn an assigner agent that inspects the agency's roster and picks the best fit. The meta-task is tagged `"assignment"` to prevent recursive auto-assignment—the coordinator never creates an assignment task for an assignment task.
 
 4. **Build auto-evaluate meta-tasks.** If `auto_evaluate` is enabled, the coordinator creates `evaluate-{task-id}` meta-tasks that are after each work task. When the work task reaches a terminal status, the evaluation task becomes ready. Evaluation tasks use the shell executor to run `wg evaluate run`, which spawns a separate evaluator to score the work. Tasks assigned to human agents are skipped—the system does not presume to evaluate human judgment. Meta-tasks tagged `"evaluation"`, `"assignment"`, or `"evolution"` are excluded to prevent infinite regress.
 
-5. **Save graph and find ready tasks.** If the auto-assign or auto-evaluate phases modified the graph (adding meta-tasks, adjusting dependencies), the coordinator saves it before proceeding. Then it computes the set of ready tasks. If no tasks are ready, the tick ends. If all tasks in the graph are terminal, the coordinator logs that the project is complete.
+4.5. **FLIP verification.** If `flip_verification_threshold` is configured, the coordinator scans for tasks with FLIP scores below the threshold and creates `.verify-flip-{task-id}` verification tasks dispatched to a stronger model (Opus by default). FLIP (Fidelity via Latent Intent Probing) is an independent fidelity check that reconstructs what the task prompt must have been from the agent's output alone, then scores the match—see *Section 5* for details.
+
+5. **Save graph and find ready tasks.** If previous phases modified the graph (adding meta-tasks, adjusting dependencies), the coordinator saves it before proceeding. Then it computes the set of ready tasks. If no tasks are ready, the tick ends. If all tasks in the graph are terminal, the coordinator logs that the project is complete. A global zero-output backoff check also runs here: if the backoff is active (from phase 1.3), spawning is skipped entirely.
 
 6. **Spawn agents.** For each ready task, up to the number of available slots, the coordinator dispatches an agent. This is where the dispatch cycle—the core of the system—begins.
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   TICK LOOP                       │
-│                                                   │
-│  1. reap_zombies()                                │
-│  2. cleanup_dead_agents → count alive slots       │
-│  3. build_auto_assign_tasks    (if enabled)       │
-│  4. build_auto_evaluate_tasks  (if enabled)       │
-│  5. save graph → find ready tasks                 │
-│  6. spawn_agents_for_ready_tasks(slots_available) │
-│                                                   │
-│  Triggered by: IPC graph_changed │ poll timer     │
-└──────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│                      TICK LOOP                        │
+│                                                       │
+│  0.  process_chat_inbox()                             │
+│  1.  cleanup_dead_agents → count alive slots          │
+│  1.3 zero_output_detection (circuit breaker)          │
+│  1.5 auto_checkpoint_alive_agents                     │
+│  2.  load graph                                       │
+│  2.5 cycle_iteration_evaluation                       │
+│  2.6 cycle_failure_restart                            │
+│  2.7 wait_resume_evaluation                           │
+│  2.8 message_triggered_resurrection                   │
+│  3.  build_auto_assign_tasks       (if enabled)       │
+│  4.  build_auto_evaluate_tasks     (if enabled)       │
+│  4.5 build_flip_verification_tasks (if enabled)       │
+│  5.  save graph → find ready tasks                    │
+│  6.  spawn_agents_for_ready_tasks(slots_available)    │
+│                                                       │
+│  Triggered by: IPC graph_changed │ poll timer         │
+└───────────────────────────────────────────────────────┘
 ```
 
-*The six phases of a coordinator tick.*
+*The phases of a coordinator tick.*
 
 ## The Dispatch Cycle
 

@@ -2,7 +2,7 @@
 
 The agency does not merely execute work. It learns from it.
 
-Every completed task generates a signal—a scored evaluation measuring how well the agent performed against the task's requirements and the agent's own declared standards. These signals accumulate into performance records on agents, roles, and motivations. When enough data exists, an evolution cycle reads the aggregate picture and proposes structural changes: sharpen a role's description, tighten a motivation's constraints, combine two high-performers into something new, retire what consistently underperforms. The changed entities receive new content-hash IDs, linked to their parents by lineage metadata. Better identities produce better work. Better work produces sharper evaluations. The loop closes.
+Every completed task generates a signal—a scored evaluation measuring how well the agent performed against the task's requirements and the agent's own declared standards. These signals accumulate into performance records on agents, roles, and motivations (called _tradeoffs_ in the CLI—`wg tradeoff`). When enough data exists, an evolution cycle reads the aggregate picture and proposes structural changes: sharpen a role's description, tighten a motivation's constraints, combine two high-performers into something new, retire what consistently underperforms. The changed entities receive new content-hash IDs, linked to their parents by lineage metadata. Better identities produce better work. Better work produces sharper evaluations. The loop closes.
 
 This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement.
 
@@ -42,6 +42,39 @@ This three-level, cross-referenced propagation creates the data structure that m
 Both done and failed tasks can be evaluated. This is intentional—there is useful signal in failure. Which agents fail on which kinds of tasks reveals mismatches between identity and work that evolution can address.
 
 Human agents are tracked by the same evaluation machinery, but their evaluations are excluded from the evolution signal. The system does not attempt to "improve" humans. Human evaluation data exists for reporting and trend analysis, not for evolutionary pressure.
+
+=== FLIP: Fidelity via Latent Intent Probing <flip>
+
+Standard evaluation asks an LLM to read the task and its output and score quality. FLIP asks a different question: _does the output faithfully reflect what was asked?_
+
+The FLIP pipeline has two phases. In the _inference_ phase, an LLM (default: Sonnet) receives only the agent's output—no task description—and reconstructs what the original prompt must have been. In the _comparison_ phase, a second LLM (default: Sonnet) scores how well the reconstructed prompt matches the actual task description. The result is a fidelity score: high FLIP means the output clearly addresses the task; low FLIP means the output may have drifted from the intent, even if it looks competent in isolation.
+
+FLIP runs alongside standard evaluation when `flip_enabled` is true in the agency configuration. The scores are recorded with source `"flip"` and propagate through the same three-level mechanism as standard evaluations.
+
+When `flip_verification_threshold` is configured, tasks with FLIP scores below the threshold automatically receive a `.verify-flip-{task-id}` verification task. This verification task is dispatched to a stronger model (Opus by default) to independently confirm or reject the result. The full agency pipeline is: *evaluate → FLIP → verify → evolve*.
+
+FLIP is configured via `wg config`:
+
+```
+wg config --flip-enabled true
+wg config --flip-inference-model sonnet
+wg config --flip-comparison-model sonnet
+wg config --flip-verification-threshold 0.7
+wg config --flip-verification-model opus
+```
+
+=== The eval-gate mechanism <eval-gate>
+
+The evaluation gate is a quality floor. When `eval_gate_threshold` is configured, any evaluated task whose weighted score falls below the threshold is automatically _rejected_—its status is set to failed with a descriptive reason citing the score and threshold. This prevents low-quality work from being accepted and unblocking downstream tasks.
+
+By default, the eval gate applies only to tasks tagged `"eval-gate"` (tasks created with `--verify` receive this tag automatically). Setting `eval_gate_all` to true extends the gate to _all_ evaluated tasks, creating a project-wide quality minimum.
+
+```
+wg config --eval-gate-threshold 0.7
+wg config --eval-gate-all true
+```
+
+The eval gate runs as the final step of `wg evaluate run`, after scoring is complete and before the evaluation is considered finished. A rejected task can be retried (`wg retry`), which re-opens it for a fresh attempt with recovery context from the failed evaluation.
 
 === External evaluation sources <external-evaluation>
 
