@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-03-19 (verified by ds4-doc-sync-ds3-ds2-doc-sync-spec)
+Last updated: 2026-03-21 (verified by doc-refresh-mar21-ds4-doc-sync-ds3-ds2-doc-sync-spec)
 
 ---
 
