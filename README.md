@@ -987,6 +987,8 @@ auto_assign = false
 name = "My Project"
 ```
 
+See [Service > Configuration](#configuration) for the full set of options including agency automation, FLIP, eval gates, model routing, and multi-coordinator settings.
+
 Agency data lives in `.workgraph/agency/`, with federation config and functions alongside:
 
 ```
@@ -998,16 +1000,20 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
     <name>.yaml
   agency/
     primitives/
-      components/              # Skill components (atomic capabilities)
-      outcomes/                # Desired outcomes
-      tradeoffs/               # Tradeoff definitions
+      components/          # Skill components (atomic capabilities)
+      outcomes/            # Desired outcomes
+      tradeoffs/           # Tradeoff definitions
     cache/
-      roles/                   # Composed roles (component_ids + outcome_id)
-      agents/                  # Agent definitions (role + tradeoff pairs)
-    evaluations/               # Evaluation records (JSON)
-    evolver-skills/            # Strategy-specific guidance documents
-    coordinator-prompt/        # Coordinator prompt files
-    deferred-ops/              # Deferred evolution operations
+      roles/               # Composed roles (component_ids + outcome_id)
+      agents/              # Agent definitions (role + tradeoff pairs)
+    assignments/           # Task-to-agent assignment records
+    evaluations/           # Evaluation records (JSON)
+    org-evaluations/       # Organization-level evaluation records
+    evolution_runs/        # Evolution run history
+    evolver-skills/        # Strategy-specific guidance documents
+    coordinator-prompt/    # Coordinator prompt files
+    deferred/              # Deferred evolution operations
+    creator_state.json     # Creator agent state
 ```
 
 ## More docs
