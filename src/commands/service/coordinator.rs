@@ -131,6 +131,16 @@ fn cleanup_and_count_alive(
     Ok(Ok(alive_count))
 }
 
+/// Tags for daemon-managed loop tasks that should not be spawned as regular agents.
+const DAEMON_MANAGED_TAGS: &[&str] = &["compact-loop", "archive-loop", "coordinator-loop"];
+
+/// Check whether a task is managed by the daemon (not spawned as a regular agent).
+fn is_daemon_managed(task: &workgraph::graph::Task) -> bool {
+    task.tags
+        .iter()
+        .any(|tag| DAEMON_MANAGED_TAGS.contains(&tag.as_str()))
+}
+
 /// Check whether any tasks are ready. Returns `None` with an early `TickResult`
 /// if no ready tasks exist.
 fn check_ready_or_return(
@@ -140,7 +150,9 @@ fn check_ready_or_return(
 ) -> Option<TickResult> {
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
-    if ready.is_empty() {
+    // Only count tasks that are spawnable (exclude daemon-managed loop tasks)
+    let spawnable_count = ready.iter().filter(|t| !is_daemon_managed(t)).count();
+    if spawnable_count == 0 {
         let terminal = graph.tasks().filter(|t| t.status.is_terminal()).count();
         let total = graph.tasks().count();
         if terminal == total && total > 0 {
@@ -2572,12 +2584,8 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Skip compact/archive tasks — handled directly by the daemon, not spawned as agents
-        if task
-            .tags
-            .iter()
-            .any(|t| t == "compact-loop" || t == "archive-loop")
-        {
+        // Skip daemon-managed loop tasks — handled directly by the daemon, not spawned as agents
+        if is_daemon_managed(task) {
             continue;
         }
 
@@ -3045,15 +3053,10 @@ pub fn coordinator_tick(
         eprintln!("[coordinator] Spawning paused: global zero-output backoff active");
         let cycle_analysis = graph.compute_cycle_analysis();
         let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-        // Exclude compact-loop and archive-loop tasks from ready count — they're handled by
-        // the daemon's compaction/archival subsystems, not by agent spawning.
+        // Exclude daemon-managed loop tasks from ready count.
         let ready_count = final_ready
             .iter()
-            .filter(|t| {
-                !t.tags
-                    .iter()
-                    .any(|tag| tag == "compact-loop" || tag == "archive-loop")
-            })
+            .filter(|t| !is_daemon_managed(t))
             .count();
         return Ok(TickResult {
             agents_alive: alive_count,
@@ -3065,15 +3068,10 @@ pub fn coordinator_tick(
     // Phase 6: Spawn agents on ready tasks
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-    // Exclude compact-loop and archive-loop tasks from ready count — they're handled by
-    // the daemon's compaction/archival subsystems, not by agent spawning.
+    // Exclude daemon-managed loop tasks from ready count.
     let ready_count = final_ready
         .iter()
-        .filter(|t| {
-            !t.tags
-                .iter()
-                .any(|tag| tag == "compact-loop" || tag == "archive-loop")
-        })
+        .filter(|t| !is_daemon_managed(t))
         .count();
     drop(final_ready);
     // Resolve task agent model: CLI override > models.task_agent > models.default > agent.model
