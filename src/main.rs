@@ -549,7 +549,7 @@ fn main() -> Result<()> {
                     edge_color: resolved_edge_color,
                 };
                 let mouse_override = if no_mouse { Some(false) } else { None };
-                tui::viz_viewer::run(workgraph_dir, options, mouse_override)
+                tui::viz_viewer::run(workgraph_dir, options, mouse_override, false)
             } else {
                 let fmt = if dot {
                     commands::viz::OutputFormat::Dot
@@ -1929,7 +1929,7 @@ fn main() -> Result<()> {
                 no_coordinator_agent,
             ),
         },
-        Commands::Tui { no_mouse } => {
+        Commands::Tui { no_mouse, recording } => {
             let resolved_edge_color = Config::load_or_default(&workgraph_dir).viz.edge_color;
             let options = commands::viz::VizOptions {
                 all: true,
@@ -1946,7 +1946,7 @@ fn main() -> Result<()> {
                 edge_color: resolved_edge_color,
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
-            tui::viz_viewer::run(workgraph_dir, options, mouse_override)
+            tui::viz_viewer::run(workgraph_dir, options, mouse_override, recording)
         }
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),

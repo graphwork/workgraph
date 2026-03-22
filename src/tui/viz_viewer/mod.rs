@@ -28,15 +28,27 @@ use ratatui::backend::CrosstermBackend;
 use self::state::VizApp;
 use crate::commands::viz::VizOptions;
 
+/// Returns true when running inside an asciinema recording session.
+fn detect_asciinema() -> bool {
+    std::env::var_os("ASCIINEMA_REC").is_some()
+}
+
 /// Run the viz viewer TUI.
 ///
 /// `mouse_override`: `Some(false)` to force mouse off (--no-mouse),
 /// `None` for auto-detection (disabled in tmux splits).
+///
+/// `recording`: when true (or auto-detected via `ASCIINEMA_REC`), disables
+/// mouse capture and keyboard enhancement queries that produce escape
+/// sequences incompatible with asciinema recording/playback.
 pub fn run(
     workgraph_dir: PathBuf,
     viz_options: VizOptions,
     mouse_override: Option<bool>,
+    recording: bool,
 ) -> Result<()> {
+    let recording = recording || detect_asciinema();
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = restore_terminal();
@@ -51,7 +63,13 @@ pub fn run(
 
     // Enable kitty keyboard protocol if supported — this lets us distinguish
     // Shift+Enter from Enter (and other modified special keys).
-    let has_keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
+    // Skip in recording mode: the query/response escape sequences pollute
+    // the .cast file and can confuse asciinema-player.
+    let has_keyboard_enhancement = if recording {
+        false
+    } else {
+        supports_keyboard_enhancement().unwrap_or(false)
+    };
     if has_keyboard_enhancement {
         let _ = execute!(
             io::stdout(),
@@ -61,7 +79,16 @@ pub fn run(
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to create terminal for TUI")?;
-    let mut app = VizApp::new(workgraph_dir, viz_options, mouse_override);
+
+    // In recording mode, force mouse off — mouse escape sequences are not
+    // useful in recordings and some asciinema-player versions render them
+    // as visible artifacts.
+    let effective_mouse = if recording {
+        Some(false)
+    } else {
+        mouse_override
+    };
+    let mut app = VizApp::new(workgraph_dir, viz_options, effective_mouse);
     app.has_keyboard_enhancement = has_keyboard_enhancement;
     let result = event::run_event_loop(&mut terminal, &mut app);
 

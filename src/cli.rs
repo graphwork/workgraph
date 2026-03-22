@@ -1440,6 +1440,12 @@ pub enum Commands {
         /// Disable mouse capture (useful in tmux)
         #[arg(long)]
         no_mouse: bool,
+
+        /// Recording mode: disable mouse capture and keyboard enhancement
+        /// queries for clean asciinema/terminal recording. Auto-enabled when
+        /// ASCIINEMA_REC is set.
+        #[arg(long)]
+        recording: bool,
     },
 
     /// Interactive configuration wizard for first-time setup
