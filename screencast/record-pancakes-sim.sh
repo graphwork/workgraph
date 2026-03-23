@@ -72,7 +72,16 @@ sleep 1
 
 # === Step 4: Show initial state (tasks all open, chat visible) ===
 echo "Recording initial state..."
-sleep 3
+sleep 2
+
+# Navigate to a middle task so BOTH upstream (magenta) and downstream (cyan)
+# edges are visible. fix-pancake-recipe has upstream (diagnose) and downstream
+# (final-taste-test) connections.
+echo "Navigating to middle task (fix-pancake-recipe)..."
+tmux send-keys -t "$SESSION" Down   # Select first task (diagnose-flat-pancakes)
+sleep 0.3
+tmux send-keys -t "$SESSION" Down   # Move to fix-pancake-recipe (middle of graph)
+sleep 3                              # Hold so viewer sees both edge directions
 
 # === Step 5: Simulate task progression ===
 echo "Simulating task progression..."

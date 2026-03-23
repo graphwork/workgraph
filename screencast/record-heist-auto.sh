@@ -96,6 +96,7 @@ count_user_tasks() {
 TIMEOUT=600  # 7 minutes max
 ELAPSED=0
 POLL_INTERVAL=5
+NAVIGATED=0
 
 while [ $ELAPSED -lt $TIMEOUT ]; do
     sleep $POLL_INTERVAL
@@ -108,6 +109,16 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
     TOTAL=$((ACTIVE + DONE))
 
     echo "  ${ELAPSED}s: ${DONE}/${TOTAL} done, ${ACTIVE} active (${OPEN} open, ${IN_PROGRESS} in-progress)"
+
+    # Once tasks appear, navigate to a middle task so both upstream (magenta)
+    # and downstream (cyan) edges are visible in the graph.
+    if [ "$TOTAL" -ge 3 ] && [ "$NAVIGATED" -eq 0 ]; then
+        echo "  Navigating to middle task for edge visibility..."
+        tmux send-keys -t "$TMUX_SESSION" Down
+        sleep 0.3
+        tmux send-keys -t "$TMUX_SESSION" Down
+        NAVIGATED=1
+    fi
 
     # If we have user tasks and none are active, we're done
     if [ "$TOTAL" -gt 0 ] && [ "$ACTIVE" -eq 0 ]; then

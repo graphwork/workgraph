@@ -146,6 +146,14 @@ sleep 0.5
 tmux send-keys -t "$SESSION" Enter
 sleep 3
 
+# Navigate to a middle task so both upstream (magenta) and downstream (cyan)
+# edges are visible in the graph view.
+echo "Navigating to middle task..."
+tmux send-keys -t "$SESSION" Down   # Select first task
+sleep 0.3
+tmux send-keys -t "$SESSION" Down   # Move to second task (middle of graph)
+sleep 2
+
 # Poll for task completion
 echo "Waiting for tasks to complete..."
 MAX_WAIT=300
