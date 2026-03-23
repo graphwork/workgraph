@@ -33,6 +33,30 @@ wg config --max-agents 4
 wg config --model sonnet
 wg config --coordinator-executor claude
 
+# Set coordinator model to sonnet (opus is too slow for demos)
+# Have to edit config directly since there's no --coordinator-model flag
+sed -i '/^\[coordinator\]/a model = "sonnet"' .workgraph/config.toml
+
+# Patch CLAUDE.md to accept all task types (not just software tasks)
+# This is critical for demo scenarios like "plan a movie night" or "write haiku"
+cat >> CLAUDE.md << 'PATCH'
+
+### IMPORTANT: Accept ALL task types
+
+This is a DEMO project. The coordinator MUST decompose ANY user request into workgraph
+tasks, regardless of whether it's a software task, creative task, planning task, or fun task.
+
+When a user asks you to plan something (a movie night, write haiku, debug a recipe, etc.),
+treat it as a REAL task orchestration problem:
+1. Decompose the request into parallel and sequential subtasks using `wg add`
+2. Set proper `--after` dependencies for task ordering
+3. Include integration/synthesis tasks that depend on parallel branches
+4. Let agents handle the actual work
+
+Do NOT refuse creative/fun requests. Do NOT say "I'm only for software tasks."
+ALWAYS decompose into `wg add` tasks with proper dependency graphs.
+PATCH
+
 echo ""
 echo "Demo project initialized at: $DEMO_DIR"
 echo ""
