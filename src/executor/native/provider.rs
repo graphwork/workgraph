@@ -82,12 +82,22 @@ pub fn create_provider_ext(
         })
         .or_else(|| std::env::var("WG_LLM_PROVIDER").ok())
         .unwrap_or_else(|| {
-            if model.contains('/') {
+            if model.starts_with("anthropic/") {
+                "anthropic".to_string()
+            } else if model.contains('/') {
                 "openai".to_string()
             } else {
                 "anthropic".to_string()
             }
         });
+
+    // Strip provider prefix from model name when routing to native provider.
+    // e.g. "anthropic/claude-sonnet-4-20250514" → "claude-sonnet-4-20250514"
+    let model = if provider_name == "anthropic" {
+        model.strip_prefix("anthropic/").unwrap_or(model)
+    } else {
+        model
+    };
 
     // Look up endpoint config: by name first, then by provider
     let endpoint = endpoint_name

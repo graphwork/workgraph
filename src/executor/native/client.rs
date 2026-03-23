@@ -38,7 +38,7 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
 }
@@ -190,6 +190,8 @@ pub struct AnthropicClient {
     base_url: String,
     pub model: String,
     pub max_tokens: u32,
+    /// Whether to use SSE streaming for requests (default: true).
+    use_streaming: bool,
 }
 
 impl AnthropicClient {
@@ -216,6 +218,7 @@ impl AnthropicClient {
             base_url: DEFAULT_BASE_URL.to_string(),
             model: model.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            use_streaming: true,
         })
     }
 
@@ -228,6 +231,16 @@ impl AnthropicClient {
     /// Override max tokens per response.
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Enable or disable SSE streaming for requests.
+    ///
+    /// When enabled (the default), the client sends `stream: true` and parses
+    /// the SSE response, accumulating content block deltas and tool call JSON
+    /// across chunks. Disable for endpoints that don't support streaming.
+    pub fn with_streaming(mut self, enabled: bool) -> Self {
+        self.use_streaming = enabled;
         self
     }
 
@@ -397,7 +410,11 @@ impl super::provider::Provider for AnthropicClient {
     }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
-        self.messages(request).await
+        if self.use_streaming {
+            self.messages_streaming(request).await
+        } else {
+            self.messages(request).await
+        }
     }
 }
 

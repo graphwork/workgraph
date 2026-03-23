@@ -21,11 +21,33 @@ use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
 
 // ── Mock HTTP helpers ───────────────────────────────────────────────────
 
-/// Anthropic Messages API mock response (minimal valid JSON).
+/// Anthropic Messages API mock response (minimal valid JSON, non-streaming).
 fn anthropic_mock_response(model: &str) -> String {
     format!(
         r#"{{"id":"msg_mock","type":"message","role":"assistant","content":[{{"type":"text","text":"hello from {model}"}}],"model":"{model}","stop_reason":"end_turn","usage":{{"input_tokens":10,"output_tokens":5}}}}"#,
         model = model,
+    )
+}
+
+/// Anthropic Messages API mock response in SSE streaming format.
+fn anthropic_mock_sse_response(model: &str) -> String {
+    let msg = format!(
+        r#"{{"type":"message_start","message":{{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"usage":{{"input_tokens":10,"output_tokens":0}}}}}}"#,
+        model = model,
+    );
+    let text = format!(
+        "hello from {model}",
+        model = model,
+    );
+    format!(
+        "event: message_start\ndata: {msg}\n\n\
+         event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+         event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+         event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+         event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":5}}}}\n\n\
+         event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+        msg = msg,
+        text = text,
     )
 }
 
@@ -421,7 +443,7 @@ fn test_per_role_with_mock_servers() {
     // End-to-end: create providers for different roles using mock servers
     let tmp = setup_workgraph_dir();
 
-    let anthropic_body = anthropic_mock_response("claude-sonnet-4-6");
+    let anthropic_body = anthropic_mock_sse_response("claude-sonnet-4-6");
     let openai_body = openai_mock_response("gpt-4o-mini");
 
     let anthropic_url = start_mock_server(anthropic_body.clone(), 1);
@@ -695,7 +717,7 @@ fn test_model_registry_provider_filtering() {
 
 #[tokio::test]
 async fn test_anthropic_provider_send_via_mock() {
-    let mock_body = anthropic_mock_response("claude-haiku-4-5");
+    let mock_body = anthropic_mock_sse_response("claude-haiku-4-5");
     let base_url = start_mock_server(mock_body, 1);
 
     let client = AnthropicClient::new("mock-key".to_string(), "claude-haiku-4-5")

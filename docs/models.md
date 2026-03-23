@@ -666,6 +666,41 @@ model = "sonnet"
 model = "opus"
 ```
 
+### Provider Selection (Native Executor)
+
+The native executor auto-detects the provider from the model string:
+
+| Model string format | Detected provider | Example |
+|---|---|---|
+| Bare name (no `/`) | `anthropic` | `claude-sonnet-4-20250514` |
+| `anthropic/` prefix | `anthropic` (prefix stripped) | `anthropic/claude-sonnet-4-20250514` |
+| Other `provider/model` | `openai`-compatible | `openai/gpt-4o`, `deepseek/deepseek-chat-v3` |
+
+You can override auto-detection per role:
+
+```toml
+[models.triage]
+model = "gpt-4o-mini"
+provider = "openai"         # Force OpenAI-compatible provider
+
+[models.evaluator]
+model = "claude-sonnet-4-20250514"
+provider = "anthropic"      # Explicit Anthropic (same as auto-detected)
+```
+
+Or globally via `[native_executor]` or environment variable:
+
+```toml
+[native_executor]
+provider = "anthropic"      # Default provider for all requests
+```
+
+```bash
+export WG_LLM_PROVIDER=openrouter   # Override via environment
+```
+
+**Resolution order:** per-role `provider` > `[native_executor]` provider > `WG_LLM_PROVIDER` env > model string heuristic.
+
 ### Model Registry Entries
 
 ```toml
