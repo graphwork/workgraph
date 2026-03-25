@@ -57,6 +57,11 @@ fn extract_session_id(agent: &AgentEntry) -> Option<String> {
     None
 }
 
+/// Default grace period value, used by tests.
+/// Production code reads from `config.agent.reaper_grace_seconds`.
+#[cfg(test)]
+const DEFAULT_REAPER_GRACE_PERIOD_SECS: i64 = 30;
+
 /// Reason an agent was detected as dead
 enum DeadReason {
     /// Process is no longer running
@@ -94,10 +99,23 @@ fn check_stream_liveness(agent: &AgentEntry) -> Option<i64> {
     None
 }
 
-/// Check if an agent should be considered dead
-fn detect_dead_reason(agent: &AgentEntry) -> Option<DeadReason> {
+/// Check if an agent should be considered dead.
+///
+/// `grace_period_secs` is the minimum uptime before a dead PID is acted on.
+/// This avoids race conditions where the coordinator registers a PID but the
+/// process hasn't fully started yet.
+fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64) -> Option<DeadReason> {
     if !agent.is_alive() {
         return None;
+    }
+
+    // Grace period: don't reap agents that were started very recently.
+    // The coordinator may register a PID before the process is fully up,
+    // so give it grace_period_secs before treating a missing PID as dead.
+    if let Some(uptime) = agent.uptime_secs() {
+        if uptime < grace_period_secs {
+            return None;
+        }
     }
 
     // Process not running is the only signal — heartbeat is no longer used for detection
@@ -121,6 +139,9 @@ fn detect_dead_reason(agent: &AgentEntry) -> Option<DeadReason> {
 /// Clean up dead agents (process exited)
 /// Returns list of cleaned up agent IDs
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
+    let config = Config::load_or_default(dir);
+    let grace_secs = config.agent.reaper_grace_seconds as i64;
+
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
 
     // Find agents that are dead: process gone
@@ -128,7 +149,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         .agents
         .values()
         .filter_map(|a| {
-            detect_dead_reason(a).map(|reason| {
+            detect_dead_reason(a, grace_secs).map(|reason| {
                 (
                     a.id.clone(),
                     a.task_id.clone(),
@@ -178,8 +199,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     }
     locked_registry.save_ref()?;
 
-    // Load config for triage settings
-    let config = Config::load_or_default(dir);
+    // Load config for triage settings (already loaded above as `config`)
 
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
@@ -215,6 +235,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             task.log.push(LogEntry {
                                 timestamp: Utc::now().to_rfc3339(),
                                 actor: Some("triage".to_string()),
+                                user: Some(workgraph::current_user()),
                                 message: format!(
                                     "Triage failed ({}), task reset: agent '{}' (PID {}) process exited",
                                     e, agent_id, pid
@@ -239,6 +260,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: None,
+                        user: Some(workgraph::current_user()),
                         message: reason_msg,
                     });
                 }
@@ -539,6 +561,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("triage".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Triage: work complete (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
@@ -559,6 +582,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("triage".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Triage: wanted continue but max retries exceeded ({}/{}) — failing task",
                         task.retry_count, max
@@ -593,6 +617,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("triage".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Triage: continuing (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
@@ -614,6 +639,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("triage".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Triage: wanted restart but max retries exceeded ({}/{}) — failing task",
                         task.retry_count, max
@@ -628,6 +654,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("triage".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Triage: restarting (agent '{}' PID {} died) — {}",
                     agent_id, pid, verdict.reason
@@ -915,5 +942,256 @@ mod tests {
         assert_eq!(usage.input_tokens, 300);
         assert_eq!(usage.output_tokens, 100);
         assert_eq!(usage.cache_read_input_tokens, 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Dead agent reaper: grace period and PID-based detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_detect_dead_reason_skips_recently_started_agent() {
+        // An agent started just now with a non-existent PID should NOT be
+        // detected as dead — the grace period protects against startup races.
+        let agent = AgentEntry {
+            id: "agent-1".to_string(),
+            pid: 999999999,
+            task_id: "task-1".to_string(),
+            executor: "test".to_string(),
+            started_at: Utc::now().to_rfc3339(), // just started
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/test.log".to_string(),
+            model: None,
+            completed_at: None,
+        };
+
+        assert!(
+            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS).is_none(),
+            "Agent within grace period should not be detected as dead"
+        );
+    }
+
+    #[test]
+    fn test_detect_dead_reason_detects_old_dead_agent() {
+        // An agent started long ago with a non-existent PID should be detected
+        // as dead — past the grace period.
+        let old_start = (Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+        let agent = AgentEntry {
+            id: "agent-1".to_string(),
+            pid: 999999999,
+            task_id: "task-1".to_string(),
+            executor: "test".to_string(),
+            started_at: old_start.clone(),
+            last_heartbeat: old_start,
+            status: AgentStatus::Working,
+            output_file: "/tmp/test.log".to_string(),
+            model: None,
+            completed_at: None,
+        };
+
+        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS);
+        assert!(
+            reason.is_some(),
+            "Agent past grace period with dead PID should be detected"
+        );
+        assert!(
+            matches!(reason.unwrap(), DeadReason::ProcessExited),
+            "Reason should be ProcessExited for non-existent PID"
+        );
+    }
+
+    #[test]
+    fn test_detect_dead_reason_zero_grace_period() {
+        // With grace period = 0, even a freshly started agent with a dead PID
+        // should be detected immediately.
+        let agent = AgentEntry {
+            id: "agent-1".to_string(),
+            pid: 999999999,
+            task_id: "task-1".to_string(),
+            executor: "test".to_string(),
+            started_at: Utc::now().to_rfc3339(), // just started
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/test.log".to_string(),
+            model: None,
+            completed_at: None,
+        };
+
+        let reason = detect_dead_reason(&agent, 0);
+        assert!(
+            reason.is_some(),
+            "Grace period 0 should detect dead PID immediately"
+        );
+        assert!(
+            matches!(reason.unwrap(), DeadReason::ProcessExited),
+            "Reason should be ProcessExited"
+        );
+    }
+
+    #[test]
+    fn test_detect_dead_reason_ignores_non_alive_agent() {
+        // An agent already marked dead in the registry should not be re-detected.
+        let agent = AgentEntry {
+            id: "agent-1".to_string(),
+            pid: 999999999,
+            task_id: "task-1".to_string(),
+            executor: "test".to_string(),
+            started_at: "2020-01-01T00:00:00Z".to_string(),
+            last_heartbeat: "2020-01-01T00:00:00Z".to_string(),
+            status: AgentStatus::Dead,
+            output_file: "/tmp/test.log".to_string(),
+            model: None,
+            completed_at: None,
+        };
+
+        assert!(
+            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS).is_none(),
+            "Already-dead agent should not be re-detected"
+        );
+    }
+
+    #[test]
+    fn test_detect_dead_reason_alive_process() {
+        // An agent with the current process PID should not be detected as dead.
+        let agent = AgentEntry {
+            id: "agent-1".to_string(),
+            pid: std::process::id(),
+            task_id: "task-1".to_string(),
+            executor: "test".to_string(),
+            started_at: "2020-01-01T00:00:00Z".to_string(), // old start, past grace
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/test.log".to_string(),
+            model: None,
+            completed_at: None,
+        };
+
+        // On Linux, verify_process_identity may detect PID reuse since our
+        // actual start time doesn't match 2020. On non-Linux this falls
+        // through to None. Either way the process IS alive, so ProcessExited
+        // should never fire.
+        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS);
+        if let Some(ref r) = reason {
+            // Only PidReused is acceptable here (on Linux where /proc is available)
+            assert!(
+                matches!(r, DeadReason::PidReused),
+                "Alive process should not be detected as ProcessExited"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dead_agent_reaper_unclaims_task() {
+        // End-to-end: a dead PID past grace period triggers task unclaim via cleanup_dead_agents.
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        let gpath = wg_dir.join("graph.jsonl");
+
+        // Write config with reaper_grace_seconds = 0 so detection is immediate
+        let config_dir = wg_dir;
+        fs::create_dir_all(config_dir).ok();
+        fs::write(
+            config_dir.join("config.toml"),
+            "[agent]\nreaper_grace_seconds = 0\n",
+        )
+        .unwrap();
+
+        // Create an in-progress task assigned to agent-1
+        let mut graph = workgraph::graph::WorkGraph::new();
+        let task = Task {
+            id: "task-1".to_string(),
+            title: "Test Task".to_string(),
+            status: Status::InProgress,
+            assigned: Some("agent-1".to_string()),
+            ..Default::default()
+        };
+        graph.add_node(workgraph::graph::Node::Task(task));
+        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+
+        // Register an agent with a dead PID
+        let mut registry = AgentRegistry::new();
+        let agent_id =
+            registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
+        registry.save(wg_dir).unwrap();
+
+        // Run the reaper
+        let cleaned = cleanup_dead_agents(wg_dir, &gpath).unwrap();
+        assert_eq!(cleaned.len(), 1, "Should detect one dead agent");
+        assert_eq!(cleaned[0], agent_id);
+
+        // Verify task was unclaimed
+        let graph = workgraph::parser::load_graph(&gpath).unwrap();
+        let task = graph.get_task("task-1").unwrap();
+        assert_eq!(task.status, Status::Open, "Task should be reset to Open");
+        assert!(task.assigned.is_none(), "Task should be unassigned");
+
+        // Verify log entry was created
+        assert!(
+            task.log.iter().any(|l| l.message.contains("process exited")
+                || l.message.contains("dead")
+                || l.message.contains("unclaimed")
+                || l.message.contains("Triage")),
+            "Task should have a log entry about the dead agent: {:?}",
+            task.log
+        );
+
+        // Verify agent is marked dead in registry
+        let registry = AgentRegistry::load(wg_dir).unwrap();
+        let agent = registry.get_agent(&agent_id).unwrap();
+        assert_eq!(
+            agent.status,
+            AgentStatus::Dead,
+            "Agent should be marked dead in registry"
+        );
+    }
+
+    #[test]
+    fn test_dead_agent_reaper_grace_period_prevents_unclaim() {
+        // A dead PID within the grace period should NOT trigger unclaim.
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        let gpath = wg_dir.join("graph.jsonl");
+
+        // No config override → default 30s grace period applies.
+
+        // Create an in-progress task assigned to agent-1
+        let mut graph = workgraph::graph::WorkGraph::new();
+        let task = Task {
+            id: "task-1".to_string(),
+            title: "Test Task".to_string(),
+            status: Status::InProgress,
+            assigned: Some("agent-1".to_string()),
+            ..Default::default()
+        };
+        graph.add_node(workgraph::graph::Node::Task(task));
+        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+
+        // Register an agent with a dead PID but FRESH start time (within grace period)
+        let mut registry = AgentRegistry::new();
+        let _agent_id =
+            registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
+        // started_at is already "now" from register_agent, which is within grace period
+        registry.save(wg_dir).unwrap();
+
+        // Run the reaper
+        let cleaned = cleanup_dead_agents(wg_dir, &gpath).unwrap();
+        assert!(
+            cleaned.is_empty(),
+            "Should NOT detect dead agent within grace period"
+        );
+
+        // Verify task is still in-progress
+        let graph = workgraph::parser::load_graph(&gpath).unwrap();
+        let task = graph.get_task("task-1").unwrap();
+        assert_eq!(
+            task.status,
+            Status::InProgress,
+            "Task should remain InProgress during grace period"
+        );
+        assert_eq!(
+            task.assigned.as_deref(),
+            Some("agent-1"),
+            "Task should remain assigned during grace period"
+        );
     }
 }

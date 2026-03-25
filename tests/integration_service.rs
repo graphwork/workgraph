@@ -507,6 +507,7 @@ fn test_dead_agent_recovery() {
     let config_content = r#"
 [agent]
 heartbeat_timeout = 5
+reaper_grace_seconds = 0
 
 [coordinator]
 max_agents = 2

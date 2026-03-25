@@ -1787,6 +1787,13 @@ pub struct AgentConfig {
     /// Heartbeat timeout in minutes (for detecting dead agents)
     #[serde(default = "default_heartbeat_timeout")]
     pub heartbeat_timeout: u64,
+
+    /// Grace period in seconds before the reaper acts on a dead PID.
+    /// Agents started less than this many seconds ago are not reaped,
+    /// avoiding a race condition where the PID is registered but the
+    /// process hasn't fully started yet. Default: 30.
+    #[serde(default = "default_reaper_grace_seconds")]
+    pub reaper_grace_seconds: u64,
 }
 
 /// Coordinator-specific configuration
@@ -2028,6 +2035,10 @@ fn default_heartbeat_timeout() -> u64 {
     5
 }
 
+fn default_reaper_grace_seconds() -> u64 {
+    30
+}
+
 fn default_command_template() -> String {
     "claude --model {model} --print \"{prompt}\"".to_string()
 }
@@ -2041,6 +2052,7 @@ impl Default for AgentConfig {
             command_template: default_command_template(),
             max_tasks: None,
             heartbeat_timeout: default_heartbeat_timeout(),
+            reaper_grace_seconds: default_reaper_grace_seconds(),
         }
     }
 }
