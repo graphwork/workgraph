@@ -1009,6 +1009,56 @@ pub struct ResolvedModel {
     pub endpoint: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Config validation
+// ---------------------------------------------------------------------------
+
+/// A single configuration diagnostic (error or warning).
+#[derive(Debug, Clone)]
+pub struct ConfigDiagnostic {
+    /// Machine-readable rule identifier (e.g., "executor-model-mismatch")
+    pub rule: String,
+    /// Human-readable description of the problem
+    pub message: String,
+    /// Suggested fix
+    pub fix: String,
+}
+
+/// Result of configuration validation.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigValidation {
+    /// Fatal errors that should block service start
+    pub errors: Vec<ConfigDiagnostic>,
+    /// Non-fatal warnings that should be displayed but allow startup
+    pub warnings: Vec<ConfigDiagnostic>,
+}
+
+impl ConfigValidation {
+    /// Returns true if there are no errors (warnings are OK).
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns true if there are no errors and no warnings.
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty() && self.warnings.is_empty()
+    }
+
+    /// Format all diagnostics for display.
+    pub fn display(&self) -> String {
+        let mut out = String::new();
+        for diag in &self.errors {
+            out.push_str(&format!("  ERROR: {}\n", diag.message));
+            out.push_str(&format!("    Fix: {}\n", diag.fix));
+        }
+        for diag in &self.warnings {
+            out.push_str(&format!("  WARNING: {}\n", diag.message));
+            out.push_str(&format!("    Fix: {}\n", diag.fix));
+        }
+        out
+    }
+}
+
 impl Config {
     /// Built-in Anthropic model defaults.
     fn builtin_registry() -> Vec<ModelRegistryEntry> {
@@ -1169,6 +1219,18 @@ impl Config {
         if let Some(role_cfg) = self.models.get_role(role)
             && let Some(ref model) = role_cfg.model
         {
+            if let Some(entry) = self.registry_lookup(model) {
+                return ResolvedModel {
+                    model: entry.model.clone(),
+                    provider: role_cfg
+                        .provider
+                        .clone()
+                        .or_else(|| Some(entry.provider.clone()))
+                        .or_else(|| default_provider.clone()),
+                    registry_entry: Some(entry),
+                    endpoint: resolve_endpoint(role),
+                };
+            }
             return ResolvedModel {
                 model: model.clone(),
                 provider: role_cfg
@@ -1201,6 +1263,14 @@ impl Config {
             _ => None,
         };
         if let Some(model) = legacy_model {
+            if let Some(entry) = self.registry_lookup(model) {
+                return ResolvedModel {
+                    model: entry.model.clone(),
+                    provider: resolve_provider(role).or_else(|| Some(entry.provider.clone())),
+                    registry_entry: Some(entry),
+                    endpoint: resolve_endpoint(role),
+                };
+            }
             return ResolvedModel {
                 model: model.clone(),
                 provider: resolve_provider(role),
@@ -1236,6 +1306,14 @@ impl Config {
         if let Some(default_cfg) = self.models.get_role(DispatchRole::Default)
             && let Some(ref model) = default_cfg.model
         {
+            if let Some(entry) = self.registry_lookup(model) {
+                return ResolvedModel {
+                    model: entry.model.clone(),
+                    provider: default_provider.or_else(|| Some(entry.provider.clone())),
+                    registry_entry: Some(entry),
+                    endpoint: default_endpoint,
+                };
+            }
             return ResolvedModel {
                 model: model.clone(),
                 provider: default_provider,
@@ -1245,6 +1323,14 @@ impl Config {
         }
 
         // 6. Global fallback
+        if let Some(entry) = self.registry_lookup(&self.agent.model) {
+            return ResolvedModel {
+                model: entry.model.clone(),
+                provider: default_provider.or_else(|| Some(entry.provider.clone())),
+                registry_entry: Some(entry),
+                endpoint: default_endpoint,
+            };
+        }
         ResolvedModel {
             model: self.agent.model.clone(),
             provider: default_provider,
@@ -1712,9 +1798,11 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_poll_interval")]
     pub poll_interval: u64,
 
-    /// Executor to use for spawned agents
-    #[serde(default = "default_executor")]
-    pub executor: String,
+    /// Executor to use for spawned agents.
+    /// When `None` (not set in config), `effective_executor()` auto-detects
+    /// based on `provider`: openrouter/openai/local → "native", else "claude".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
 
     /// Model to use for spawned agents (e.g., "opus-4-5", "sonnet", "haiku")
     /// Overrides agent.model when set. Can be further overridden by CLI --model.
@@ -1849,13 +1937,38 @@ fn default_agent_timeout() -> String {
     "30m".to_string()
 }
 
+/// Providers that are not Anthropic-native and should default to the "native" executor.
+const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "openai", "local"];
+
+impl CoordinatorConfig {
+    /// Return the effective executor, considering provider-based auto-detection.
+    ///
+    /// If executor is explicitly set in config, that value is used unconditionally.
+    /// Otherwise, if provider is openrouter/openai/local, returns "native" (since
+    /// the claude executor only works with Anthropic's API). Falls back to "claude".
+    pub fn effective_executor(&self) -> String {
+        if let Some(ref executor) = self.executor {
+            // Explicitly set in config — honour it
+            executor.clone()
+        } else if let Some(ref provider) = self.provider {
+            if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
+                "native".to_string()
+            } else {
+                "claude".to_string()
+            }
+        } else {
+            "claude".to_string()
+        }
+    }
+}
+
 impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
             max_agents: default_max_agents(),
             interval: default_coordinator_interval(),
             poll_interval: default_poll_interval(),
-            executor: default_executor(),
+            executor: None,
             model: None,
             provider: None,
             default_context_scope: None,
@@ -2308,6 +2421,158 @@ impl Config {
             }
         }
         self.coordinator.compaction_token_threshold
+    }
+
+    /// Validate configuration for common mismatches.
+    ///
+    /// Returns a `ConfigValidation` containing errors (fatal) and warnings (informational).
+    /// Errors should block service start. Warnings should be displayed but allow startup.
+    pub fn validate_config(&self) -> ConfigValidation {
+        let mut result = ConfigValidation::default();
+
+        // Check coordinator executor + model/provider combinations
+        let executor = self.coordinator.effective_executor();
+        let model = self
+            .coordinator
+            .model
+            .as_deref()
+            .unwrap_or(&self.agent.model);
+        let provider = self.coordinator.provider.as_deref();
+
+        // Rule 1: executor='claude' but model contains '/' (non-Anthropic model format)
+        if executor == "claude" && model.contains('/') {
+            result.errors.push(ConfigDiagnostic {
+                rule: "executor-model-mismatch".into(),
+                message: format!(
+                    "executor = 'claude' but model = '{}' contains '/' (third-party model format). \
+                     Claude CLI only accepts Anthropic model names (e.g., 'sonnet', 'opus', 'haiku').",
+                    model
+                ),
+                fix: format!(
+                    "Either change the model to an Anthropic model, or set executor = 'native' \
+                     to use '{}' via the API directly.",
+                    model
+                ),
+            });
+        }
+
+        // Rule 2: executor='claude' but provider is non-Anthropic
+        if executor == "claude" {
+            if let Some(p) = provider {
+                if p != "anthropic" {
+                    result.errors.push(ConfigDiagnostic {
+                        rule: "executor-provider-mismatch".into(),
+                        message: format!(
+                            "executor = 'claude' but provider = '{}'. \
+                             Claude CLI only works with Anthropic's API.",
+                            p
+                        ),
+                        fix: format!(
+                            "Set executor = 'native' to use provider '{}', \
+                             or remove the provider setting to use Anthropic.",
+                            p
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Rule 3: [models.*] model value doesn't match registry AND doesn't contain '/'
+        let registry = self.effective_registry();
+        let registry_ids: std::collections::HashSet<&str> =
+            registry.iter().map(|e| e.id.as_str()).collect();
+
+        // Check models.default and per-role model values
+        let role_configs: Vec<(String, &RoleModelConfig)> = {
+            let mut pairs = Vec::new();
+            if let Some(ref cfg) = self.models.default {
+                pairs.push(("default".to_string(), cfg));
+            }
+            for role in DispatchRole::ALL {
+                if let Some(cfg) = self.models.get_role(*role) {
+                    pairs.push((role.to_string(), cfg));
+                }
+            }
+            pairs
+        };
+
+        for (role_name, role_cfg) in &role_configs {
+            if let Some(ref m) = role_cfg.model {
+                if !registry_ids.contains(m.as_str()) && !m.contains('/') {
+                    result.warnings.push(ConfigDiagnostic {
+                        rule: "unresolved-model-id".into(),
+                        message: format!(
+                            "models.{}.model = '{}' doesn't match any registry entry \
+                             and doesn't look like a provider/model path. \
+                             May be an unresolved short ID.",
+                            role_name, m
+                        ),
+                        fix: format!(
+                            "Add a [[model_registry]] entry for '{}', use a known ID \
+                             ({}), or use provider/model format (e.g., 'anthropic/claude-sonnet-4-20250514').",
+                            m,
+                            registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Rule 4: model_registry entry's 'model' field doesn't contain '/'
+        // (should be a full provider-qualified model name for non-Anthropic providers)
+        for entry in &self.model_registry {
+            if entry.provider != "anthropic" && !entry.model.contains('/') {
+                result.warnings.push(ConfigDiagnostic {
+                    rule: "registry-model-format".into(),
+                    message: format!(
+                        "model_registry entry '{}' (provider: '{}') has model = '{}' \
+                         which doesn't contain '/'. OpenRouter and similar providers \
+                         typically use 'provider/model' format.",
+                        entry.id, entry.provider, entry.model
+                    ),
+                    fix: format!(
+                        "Use the full model path, e.g., '{}/{}'.",
+                        entry.provider, entry.model
+                    ),
+                });
+            }
+        }
+
+        // Rule 5: llm_endpoints has api_key_file that doesn't exist or is empty
+        for ep in &self.llm_endpoints.endpoints {
+            if let Some(ref file_path) = ep.api_key_file {
+                let expanded = expand_tilde(file_path);
+                if !expanded.exists() {
+                    result.errors.push(ConfigDiagnostic {
+                        rule: "missing-api-key-file".into(),
+                        message: format!(
+                            "Endpoint '{}' (provider: '{}') references api_key_file = '{}' \
+                             but the file does not exist.",
+                            ep.name, ep.provider, file_path
+                        ),
+                        fix: format!(
+                            "Create the file at '{}' with your API key, \
+                             or use api_key_env to reference an environment variable instead.",
+                            file_path
+                        ),
+                    });
+                } else if let Ok(contents) = fs::read_to_string(&expanded) {
+                    if contents.trim().is_empty() {
+                        result.errors.push(ConfigDiagnostic {
+                            rule: "empty-api-key-file".into(),
+                            message: format!(
+                                "Endpoint '{}' (provider: '{}') references api_key_file = '{}' \
+                                 but the file is empty.",
+                                ep.name, ep.provider, file_path
+                            ),
+                            fix: "Add your API key to the file.".into(),
+                        });
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// Build the executor command from template
@@ -2768,10 +3033,12 @@ model = "haiku"
     #[test]
     fn test_resolve_verification_legacy_override() {
         // If user explicitly sets flip_verification_model to non-default, it should be used
+        // "sonnet" is a registry ID, so it resolves to the full API model path
         let mut config = Config::default();
         config.agency.flip_verification_model = "sonnet".to_string();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, "sonnet");
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert!(resolved.registry_entry.is_some());
     }
 
     #[test]
@@ -2845,10 +3112,12 @@ model = "haiku"
     #[test]
     fn test_legacy_fields_still_resolve() {
         // Legacy fields should still work through resolve_model_for_role
+        // "haiku" is a registry ID, so it resolves to the full API model path
         let mut config = Config::default();
         config.agency.evaluator_model = Some("haiku".to_string());
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "haiku");
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert!(resolved.registry_entry.is_some());
     }
 
     #[test]
@@ -2969,12 +3238,14 @@ model = "haiku"
         config.agency.evaluator_model = Some("haiku".to_string());
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "haiku");
+        // "haiku" is a registry ID → resolves to full API model path
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
         assert_eq!(
             resolved.provider,
             Some("openrouter".to_string()),
             "Default provider should cascade to legacy model roles"
         );
+        assert!(resolved.registry_entry.is_some());
     }
 
     #[test]
@@ -3750,5 +4021,326 @@ model = "haiku"
         config.coordinator.compaction_threshold_ratio = 0.6;
         let threshold = config.effective_compaction_threshold();
         assert_eq!(threshold, 120_000);
+    }
+
+    // ---- Registry resolution in resolve_model_for_role steps 1, 2, 5, 6 ----
+
+    #[test]
+    fn test_registry_resolve_step1_role_model_override() {
+        // Step 1: [models.evaluator].model = "sonnet" should resolve via registry
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("sonnet".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert!(resolved.registry_entry.is_some());
+        assert_eq!(resolved.registry_entry.unwrap().id, "sonnet");
+    }
+
+    #[test]
+    fn test_registry_resolve_step1_custom_registry_entry() {
+        // Step 1: custom registry entry "deepseek-v3.2" resolves to full path
+        let mut config = Config::default();
+        config.model_registry = vec![ModelRegistryEntry {
+            id: "deepseek-v3.2".into(),
+            provider: "deepseek".into(),
+            model: "deepseek/deepseek-v3.2".into(),
+            tier: Tier::Standard,
+            ..Default::default()
+        }];
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("deepseek-v3.2".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "deepseek/deepseek-v3.2");
+        assert_eq!(resolved.provider, Some("deepseek".to_string()));
+        assert!(resolved.registry_entry.is_some());
+    }
+
+    #[test]
+    fn test_registry_resolve_step1_provider_override_beats_registry() {
+        // Step 1: explicit provider in role config overrides registry provider
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("sonnet".to_string()),
+            provider: Some("openrouter".to_string()),
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+        assert!(resolved.registry_entry.is_some());
+    }
+
+    #[test]
+    fn test_registry_resolve_step1_passthrough_unknown() {
+        // Step 1: unknown model string passes through without registry_entry
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("some-unknown-model".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "some-unknown-model");
+        assert!(resolved.registry_entry.is_none());
+    }
+
+    #[test]
+    fn test_registry_resolve_step2_legacy_model() {
+        // Step 2: legacy evaluator_model = "haiku" resolves via registry
+        let mut config = Config::default();
+        config.agency.evaluator_model = Some("haiku".to_string());
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert!(resolved.registry_entry.is_some());
+        assert_eq!(resolved.registry_entry.unwrap().id, "haiku");
+    }
+
+    #[test]
+    fn test_registry_resolve_step2_legacy_passthrough() {
+        // Step 2: legacy model not in registry passes through
+        let mut config = Config::default();
+        config.agency.evaluator_model = Some("my-custom-llm".to_string());
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "my-custom-llm");
+        assert!(resolved.registry_entry.is_none());
+    }
+
+    // Note: Steps 5 and 6 are currently unreachable because effective_tiers()
+    // always fills defaults, so step 4 (resolve_tier with default tier) always
+    // succeeds. The registry lookup code is added for correctness if that changes.
+    // The registry lookup pattern is identical to steps 1/2 which are tested above.
+
+    // -----------------------------------------------------------------------
+    // validate_config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_config_default_is_clean() {
+        let config = Config::default();
+        let v = config.validate_config();
+        assert!(
+            v.is_clean(),
+            "Default config should be clean: {}",
+            v.display()
+        );
+    }
+
+    #[test]
+    fn test_validate_config_claude_executor_with_slash_model() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.model = Some("minimax/minimax-m2.5".to_string());
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert_eq!(v.errors.len(), 1);
+        assert_eq!(v.errors[0].rule, "executor-model-mismatch");
+    }
+
+    #[test]
+    fn test_validate_config_claude_executor_with_openrouter_provider() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("openrouter".to_string());
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert_eq!(v.errors.len(), 1);
+        assert_eq!(v.errors[0].rule, "executor-provider-mismatch");
+    }
+
+    #[test]
+    fn test_validate_config_claude_executor_with_openai_provider() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("openai".to_string());
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert_eq!(v.errors[0].rule, "executor-provider-mismatch");
+    }
+
+    #[test]
+    fn test_validate_config_claude_executor_with_anthropic_provider_ok() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("anthropic".to_string());
+        let v = config.validate_config();
+        assert!(v.is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_native_executor_with_openrouter_ok() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.coordinator.provider = Some("openrouter".to_string());
+        config.coordinator.model = Some("minimax/minimax-m2.5".to_string());
+        let v = config.validate_config();
+        assert!(v.is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_unresolved_model_short_id() {
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: Some("unknown-model-xyz".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let v = config.validate_config();
+        assert!(v.is_ok()); // warnings don't block
+        assert!(!v.warnings.is_empty());
+        assert!(v.warnings.iter().any(|w| w.rule == "unresolved-model-id"));
+    }
+
+    #[test]
+    fn test_validate_config_known_model_id_no_warning() {
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: Some("haiku".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let v = config.validate_config();
+        assert!(v.is_clean());
+    }
+
+    #[test]
+    fn test_validate_config_slash_model_no_warning() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.models.default = Some(RoleModelConfig {
+            model: Some("openai/gpt-4o".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let v = config.validate_config();
+        assert!(v.warnings.iter().all(|w| w.rule != "unresolved-model-id"));
+    }
+
+    #[test]
+    fn test_validate_config_registry_entry_non_anthropic_no_slash() {
+        let mut config = Config::default();
+        config.model_registry.push(ModelRegistryEntry {
+            id: "my-local".into(),
+            provider: "openrouter".into(),
+            model: "some-model-name".into(),
+            tier: Tier::Standard,
+            ..Default::default()
+        });
+        let v = config.validate_config();
+        assert!(v.is_ok());
+        assert!(v.warnings.iter().any(|w| w.rule == "registry-model-format"));
+    }
+
+    #[test]
+    fn test_validate_config_registry_entry_anthropic_no_slash_ok() {
+        let mut config = Config::default();
+        config.model_registry.push(ModelRegistryEntry {
+            id: "custom-claude".into(),
+            provider: "anthropic".into(),
+            model: "claude-custom-model".into(),
+            tier: Tier::Standard,
+            ..Default::default()
+        });
+        let v = config.validate_config();
+        assert!(v.warnings.iter().all(|w| w.rule != "registry-model-format"));
+    }
+
+    #[test]
+    fn test_validate_config_missing_api_key_file() {
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "test-endpoint".into(),
+            provider: "openrouter".into(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some("/nonexistent/path/to/api-key.txt".into()),
+            api_key_env: None,
+            is_default: false,
+        });
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert!(v.errors.iter().any(|e| e.rule == "missing-api-key-file"));
+    }
+
+    #[test]
+    fn test_validate_config_empty_api_key_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_file = temp_dir.path().join("empty-key.txt");
+        fs::write(&key_file, "").unwrap();
+
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "test-endpoint".into(),
+            provider: "openrouter".into(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(key_file.to_string_lossy().into_owned()),
+            api_key_env: None,
+            is_default: false,
+        });
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert!(v.errors.iter().any(|e| e.rule == "empty-api-key-file"));
+    }
+
+    #[test]
+    fn test_validate_config_valid_api_key_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_file = temp_dir.path().join("valid-key.txt");
+        fs::write(&key_file, "sk-test-key-12345").unwrap();
+
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "test-endpoint".into(),
+            provider: "openrouter".into(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: Some(key_file.to_string_lossy().into_owned()),
+            api_key_env: None,
+            is_default: false,
+        });
+        let v = config.validate_config();
+        assert!(v
+            .errors
+            .iter()
+            .all(|e| e.rule != "missing-api-key-file" && e.rule != "empty-api-key-file"));
+    }
+
+    #[test]
+    fn test_validate_config_multiple_errors() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("openrouter".to_string());
+        config.coordinator.model = Some("minimax/minimax-m2.5".to_string());
+        let v = config.validate_config();
+        assert!(!v.is_ok());
+        assert_eq!(v.errors.len(), 2);
+    }
+
+    #[test]
+    fn test_validate_config_display_format() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("openrouter".to_string());
+        let v = config.validate_config();
+        let display = v.display();
+        assert!(display.contains("ERROR:"));
+        assert!(display.contains("Fix:"));
     }
 }

@@ -478,7 +478,7 @@ pub fn run_tick(
     let max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let executor = executor
         .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.coordinator.executor.clone());
+        .unwrap_or_else(|| config.coordinator.effective_executor());
 
     let graph_path = graph_path(dir);
     if !graph_path.exists() {
@@ -827,7 +827,7 @@ pub fn run_start(
     let eff_poll_interval = interval.unwrap_or(config.coordinator.poll_interval);
     let eff_executor = executor
         .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.coordinator.executor.clone());
+        .unwrap_or_else(|| config.coordinator.effective_executor());
     let eff_model: Option<String> = model
         .map(std::string::ToString::to_string)
         .or_else(|| config.coordinator.model.clone());
@@ -1793,11 +1793,33 @@ pub fn run_daemon(
 
     // Load coordinator config, CLI args override config values
     let config = Config::load_or_default(&dir);
+
+    // Validate configuration before starting
+    let validation = config.validate_config();
+    for diag in &validation.warnings {
+        logger.warn(&format!("Config warning: {}", diag.message));
+    }
+    if !validation.is_ok() {
+        for diag in &validation.errors {
+            logger.error(&format!("Config error: {}", diag.message));
+            logger.error(&format!("  Fix: {}", diag.fix));
+        }
+        // Clean up socket before bailing
+        if socket.exists() {
+            let _ = fs::remove_file(&socket);
+        }
+        anyhow::bail!(
+            "Configuration validation failed with {} error(s). \
+             Run 'wg config --show' for details.",
+            validation.errors.len()
+        );
+    }
+
     let mut daemon_cfg = DaemonConfig {
         max_agents: cli_max_agents.unwrap_or(config.coordinator.max_agents),
         executor: cli_executor
             .map(std::string::ToString::to_string)
-            .unwrap_or_else(|| config.coordinator.executor.clone()),
+            .unwrap_or_else(|| config.coordinator.effective_executor()),
         // The poll_interval is the slow background safety-net timer.
         // CLI --interval overrides it; otherwise use config.coordinator.poll_interval.
         poll_interval: Duration::from_secs(

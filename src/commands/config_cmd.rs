@@ -45,7 +45,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
-        println!("  executor = \"{}\"", config.coordinator.executor);
+        println!("  executor = \"{}\"", config.coordinator.effective_executor());
         if let Some(ref m) = config.coordinator.model {
             println!("  model = \"{}\"", m);
         }
@@ -274,6 +274,21 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                 println!();
             }
         }
+
+        // Health check
+        let validation = config.validate_config();
+        if validation.is_clean() {
+            println!("[health check]");
+            println!("  status = ok");
+        } else {
+            println!("[health check]");
+            if validation.is_ok() {
+                println!("  status = warnings");
+            } else {
+                println!("  status = errors");
+            }
+            print!("{}", validation.display());
+        }
     }
 
     Ok(())
@@ -395,7 +410,7 @@ pub fn update(
     }
 
     if let Some(exec) = coordinator_executor {
-        config.coordinator.executor = exec.to_string();
+        config.coordinator.executor = Some(exec.to_string());
         println!("Set coordinator.executor = \"{}\"", exec);
         changed = true;
     }
@@ -1829,7 +1844,7 @@ mod tests {
         let config = Config::load(temp_dir.path()).unwrap();
         assert_eq!(config.coordinator.max_agents, 8);
         assert_eq!(config.coordinator.interval, 60);
-        assert_eq!(config.coordinator.executor, "shell");
+        assert_eq!(config.coordinator.executor, Some("shell".to_string()));
     }
 
     #[test]
