@@ -1473,33 +1473,14 @@ pub struct LogPaneState {
     pub viewport_height: usize,
     /// Total wrapped line count (set each frame by render, used for scroll bounds).
     pub total_wrapped_lines: usize,
-    /// Expandable log section state.
-    pub expandable: ExpandableLogState,
+    /// Agent ID for the selected task (for loading output.log).
+    pub agent_id: Option<String>,
+    /// Agent output text buffer — same type as the Output tab uses.
+    pub agent_output: OutputAgentText,
+    /// Whether new content arrived while scrolled up (for "new output" indicator).
+    pub has_new_content: bool,
 }
 
-/// State for expandable sections in the Log tab.
-/// Each "section" is the gap between two consecutive log entries,
-/// representing agent output that occurred between those timestamps.
-pub struct ExpandableLogState {
-    /// Which sections are expanded (index into log entries — section i is between entry i and i+1).
-    pub expanded_sections: HashSet<usize>,
-    /// Whether all sections are expanded.
-    pub all_expanded: bool,
-    /// Cached per-section rendered content (section_index -> rendered lines).
-    pub section_cache: HashMap<usize, Vec<ratatui::text::Line<'static>>>,
-    /// Agent ID for the current task (for looking up output.log).
-    pub agent_id: Option<String>,
-    /// Per-section summary: (message_count, token_estimate).
-    pub section_summaries: HashMap<usize, (usize, usize)>,
-    /// Raw section text content (section_index -> raw text before markdown rendering).
-    pub section_text: HashMap<usize, String>,
-    /// Log entry timestamps (ISO 8601) for mapping to output.log ranges.
-    pub entry_timestamps: Vec<String>,
-    /// Task ID this expandable state was built for (to detect staleness).
-    pub task_id: Option<String>,
-    /// The section header nearest to the top of the visible viewport (set by renderer).
-    pub nearest_visible_section: Option<usize>,
-}
 
 impl Default for LogPaneState {
     fn default() -> Self {
@@ -1511,23 +1492,9 @@ impl Default for LogPaneState {
             task_id: None,
             viewport_height: 0,
             total_wrapped_lines: 0,
-            expandable: ExpandableLogState::default(),
-        }
-    }
-}
-
-impl Default for ExpandableLogState {
-    fn default() -> Self {
-        Self {
-            expanded_sections: HashSet::new(),
-            all_expanded: false,
-            section_cache: HashMap::new(),
             agent_id: None,
-            section_summaries: HashMap::new(),
-            section_text: HashMap::new(),
-            entry_timestamps: Vec::new(),
-            task_id: None,
-            nearest_visible_section: None,
+            agent_output: OutputAgentText::default(),
+            has_new_content: false,
         }
     }
 }
@@ -3963,6 +3930,9 @@ impl VizApp {
                     if self.right_panel_tab == RightPanelTab::Output {
                         self.update_output_pane();
                     }
+                    if self.right_panel_tab == RightPanelTab::Log {
+                        self.update_log_output();
+                    }
                     self.invalidate_hud();
                     self.load_hud_detail();
                     if prev_hud_task.is_some()
@@ -4062,6 +4032,12 @@ impl VizApp {
             // Output pane: update if tab is active.
             if self.right_panel_tab == RightPanelTab::Output {
                 self.update_output_pane();
+                content_updated = true;
+            }
+
+            // Log pane: update agent output if tab is active.
+            if self.right_panel_tab == RightPanelTab::Log {
+                self.update_log_output();
                 content_updated = true;
             }
 
@@ -4185,6 +4161,10 @@ impl VizApp {
                 // Update output pane with new agent output if Output tab is active.
                 if self.right_panel_tab == RightPanelTab::Output {
                     self.update_output_pane();
+                }
+                // Update log pane agent output if Log tab is active.
+                if self.right_panel_tab == RightPanelTab::Log {
+                    self.update_log_output();
                 }
                 // Preserve HUD scroll position when the selected task hasn't changed.
                 self.invalidate_hud();
@@ -4662,7 +4642,7 @@ impl VizApp {
                 lines.push("── Output ── [R: raw JSON]".to_string());
                 // Human-readable mode: extract assistant text as markdown
                 if let Ok(content) = std::fs::read_to_string(&output_path) {
-                    let extracted = extract_assistant_text_from_log(&content);
+                    let extracted = extract_enriched_text_from_log(&content);
                     if extracted.is_empty() {
                         lines.push("  (no assistant output)".to_string());
                     } else {
@@ -5098,7 +5078,7 @@ impl VizApp {
         if let Some(output_path) = output_path {
             lines.push("── Output ──".to_string());
             if let Ok(content) = std::fs::read_to_string(&output_path) {
-                let extracted = extract_assistant_text_from_log(&content);
+                let extracted = extract_enriched_text_from_log(&content);
                 if extracted.is_empty() {
                     lines.push("  (no assistant output)".to_string());
                 } else {
@@ -5402,10 +5382,8 @@ impl VizApp {
 
         self.log_pane.rendered_lines.clear();
 
-        // Reset expandable state if task changed.
-        if self.log_pane.expandable.task_id.as_deref() != Some(&task_id) {
-            self.log_pane.expandable = ExpandableLogState::default();
-        }
+        // Reset agent output if task changed.
+        let prev_agent_id = self.log_pane.agent_id.clone();
 
         if task.log.is_empty() {
             self.log_pane
@@ -5413,11 +5391,9 @@ impl VizApp {
                 .push("(no log entries)".to_string());
         } else {
             let now = chrono::Utc::now();
-            let mut timestamps = Vec::new();
             // Find agent_id from log entries (actor field) or from "Spawned" message.
             let mut agent_id: Option<String> = None;
             for entry in &task.log {
-                timestamps.push(entry.timestamp.clone());
                 // Try to extract agent_id from actor field.
                 if agent_id.is_none() {
                     if let Some(ref actor) = entry.actor {
@@ -5461,9 +5437,11 @@ impl VizApp {
                 }
             }
 
-            self.log_pane.expandable.entry_timestamps = timestamps;
-            self.log_pane.expandable.agent_id = agent_id;
-            self.log_pane.expandable.task_id = Some(task_id.clone());
+            // Reset agent output buffer if agent changed.
+            if agent_id != prev_agent_id {
+                self.log_pane.agent_output = OutputAgentText::default();
+            }
+            self.log_pane.agent_id = agent_id;
         }
 
         // If auto-tail is on, scroll to bottom so newest entries are visible.
@@ -5478,167 +5456,10 @@ impl VizApp {
     /// Force reload of log pane content.
     pub fn invalidate_log_pane(&mut self) {
         self.log_pane.task_id = None;
-        // Clear cached expanded content so it reloads from disk.
-        self.log_pane.expandable.section_cache.clear();
-        self.log_pane.expandable.section_text.clear();
-        self.log_pane.expandable.section_summaries.clear();
+        // Mark agent output as dirty so markdown is re-rendered.
+        self.log_pane.agent_output.dirty = true;
     }
 
-    /// Toggle expand/collapse of a specific log section.
-    pub fn log_toggle_section(&mut self, section_idx: usize) {
-        if self.log_pane.expandable.expanded_sections.contains(&section_idx) {
-            self.log_pane.expandable.expanded_sections.remove(&section_idx);
-        } else {
-            self.log_pane.expandable.expanded_sections.insert(section_idx);
-            // Load section content on first expand.
-            self.load_log_section_content(section_idx);
-        }
-        self.log_pane.expandable.all_expanded = false;
-    }
-
-    /// Expand all log sections.
-    pub fn log_expand_all(&mut self) {
-        let n = self.log_pane.expandable.entry_timestamps.len();
-        for i in 0..n.saturating_sub(1) {
-            self.log_pane.expandable.expanded_sections.insert(i);
-            self.load_log_section_content(i);
-        }
-        // Also expand the last section (after the final entry).
-        if n > 0 {
-            self.log_pane.expandable.expanded_sections.insert(n - 1);
-            self.load_log_section_content(n - 1);
-        }
-        self.log_pane.expandable.all_expanded = true;
-    }
-
-    /// Collapse all log sections.
-    pub fn log_collapse_all(&mut self) {
-        self.log_pane.expandable.expanded_sections.clear();
-        self.log_pane.expandable.all_expanded = false;
-    }
-
-    /// Load the content for a specific expandable section from the agent's output.log.
-    /// Section i covers the time between log entry i and log entry i+1.
-    fn load_log_section_content(&mut self, section_idx: usize) {
-        // Skip if already cached.
-        if self.log_pane.expandable.section_cache.contains_key(&section_idx) {
-            return;
-        }
-
-        let agent_id = match &self.log_pane.expandable.agent_id {
-            Some(id) => id.clone(),
-            None => return,
-        };
-
-        let timestamps = &self.log_pane.expandable.entry_timestamps;
-        if timestamps.is_empty() {
-            return;
-        }
-
-        let start_ts = if section_idx < timestamps.len() {
-            &timestamps[section_idx]
-        } else {
-            return;
-        };
-        let end_ts = if section_idx + 1 < timestamps.len() {
-            Some(&timestamps[section_idx + 1])
-        } else {
-            None // Last section — everything after the final log entry.
-        };
-
-        let log_path = self.workgraph_dir.join("agents").join(&agent_id).join("output.log");
-        let content = match std::fs::read_to_string(&log_path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        // Parse timestamps for range filtering.
-        let start_dt = match chrono::DateTime::parse_from_rfc3339(start_ts) {
-            Ok(dt) => dt.with_timezone(&chrono::Utc),
-            Err(_) => return,
-        };
-        let end_dt = end_ts.and_then(|ts| {
-            chrono::DateTime::parse_from_rfc3339(ts)
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-        });
-
-        // Filter JSONL lines by timestamp range.
-        let mut filtered_lines = Vec::new();
-        let mut msg_count = 0usize;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('{') {
-                continue;
-            }
-            let val: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            // Extract timestamp from the JSONL line.
-            let line_ts = val
-                .get("timestamp")
-                .or_else(|| val.get("message").and_then(|m| m.get("created")))
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc));
-
-            if let Some(line_dt) = line_ts {
-                if line_dt < start_dt {
-                    continue;
-                }
-                if let Some(ref end) = end_dt {
-                    if line_dt >= *end {
-                        continue;
-                    }
-                }
-            }
-
-            // Count messages for summary.
-            let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if msg_type == "assistant" {
-                msg_count += 1;
-            }
-
-            filtered_lines.push(trimmed.to_string());
-        }
-
-        let filtered_content = filtered_lines.join("\n");
-        let text = extract_assistant_text_from_log(&filtered_content);
-
-        // Estimate token count (~4 chars per token).
-        let token_estimate = text.len() / 4;
-
-        self.log_pane.expandable.section_summaries.insert(section_idx, (msg_count, token_estimate));
-        self.log_pane.expandable.section_text.insert(section_idx, text);
-        // Clear rendered cache — will be rebuilt by draw_log_tab.
-        self.log_pane.expandable.section_cache.remove(&section_idx);
-    }
-
-    /// Toggle the first visible section header in the log pane.
-    /// Called by Enter/Space in the Log tab.
-    pub fn log_toggle_nearest_section(&mut self) {
-        // Find which section header is closest to the current scroll position.
-        // Each log entry takes at least 1 line; section headers appear after each entry.
-        // We approximate by using the entry index based on scroll position.
-        let n_entries = self.log_pane.rendered_lines.len();
-        if n_entries == 0 {
-            return;
-        }
-        // Simple heuristic: use scroll position to estimate which entry we're near.
-        // We'll toggle the section nearest to the viewport top.
-        let n_timestamps = self.log_pane.expandable.entry_timestamps.len();
-        if n_timestamps == 0 {
-            return;
-        }
-        // Find the first section that has a header in the visible area.
-        // For now, use a simple approach: toggle based on current scroll line index.
-        // The render will map log entries to line positions.
-        // Use the stored line_to_section mapping if available, otherwise toggle section 0.
-        let target = self.log_pane.expandable.nearest_visible_section.unwrap_or(0);
-        self.log_toggle_section(target);
-    }
 
     /// Scroll log pane up.
     pub fn log_scroll_up(&mut self, amount: usize) {
@@ -6946,6 +6767,76 @@ impl VizApp {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Update the Log pane's agent output by incrementally reading the agent's output.log.
+    /// Uses the same extraction function (`extract_enriched_text_from_log`) and data type
+    /// (`OutputAgentText`) as the Output tab, ensuring identical rendering.
+    pub fn update_log_output(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let agent_id = match &self.log_pane.agent_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let log_path = self
+            .workgraph_dir
+            .join("agents")
+            .join(&agent_id)
+            .join("output.log");
+        if !log_path.exists() {
+            return;
+        }
+
+        let text_entry = &mut self.log_pane.agent_output;
+
+        let mut file = match std::fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_len <= text_entry.file_offset {
+            return; // No new data.
+        }
+
+        if file.seek(SeekFrom::Start(text_entry.file_offset)).is_err() {
+            return;
+        }
+
+        let mut new_data = String::new();
+        if file.read_to_string(&mut new_data).is_err() {
+            return;
+        }
+
+        text_entry.file_offset = file_len;
+
+        // Same extraction as the Output tab.
+        let new_text = extract_enriched_text_from_log(&new_data);
+        if !new_text.is_empty() {
+            if !text_entry.full_text.is_empty() {
+                text_entry.full_text.push_str("\n\n");
+            }
+            text_entry.full_text.push_str(&new_text);
+
+            // Cap at OUTPUT_MAX_CHARS.
+            if text_entry.full_text.len() > OUTPUT_MAX_CHARS {
+                let trim_to = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
+                let boundary = text_entry.full_text[trim_to..]
+                    .find('\n')
+                    .map(|p| trim_to + p + 1)
+                    .unwrap_or(trim_to);
+                text_entry.full_text = text_entry.full_text[boundary..].to_string();
+            }
+
+            text_entry.dirty = true;
+
+            // Signal new content if scrolled up.
+            if !self.log_pane.auto_tail {
+                self.log_pane.has_new_content = true;
             }
         }
     }
@@ -10216,87 +10107,8 @@ fn find_latest_archive(
 /// Parses each JSON line, finds `"type": "assistant"` events, and extracts text
 /// from `message.content[].text` blocks. Returns the concatenated markdown text
 /// with tool-use blocks rendered as compact summaries.
-fn extract_assistant_text_from_log(content: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('{') {
-            continue;
-        }
-        let val: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if msg_type != "assistant" {
-            continue;
-        }
-
-        let content_arr = match val
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        {
-            Some(arr) => arr,
-            None => continue,
-        };
-
-        for block in content_arr {
-            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            match block_type {
-                "text" => {
-                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                        let trimmed_text = text.trim();
-                        if !trimmed_text.is_empty() {
-                            parts.push(trimmed_text.to_string());
-                        }
-                    }
-                }
-                "tool_use" => {
-                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-                    let detail = match name {
-                        "Bash" => block
-                            .get("input")
-                            .and_then(|i| i.get("command"))
-                            .and_then(|v| v.as_str())
-                            .map(|c| {
-                                let c = c.trim();
-                                if c.len() > 80 {
-                                    format!("{}…", &c[..c.floor_char_boundary(80)])
-                                } else {
-                                    c.to_string()
-                                }
-                            }),
-                        "Read" | "Write" | "Edit" => block
-                            .get("input")
-                            .and_then(|i| i.get("file_path"))
-                            .and_then(|v| v.as_str())
-                            .map(|p| p.to_string()),
-                        "Grep" | "Glob" => block
-                            .get("input")
-                            .and_then(|i| i.get("pattern"))
-                            .and_then(|v| v.as_str())
-                            .map(|p| p.to_string()),
-                        _ => None,
-                    };
-                    let summary = match detail {
-                        Some(d) => format!("┌─ {} ────\n│ {}\n└─", name, d),
-                        None => format!("┌─ {} ────\n└─", name),
-                    };
-                    parts.push(summary);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    parts.join("\n\n")
-}
-
 /// Extract assistant text + tool result summaries from output.log JSONL content.
-/// Similar to `extract_assistant_text_from_log` but includes compact tool result
+/// Similar to `extract_enriched_text_from_log` but includes compact tool result
 /// summaries for a more dynamic live view.
 fn extract_enriched_text_from_log(content: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -11328,7 +11140,7 @@ mod extract_assistant_text_tests {
             "\n",
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Second message."}]}}"#,
         );
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("Heading here"));
         assert!(result.contains("**bold**"));
         assert!(result.contains("Second message."));
@@ -11337,7 +11149,7 @@ mod extract_assistant_text_tests {
     #[test]
     fn extracts_tool_use_summaries() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("┌─ Bash"));
         assert!(result.contains("cargo test"));
         assert!(result.contains("└─"));
@@ -11346,7 +11158,7 @@ mod extract_assistant_text_tests {
     #[test]
     fn handles_read_tool_summary() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("┌─ Read"));
         assert!(result.contains("/src/main.rs"));
     }
@@ -11354,7 +11166,7 @@ mod extract_assistant_text_tests {
     #[test]
     fn handles_grep_tool_summary() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn main"}}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("┌─ Grep"));
         assert!(result.contains("fn main"));
     }
@@ -11364,21 +11176,21 @@ mod extract_assistant_text_tests {
         let log = r#"{"type":"system","subtype":"init"}
 {"type":"user","message":{"content":[{"type":"text","text":"user text"}]}}
 {"type":"rate_limit_event","rate_limit_info":{}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.is_empty());
     }
 
     #[test]
     fn skips_empty_text_blocks() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"  \n  "}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.is_empty());
     }
 
     #[test]
     fn handles_mixed_text_and_tool_use() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check."},{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("Let me check."));
         assert!(result.contains("┌─ Bash"));
         assert!(result.contains("ls -la"));
@@ -11387,7 +11199,7 @@ mod extract_assistant_text_tests {
     #[test]
     fn unknown_tool_shows_name_only() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"CustomTool","input":{"foo":"bar"}}]}}"#;
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.contains("┌─ CustomTool"));
         assert!(result.contains("└─"));
         // No detail line for unknown tools
@@ -11397,7 +11209,7 @@ mod extract_assistant_text_tests {
     #[test]
     fn handles_malformed_json_gracefully() {
         let log = "not json at all\n{broken json\n";
-        let result = extract_assistant_text_from_log(log);
+        let result = extract_enriched_text_from_log(log);
         assert!(result.is_empty());
     }
 
@@ -11408,7 +11220,7 @@ mod extract_assistant_text_tests {
             r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
             long_cmd
         );
-        let result = extract_assistant_text_from_log(&log);
+        let result = extract_enriched_text_from_log(&log);
         assert!(result.contains("┌─ Bash"));
         // Should be truncated with …
         assert!(result.contains('…'));

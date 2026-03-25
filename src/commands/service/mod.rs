@@ -332,6 +332,12 @@ pub struct CoordinatorState {
     /// Whether the coordinator is paused (no new agent spawns)
     #[serde(default)]
     pub paused: bool,
+    /// Whether agents are frozen (SIGSTOP sent to all agent processes)
+    #[serde(default)]
+    pub frozen: bool,
+    /// PIDs that were frozen (for thaw to target the right processes)
+    #[serde(default)]
+    pub frozen_pids: Vec<u32>,
     /// Accumulated coordinator conversation tokens since last compaction.
     /// Incremented by the coordinator agent thread after each LLM turn.
     /// Resets to 0 after successful compaction.
@@ -1882,6 +1888,8 @@ pub fn run_daemon(
         tasks_ready: 0,
         agents_spawned: 0,
         paused: false,
+        frozen: false,
+        frozen_pids: Vec::new(),
         accumulated_tokens: CoordinatorState::load(&dir)
             .map(|cs| cs.accumulated_tokens)
             .unwrap_or(0),
@@ -2635,6 +2643,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "coordinator": {
                 "enabled": coord.enabled,
                 "paused": coord.paused,
+                "frozen": coord.frozen,
+                "frozen_pids": coord.frozen_pids,
                 "max_agents": coord.max_agents,
                 "poll_interval": coord.poll_interval,
                 "executor": coord.executor,
@@ -2700,11 +2710,20 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             }
         }
         let model_str = coord.model.as_deref().unwrap_or("default");
-        let pause_str = if coord.paused { ", PAUSED" } else { "" };
+        let state_str = if coord.frozen {
+            ", FROZEN"
+        } else if coord.paused {
+            ", PAUSED"
+        } else {
+            ""
+        };
         println!(
             "Coordinator: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
-            pause_str, coord.max_agents, coord.poll_interval, coord.executor, model_str
+            state_str, coord.max_agents, coord.poll_interval, coord.executor, model_str
         );
+        if coord.frozen && !coord.frozen_pids.is_empty() {
+            println!("  Frozen PIDs: {:?}", coord.frozen_pids);
+        }
         if let Some(ref last) = coord.last_tick {
             println!(
                 "  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={})",
@@ -2912,6 +2931,124 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
 
 #[cfg(not(unix))]
 pub fn run_resume(_dir: &Path, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Freeze all running agents (SIGSTOP) and pause the coordinator
+#[cfg(unix)]
+pub fn run_freeze(dir: &Path, json: bool) -> Result<()> {
+    guard_agent_stop_pause()?;
+
+    let response = send_request(dir, &IpcRequest::Freeze)?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if json {
+        if let Some(data) = &response.data {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        }
+    } else {
+        let frozen_count = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("frozen_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let status = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("frozen");
+
+        if status == "already_frozen" {
+            println!("Service is already frozen.");
+        } else {
+            println!("Froze {} agent(s). Service paused.", frozen_count);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_freeze(_dir: &Path, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Thaw all frozen agents (SIGCONT) and resume the coordinator
+#[cfg(unix)]
+pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::Thaw)?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if json {
+        if let Some(data) = &response.data {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        }
+    } else {
+        let thawed_count = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("thawed_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let dead_count = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("dead_pids"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let status = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("thawed");
+
+        if status == "not_frozen" {
+            println!("Service is not frozen.");
+        } else {
+            let mut msg = format!("Thawed {} agent(s). Service resumed.", thawed_count);
+            if dead_count > 0 {
+                msg.push_str(&format!(
+                    " ({} agent(s) died while frozen.)",
+                    dead_count
+                ));
+            }
+            println!("{}", msg);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_thaw(_dir: &Path, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
