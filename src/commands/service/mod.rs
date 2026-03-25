@@ -431,6 +431,58 @@ impl CoordinatorState {
         Self::load(dir).unwrap_or_default()
     }
 
+    /// Load all coordinator states from per-ID files in the service directory.
+    /// Returns a sorted vec of (coordinator_id, state) pairs.
+    pub fn load_all(dir: &Path) -> Vec<(u32, Self)> {
+        let service_dir = dir.join("service");
+        let mut results = Vec::new();
+        if let Ok(entries) = fs::read_dir(&service_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if let Some(id_str) = name_str
+                    .strip_prefix("coordinator-state-")
+                    .and_then(|s| s.strip_suffix(".json"))
+                {
+                    if let Ok(id) = id_str.parse::<u32>() {
+                        if let Some(state) = Self::load_for(dir, id) {
+                            results.push((id, state));
+                        }
+                    }
+                }
+            }
+        }
+        results.sort_by_key(|(id, _)| *id);
+        results
+    }
+
+    /// Sum `accumulated_tokens` across all per-coordinator state files.
+    /// Falls back to the legacy shared file when no per-ID files are found.
+    pub fn total_accumulated_tokens(dir: &Path) -> u64 {
+        let service_dir = dir.join("service");
+        let entries = match fs::read_dir(&service_dir) {
+            Ok(e) => e,
+            Err(_) => return Self::load(dir).map(|s| s.accumulated_tokens).unwrap_or(0),
+        };
+        let mut total: u64 = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("coordinator-state-") && name_str.ends_with(".json") {
+                if let Ok(content) = fs::read_to_string(entry.path()) {
+                    if let Ok(state) = serde_json::from_str::<Self>(&content) {
+                        total += state.accumulated_tokens;
+                    }
+                }
+            }
+        }
+        // Fall back to legacy file if no per-ID files found
+        if total == 0 {
+            total = Self::load(dir).map(|s| s.accumulated_tokens).unwrap_or(0);
+        }
+        total
+    }
+
     /// Remove the per-ID state file for a specific coordinator.
     pub fn remove_for(dir: &Path, coordinator_id: u32) {
         let path = coordinator_state_path(dir, coordinator_id);
@@ -442,6 +494,53 @@ impl CoordinatorState {
         Self::remove_for(dir, 0);
         // Also clean up the legacy shared file
         let _ = fs::remove_file(coordinator_state_path_legacy(dir));
+    }
+
+    /// Remove ALL per-coordinator state files and the legacy shared file.
+    /// Used on daemon shutdown to clean up all coordinator state.
+    pub fn remove_all(dir: &Path) {
+        let service_dir = dir.join("service");
+        if let Ok(entries) = fs::read_dir(&service_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("coordinator-state") && name_str.ends_with(".json") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    /// Reset accumulated_tokens to 0 in all per-coordinator state files.
+    pub fn reset_all_accumulated_tokens(dir: &Path) {
+        for (id, mut state) in Self::load_all(dir) {
+            state.accumulated_tokens = 0;
+            state.save_for(dir, id);
+        }
+    }
+
+    /// Migrate legacy coordinator-state.json to per-ID file (coordinator-state-0.json).
+    /// No-op if the legacy file doesn't exist or a per-ID file already exists.
+    pub fn migrate_legacy(dir: &Path) {
+        let legacy_path = coordinator_state_path_legacy(dir);
+        let per_id_path = coordinator_state_path(dir, 0);
+        if legacy_path.exists() && !per_id_path.exists() {
+            if let Ok(content) = fs::read_to_string(&legacy_path) {
+                if let Ok(state) = serde_json::from_str::<Self>(&content) {
+                    state.save_for(dir, 0);
+                    let _ = fs::remove_file(&legacy_path);
+                }
+            }
+        }
+    }
+
+    /// Update a field across all per-coordinator state files.
+    /// Used for global operations like pause/resume/freeze/thaw.
+    pub fn update_all(dir: &Path, mutator: impl Fn(&mut Self)) {
+        for (id, mut state) in Self::load_all(dir) {
+            mutator(&mut state);
+            state.save_for(dir, id);
+        }
     }
 }
 
@@ -3797,9 +3896,9 @@ mod tests {
         let logger = DaemonLogger::open(dir).unwrap();
 
         // Pre-seed accumulated tokens above threshold so compaction isn't deferred
-        let mut cs = CoordinatorState::load_or_default(dir);
+        let mut cs = CoordinatorState::load_or_default_for(dir, 0);
         cs.accumulated_tokens = 200_000;
-        cs.save(dir);
+        cs.save_for(dir, 0);
 
         let mut error_count = 0u64;
         // .compact-0 is Open with no deps → graph-ready → compaction fires
@@ -3846,9 +3945,9 @@ mod tests {
         let mut error_count = 0u64;
 
         // Pre-seed accumulated tokens above threshold so compaction isn't deferred
-        let mut cs = CoordinatorState::load_or_default(dir);
+        let mut cs = CoordinatorState::load_or_default_for(dir, 0);
         cs.accumulated_tokens = 200_000;
-        cs.save(dir);
+        cs.save_for(dir, 0);
 
         // .compact-0 is Open and dep (.coordinator-0) is Done → should fire
         run_graph_compaction(dir, &mut error_count, &logger);
@@ -3948,9 +4047,9 @@ mod tests {
         let mut error_count = 0u64;
 
         // Pre-seed accumulated tokens above threshold
-        let mut cs = CoordinatorState::load_or_default(dir);
+        let mut cs = CoordinatorState::load_or_default_for(dir, 0);
         cs.accumulated_tokens = 200_000;
-        cs.save(dir);
+        cs.save_for(dir, 0);
 
         // Before fix: .compact-0 is Done, cycle can't iterate because
         // .coordinator-0 is InProgress — compaction would never fire.
@@ -4016,9 +4115,9 @@ mod tests {
         let mut error_count = 0u64;
 
         // Tokens below default threshold — should NOT re-open
-        let mut cs = CoordinatorState::load_or_default(dir);
+        let mut cs = CoordinatorState::load_or_default_for(dir, 0);
         cs.accumulated_tokens = 1000;
-        cs.save(dir);
+        cs.save_for(dir, 0);
 
         run_graph_compaction(dir, &mut error_count, &logger);
 
