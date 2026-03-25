@@ -2016,6 +2016,26 @@ fn main() -> Result<()> {
                 duration,
             ),
         },
+        Commands::Server { command } => match command {
+            ServerCommands::Init {
+                apply,
+                group,
+                users,
+                ttyd,
+                caddy,
+                ttyd_port,
+            } => {
+                let opts = commands::server::ServerInitOpts {
+                    apply,
+                    group: group.as_deref(),
+                    users: &users,
+                    ttyd,
+                    caddy,
+                    ttyd_port,
+                };
+                commands::server::run(&workgraph_dir, &opts)
+            }
+        },
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),

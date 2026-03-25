@@ -86,6 +86,7 @@ pub mod role;
 pub mod runs_cmd;
 pub mod screencast_autopilot;
 pub mod screencast_render;
+pub mod server;
 pub mod service;
 pub mod setup;
 pub mod show;

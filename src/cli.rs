@@ -1479,6 +1479,12 @@ pub enum Commands {
         command: ScreencastCommands,
     },
 
+    /// Multi-user server setup automation
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+
     /// Interactive configuration wizard for first-time setup
     Setup,
 
@@ -2920,6 +2926,36 @@ pub enum ScreencastCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ServerCommands {
+    /// Initialize multi-user server setup (dry-run by default)
+    Init {
+        /// Actually apply changes (default is dry-run)
+        #[arg(long)]
+        apply: bool,
+
+        /// Unix group name (default: wg-<project>)
+        #[arg(long)]
+        group: Option<String>,
+
+        /// Users to add to the project group (repeatable)
+        #[arg(long = "user")]
+        users: Vec<String>,
+
+        /// Generate ttyd configuration for web terminal access
+        #[arg(long)]
+        ttyd: bool,
+
+        /// Generate Caddy reverse-proxy configuration
+        #[arg(long)]
+        caddy: bool,
+
+        /// Port for ttyd web terminal (default: 7681)
+        #[arg(long, default_value = "7681")]
+        ttyd_port: u16,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ServiceCommands {
     /// Start the agent service daemon
     Start {
@@ -3234,6 +3270,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Sweep { .. } => "sweep",
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
+        Commands::Server { .. } => "server",
         Commands::Service { .. } => "service",
         Commands::Screencast { .. } => "screencast",
         Commands::Tui { .. } => "tui",
