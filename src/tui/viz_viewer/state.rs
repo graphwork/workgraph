@@ -1136,6 +1136,52 @@ pub struct AgentMonitorEntry {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Navigation stack for drill-down
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A single entry in the drill-down navigation stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NavEntry {
+    /// Dashboard overview — the top-level agent view.
+    Dashboard,
+    /// Agent output view — live output for a specific agent.
+    AgentDetail { agent_id: String },
+    /// Task detail view — full task info for a specific task.
+    TaskDetail { task_id: String },
+    /// Task log view — log entries for a specific task.
+    TaskLog { task_id: String },
+}
+
+/// A stack-based navigation history for drill-down navigation.
+/// Push on Enter (drill deeper), pop on Esc/b (go back).
+#[derive(Clone, Debug, Default)]
+pub struct NavStack {
+    entries: Vec<NavEntry>,
+}
+
+impl NavStack {
+    pub fn push(&mut self, entry: NavEntry) {
+        self.entries.push(entry);
+    }
+
+    pub fn pop(&mut self) -> Option<NavEntry> {
+        self.entries.pop()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Dashboard state
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -2730,6 +2776,9 @@ pub struct VizApp {
     // ── Dashboard pane state (panel 10) ──
     pub dashboard: DashboardState,
 
+    // ── Drill-down navigation stack ──
+    pub nav_stack: NavStack,
+
     // ── Agency lifecycle for selected task ──
     pub agency_lifecycle: Option<AgencyLifecycle>,
 
@@ -3025,6 +3074,7 @@ impl VizApp {
             firehose: FirehoseState::default(),
             output_pane: OutputPaneState::default(),
             dashboard: DashboardState::default(),
+            nav_stack: NavStack::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
@@ -3090,6 +3140,7 @@ impl VizApp {
             app.load_viz();
             app.load_stats();
         }
+        app.ensure_user_coordinator();
         app.load_agent_monitor();
         app.check_coordinator_status();
         app.update_service_health();
@@ -6515,6 +6566,7 @@ impl VizApp {
             firehose: FirehoseState::default(),
             output_pane: OutputPaneState::default(),
             dashboard: DashboardState::default(),
+            nav_stack: NavStack::default(),
             agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
@@ -8648,6 +8700,38 @@ impl VizApp {
             // (recompute_trace calls switch_coordinator for coordinator tasks).
             // Just update the selection visually.
             self.scroll_to_selected_task();
+        }
+    }
+
+    /// On TUI startup, auto-create a coordinator labeled with the current
+    /// WG_USER identity if none exists for that user. This ensures each user
+    /// gets their own coordinator managing their own agent budget.
+    pub fn ensure_user_coordinator(&mut self) {
+        let user = workgraph::current_user();
+        // Don't auto-create for the fallback "unknown" identity
+        if user == "unknown" {
+            return;
+        }
+
+        let expected_label = format!("Coordinator: {}", user);
+        let coordinators = self.list_coordinator_ids_and_labels();
+
+        // Check if a coordinator already exists for this user
+        let user_has_coordinator = coordinators
+            .iter()
+            .any(|(_, label)| *label == expected_label);
+
+        if !user_has_coordinator {
+            // Auto-create a coordinator for this user via IPC
+            self.create_coordinator(Some(user.clone()));
+        }
+
+        // If user already has a coordinator, switch to it
+        if let Some((cid, _)) = coordinators
+            .iter()
+            .find(|(_, label)| *label == expected_label)
+        {
+            self.active_coordinator_id = *cid;
         }
     }
 
