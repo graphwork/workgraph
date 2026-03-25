@@ -1078,7 +1078,16 @@ fn resolve_model_via_registry(
     // Load merged config for registry lookup (includes global + local + builtins)
     let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
 
-    if let Some(entry) = merged.registry_lookup(&model_str) {
+    // Look up by short ID first, then by full model field (e.g., "deepseek/deepseek-chat"
+    // matching a registry entry with model = "deepseek/deepseek-chat").
+    let registry_entry = merged.registry_lookup(&model_str).or_else(|| {
+        merged
+            .effective_registry()
+            .into_iter()
+            .find(|e| e.model == model_str)
+    });
+
+    if let Some(entry) = registry_entry {
         // Found in registry
         let is_builtin = BUILTIN_TIER_ALIASES.contains(&model_str.as_str());
         let resolved_model = if is_builtin {
@@ -1095,12 +1104,19 @@ fn resolve_model_via_registry(
         ))
     } else if task_model.is_some() && task_model.map(|s| s.as_str()) == effective_model.as_deref() {
         // Task explicitly specified a model that's not in the registry.
-        // Error so the user knows they need to register it first.
-        anyhow::bail!(
-            "Model '{}' not found in config. Register it first with:\n  wg model add {} --provider <provider> --model-id <model-id>",
-            model_str,
-            model_str,
-        );
+        if model_str.contains('/') {
+            // Full provider/model ID (e.g., "deepseek/deepseek-chat") — pass through.
+            // The native executor's create_provider_ext() auto-detects the provider
+            // from the slash in the model name.
+            Ok((effective_model, None, None))
+        } else {
+            // Short alias that's not registered — error so the user knows to register it.
+            anyhow::bail!(
+                "Model '{}' not found in config. Register it first with:\n  wg model add {} --provider <provider> --model-id <model-id>",
+                model_str,
+                model_str,
+            );
+        }
     } else {
         // Model came from executor/coordinator defaults — pass through unchanged.
         // It may be a direct model ID the executor understands.
@@ -1494,8 +1510,10 @@ mod tests {
         let dir = tmp.path();
         let config = Config::load_or_default(dir);
 
-        // Model came from executor/coordinator, not from task — should pass through
-        let (model, provider, endpoint) = resolve_model_via_registry(
+        // Model came from executor/coordinator, not from task — should pass through.
+        // "claude-opus-4-6" matches the builtin "opus" entry's model field, so
+        // it resolves with provider info from that entry.
+        let (model, provider, _endpoint) = resolve_model_via_registry(
             Some("claude-opus-4-6".to_string()),
             None, // no task model
             &config,
@@ -1506,10 +1524,37 @@ mod tests {
         assert_eq!(
             model,
             Some("claude-opus-4-6".to_string()),
-            "Non-task model should pass through unchanged"
+            "Non-task model should resolve to the same model ID"
         );
-        assert_eq!(provider, None, "No registry provider for pass-through");
-        assert_eq!(endpoint, None, "No registry endpoint for pass-through");
+        assert_eq!(
+            provider,
+            Some("anthropic".to_string()),
+            "Should find provider from builtin registry entry"
+        );
+    }
+
+    #[test]
+    fn test_registry_truly_unknown_non_task_model_passes_through() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        // A model not in the registry at all, from executor/coordinator
+        let (model, provider, endpoint) = resolve_model_via_registry(
+            Some("totally-unknown-model".to_string()),
+            None, // no task model
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model,
+            Some("totally-unknown-model".to_string()),
+            "Unknown non-task model should pass through unchanged"
+        );
+        assert_eq!(provider, None, "No registry provider for truly unknown model");
+        assert_eq!(endpoint, None, "No registry endpoint for truly unknown model");
     }
 
     #[test]
@@ -1548,5 +1593,93 @@ mod tests {
         );
         assert_eq!(provider, Some("openrouter".to_string()));
         assert_eq!(endpoint, Some("my-openrouter".to_string()));
+    }
+
+    #[test]
+    fn test_registry_full_model_id_passthrough_for_task() {
+        // Full model IDs with "/" should pass through even when task-specified,
+        // allowing OpenRouter-style "provider/model" to work without registration.
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let full_model = "deepseek/deepseek-chat".to_string();
+        let (model, provider, endpoint) = resolve_model_via_registry(
+            Some(full_model.clone()),
+            Some(&full_model),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model,
+            Some("deepseek/deepseek-chat".to_string()),
+            "Full model ID with / should pass through unchanged"
+        );
+        assert_eq!(
+            provider, None,
+            "No provider from registry — auto-detection will handle it"
+        );
+        assert_eq!(endpoint, None, "No endpoint from registry");
+    }
+
+    #[test]
+    fn test_registry_lookup_by_model_field() {
+        // If a registry entry has model = "anthropic/claude-3.5-sonnet",
+        // using --model "anthropic/claude-3.5-sonnet" should find it.
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let full_model = "anthropic/claude-3.5-sonnet".to_string();
+        let (model, provider, endpoint) = resolve_model_via_registry(
+            Some(full_model.clone()),
+            Some(&full_model),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model,
+            Some("anthropic/claude-3.5-sonnet".to_string()),
+            "Should match registry entry by model field"
+        );
+        assert_eq!(
+            provider,
+            Some("openrouter".to_string()),
+            "Should get provider from matched entry"
+        );
+        assert_eq!(
+            endpoint,
+            Some("my-openrouter".to_string()),
+            "Should get endpoint from matched entry"
+        );
+    }
+
+    #[test]
+    fn test_registry_short_alias_still_errors_when_unknown() {
+        // Short aliases (no "/") that aren't registered should still error
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let unknown = "some-unknown-alias".to_string();
+        let result = resolve_model_via_registry(
+            Some(unknown.clone()),
+            Some(&unknown),
+            &config,
+            dir,
+        );
+
+        assert!(
+            result.is_err(),
+            "Short unknown aliases should still error"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("not found in config"),
+            "Error should mention registration"
+        );
     }
 }
