@@ -147,10 +147,70 @@ pub fn clear_streaming(workgraph_dir: &Path, coordinator_id: u32) {
     let _ = fs::remove_file(&path);
 }
 
+/// RAII guard for chat file locking via sidecar `.lock` files.
+///
+/// Uses flock on a sidecar lock file (e.g. `inbox.jsonl.lock`) rather than
+/// locking the data file directly. This avoids races with rename-based
+/// operations (rotation, rewrite) and allows shared/exclusive semantics.
+struct ChatLock {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+impl ChatLock {
+    /// Acquire an exclusive lock for write operations.
+    #[cfg(unix)]
+    fn exclusive(jsonl_path: &Path) -> Result<Self> {
+        Self::lock_impl(jsonl_path, libc::LOCK_EX)
+    }
+
+    #[cfg(not(unix))]
+    fn exclusive(_jsonl_path: &Path) -> Result<Self> {
+        Ok(ChatLock {})
+    }
+
+    /// Acquire a shared lock for read operations.
+    #[cfg(unix)]
+    fn shared(jsonl_path: &Path) -> Result<Self> {
+        Self::lock_impl(jsonl_path, libc::LOCK_SH)
+    }
+
+    #[cfg(not(unix))]
+    fn shared(_jsonl_path: &Path) -> Result<Self> {
+        Ok(ChatLock {})
+    }
+
+    #[cfg(unix)]
+    fn lock_impl(jsonl_path: &Path, operation: libc::c_int) -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = jsonl_path.with_extension("jsonl.lock");
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
+        let fd = file.as_raw_fd();
+        let ret = unsafe { libc::flock(fd, operation) };
+        if ret != 0 {
+            anyhow::bail!(
+                "Failed to acquire lock on {}: {}",
+                lock_path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(ChatLock { _file: file })
+    }
+}
+
 /// Append a message to a JSONL file with flock-based ID assignment.
 ///
-/// Opens the file with O_APPEND, acquires an exclusive lock,
-/// reads the current max ID, assigns the next ID, and appends.
+/// Acquires an exclusive lock via sidecar lock file, reads the current
+/// max ID, assigns the next ID, and appends atomically.
 fn append_message(
     path: &Path,
     role: &str,
@@ -164,26 +224,15 @@ fn append_message(
             .with_context(|| format!("Failed to create chat directory: {}", parent.display()))?;
     }
 
+    // Acquire exclusive lock via sidecar lock file
+    let _lock = ChatLock::exclusive(path)?;
+
     let file = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
         .open(path)
         .with_context(|| format!("Failed to open chat file: {}", path.display()))?;
-
-    // Lock the file exclusively for ID assignment + append
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = file.as_raw_fd();
-        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
-        if ret != 0 {
-            anyhow::bail!(
-                "Failed to acquire lock on chat file: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
 
     // Read existing messages to find the max ID
     let max_id = {
@@ -236,12 +285,12 @@ fn append_message(
             .and_then(|mut f| f.write_all(entry.as_bytes()));
     }
 
-    // Lock is released when file is dropped
+    // Lock is released when _lock is dropped
     Ok(next_id)
 }
 
-/// Read all messages from a JSONL file.
-fn read_messages(path: &Path) -> Result<Vec<ChatMessage>> {
+/// Read all messages from a JSONL file (internal, caller holds lock).
+fn read_messages_inner(path: &Path) -> Result<Vec<ChatMessage>> {
     if !path.exists() {
         return Ok(vec![]);
     }
@@ -264,6 +313,15 @@ fn read_messages(path: &Path) -> Result<Vec<ChatMessage>> {
 
     messages.sort_by_key(|m| m.id);
     Ok(messages)
+}
+
+/// Read all messages from a JSONL file with shared lock protection.
+fn read_messages(path: &Path) -> Result<Vec<ChatMessage>> {
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let _lock = ChatLock::shared(path)?;
+    read_messages_inner(path)
 }
 
 /// Read a cursor value from a file. Returns 0 if the file doesn't exist.
@@ -562,12 +620,14 @@ pub fn rotate_history(workgraph_dir: &Path, keep_count: usize) -> Result<()> {
 }
 
 /// Rotate a single JSONL file, keeping only the last `keep_count` messages.
+/// Holds an exclusive lock for the entire read-modify-write cycle.
 fn rotate_file(path: &Path, keep_count: usize) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
 
-    let messages = read_messages(path)?;
+    let _lock = ChatLock::exclusive(path)?;
+    let messages = read_messages_inner(path)?;
     if messages.len() <= keep_count {
         return Ok(());
     }
@@ -723,12 +783,13 @@ pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachmen
 
 /// Rewrite a JSONL file atomically, applying a transformation to each message.
 /// The closure receives each message mutably and returns `true` to keep it.
+/// Holds an exclusive lock for the entire read-modify-write cycle.
 fn rewrite_jsonl(path: &Path, mut f: impl FnMut(&mut ChatMessage) -> bool) -> Result<()> {
-    let mut messages = if path.exists() {
-        read_messages(path)?
-    } else {
+    if !path.exists() {
         return Ok(());
-    };
+    }
+    let _lock = ChatLock::exclusive(path)?;
+    let mut messages = read_messages_inner(path)?;
 
     messages.retain_mut(|msg| f(msg));
 
@@ -1424,5 +1485,114 @@ mod tests {
         let json = r#"{"id":1,"timestamp":"2026-01-01T00:00:00Z","role":"user","content":"hi","request_id":"r1"}"#;
         let msg: ChatMessage = serde_json::from_str(json).unwrap();
         assert!(msg.user.is_none());
+    }
+
+    #[test]
+    fn test_concurrent_sends_no_message_loss() {
+        // Two "users" sending messages simultaneously must not lose either message.
+        let (_tmp, wg_dir) = setup();
+        let mut handles = vec![];
+
+        // Simulate two users each sending 50 messages concurrently
+        for user in 0..2 {
+            let dir = wg_dir.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50 {
+                    append_inbox(
+                        &dir,
+                        &format!("user{} msg{}", user, i),
+                        &format!("req-{}-{}", user, i),
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let msgs = read_inbox(&wg_dir).unwrap();
+        assert_eq!(msgs.len(), 100, "Both users' messages must be present");
+
+        // Every message from both users must be present
+        for user in 0..2 {
+            for i in 0..50 {
+                let content = format!("user{} msg{}", user, i);
+                assert!(
+                    msgs.iter().any(|m| m.content == content),
+                    "Missing message: {}",
+                    content
+                );
+            }
+        }
+
+        // IDs must be unique
+        let mut ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 100, "All IDs must be unique");
+    }
+
+    #[test]
+    fn test_read_during_concurrent_writes_no_partial_data() {
+        // Reading inbox while another thread writes must never see partial/corrupt data.
+        use std::sync::{Arc, Barrier};
+
+        let (_tmp, wg_dir) = setup();
+        let barrier = Arc::new(Barrier::new(3)); // 1 writer + 1 writer + 1 reader
+
+        // Writer 1
+        let dir1 = wg_dir.clone();
+        let b1 = Arc::clone(&barrier);
+        let w1 = std::thread::spawn(move || {
+            b1.wait();
+            for i in 0..50 {
+                append_inbox(&dir1, &format!("writer1-{}", i), &format!("w1-{}", i)).unwrap();
+            }
+        });
+
+        // Writer 2
+        let dir2 = wg_dir.clone();
+        let b2 = Arc::clone(&barrier);
+        let w2 = std::thread::spawn(move || {
+            b2.wait();
+            for i in 0..50 {
+                append_inbox(&dir2, &format!("writer2-{}", i), &format!("w2-{}", i)).unwrap();
+            }
+        });
+
+        // Reader: repeatedly reads while writers are active
+        let dir3 = wg_dir.clone();
+        let b3 = Arc::clone(&barrier);
+        let reader = std::thread::spawn(move || {
+            b3.wait();
+            let mut read_count = 0;
+            for _ in 0..100 {
+                let msgs = read_inbox(&dir3).unwrap();
+                // Every read must return well-formed messages
+                for msg in &msgs {
+                    assert!(!msg.content.is_empty(), "Message content must not be empty");
+                    assert!(!msg.request_id.is_empty(), "Request ID must not be empty");
+                    assert!(msg.id > 0, "ID must be positive");
+                }
+                // Message count must be monotonically non-decreasing within a session
+                assert!(
+                    msgs.len() >= read_count || read_count == 0,
+                    "Message count went backwards: had {} now {}",
+                    read_count,
+                    msgs.len()
+                );
+                read_count = msgs.len();
+            }
+        });
+
+        w1.join().unwrap();
+        w2.join().unwrap();
+        reader.join().unwrap();
+
+        // Final read: all 100 messages present
+        let msgs = read_inbox(&wg_dir).unwrap();
+        assert_eq!(msgs.len(), 100);
     }
 }
