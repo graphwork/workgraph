@@ -85,9 +85,10 @@ fn compute_artifact_diff(artifacts: &[String], started_at: Option<&str>) -> Opti
 
     // Truncate overly large diffs
     if diff.len() > MAX_DIFF_BYTES {
-        let truncated = &diff[..MAX_DIFF_BYTES];
+        let safe_end = diff.floor_char_boundary(MAX_DIFF_BYTES);
+        let truncated = &diff[..safe_end];
         // Find the last newline to avoid cutting mid-line
-        let cut_point = truncated.rfind('\n').unwrap_or(MAX_DIFF_BYTES);
+        let cut_point = truncated.rfind('\n').unwrap_or(safe_end);
         Some(format!(
             "{}\n\n... (diff truncated at {} bytes, total {} bytes)",
             &diff[..cut_point],
@@ -892,7 +893,8 @@ pub fn run_flip(
 
             // Show a snippet of the inferred prompt
             let snippet = if parsed_inference.inferred_prompt.len() > 200 {
-                format!("{}...", &parsed_inference.inferred_prompt[..200])
+                let end = parsed_inference.inferred_prompt.floor_char_boundary(200);
+                format!("{}...", &parsed_inference.inferred_prompt[..end])
             } else {
                 parsed_inference.inferred_prompt.clone()
             };
@@ -1167,7 +1169,7 @@ pub fn run_show(
                         if e.agent_id.is_empty() {
                             "-"
                         } else {
-                            &e.agent_id[..e.agent_id.len().min(10)]
+                            &e.agent_id[..e.agent_id.floor_char_boundary(10)]
                         },
                         e.timestamp
                     );
@@ -1229,17 +1231,17 @@ pub fn run_show(
             let agent_display = if e.agent_id.is_empty() {
                 "-"
             } else if e.agent_id.len() > 10 {
-                &e.agent_id[..10]
+                &e.agent_id[..e.agent_id.floor_char_boundary(10)]
             } else {
                 &e.agent_id
             };
             let task_display = if e.task_id.len() > 18 {
-                &e.task_id[..18]
+                &e.task_id[..e.task_id.floor_char_boundary(18)]
             } else {
                 &e.task_id
             };
             let source_display = if e.source.len() > 14 {
-                &e.source[..14]
+                &e.source[..e.source.floor_char_boundary(14)]
             } else {
                 &e.source
             };
@@ -1482,5 +1484,28 @@ mod tests {
 
         assert!(dimensions.get("intent_fidelity").is_none());
         assert_eq!(dimensions.len(), 1);
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // '─' is a 3-byte UTF-8 char (E2 94 80).
+        // Build a string where a naive byte slice at 10 would land inside a multi-byte char.
+        let text = "ab─cd─ef─gh─ij"; // bytes: a(1) b(1) ─(3) c(1) d(1) ─(3) ...
+        assert!(text.len() > 10);
+
+        // Naive &text[..10] would panic because byte 10 is inside '─'.
+        // floor_char_boundary finds the nearest valid boundary at or before 10.
+        let end = text.floor_char_boundary(10);
+        let truncated = &text[..end];
+        // Must not panic, and must be valid UTF-8 (guaranteed by &str).
+        assert!(truncated.len() <= 10);
+        assert!(text.is_char_boundary(end));
+
+        // Also test with emoji (4-byte char)
+        let emoji_text = "hello 🎉 world";
+        let end2 = emoji_text.floor_char_boundary(8);
+        let truncated2 = &emoji_text[..end2];
+        assert!(truncated2.len() <= 8);
+        assert!(emoji_text.is_char_boundary(end2));
     }
 }
