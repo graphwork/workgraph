@@ -261,54 +261,62 @@ pub fn apply_placement_command(cmd: &PlacementCommand, dir: &Path) -> Result<boo
             before,
         } => {
             let graph_path = dir.join("graph.jsonl");
-            let mut graph =
-                workgraph::parser::load_graph(&graph_path).context("Failed to load graph")?;
 
-            let task = graph
-                .get_task_mut(task_id)
-                .ok_or_else(|| anyhow::anyhow!("Task '{}' not found in graph", task_id))?;
+            let mut error: Option<anyhow::Error> = None;
+            workgraph::parser::modify_graph(&graph_path, |graph| {
+                let task = match graph.get_task_mut(task_id) {
+                    Some(t) => t,
+                    None => {
+                        error = Some(anyhow::anyhow!("Task '{}' not found in graph", task_id));
+                        return false;
+                    }
+                };
 
-            let mut modified = false;
+                let mut modified = false;
 
-            for dep in after {
-                if !task.after.contains(dep) {
-                    task.after.push(dep.clone());
-                    modified = true;
+                for dep in after {
+                    if !task.after.contains(dep) {
+                        task.after.push(dep.clone());
+                        modified = true;
+                    }
                 }
-            }
 
-            for dep in before {
-                if !task.before.contains(dep) {
-                    task.before.push(dep.clone());
-                    modified = true;
+                for dep in before {
+                    if !task.before.contains(dep) {
+                        task.before.push(dep.clone());
+                        modified = true;
+                    }
                 }
-            }
 
-            if modified {
-                task.log.push(workgraph::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("placement".to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!(
-                        "Placement applied: {}{}",
-                        if !after.is_empty() {
-                            format!("--after {}", after.join(","))
-                        } else {
-                            String::new()
-                        },
-                        if !before.is_empty() {
-                            format!(
-                                "{}--before {}",
-                                if !after.is_empty() { " " } else { "" },
-                                before.join(",")
-                            )
-                        } else {
-                            String::new()
-                        },
-                    ),
-                });
-                workgraph::parser::save_graph(&graph, &graph_path)
-                    .context("Failed to save graph")?;
+                if modified {
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("placement".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Placement applied: {}{}",
+                            if !after.is_empty() {
+                                format!("--after {}", after.join(","))
+                            } else {
+                                String::new()
+                            },
+                            if !before.is_empty() {
+                                format!(
+                                    "{}--before {}",
+                                    if !after.is_empty() { " " } else { "" },
+                                    before.join(",")
+                                )
+                            } else {
+                                String::new()
+                            },
+                        ),
+                    });
+                }
+                modified
+            })
+            .context("Failed to modify graph")?;
+            if let Some(e) = error {
+                return Err(e);
             }
 
             Ok(true)

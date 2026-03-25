@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
 use workgraph::graph::Status;
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::modify_graph;
 
 use super::graph_path;
 
@@ -63,139 +63,66 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
         None
     };
 
-    let graph = load_graph(&path).context("Failed to load graph")?;
+    let mut gc_list: Vec<String> = Vec::new();
+    let mut removed_details: Vec<serde_json::Value> = Vec::new();
+    let mut display_lines: Vec<String> = Vec::new();
+    let mut was_empty = false;
 
-    // Collect all task IDs and their statuses for dependency checking
-    let all_tasks: Vec<_> = graph.tasks().cloned().collect();
+    modify_graph(&path, |graph| {
+        // Collect all task IDs and their statuses for dependency checking
+        let all_tasks: Vec<_> = graph.tasks().cloned().collect();
 
-    // Build a set of task IDs that have non-terminal dependents.
-    // A task should NOT be gc'd if any task that lists it in after is non-terminal.
-    let mut has_open_dependent: HashSet<String> = HashSet::new();
-    for task in &all_tasks {
-        if !task.status.is_terminal() {
-            // This task is non-terminal — all its blockers are "needed"
-            for blocker_id in &task.after {
-                has_open_dependent.insert(blocker_id.clone());
+        // Build a set of task IDs that have non-terminal dependents.
+        let mut has_open_dependent: HashSet<String> = HashSet::new();
+        for task in &all_tasks {
+            if !task.status.is_terminal() {
+                for blocker_id in &task.after {
+                    has_open_dependent.insert(blocker_id.clone());
+                }
             }
         }
-    }
 
-    // SCC-aware gc: compute cycle analysis to handle cycles correctly.
-    // Tasks in an SCC block each other via after edges, so we need to treat
-    // them as a unit: either gc ALL members or NONE.
-    let cycle_analysis = graph.compute_cycle_analysis();
+        // SCC-aware gc
+        let cycle_analysis = graph.compute_cycle_analysis();
 
-    // Build a set of SCC members that should be protected from individual gc.
-    // An SCC is protected if it has any non-terminal member or any external
-    // open dependent. Protected SCC members cannot be gc'd individually.
-    let mut protected_scc_members: HashSet<String> = HashSet::new();
-    // Track SCCs eligible for gc as a unit
-    let mut scc_gc_candidates: Vec<&Vec<String>> = Vec::new();
+        let mut protected_scc_members: HashSet<String> = HashSet::new();
+        let mut scc_gc_candidates: Vec<Vec<String>> = Vec::new();
 
-    for cycle in &cycle_analysis.cycles {
-        let all_terminal = cycle
-            .members
-            .iter()
-            .all(|id| graph.get_task(id).is_some_and(|t| t.status.is_terminal()));
+        for cycle in &cycle_analysis.cycles {
+            let all_terminal = cycle
+                .members
+                .iter()
+                .all(|id| graph.get_task(id).is_some_and(|t| t.status.is_terminal()));
 
-        let has_external_dependent = cycle.members.iter().any(|id| {
-            all_tasks.iter().any(|t| {
-                !t.status.is_terminal() && t.after.contains(id) && !cycle.members.contains(&t.id)
-            })
-        });
-
-        if !all_terminal || has_external_dependent {
-            // Protect all members — they cannot be gc'd individually
-            for id in &cycle.members {
-                protected_scc_members.insert(id.clone());
-            }
-        } else {
-            // All terminal, no external deps — candidate for SCC gc
-            scc_gc_candidates.push(&cycle.members);
-        }
-    }
-
-    // Find tasks eligible for gc (non-SCC tasks or tasks not in protected SCCs)
-    let mut to_gc: HashSet<String> = HashSet::new();
-    for task in &all_tasks {
-        if !task.status.is_terminal() {
-            continue;
-        }
-        // By default, only gc failed + abandoned. With --include-done, also gc done.
-        if task.status == Status::Done && !include_done {
-            continue;
-        }
-        // Skip tasks in protected SCCs — they can only be gc'd as a unit
-        if protected_scc_members.contains(&task.id) {
-            continue;
-        }
-        // Safety: skip if any non-terminal task depends on this one
-        if has_open_dependent.contains(&task.id) {
-            continue;
-        }
-        // Apply --older filter
-        if let Some(ref min_age) = older_duration
-            && !is_old_enough(task, min_age)
-        {
-            continue;
-        }
-        to_gc.insert(task.id.clone());
-    }
-
-    // Now handle eligible SCCs: gc all members as a unit if they pass filters
-    for members in &scc_gc_candidates {
-        // Check status filter: all members must pass the include_done filter
-        let all_pass_status = members.iter().all(|id| {
-            graph
-                .get_task(id)
-                .is_some_and(|t| t.status != Status::Done || include_done)
-        });
-        if !all_pass_status {
-            continue;
-        }
-
-        // Check --older filter: all members must be old enough
-        if let Some(ref min_age) = older_duration {
-            let all_old_enough = members.iter().all(|id| {
-                graph
-                    .get_task(id)
-                    .is_some_and(|t| is_old_enough(t, min_age))
+            let has_external_dependent = cycle.members.iter().any(|id| {
+                all_tasks.iter().any(|t| {
+                    !t.status.is_terminal() && t.after.contains(id) && !cycle.members.contains(&t.id)
+                })
             });
-            if !all_old_enough {
+
+            if !all_terminal || has_external_dependent {
+                for id in &cycle.members {
+                    protected_scc_members.insert(id.clone());
+                }
+            } else {
+                scc_gc_candidates.push(cycle.members.clone());
+            }
+        }
+
+        let mut to_gc: HashSet<String> = HashSet::new();
+        for task in &all_tasks {
+            if !task.status.is_terminal() {
                 continue;
             }
-        }
-
-        // Add all SCC members to gc set
-        for id in *members {
-            to_gc.insert(id.clone());
-        }
-    }
-
-    // Also collect internal tasks (assign-*, evaluate-*) whose parent is being gc'd
-    for task in &all_tasks {
-        for prefix in INTERNAL_PREFIXES {
-            if let Some(parent_id) = task.id.strip_prefix(prefix)
-                && to_gc.contains(parent_id)
-                && task.status.is_terminal()
-            {
-                to_gc.insert(task.id.clone());
+            if task.status == Status::Done && !include_done {
+                continue;
             }
-        }
-    }
-
-    // Also gc internal tasks that are themselves terminal with no open dependents,
-    // even if their parent was already removed (e.g., parent was archived but
-    // internal tasks were left behind)
-    for task in &all_tasks {
-        if to_gc.contains(&task.id) {
-            continue;
-        }
-        let is_internal = INTERNAL_PREFIXES
-            .iter()
-            .any(|prefix| task.id.starts_with(prefix));
-        if is_internal && task.status.is_terminal() && !has_open_dependent.contains(&task.id) {
-            // Apply --older filter to orphaned internal tasks too
+            if protected_scc_members.contains(&task.id) {
+                continue;
+            }
+            if has_open_dependent.contains(&task.id) {
+                continue;
+            }
             if let Some(ref min_age) = older_duration
                 && !is_old_enough(task, min_age)
             {
@@ -203,47 +130,113 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
             }
             to_gc.insert(task.id.clone());
         }
-    }
 
-    if to_gc.is_empty() {
+        for members in &scc_gc_candidates {
+            let all_pass_status = members.iter().all(|id| {
+                graph
+                    .get_task(id)
+                    .is_some_and(|t| t.status != Status::Done || include_done)
+            });
+            if !all_pass_status {
+                continue;
+            }
+
+            if let Some(ref min_age) = older_duration {
+                let all_old_enough = members.iter().all(|id| {
+                    graph
+                        .get_task(id)
+                        .is_some_and(|t| is_old_enough(t, min_age))
+                });
+                if !all_old_enough {
+                    continue;
+                }
+            }
+
+            for id in members {
+                to_gc.insert(id.clone());
+            }
+        }
+
+        // Also collect internal tasks whose parent is being gc'd
+        for task in &all_tasks {
+            for prefix in INTERNAL_PREFIXES {
+                if let Some(parent_id) = task.id.strip_prefix(prefix)
+                    && to_gc.contains(parent_id)
+                    && task.status.is_terminal()
+                {
+                    to_gc.insert(task.id.clone());
+                }
+            }
+        }
+
+        for task in &all_tasks {
+            if to_gc.contains(&task.id) {
+                continue;
+            }
+            let is_internal = INTERNAL_PREFIXES
+                .iter()
+                .any(|prefix| task.id.starts_with(prefix));
+            if is_internal && task.status.is_terminal() && !has_open_dependent.contains(&task.id) {
+                if let Some(ref min_age) = older_duration
+                    && !is_old_enough(task, min_age)
+                {
+                    continue;
+                }
+                to_gc.insert(task.id.clone());
+            }
+        }
+
+        if to_gc.is_empty() {
+            was_empty = true;
+            return false;
+        }
+
+        gc_list = to_gc.iter().cloned().collect();
+        gc_list.sort();
+
+        if dry_run {
+            for id in &gc_list {
+                if let Some(task) = graph.get_task(id) {
+                    display_lines.push(format!("  {} - {} [{}]", task.id, task.title, task.status));
+                }
+            }
+            return false;
+        }
+
+        // Capture provenance data
+        removed_details = gc_list
+            .iter()
+            .filter_map(|id| {
+                graph.get_task(id).map(|t| {
+                    serde_json::json!({
+                        "id": t.id,
+                        "status": format!("{:?}", t.status),
+                        "title": t.title,
+                    })
+                })
+            })
+            .collect();
+
+        for id in &gc_list {
+            graph.remove_node(id);
+        }
+        true
+    })
+    .context("Failed to modify graph")?;
+
+    if was_empty {
         println!("No tasks to garbage collect.");
         return Ok(());
     }
 
-    // Sort for deterministic output
-    let mut gc_list: Vec<_> = to_gc.iter().cloned().collect();
-    gc_list.sort();
-
     if dry_run {
         println!("Would remove {} tasks:", gc_list.len());
-        for id in &gc_list {
-            if let Some(task) = graph.get_task(id) {
-                println!("  {} - {} [{}]", task.id, task.title, task.status);
-            }
+        for line in &display_lines {
+            println!("{}", line);
         }
         return Ok(());
     }
 
-    // Capture details of tasks being removed for provenance
-    let removed_details: Vec<serde_json::Value> = gc_list
-        .iter()
-        .filter_map(|id| {
-            graph.get_task(id).map(|t| {
-                serde_json::json!({
-                    "id": t.id,
-                    "status": format!("{:?}", t.status),
-                    "title": t.title,
-                })
-            })
-        })
-        .collect();
-
-    let mut modified_graph = graph;
-    for id in &gc_list {
-        modified_graph.remove_node(id);
-    }
-
-    save_graph(&modified_graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     // Record operation

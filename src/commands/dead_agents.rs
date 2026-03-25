@@ -17,7 +17,7 @@ use chrono::Utc;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::{AgentRegistry, AgentStatus};
 
 use super::graph_path;
@@ -130,45 +130,43 @@ pub fn run_cleanup(
     locked_registry.save_ref()?;
 
     // Now unclaim tasks from dead agents
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
     let mut tasks_unclaimed = Vec::new();
     let mut errors = Vec::new();
 
-    for dead_agent in &dead_info {
-        if let Some(task) = graph.get_task_mut(&dead_agent.task_id) {
-            // Only unclaim if task is still in progress
-            if task.status == Status::InProgress {
-                task.status = Status::Open;
-                task.assigned = None;
-                // Don't clear started_at - keep the history
+    let dead_info_clone = dead_info.clone();
+    modify_graph(&path, |graph| {
+        let mut modified = false;
+        for dead_agent in &dead_info_clone {
+            if let Some(task) = graph.get_task_mut(&dead_agent.task_id) {
+                if task.status == Status::InProgress {
+                    task.status = Status::Open;
+                    task.assigned = None;
 
-                // Add log entry
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: None,
-                    user: Some(workgraph::current_user()),
-                    message: format!(
-                        "Task unclaimed: agent '{}' (PID {}) detected as dead (no heartbeat for {} seconds)",
-                        dead_agent.agent_id,
-                        dead_agent.pid,
-                        dead_agent.seconds_since_heartbeat
-                    ),
-                });
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: None,
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Task unclaimed: agent '{}' (PID {}) detected as dead (no heartbeat for {} seconds)",
+                            dead_agent.agent_id,
+                            dead_agent.pid,
+                            dead_agent.seconds_since_heartbeat
+                        ),
+                    });
 
-                tasks_unclaimed.push(dead_agent.task_id.clone());
+                    tasks_unclaimed.push(dead_agent.task_id.clone());
+                    modified = true;
+                }
+            } else {
+                errors.push(format!(
+                    "Task '{}' not found for dead agent '{}'",
+                    dead_agent.task_id, dead_agent.agent_id
+                ));
             }
-        } else {
-            errors.push(format!(
-                "Task '{}' not found for dead agent '{}'",
-                dead_agent.task_id, dead_agent.agent_id
-            ));
         }
-    }
-
-    // Save graph
-    if !tasks_unclaimed.is_empty() {
-        save_graph(&graph, &path).context("Failed to save graph")?;
-    }
+        modified
+    })
+    .context("Failed to modify graph")?;
 
     let result = DetectionResult {
         dead_agents: dead_info,

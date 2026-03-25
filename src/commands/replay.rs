@@ -9,7 +9,7 @@ use std::path::Path;
 use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
 use workgraph::config::Config;
 use workgraph::graph::{Status, Task};
-use workgraph::parser::save_graph;
+use workgraph::parser::{load_graph, save_graph, modify_graph};
 use workgraph::runs::{self, RunMeta};
 
 /// Options controlling which tasks to reset.
@@ -206,18 +206,22 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
     runs::snapshot(dir, &run_id, &meta)?;
 
     // Phase 5: Reset selected tasks
-    for task_id in &reset_ids {
-        if let Some(task) = graph.get_task_mut(task_id) {
-            reset_task(task);
-            // Apply model override
-            if let Some(ref model) = opts.model {
-                task.model = Some(model.clone());
+    // Use modify_graph for atomic load+mutate+save
+    let model_clone = opts.model.clone();
+    modify_graph(&graph_path, |graph| {
+        let mut modified = false;
+        for task_id in &reset_ids {
+            if let Some(task) = graph.get_task_mut(task_id) {
+                reset_task(task);
+                if let Some(ref model) = model_clone {
+                    task.model = Some(model.clone());
+                }
+                modified = true;
             }
         }
-    }
-
-    // Phase 6: Save graph
-    save_graph(&graph, &graph_path).context("Failed to save graph after replay")?;
+        modified
+    })
+    .context("Failed to modify graph after replay")?;
     super::notify_graph_changed(dir);
 
     // Phase 7: Record provenance

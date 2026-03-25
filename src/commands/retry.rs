@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
+use workgraph::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
@@ -10,54 +10,73 @@ use super::graph_path;
 use workgraph::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
-    let task = graph.get_task_mut_or_err(id)?;
-
-    if task.status != Status::Failed {
-        anyhow::bail!(
-            "Task '{}' is not failed (status: {:?}). Only failed tasks can be retried.",
-            id,
-            task.status
-        );
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    // Check if max retries exceeded
-    if let Some(max) = task.max_retries
-        && task.retry_count >= max
-    {
-        anyhow::bail!(
-            "Task '{}' has reached max retries ({}/{}). Consider abandoning or increasing max_retries.",
-            id,
-            task.retry_count,
-            max
-        );
+    let mut error: Option<anyhow::Error> = None;
+    let mut prev_failure_reason: Option<String> = None;
+    let mut attempt: u32 = 0;
+    let mut retry_count: u32 = 0;
+    let mut max_retries: Option<u32> = None;
+
+    modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", id));
+                return false;
+            }
+        };
+
+        if task.status != Status::Failed {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is not failed (status: {:?}). Only failed tasks can be retried.",
+                id,
+                task.status
+            ));
+            return false;
+        }
+
+        // Check if max retries exceeded
+        if let Some(max) = task.max_retries
+            && task.retry_count >= max
+        {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' has reached max retries ({}/{}). Consider abandoning or increasing max_retries.",
+                id,
+                task.retry_count,
+                max
+            ));
+            return false;
+        }
+
+        prev_failure_reason = task.failure_reason.clone();
+        attempt = task.retry_count + 1;
+
+        task.status = Status::Open;
+        task.failure_reason = None;
+        task.assigned = None;
+        task.tags.retain(|t| t != "converged");
+
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            user: Some(workgraph::current_user()),
+            message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
+        });
+
+        retry_count = task.retry_count;
+        max_retries = task.max_retries;
+
+        true
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
     }
 
-    let prev_failure_reason = task.failure_reason.clone();
-    let attempt = task.retry_count + 1;
-
-    task.status = Status::Open;
-    // Keep retry_count for history - don't reset it
-    // Clear failure_reason since we're retrying
-    task.failure_reason = None;
-    // Clear assigned so the coordinator can re-spawn an agent
-    task.assigned = None;
-    // Clear converged tag so the loop can fire again if needed
-    task.tags.retain(|t| t != "converged");
-
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: None,
-        user: Some(workgraph::current_user()),
-        message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
-    });
-
-    // Extract values we need for printing before saving
-    let retry_count = task.retry_count;
-    let max_retries = task.max_retries;
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     // Record operation

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use std::path::Path;
-use workgraph::parser::save_graph;
+use workgraph::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
@@ -14,39 +14,60 @@ pub fn run(
     after_hours: Option<f64>,
     at_timestamp: Option<&str>,
 ) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+    }
 
-    let task = graph.get_task_mut_or_err(id)?;
-
+    // Pre-compute the new timestamp (or None to clear)
     let new_timestamp = if let Some(hours) = after_hours {
-        // Calculate timestamp as now + hours
         let secs = hours * 3600.0;
         if !secs.is_finite() || secs > i64::MAX as f64 || secs < i64::MIN as f64 {
             anyhow::bail!("Hours value {} is out of range", hours);
         }
         let duration = Duration::seconds(secs as i64);
         let future_time = Utc::now() + duration;
-        future_time.to_rfc3339()
+        Some(future_time.to_rfc3339())
     } else if let Some(timestamp) = at_timestamp {
-        // Validate the timestamp
         timestamp.parse::<chrono::DateTime<Utc>>().context(
             "Invalid timestamp format. Use ISO 8601 format (e.g., 2024-01-20T10:00:00Z)",
         )?;
-        timestamp.to_string()
+        Some(timestamp.to_string())
     } else {
-        // Clear the not_before (make it ready now)
-        task.not_before = None;
-        save_graph(&graph, &path).context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-        println!("Cleared not_before for '{}' - task is now ready", id);
-        return Ok(());
+        None
     };
 
-    task.not_before = Some(new_timestamp.clone());
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", id));
+                return false;
+            }
+        };
+
+        match &new_timestamp {
+            Some(ts) => {
+                task.not_before = Some(ts.clone());
+            }
+            None => {
+                task.not_before = None;
+            }
+        }
+        true
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
+
     super::notify_graph_changed(dir);
 
-    println!("Rescheduled '{}' - not ready until {}", id, new_timestamp);
+    match &new_timestamp {
+        Some(ts) => println!("Rescheduled '{}' - not ready until {}", id, ts),
+        None => println!("Cleared not_before for '{}' - task is now ready", id),
+    }
     Ok(())
 }
 

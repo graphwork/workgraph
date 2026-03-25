@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::modify_graph;
 use workgraph::service::{AgentRegistry, AgentStatus};
 
 use super::{graph_path, kill_process_force, kill_process_graceful};
@@ -174,27 +174,27 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
         return Ok(()); // No graph, nothing to unclaim
     }
 
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
+    modify_graph(&path, |graph| {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            if task.status == Status::InProgress {
+                task.status = Status::Open;
+                task.assigned = None;
 
-    if let Some(task) = graph.get_task_mut(task_id) {
-        // Only unclaim if task is in progress
-        if task.status == Status::InProgress {
-            task.status = Status::Open;
-            task.assigned = None;
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: None,
+                    user: Some(workgraph::current_user()),
+                    message: format!("Task unclaimed: agent '{}' was killed", agent_id),
+                });
 
-            // Add log entry
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: None,
-                user: Some(workgraph::current_user()),
-                message: format!("Task unclaimed: agent '{}' was killed", agent_id),
-            });
-
-            save_graph(&graph, &path).context("Failed to save graph")?;
-            super::notify_graph_changed(dir);
+                return true;
+            }
         }
-    }
+        false
+    })
+    .context("Failed to modify graph")?;
 
+    super::notify_graph_changed(dir);
     Ok(())
 }
 

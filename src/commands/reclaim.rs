@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
+use workgraph::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
@@ -14,59 +14,70 @@ use workgraph::parser::load_graph;
 /// This allows forcefully taking over a task that is currently assigned to another agent.
 /// The task must be in InProgress status to be reclaimed.
 pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    // Check that task is in progress
-    if task.status != Status::InProgress {
-        anyhow::bail!(
-            "Task '{}' is not in progress (status: {:?}). Only in-progress tasks can be reclaimed.",
-            task_id,
-            task.status
-        );
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    // Check that task is assigned to the specified actor
-    match &task.assigned {
-        Some(assigned) if assigned == from_actor => {
-            // Good - can proceed with reclaim
-        }
-        Some(assigned) => {
-            anyhow::bail!(
-                "Task '{}' is assigned to '{}', not '{}'. Cannot reclaim.",
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                return false;
+            }
+        };
+
+        if task.status != Status::InProgress {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is not in progress (status: {:?}). Only in-progress tasks can be reclaimed.",
                 task_id,
-                assigned,
-                from_actor
-            );
+                task.status
+            ));
+            return false;
         }
-        None => {
-            anyhow::bail!(
-                "Task '{}' has no assigned actor. Use 'wg claim' instead.",
-                task_id
-            );
+
+        match &task.assigned {
+            Some(assigned) if assigned == from_actor => {}
+            Some(assigned) => {
+                error = Some(anyhow::anyhow!(
+                    "Task '{}' is assigned to '{}', not '{}'. Cannot reclaim.",
+                    task_id,
+                    assigned,
+                    from_actor
+                ));
+                return false;
+            }
+            None => {
+                error = Some(anyhow::anyhow!(
+                    "Task '{}' has no assigned actor. Use 'wg claim' instead.",
+                    task_id
+                ));
+                return false;
+            }
         }
+
+        let now = Utc::now().to_rfc3339();
+        task.assigned = Some(to_actor.to_string());
+        task.log.push(LogEntry {
+            timestamp: now,
+            actor: Some(to_actor.to_string()),
+            user: Some(workgraph::current_user()),
+            message: format!(
+                "Task reclaimed from @{} to @{} (agent takeover)",
+                from_actor, to_actor
+            ),
+        });
+
+        true
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
     }
 
-    // Perform the reclaim
-    let now = Utc::now().to_rfc3339();
-    task.assigned = Some(to_actor.to_string());
-
-    // Log the reclaim event
-    let log_message = format!(
-        "Task reclaimed from @{} to @{} (agent takeover)",
-        from_actor, to_actor
-    );
-    task.log.push(LogEntry {
-        timestamp: now,
-        actor: Some(to_actor.to_string()),
-        user: Some(workgraph::current_user()),
-        message: log_message,
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
-
     println!(
         "Reclaimed task '{}' from '{}' to '{}'",
         task_id, from_actor, to_actor

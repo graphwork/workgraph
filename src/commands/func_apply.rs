@@ -6,7 +6,7 @@ use workgraph::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, save_graph, modify_graph};
 
 use super::graph_path;
 
@@ -329,8 +329,32 @@ pub fn run(
         return Ok(());
     }
 
-    // Save graph
-    save_graph(&graph, &graph_file).context("Failed to save graph")?;
+    // Save graph atomically
+    // The graph was already built up with all tasks; now save atomically via modify_graph
+    // We re-load and re-apply since modify_graph handles locking
+    let created_ids_for_save = created_ids.clone();
+    modify_graph(&graph_file, |existing_graph| {
+        // Apply all nodes from our computed graph that don't exist yet
+        for id in &created_ids_for_save {
+            if existing_graph.get_node(id).is_none() {
+                if let Some(node) = graph.get_node(id) {
+                    existing_graph.add_node(node.clone());
+                }
+                // Update bidirectional edges
+                if let Some(task) = graph.get_task(id) {
+                    for dep in &task.after {
+                        if let Some(blocker) = existing_graph.get_task_mut(dep)
+                            && !blocker.before.contains(id)
+                        {
+                            blocker.before.push(id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        !created_ids_for_save.is_empty()
+    })
+    .context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
     // Record provenance

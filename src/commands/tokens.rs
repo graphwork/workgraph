@@ -2,9 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use workgraph::graph::TokenUsage;
-use workgraph::parser::save_graph;
-
-use super::load_workgraph_mut;
+use workgraph::parser::modify_graph;
 
 /// Set or accumulate token usage on a task from a JSON string.
 ///
@@ -14,16 +12,32 @@ pub fn run(dir: &Path, task_id: &str, json: &str) -> Result<()> {
     let usage: TokenUsage =
         serde_json::from_str(json).context("Failed to parse token usage JSON")?;
 
-    let (mut graph, graph_path) = load_workgraph_mut(dir)?;
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    if let Some(ref mut existing) = task.token_usage {
-        existing.accumulate(&usage);
-    } else {
-        task.token_usage = Some(usage);
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    save_graph(&graph, &graph_path).context("Failed to save graph after setting token usage")?;
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                return false;
+            }
+        };
+
+        if let Some(ref mut existing) = task.token_usage {
+            existing.accumulate(&usage);
+        } else {
+            task.token_usage = Some(usage.clone());
+        }
+        true
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
     Ok(())
 }
 
