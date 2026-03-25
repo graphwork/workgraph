@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, modify_graph};
 
 use super::graph_path;
 
@@ -269,16 +269,24 @@ pub fn restore(dir: &Path, task_id: &str, reopen: bool) -> Result<()> {
         restored_task.assigned = None;
     }
 
-    // Add back to graph
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-    if graph.get_task(&restored_task.id).is_some() {
-        anyhow::bail!(
-            "Task '{}' already exists in the active graph",
-            restored_task.id
-        );
+    // Add back to graph atomically
+    let restored_task_clone = restored_task.clone();
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        if graph.get_task(&restored_task_clone.id).is_some() {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' already exists in the active graph",
+                restored_task_clone.id
+            ));
+            return false;
+        }
+        graph.add_node(Node::Task(restored_task_clone.clone()));
+        true
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
     }
-    graph.add_node(Node::Task(restored_task.clone()));
-    save_graph(&graph, &path).context("Failed to save graph")?;
 
     // Remove from archive
     remove_from_archive(&arch_path, task_id)?;
@@ -309,26 +317,41 @@ pub fn undo(dir: &Path) -> Result<()> {
     }
 
     let archived_tasks = load_archive(&arch_path)?;
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
 
     let mut restored_count = 0;
     let mut skipped = Vec::new();
 
+    // Pre-compute which tasks to restore (need archive removal outside closure)
+    let mut to_restore: Vec<(String, Task)> = Vec::new();
     for task_id in &task_ids {
         if let Some(task) = archived_tasks.iter().find(|t| &t.id == task_id) {
-            if graph.get_task(task_id).is_some() {
-                skipped.push(task_id.clone());
-                continue;
-            }
-            graph.add_node(Node::Task(task.clone()));
-            remove_from_archive(&arch_path, task_id)?;
-            restored_count += 1;
+            to_restore.push((task_id.clone(), task.clone()));
         } else {
             skipped.push(task_id.clone());
         }
     }
 
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    modify_graph(&path, |graph| {
+        let mut changed = false;
+        for (task_id, task) in &to_restore {
+            if graph.get_task(task_id).is_some() {
+                skipped.push(task_id.clone());
+                continue;
+            }
+            graph.add_node(Node::Task(task.clone()));
+            restored_count += 1;
+            changed = true;
+        }
+        changed
+    })
+    .context("Failed to modify graph")?;
+
+    // Remove restored tasks from archive
+    for (task_id, _) in &to_restore {
+        if !skipped.contains(task_id) {
+            remove_from_archive(&arch_path, task_id)?;
+        }
+    }
     super::notify_graph_changed(dir);
 
     // Remove the batch metadata file since undo is done
@@ -473,14 +496,15 @@ pub fn run(
     let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
     save_batch_metadata(dir, &archived_ids)?;
 
-    // 3. Remove archived tasks from the main graph
-    let mut modified_graph = graph;
-    for task in &tasks_to_archive {
-        modified_graph.remove_node(&task.id);
-    }
-
-    // 4. Save the modified graph
-    save_graph(&modified_graph, &path).context("Failed to save graph")?;
+    // 3. Remove archived tasks from the main graph atomically
+    let archive_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    modify_graph(&path, |graph| {
+        for id in &archive_ids {
+            graph.remove_node(id);
+        }
+        true
+    })
+    .context("Failed to modify graph")?;
     super::notify_graph_changed(dir);
 
     // Record operation
@@ -540,12 +564,15 @@ pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
     let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
     save_batch_metadata(dir, &archived_ids)?;
 
-    // Remove from main graph
-    let mut modified_graph = graph;
-    for task in &tasks_to_archive {
-        modified_graph.remove_node(&task.id);
-    }
-    save_graph(&modified_graph, &path).context("Failed to save graph")?;
+    // Remove from main graph atomically
+    let auto_archive_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    modify_graph(&path, |graph| {
+        for id in &auto_archive_ids {
+            graph.remove_node(id);
+        }
+        true
+    })
+    .context("Failed to modify graph")?;
     super::notify_graph_changed(dir);
 
     // Record provenance

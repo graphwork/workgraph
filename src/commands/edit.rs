@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::graph::{CycleConfig, parse_delay};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::modify_graph;
 
 use super::graph_path;
 
@@ -41,13 +41,7 @@ pub fn run(
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    // Load the graph
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    // Validate task exists
-    graph.get_task_or_err(task_id)?;
-
-    // Validate self-blocking
+    // Validate self-blocking (can be done before loading graph)
     for dep in add_after {
         if dep == task_id {
             anyhow::bail!("Task '{}' cannot block itself", task_id);
@@ -56,10 +50,25 @@ pub fn run(
 
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
+    let mut error: Option<anyhow::Error> = None;
+
+    modify_graph(&path, |graph| {
+
+    // Validate task exists
+    if graph.get_task(task_id).is_none() {
+        error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+        return false;
+    }
 
     // Modify the task in a block so the mutable borrow is released afterwards
     {
-        let task = graph.get_task_mut_or_err(task_id)?;
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                return false;
+            }
+        };
 
         // Update title
         if let Some(new_title) = title {
@@ -171,17 +180,24 @@ pub fn run(
         // Update cycle config
         if let Some(max_iter) = max_iterations {
             let guard = match cycle_guard {
-                Some(expr) => Some(crate::commands::add::parse_guard_expr(expr)?),
+                Some(expr) => match crate::commands::add::parse_guard_expr(expr) {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        error = Some(e);
+                        return false;
+                    }
+                },
                 None => task.cycle_config.as_ref().and_then(|c| c.guard.clone()),
             };
             let delay = match cycle_delay {
                 Some(d) => {
-                    parse_delay(d).ok_or_else(|| {
-                        anyhow::anyhow!(
+                    if parse_delay(d).is_none() {
+                        error = Some(anyhow::anyhow!(
                             "Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d",
                             d
-                        )
-                    })?;
+                        ));
+                        return false;
+                    }
                     Some(d.to_string())
                 }
                 None => task.cycle_config.as_ref().and_then(|c| c.delay.clone()),
@@ -204,30 +220,39 @@ pub fn run(
             // Allow updating guard/delay/no_converge on existing cycle config
             if let Some(expr) = cycle_guard {
                 if let Some(ref mut config) = task.cycle_config {
-                    config.guard = Some(crate::commands::add::parse_guard_expr(expr)?);
+                    config.guard = match crate::commands::add::parse_guard_expr(expr) {
+                        Ok(g) => Some(g),
+                        Err(e) => {
+                            error = Some(e);
+                            return false;
+                        }
+                    };
                     println!("Updated cycle guard");
                     changed = true;
                 } else {
-                    anyhow::bail!(
+                    error = Some(anyhow::anyhow!(
                         "Cannot set --cycle-guard without --max-iterations: task has no cycle_config"
-                    );
+                    ));
+                    return false;
                 }
             }
             if let Some(d) = cycle_delay {
                 if let Some(ref mut config) = task.cycle_config {
-                    parse_delay(d).ok_or_else(|| {
-                        anyhow::anyhow!(
+                    if parse_delay(d).is_none() {
+                        error = Some(anyhow::anyhow!(
                             "Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d",
                             d
-                        )
-                    })?;
+                        ));
+                        return false;
+                    }
                     config.delay = Some(d.to_string());
                     println!("Updated cycle delay: {}", d);
                     changed = true;
                 } else {
-                    anyhow::bail!(
+                    error = Some(anyhow::anyhow!(
                         "Cannot set --cycle-delay without --max-iterations: task has no cycle_config"
-                    );
+                    ));
+                    return false;
                 }
             }
             if no_converge {
@@ -236,9 +261,10 @@ pub fn run(
                     println!("Set no-converge on cycle");
                     changed = true;
                 } else {
-                    anyhow::bail!(
+                    error = Some(anyhow::anyhow!(
                         "Cannot set --no-converge without --max-iterations: task has no cycle_config"
-                    );
+                    ));
+                    return false;
                 }
             }
             if no_restart_on_failure {
@@ -247,9 +273,10 @@ pub fn run(
                     println!("Disabled restart-on-failure for cycle");
                     changed = true;
                 } else {
-                    anyhow::bail!(
+                    error = Some(anyhow::anyhow!(
                         "Cannot set --no-restart-on-failure without --max-iterations: task has no cycle_config"
-                    );
+                    ));
+                    return false;
                 }
             }
             if let Some(max) = max_failure_restarts {
@@ -258,9 +285,10 @@ pub fn run(
                     println!("Set max-failure-restarts: {}", max);
                     changed = true;
                 } else {
-                    anyhow::bail!(
+                    error = Some(anyhow::anyhow!(
                         "Cannot set --max-failure-restarts without --max-iterations: task has no cycle_config"
-                    );
+                    ));
+                    return false;
                 }
             }
         }
@@ -276,19 +304,23 @@ pub fn run(
                     println!("Updated visibility: {}", vis);
                     changed = true;
                 }
-                _ => anyhow::bail!(
-                    "Invalid visibility '{}'. Valid values: internal, public, peer",
-                    vis
-                ),
+                _ => {
+                    error = Some(anyhow::anyhow!(
+                        "Invalid visibility '{}'. Valid values: internal, public, peer",
+                        vis
+                    ));
+                    return false;
+                }
             }
         }
 
         // Update context scope
         if let Some(scope) = context_scope {
             // Validate
-            scope
-                .parse::<workgraph::context_scope::ContextScope>()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Err(e) = scope.parse::<workgraph::context_scope::ContextScope>() {
+                error = Some(anyhow::anyhow!("{}", e));
+                return false;
+            }
             let old = task.context_scope.clone();
             task.context_scope = Some(scope.to_string());
             field_changes
@@ -299,8 +331,10 @@ pub fn run(
 
         // Update exec mode
         if let Some(mode) = exec_mode {
-            mode.parse::<workgraph::config::ExecMode>()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Err(e) = mode.parse::<workgraph::config::ExecMode>() {
+                error = Some(anyhow::anyhow!("{}", e));
+                return false;
+            }
             let old = task.exec_mode.clone();
             task.exec_mode = Some(mode.to_string());
             field_changes.push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
@@ -310,12 +344,17 @@ pub fn run(
 
         // Update not_before (from --delay or --not-before)
         if delay.is_some() && not_before.is_some() {
-            anyhow::bail!("Cannot specify both --delay and --not-before");
+            error = Some(anyhow::anyhow!("Cannot specify both --delay and --not-before"));
+            return false;
         }
         if let Some(d) = delay {
-            let secs = workgraph::graph::parse_delay(d).ok_or_else(|| {
-                anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
-            })?;
+            let secs = match workgraph::graph::parse_delay(d) {
+                Some(s) => s,
+                None => {
+                    error = Some(anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d));
+                    return false;
+                }
+            };
             let new_ts = (chrono::Utc::now() + chrono::Duration::seconds(secs as i64)).to_rfc3339();
             let old = task.not_before.clone();
             task.not_before = Some(new_ts.clone());
@@ -324,12 +363,12 @@ pub fn run(
             println!("Set not_before: {} (delay {})", new_ts, d);
             changed = true;
         } else if let Some(ts) = not_before {
-            ts.parse::<chrono::DateTime<chrono::Utc>>()
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S")
-                        .map(|ndt| ndt.and_utc())
-                })
-                .map_err(|_| anyhow::anyhow!("Invalid timestamp '{}'. Use ISO 8601 format", ts))?;
+            if ts.parse::<chrono::DateTime<chrono::Utc>>().is_err()
+                && chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S").is_err()
+            {
+                error = Some(anyhow::anyhow!("Invalid timestamp '{}'. Use ISO 8601 format", ts));
+                return false;
+            }
             let old = task.not_before.clone();
             task.not_before = Some(ts.to_string());
             field_changes.push(serde_json::json!({"field": "not_before", "old": old, "new": ts}));
@@ -365,7 +404,13 @@ pub fn run(
         }
 
         // Clear the agent field so the task gets re-assigned when actually ready
-        let task = graph.get_task_mut_or_err(task_id)?;
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                return false;
+            }
+        };
         if task.agent.is_some() {
             task.agent = None;
             println!("Cleared agent assignment (dependencies changed, will re-assign when ready)");
@@ -387,9 +432,15 @@ pub fn run(
         }
     }
 
-    // Save if changes were made
+    // Return whether changes were made
+    changed
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
+
     if changed {
-        save_graph(&graph, &path).context("Failed to save graph")?;
         super::notify_graph_changed(dir);
 
         // Record operation
