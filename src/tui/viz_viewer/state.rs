@@ -12141,7 +12141,7 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::TwoThirdsInspector;
-        app.right_panel_tab = RightPanelTab::Output; // last tab
+        app.right_panel_tab = RightPanelTab::Dashboard; // last tab
 
         app.cycle_inspector_view_forward();
 
@@ -12160,7 +12160,7 @@ mod remap_panel_tests {
         app.cycle_inspector_view_backward();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Output);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
         assert!(app.slide_animation.is_some());
     }
 
@@ -12185,7 +12185,7 @@ mod remap_panel_tests {
         app.right_panel_visible = false;
         app.layout_mode = LayoutMode::Off;
 
-        // 10 tabs + 1 close = 11 presses
+        // 11 tabs + 1 close = 12 presses
         let expected_tabs = [
             Some(RightPanelTab::Chat),
             Some(RightPanelTab::Detail),
@@ -12197,6 +12197,7 @@ mod remap_panel_tests {
             Some(RightPanelTab::CoordLog),
             Some(RightPanelTab::Firehose),
             Some(RightPanelTab::Output),
+            Some(RightPanelTab::Dashboard),
             None, // closed
         ];
 
@@ -12423,8 +12424,9 @@ mod firehose_tests {
         assert_eq!(RightPanelTab::from_index(8), Some(RightPanelTab::Firehose));
         assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Firehose);
         assert_eq!(RightPanelTab::Firehose.next(), RightPanelTab::Output);
-        assert_eq!(RightPanelTab::Output.next(), RightPanelTab::Chat);
-        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Output);
+        assert_eq!(RightPanelTab::Output.next(), RightPanelTab::Dashboard);
+        assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Chat);
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Dashboard);
     }
 
     #[test]
