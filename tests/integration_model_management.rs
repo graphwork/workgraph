@@ -485,10 +485,10 @@ mod model_management_key_validation {
         };
         assert_eq!(ep_env.key_source(), "env: MY_KEY");
 
-        // None
+        // None — use a provider with no env-var fallback so host env doesn't interfere
         let ep_none = EndpointConfig {
             name: "d".into(),
-            provider: "openai".into(),
+            provider: "custom".into(),
             url: None,
             model: None,
             api_key: None,
