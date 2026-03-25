@@ -393,6 +393,17 @@ impl CoordinatorState {
         let path = coordinator_state_path(dir);
         let _ = fs::remove_file(&path);
     }
+
+    /// Load coordinator state for a specific coordinator ID, defaulting if missing.
+    pub fn load_or_default_for(dir: &Path, _coordinator_id: u32) -> Self {
+        // For now, all coordinators share a single state file.
+        Self::load_or_default(dir)
+    }
+
+    /// Save coordinator state for a specific coordinator ID.
+    pub fn save_for(&self, dir: &Path, _coordinator_id: u32) {
+        self.save(dir)
+    }
 }
 
 /// Generate systemd user service file

@@ -216,6 +216,7 @@ pub fn capture_state_context(app: &super::state::VizApp) -> StateContext {
             RightPanelTab::CoordLog => "coord_log",
             RightPanelTab::Firehose => "firehose",
             RightPanelTab::Output => "output",
+            RightPanelTab::Dashboard => "dashboard",
         })
     } else {
         None
