@@ -1586,6 +1586,28 @@ fn build_flip_verification_tasks(
             desc.push('\n');
         }
 
+        // Inject FLIP evaluation context so the verify agent knows exactly what failed
+        desc.push_str("### FLIP Evaluation Results\n\n");
+        if !eval.dimensions.is_empty() {
+            desc.push_str("**Dimension scores:**\n");
+            let mut dims: Vec<_> = eval.dimensions.iter().collect();
+            dims.sort_by(|a, b| a.0.cmp(b.0));
+            for (dim, score) in &dims {
+                desc.push_str(&format!("- **{}:** {:.2}\n", dim, score));
+            }
+            desc.push('\n');
+        }
+        if !eval.notes.is_empty() {
+            desc.push_str("**Evaluator reasoning:**\n");
+            // Truncate very long notes to keep the description manageable
+            let notes_truncated: String = eval.notes.chars().take(4000).collect();
+            desc.push_str(&notes_truncated);
+            if eval.notes.len() > 4000 {
+                desc.push_str("\n... (truncated)");
+            }
+            desc.push_str("\n\n");
+        }
+
         desc.push_str("### Verification Steps\n");
         desc.push_str("Independently check whether the work was actually completed.\n");
         desc.push_str("Do NOT trust the original agent's claims.\n\n");
@@ -1680,6 +1702,37 @@ fn build_flip_verification_tasks(
         };
 
         graph.add_node(Node::Task(verify_task));
+
+        // Create .assign-verify-* task so the verify task goes through agency pipeline
+        let assign_verify_id = format!(".assign-{}", verify_task_id);
+        if graph.get_task(&assign_verify_id).is_none() {
+            let assign_task = Task {
+                id: assign_verify_id.clone(),
+                title: format!("Assign agent for: Verify (FLIP {:.2}): {}", eval.score, source_title),
+                status: Status::Open,
+                after: vec![],
+                before: vec![verify_task_id.clone()],
+                tags: vec!["assignment".to_string(), "agency".to_string()],
+                exec: Some(format!("wg assign {} --auto", verify_task_id)),
+                exec_mode: Some("bare".to_string()),
+                visibility: "internal".to_string(),
+                created_at: Some(Utc::now().to_rfc3339()),
+                ..Task::default()
+            };
+            graph.add_node(Node::Task(assign_task));
+
+            // Add blocking edge: verify task depends on its assignment
+            if let Some(vt) = graph.get_task_mut(&verify_task_id)
+                && !vt.after.iter().any(|a| a == &assign_verify_id)
+            {
+                vt.after.push(assign_verify_id.clone());
+            }
+
+            eprintln!(
+                "[coordinator] Created assignment task '{}' blocking '{}'",
+                assign_verify_id, verify_task_id,
+            );
+        }
 
         // Log the trigger on the source task
         if let Some(source) = graph.get_task_mut(source_task_id) {
@@ -2686,7 +2739,7 @@ fn spawn_agents_for_ready_tasks(
             task.agent
                 .as_ref()
                 .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok())
-                .map(|agent| agent.executor)
+                .map(|agent| agent.effective_executor().to_string())
                 .unwrap_or_else(|| executor.to_string())
         };
 
@@ -4602,5 +4655,152 @@ mod tests {
         // Downstream is Done, so child task should be created
         let child = graph.get_task(".respond-to-parent").unwrap();
         assert_eq!(child.status, Status::Open);
+    }
+
+    #[test]
+    fn test_flip_verify_task_includes_eval_context() {
+        // Setup: create a source task (Done) and a low FLIP evaluation
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Implement feature".to_string();
+        source.description = Some("Build the widget".to_string());
+        source.status = Status::Done;
+        source.verify = Some("cargo test test_widget".to_string());
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Create a FLIP evaluation with dimensions and notes
+        let evals_dir = dir.path().join("agency").join("evaluations");
+        std::fs::create_dir_all(&evals_dir).unwrap();
+
+        let mut dimensions = std::collections::HashMap::new();
+        dimensions.insert("completeness".to_string(), 0.3);
+        dimensions.insert("correctness".to_string(), 0.5);
+
+        let eval = workgraph::agency::Evaluation {
+            id: "flip-my-task-123".to_string(),
+            task_id: "my-task".to_string(),
+            agent_id: String::new(),
+            role_id: "unknown".to_string(),
+            tradeoff_id: "unknown".to_string(),
+            score: 0.35,
+            dimensions,
+            notes: "The implementation is incomplete — missing error handling and the test only covers the happy path.".to_string(),
+            evaluator: "flip:test".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: None,
+            source: workgraph::agency::eval_source::FLIP.to_string(),
+        };
+
+        let eval_path = evals_dir.join("flip-my-task-123.json");
+        let json = serde_json::to_string_pretty(&eval).unwrap();
+        std::fs::write(&eval_path, json).unwrap();
+
+        // Config with FLIP verification threshold
+        let mut config = Config::default();
+        config.agency.flip_verification_threshold = Some(0.6);
+
+        let modified = build_flip_verification_tasks(dir.path(), &mut graph, &config);
+        assert!(modified, "should create verify task");
+
+        // Check verify task exists and has FLIP context in description
+        let verify = graph.get_task(".verify-my-task").unwrap();
+        let desc = verify.description.as_deref().unwrap();
+
+        assert!(
+            desc.contains("FLIP Evaluation Results"),
+            "should have FLIP results section"
+        );
+        assert!(
+            desc.contains("completeness"),
+            "should include dimension names"
+        );
+        assert!(
+            desc.contains("correctness"),
+            "should include dimension names"
+        );
+        assert!(
+            desc.contains("incomplete"),
+            "should include evaluator reasoning (notes)"
+        );
+
+        // Check .assign-verify-* task was created
+        let assign = graph.get_task(".assign-.verify-my-task").unwrap();
+        assert_eq!(assign.status, Status::Open);
+        assert!(
+            assign.tags.contains(&"assignment".to_string()),
+            "should be tagged as assignment"
+        );
+        assert!(
+            assign.exec.as_deref().unwrap().contains("wg assign .verify-my-task --auto"),
+            "should exec agency assignment"
+        );
+
+        // Check that .verify-my-task depends on .assign-verify-my-task
+        assert!(
+            verify.after.contains(&".assign-.verify-my-task".to_string()),
+            "verify task should be blocked by its assignment task"
+        );
+    }
+
+    #[test]
+    fn test_flip_verify_task_no_assignment_when_already_exists() {
+        // If .assign-.verify-* already exists, don't create a duplicate
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+
+        let mut source = Task::default();
+        source.id = "t1".to_string();
+        source.title = "Task one".to_string();
+        source.status = Status::Done;
+
+        let mut existing_assign = Task::default();
+        existing_assign.id = ".assign-.verify-t1".to_string();
+        existing_assign.title = "Existing assign".to_string();
+        existing_assign.status = Status::Open;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(existing_assign));
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Create low FLIP eval
+        let evals_dir = dir.path().join("agency").join("evaluations");
+        std::fs::create_dir_all(&evals_dir).unwrap();
+
+        let eval = workgraph::agency::Evaluation {
+            id: "flip-t1-123".to_string(),
+            task_id: "t1".to_string(),
+            agent_id: String::new(),
+            role_id: "unknown".to_string(),
+            tradeoff_id: "unknown".to_string(),
+            score: 0.2,
+            dimensions: std::collections::HashMap::new(),
+            notes: "Bad work".to_string(),
+            evaluator: "flip:test".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: None,
+            source: workgraph::agency::eval_source::FLIP.to_string(),
+        };
+
+        let eval_path = evals_dir.join("flip-t1-123.json");
+        let json = serde_json::to_string_pretty(&eval).unwrap();
+        std::fs::write(&eval_path, json).unwrap();
+
+        let mut config = Config::default();
+        config.agency.flip_verification_threshold = Some(0.5);
+
+        let modified = build_flip_verification_tasks(dir.path(), &mut graph, &config);
+        assert!(modified, "should create verify task");
+
+        // The .assign-verify task should not be duplicated — the existing one stays
+        // (idempotency check inside the function)
+        let assign = graph.get_task(".assign-.verify-t1").unwrap();
+        assert_eq!(assign.title, "Existing assign", "should keep existing assignment");
     }
 }
