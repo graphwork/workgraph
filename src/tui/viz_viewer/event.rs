@@ -995,6 +995,8 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Esc => {
             if app.has_active_search() {
                 app.clear_search();
+            } else if app.dismiss_error_toasts() {
+                // Dismissed error toasts — don't quit.
             } else {
                 app.should_quit = true;
             }

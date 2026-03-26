@@ -10,9 +10,9 @@ use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
     ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel,
     InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SinglePanelView, SortMode, TaskFormField, TaskFormState, TextPromptAction, VitalsStaleness,
-    VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact,
-    spinner_wave_pos, vitals_staleness_color,
+    SinglePanelView, SortMode, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
+    VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
+    format_duration_compact, spinner_wave_pos, vitals_staleness_color,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -545,9 +545,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         draw_service_health_detail(frame, app);
     }
 
-    // Pipeline toasts (agency events: assignment, placement, spawn)
-    if !app.pipeline_toasts.is_empty() {
-        draw_pipeline_toasts(frame, app);
+    // Toast notifications (severity-leveled, stacked in top-right)
+    if !app.toasts.is_empty() {
+        draw_toasts(frame, app);
     }
 
     // Key feedback overlay (for screencasts/demos)
@@ -5818,17 +5818,20 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
         spans.extend(hint_spans);
     }
 
-    // Append notification if present.
-    if let Some((ref msg, _)) = app.notification {
+    // Append latest toast in the status bar (if any).
+    if let Some(toast) = app.toasts.last() {
+        let color = match toast.severity {
+            ToastSeverity::Info => Color::Green,
+            ToastSeverity::Warning => Color::Yellow,
+            ToastSeverity::Error => Color::Red,
+        };
         spans.push(Span::styled(
             "  │ ",
             Style::default().fg(Color::Rgb(80, 80, 80)),
         ));
         spans.push(Span::styled(
-            msg.as_str(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            toast.message.as_str(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -6546,11 +6549,11 @@ fn draw_service_health_badge(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(badge, badge_area);
 }
 
-/// Draw the service health detail popup — anchored below the badge.
-/// Draw transient pipeline toast notifications in the bottom-right of the graph area.
-/// Toasts stack upward from the bottom, each fading out over 3 seconds.
-fn draw_pipeline_toasts(frame: &mut Frame, app: &VizApp) {
-    if app.pipeline_toasts.is_empty() {
+/// Draw severity-leveled toast notifications in the top-right of the graph area.
+/// Toasts stack downward from the top-right. Max 4 visible. Each severity has
+/// a distinct color (green/yellow/red) and fade behavior.
+fn draw_toasts(frame: &mut Frame, app: &VizApp) {
+    if app.toasts.is_empty() {
         return;
     }
 
@@ -6559,53 +6562,67 @@ fn draw_pipeline_toasts(frame: &mut Frame, app: &VizApp) {
         return;
     }
 
-    // Render toasts from bottom to top (newest at bottom).
     let max_width = 60.min(graph_area.width.saturating_sub(4));
     let mut y_offset: u16 = 0;
 
-    for (msg, when) in app.pipeline_toasts.iter().rev() {
-        let elapsed_ms = when.elapsed().as_millis() as u64;
-        let toast_duration_ms: u64 = 3000;
-        if elapsed_ms >= toast_duration_ms {
-            continue;
-        }
+    // Show newest toasts first (last in vec), up to MAX_VISIBLE_TOASTS.
+    let visible_count = app.toasts.len().min(super::state::MAX_VISIBLE_TOASTS);
+    let start = app.toasts.len().saturating_sub(visible_count);
 
-        // Fade: full opacity for first 2s, then fade out over last 1s.
-        let fade = if elapsed_ms < 2000 {
-            1.0_f64
-        } else {
-            1.0 - ((elapsed_ms - 2000) as f64 / 1000.0)
+    for toast in app.toasts[start..].iter().rev() {
+        let elapsed_ms = toast.created_at.elapsed().as_millis() as u64;
+
+        // Compute fade based on severity auto-dismiss duration.
+        let fade = match toast.severity.auto_dismiss_duration() {
+            Some(dur) => {
+                let total_ms = dur.as_millis() as u64;
+                let fade_start_ms = total_ms.saturating_sub(1000);
+                if elapsed_ms >= total_ms {
+                    continue; // expired
+                } else if elapsed_ms < fade_start_ms {
+                    1.0_f64
+                } else {
+                    1.0 - ((elapsed_ms - fade_start_ms) as f64 / 1000.0)
+                }
+            }
+            None => 1.0, // Error toasts don't fade
         };
 
         // Truncate message to fit within max_width (with 2 chars padding).
-        let display_msg = if msg.width() > (max_width as usize).saturating_sub(2) {
+        let display_msg = if toast.message.width() > (max_width as usize).saturating_sub(2) {
             let limit = (max_width as usize).saturating_sub(5);
-            let truncated: String = msg.chars().take(limit).collect();
+            let truncated: String = toast.message.chars().take(limit).collect();
             format!("{}...", truncated)
         } else {
-            msg.clone()
+            toast.message.clone()
         };
 
         let toast_width = (display_msg.width() as u16 + 2).min(max_width);
         let toast_height: u16 = 1;
 
-        // Position: bottom-right of graph area, stacking upward.
+        // Position: top-right of graph area, stacking downward.
         let x = graph_area.x + graph_area.width.saturating_sub(toast_width + 1);
-        let y = graph_area.y + graph_area.height.saturating_sub(2 + y_offset);
+        let y = graph_area.y + 1 + y_offset;
 
-        if y <= graph_area.y {
+        if y >= graph_area.y + graph_area.height.saturating_sub(1) {
             break; // No more room to stack.
         }
 
         let area = Rect::new(x, y, toast_width, toast_height);
 
-        // Color: magenta/purple tint for agency events, fading with time.
-        let fg_r = (200.0 * fade) as u8;
-        let fg_g = (160.0 * fade) as u8;
-        let fg_b = (255.0 * fade) as u8;
-        let bg_r = (30.0 * fade) as u8;
-        let bg_g = (20.0 * fade) as u8;
-        let bg_b = (40.0 * fade) as u8;
+        // Color by severity, with fade.
+        let (base_fg, base_bg) = match toast.severity {
+            ToastSeverity::Info => ((100.0, 255.0, 100.0), (15.0, 40.0, 15.0)),
+            ToastSeverity::Warning => ((255.0, 220.0, 80.0), (40.0, 35.0, 10.0)),
+            ToastSeverity::Error => ((255.0, 100.0, 100.0), (50.0, 15.0, 15.0)),
+        };
+
+        let fg_r = (base_fg.0 * fade) as u8;
+        let fg_g = (base_fg.1 * fade) as u8;
+        let fg_b = (base_fg.2 * fade) as u8;
+        let bg_r = (base_bg.0 * fade) as u8;
+        let bg_g = (base_bg.1 * fade) as u8;
+        let bg_b = (base_bg.2 * fade) as u8;
 
         frame.render_widget(Clear, area);
         let para = Paragraph::new(Line::from(Span::styled(

@@ -333,6 +333,7 @@ pub fn connect(user: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[test]
@@ -422,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_connect_no_user_no_env() {
         // Clear WG_USER so the fallback fails
         unsafe { std::env::remove_var("WG_USER") };
@@ -436,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_connect_uses_wg_user_env() {
         // Set WG_USER and verify the function gets past user resolution.
         // It will either succeed (tmux installed) or fail at tmux check —
@@ -455,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_connect_explicit_user_overrides_env() {
         unsafe { std::env::set_var("WG_USER", "envuser") };
         // Pass explicit user — should get past user resolution

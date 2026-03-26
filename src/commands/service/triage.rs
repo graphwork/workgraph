@@ -327,11 +327,14 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     }
                 }
             }
-            // Also replay triage mutations for failed tasks
+            // Also replay mutations for other dead-agent tasks (unclaim, triage-fail, token/session)
             for (_, task_id, _, _, _) in &dead {
                 if !tasks_completed_by_triage.contains(task_id) {
                     if let Some(local) = graph.get_task(task_id) {
                         if let Some(fresh) = fresh_graph.get_task_mut(task_id) {
+                            fresh.status = local.status.clone();
+                            fresh.assigned = local.assigned.clone();
+                            fresh.log = local.log.clone();
                             fresh.session_id = local.session_id.clone();
                             fresh.token_usage = local.token_usage.clone();
                         }

@@ -15,7 +15,8 @@ mod tui_editor_tests {
     use crate::commands::viz::VizOutput;
     use crate::tui::viz_viewer::render;
     use crate::tui::viz_viewer::state::{
-        FocusedPanel, InputMode, InspectorSubFocus, RightPanelTab, VizApp, editor_text,
+        FocusedPanel, InputMode, InspectorSubFocus, RightPanelTab, SinglePanelView, VizApp,
+        editor_text,
     };
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -701,6 +702,8 @@ mod tui_editor_tests {
         // so the editor area will be ~18 chars. Type a long line that wraps.
         // We need to know the exact editor width after render, so render first with
         // some text, check the area, then construct the right amount.
+        // At 40 cols we hit Compact mode — set Detail view so the chat panel renders.
+        app.single_panel_view = SinglePanelView::Detail;
         type_string(&mut app, "a]placeholder");
         render_to_string(&mut app, 40, 20);
 

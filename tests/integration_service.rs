@@ -264,11 +264,26 @@ where
 
 /// Helper: get the number of coordinator ticks from the coordinator state file.
 fn coordinator_ticks(wg_dir: &Path) -> u64 {
-    let state_path = wg_dir.join("service").join("coordinator-state.json");
-    if let Ok(content) = fs::read_to_string(&state_path)
-        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
-    {
-        return val["ticks"].as_u64().unwrap_or(0);
+    // Try per-coordinator state files first (coordinator-state-{id}.json),
+    // then fall back to legacy coordinator-state.json.
+    let service_dir = wg_dir.join("service");
+    if let Ok(entries) = fs::read_dir(&service_dir) {
+        let mut max_ticks: u64 = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("coordinator-state") && name_str.ends_with(".json") {
+                if let Ok(content) = fs::read_to_string(entry.path())
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+                {
+                    let ticks = val["ticks"].as_u64().unwrap_or(0);
+                    max_ticks = max_ticks.max(ticks);
+                }
+            }
+        }
+        if max_ticks > 0 {
+            return max_ticks;
+        }
     }
     0
 }
