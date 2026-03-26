@@ -188,13 +188,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_minimized_strip_area = Rect::default();
                 }
                 LayoutMode::Off => {
-                    // Hot zone at right edge (always set for hover detection).
-                    // Strip only takes visual space when hovering or mode 1003
-                    // is unavailable (mosh fallback: strip always visible).
+                    // Always reserve 1 col for the minimized strip so the graph
+                    // never reflows when hover toggles strip visibility.
                     let has_room = main_area.width > 1;
-                    let strip_visible =
-                        has_room && (app.minimized_strip_hover || !app.any_motion_mouse);
-                    let strip_width = if strip_visible { 1u16 } else { 0 };
+                    let strip_width = if has_room { 1u16 } else { 0 };
                     let graph_width = main_area.width.saturating_sub(strip_width);
                     let graph_area =
                         Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
@@ -265,13 +262,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_minimized_strip_area = Rect::default();
                 }
                 LayoutMode::Off => {
-                    // Hot zone at right edge (always set for hover detection).
-                    // Strip only takes visual space when hovering or mode 1003
-                    // is unavailable (mosh fallback: strip always visible).
+                    // Always reserve 1 col for the minimized strip so the graph
+                    // never reflows when hover toggles strip visibility.
                     let has_room = main_area.width > 1;
-                    let strip_visible =
-                        has_room && (app.minimized_strip_hover || !app.any_motion_mouse);
-                    let strip_width = if strip_visible { 1u16 } else { 0 };
+                    let strip_width = if has_room { 1u16 } else { 0 };
                     let graph_width = main_area.width.saturating_sub(strip_width);
                     let graph_area =
                         Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
@@ -386,12 +380,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Narrow split mode.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    // Strip only visible on hover or when mode 1003 unavailable.
+                    // Always reserve strip space; only draw content on hover.
                     let strip = app.last_fullscreen_restore_area;
-                    let strip_visible = strip.width > 0
-                        && (app.fullscreen_restore_hover || !app.any_motion_mouse);
-                    let panel_area = if strip_visible {
-                        draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
+                    let panel_area = if strip.width > 0 {
+                        if app.fullscreen_restore_hover || !app.any_motion_mouse {
+                            draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
+                        }
                         Rect::new(
                             main_area.x + 1,
                             main_area.y,
@@ -412,7 +406,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     {
                         draw_scrollbar(frame, app, graph_area);
                     }
-                    // Strip only visible on hover or when mode 1003 unavailable.
+                    // Strip content only drawn on hover; space always reserved.
                     let strip = app.last_minimized_strip_area;
                     if strip.width > 0
                         && (app.minimized_strip_hover || !app.any_motion_mouse)
@@ -482,12 +476,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Full layout: existing behavior.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    // Strip only visible on hover or when mode 1003 unavailable.
+                    // Always reserve strip space; only draw content on hover.
                     let strip = app.last_fullscreen_restore_area;
-                    let strip_visible = strip.width > 0
-                        && (app.fullscreen_restore_hover || !app.any_motion_mouse);
-                    let panel_area = if strip_visible {
-                        draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
+                    let panel_area = if strip.width > 0 {
+                        if app.fullscreen_restore_hover || !app.any_motion_mouse {
+                            draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
+                        }
                         Rect::new(
                             main_area.x + 1,
                             main_area.y,
@@ -508,7 +502,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     {
                         draw_scrollbar(frame, app, graph_area);
                     }
-                    // Strip only visible on hover or when mode 1003 unavailable.
+                    // Strip content only drawn on hover; space always reserved.
                     let strip = app.last_minimized_strip_area;
                     if strip.width > 0
                         && (app.minimized_strip_hover || !app.any_motion_mouse)
