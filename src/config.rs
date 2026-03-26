@@ -2460,41 +2460,66 @@ impl Config {
             .unwrap_or(&self.agent.model);
         let provider = self.coordinator.provider.as_deref();
 
-        // Rule 1: executor='claude' but model contains '/' (non-Anthropic model format)
-        if executor == "claude" && model.contains('/') {
-            result.errors.push(ConfigDiagnostic {
-                rule: "executor-model-mismatch".into(),
+        // Rule 1: executor='claude' but model is non-Anthropic — auto-routed to native
+        if executor == "claude" && model.contains('/') && !model.starts_with("anthropic/") {
+            result.warnings.push(ConfigDiagnostic {
+                rule: "executor-model-auto-route".into(),
                 message: format!(
-                    "executor = 'claude' but model = '{}' contains '/' (third-party model format). \
-                     Claude CLI only accepts Anthropic model names (e.g., 'sonnet', 'opus', 'haiku').",
+                    "executor = 'claude' but model = '{}' is non-Anthropic. \
+                     Will auto-route to native executor.",
                     model
                 ),
                 fix: format!(
-                    "Either change the model to an Anthropic model, or set executor = 'native' \
-                     to use '{}' via the API directly.",
-                    model
+                    "Set executor = 'native' to make this explicit, \
+                     or change the model to an Anthropic model.",
                 ),
             });
         }
 
-        // Rule 2: executor='claude' but provider is non-Anthropic
+        // Rule 2: executor='claude' but provider is non-Anthropic — auto-routed to native
         if executor == "claude"
             && let Some(p) = provider
             && p != "anthropic"
         {
-            result.errors.push(ConfigDiagnostic {
-                rule: "executor-provider-mismatch".into(),
+            result.warnings.push(ConfigDiagnostic {
+                rule: "executor-provider-auto-route".into(),
                 message: format!(
                     "executor = 'claude' but provider = '{}'. \
-                     Claude CLI only works with Anthropic's API.",
+                     Will auto-route to native executor.",
                     p
                 ),
                 fix: format!(
-                    "Set executor = 'native' to use provider '{}', \
-                     or remove the provider setting to use Anthropic.",
-                    p
+                    "Set executor = 'native' to make this explicit, \
+                     or set provider = 'anthropic'.",
                 ),
             });
+        }
+
+        // Rule: non-Anthropic provider + Anthropic-only model alias (e.g. provider=openrouter, model=opus)
+        // OpenRouter/OpenAI won't understand bare Anthropic aliases like "opus" or "sonnet".
+        if let Some(p) = provider
+            && p != "anthropic"
+        {
+            let is_anthropic_only_model = !model.contains('/')
+                && self
+                    .registry_lookup(model)
+                    .map(|e| e.provider == "anthropic")
+                    .unwrap_or(true); // bare unknown models assumed Anthropic
+            if is_anthropic_only_model {
+                result.errors.push(ConfigDiagnostic {
+                    rule: "provider-model-mismatch".into(),
+                    message: format!(
+                        "coordinator provider = '{}' but model = '{}' is an Anthropic model alias. \
+                         Provider '{}' won't recognize this model name.",
+                        p, model, p
+                    ),
+                    fix: format!(
+                        "Use a {}-compatible model (e.g. 'deepseek/deepseek-chat'), \
+                         or set provider = 'anthropic' to use '{model}' via Anthropic.",
+                        p
+                    ),
+                });
+            }
         }
 
         // Rule 3: [models.*] model value doesn't match registry AND doesn't contain '/'
@@ -4243,35 +4268,65 @@ model = "haiku"
     }
 
     #[test]
-    fn test_validate_config_claude_executor_with_slash_model() {
+    fn test_validate_config_claude_executor_with_slash_model_warns() {
         let mut config = Config::default();
         config.coordinator.executor = Some("claude".to_string());
         config.coordinator.model = Some("minimax/minimax-m2.5".to_string());
         let v = config.validate_config();
-        assert!(!v.is_ok());
-        assert_eq!(v.errors.len(), 1);
-        assert_eq!(v.errors[0].rule, "executor-model-mismatch");
+        // Auto-routed to native — warning, not error
+        assert!(v.is_ok());
+        assert!(
+            v.warnings
+                .iter()
+                .any(|w| w.rule == "executor-model-auto-route")
+        );
     }
 
     #[test]
-    fn test_validate_config_claude_executor_with_openrouter_provider() {
+    fn test_validate_config_claude_executor_with_openrouter_provider_and_anthropic_model() {
         let mut config = Config::default();
         config.coordinator.executor = Some("claude".to_string());
         config.coordinator.provider = Some("openrouter".to_string());
+        // default model is "opus" (Anthropic alias) — incompatible with openrouter
         let v = config.validate_config();
         assert!(!v.is_ok());
-        assert_eq!(v.errors.len(), 1);
-        assert_eq!(v.errors[0].rule, "executor-provider-mismatch");
+        assert!(
+            v.errors
+                .iter()
+                .any(|e| e.rule == "provider-model-mismatch")
+        );
+        // Also warns about executor auto-route
+        assert!(
+            v.warnings
+                .iter()
+                .any(|w| w.rule == "executor-provider-auto-route")
+        );
     }
 
     #[test]
-    fn test_validate_config_claude_executor_with_openai_provider() {
+    fn test_validate_config_openrouter_provider_with_compatible_model_ok() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.provider = Some("openrouter".to_string());
+        config.coordinator.model = Some("deepseek/deepseek-chat".to_string());
+        let v = config.validate_config();
+        // Non-Anthropic model + non-Anthropic provider = OK (auto-routed)
+        assert!(v.is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_claude_executor_with_openai_provider_and_anthropic_model() {
         let mut config = Config::default();
         config.coordinator.executor = Some("claude".to_string());
         config.coordinator.provider = Some("openai".to_string());
+        // default model is "opus" — incompatible with openai provider
         let v = config.validate_config();
         assert!(!v.is_ok());
-        assert_eq!(v.errors[0].rule, "executor-provider-mismatch");
+        assert!(
+            v.errors
+                .iter()
+                .any(|e| e.rule == "provider-model-mismatch")
+        );
     }
 
     #[test]
@@ -4430,14 +4485,15 @@ model = "haiku"
     }
 
     #[test]
-    fn test_validate_config_multiple_errors() {
+    fn test_validate_config_multiple_warnings_for_auto_route() {
         let mut config = Config::default();
         config.coordinator.executor = Some("claude".to_string());
         config.coordinator.provider = Some("openrouter".to_string());
         config.coordinator.model = Some("minimax/minimax-m2.5".to_string());
         let v = config.validate_config();
-        assert!(!v.is_ok());
-        assert_eq!(v.errors.len(), 2);
+        // Non-Anthropic model + non-Anthropic provider: auto-routed, no errors
+        assert!(v.is_ok());
+        assert!(v.warnings.len() >= 2);
     }
 
     #[test]
@@ -4445,6 +4501,7 @@ model = "haiku"
         let mut config = Config::default();
         config.coordinator.executor = Some("claude".to_string());
         config.coordinator.provider = Some("openrouter".to_string());
+        // default model "opus" + provider "openrouter" → error
         let v = config.validate_config();
         let display = v.display();
         assert!(display.contains("ERROR:"));
