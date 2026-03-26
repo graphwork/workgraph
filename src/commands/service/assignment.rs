@@ -248,6 +248,7 @@ should be created for future tasks like this."#
 /// When `active_tasks_context` is non-empty, the prompt includes placement
 /// instructions and the verdict may contain a `placement` field with dependency
 /// edges to apply to the source task.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_lightweight_assignment(
     config: &Config,
     task: &Task,

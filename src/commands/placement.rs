@@ -63,10 +63,10 @@ pub fn extract_text_from_stream(raw_stream_path: &Path) -> Result<String> {
                 .and_then(|c| c.as_array())
             {
                 for block in content {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                            text_parts.push(t.to_string());
-                        }
+                    if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                        && let Some(t) = block.get("text").and_then(|t| t.as_str())
+                    {
+                        text_parts.push(t.to_string());
                     }
                 }
             }
@@ -128,9 +128,7 @@ pub fn parse_placement_command(text: &str, expected_task_id: &str) -> PlacementP
 /// Handles common LLM variations: no-op, noop, no op, no_op, NO-OP, etc.
 /// Also strips trailing punctuation (e.g., "no-op.").
 fn is_noop(s: &str) -> bool {
-    let s = s
-        .trim()
-        .trim_end_matches(|c: char| c == '.' || c == '!' || c == ',' || c == ';');
+    let s = s.trim().trim_end_matches(['.', '!', ',', ';']);
     let lower = s.trim().to_ascii_lowercase();
     lower == "no-op" || lower == "noop" || lower == "no op" || lower == "no_op"
 }
@@ -145,8 +143,8 @@ fn strip_markdown_formatting(line: &str) -> String {
     // Strip surrounding backticks (inline code)
     let s = s.trim_start_matches('`').trim_end_matches('`').trim();
     // Strip leading bullet/list markers (- or *)
-    let s = s.strip_prefix("- ").or(Some(s)).unwrap();
-    let s = s.strip_prefix("* ").or(Some(s)).unwrap();
+    let s = s.strip_prefix("- ").unwrap_or(s);
+    let s = s.strip_prefix("* ").unwrap_or(s);
     s.trim().to_string()
 }
 
@@ -203,9 +201,7 @@ fn parse_wg_edit_command(line: &str, expected_task_id: &str) -> Option<Placement
                 if i < remaining.len() {
                     // Support comma-separated deps; strip trailing punctuation
                     for dep in remaining[i].split(',') {
-                        let dep = dep
-                            .trim()
-                            .trim_end_matches(|c: char| c == '.' || c == ';' || c == ')');
+                        let dep = dep.trim().trim_end_matches(['.', ';', ')']);
                         if !dep.is_empty() {
                             after.push(dep.to_string());
                         }
@@ -216,9 +212,7 @@ fn parse_wg_edit_command(line: &str, expected_task_id: &str) -> Option<Placement
                 i += 1;
                 if i < remaining.len() {
                     for dep in remaining[i].split(',') {
-                        let dep = dep
-                            .trim()
-                            .trim_end_matches(|c: char| c == '.' || c == ';' || c == ')');
+                        let dep = dep.trim().trim_end_matches(['.', ';', ')']);
                         if !dep.is_empty() {
                             before.push(dep.to_string());
                         }

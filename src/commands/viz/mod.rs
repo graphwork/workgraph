@@ -334,12 +334,12 @@ fn compact_node_annotation(
     let now = chrono::Utc::now();
 
     // Check if recently completed (within 60s): show green "done" indicator.
-    if let Some(ts_str) = last_compaction {
-        if let Ok(dt) = ts_str.parse::<chrono::DateTime<chrono::Utc>>() {
-            let secs_ago = (now - dt).num_seconds().max(0);
-            if secs_ago < 60 {
-                return format!("[✓ compacted {}s ago]", secs_ago);
-            }
+    if let Some(ts_str) = last_compaction
+        && let Ok(dt) = ts_str.parse::<chrono::DateTime<chrono::Utc>>()
+    {
+        let secs_ago = (now - dt).num_seconds().max(0);
+        if secs_ago < 60 {
+            return format!("[✓ compacted {}s ago]", secs_ago);
         }
     }
 

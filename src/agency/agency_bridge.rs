@@ -165,10 +165,10 @@ pub fn request_agency_assignment(
         Some(path) => match fs::read_to_string(path) {
             Ok(t) => t.trim().to_string(),
             Err(e) => {
-                return Err(AgencyError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("could not read agency token from '{}': {}", path, e),
-                )));
+                return Err(AgencyError::Io(std::io::Error::other(format!(
+                    "could not read agency token from '{}': {}",
+                    path, e
+                ))));
             }
         },
         None => String::new(),
@@ -189,10 +189,10 @@ pub fn request_agency_assignment(
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| {
-            AgencyError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("could not build HTTP client: {}", e),
-            ))
+            AgencyError::Io(std::io::Error::other(format!(
+                "could not build HTTP client: {}",
+                e
+            )))
         })?;
 
     let mut request = client.post(&url).json(&payload);
@@ -208,14 +208,11 @@ pub fn request_agency_assignment(
     })?;
 
     if !resp.status().is_success() {
-        return Err(AgencyError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "agency assignment request to {} returned status {}",
-                url,
-                resp.status()
-            ),
-        )));
+        return Err(AgencyError::Io(std::io::Error::other(format!(
+            "agency assignment request to {} returned status {}",
+            url,
+            resp.status()
+        ))));
     }
 
     let body = resp.text().map_err(|e| {

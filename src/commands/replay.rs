@@ -34,7 +34,7 @@ struct ReplayOutput {
 }
 
 pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
-    let (mut graph, graph_path) = super::load_workgraph_mut(dir)?;
+    let (graph, graph_path) = super::load_workgraph_mut(dir)?;
     let config = Config::load_or_default(dir);
 
     // Determine keep_done threshold

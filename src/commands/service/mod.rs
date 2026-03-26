@@ -444,20 +444,18 @@ impl CoordinatorState {
                 if let Some(id_str) = name_str
                     .strip_prefix("coordinator-state-")
                     .and_then(|s| s.strip_suffix(".json"))
+                    && let Ok(id) = id_str.parse::<u32>()
+                    && let Some(state) = Self::load_for(dir, id)
                 {
-                    if let Ok(id) = id_str.parse::<u32>() {
-                        if let Some(state) = Self::load_for(dir, id) {
-                            results.push((id, state));
-                        }
-                    }
+                    results.push((id, state));
                 }
             }
         }
         // Fall back to legacy file if no per-ID files found
-        if results.is_empty() {
-            if let Some(state) = Self::load(dir) {
-                results.push((0, state));
-            }
+        if results.is_empty()
+            && let Some(state) = Self::load(dir)
+        {
+            results.push((0, state));
         }
         results.sort_by_key(|(id, _)| *id);
         results
@@ -475,12 +473,12 @@ impl CoordinatorState {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("coordinator-state-") && name_str.ends_with(".json") {
-                if let Ok(content) = fs::read_to_string(entry.path()) {
-                    if let Ok(state) = serde_json::from_str::<Self>(&content) {
-                        total += state.accumulated_tokens;
-                    }
-                }
+            if name_str.starts_with("coordinator-state-")
+                && name_str.ends_with(".json")
+                && let Ok(content) = fs::read_to_string(entry.path())
+                && let Ok(state) = serde_json::from_str::<Self>(&content)
+            {
+                total += state.accumulated_tokens;
             }
         }
         // Fall back to legacy file if no per-ID files found
@@ -505,6 +503,7 @@ impl CoordinatorState {
 
     /// Remove ALL per-coordinator state files and the legacy shared file.
     /// Used on daemon shutdown to clean up all coordinator state.
+    #[allow(dead_code)]
     pub fn remove_all(dir: &Path) {
         let service_dir = dir.join("service");
         if let Ok(entries) = fs::read_dir(&service_dir) {
@@ -519,6 +518,7 @@ impl CoordinatorState {
     }
 
     /// Reset accumulated_tokens to 0 in all per-coordinator state files.
+    #[allow(dead_code)]
     pub fn reset_all_accumulated_tokens(dir: &Path) {
         for (id, mut state) in Self::load_all(dir) {
             state.accumulated_tokens = 0;
@@ -528,21 +528,23 @@ impl CoordinatorState {
 
     /// Migrate legacy coordinator-state.json to per-ID file (coordinator-state-0.json).
     /// No-op if the legacy file doesn't exist or a per-ID file already exists.
+    #[allow(dead_code)]
     pub fn migrate_legacy(dir: &Path) {
         let legacy_path = coordinator_state_path_legacy(dir);
         let per_id_path = coordinator_state_path(dir, 0);
-        if legacy_path.exists() && !per_id_path.exists() {
-            if let Ok(content) = fs::read_to_string(&legacy_path) {
-                if let Ok(state) = serde_json::from_str::<Self>(&content) {
-                    state.save_for(dir, 0);
-                    let _ = fs::remove_file(&legacy_path);
-                }
-            }
+        if legacy_path.exists()
+            && !per_id_path.exists()
+            && let Ok(content) = fs::read_to_string(&legacy_path)
+            && let Ok(state) = serde_json::from_str::<Self>(&content)
+        {
+            state.save_for(dir, 0);
+            let _ = fs::remove_file(&legacy_path);
         }
     }
 
     /// Update a field across all per-coordinator state files.
     /// Used for global operations like pause/resume/freeze/thaw.
+    #[allow(dead_code)]
     pub fn update_all(dir: &Path, mutator: impl Fn(&mut Self)) {
         for (id, mut state) in Self::load_all(dir) {
             mutator(&mut state);
@@ -1515,35 +1517,32 @@ fn ensure_coordinator_task(dir: &Path) {
     }
 
     // Ensure .coordinator-0 has back-edge to .archive-0
-    if let Some(coord) = graph.get_task_mut(".coordinator-0") {
-        if !coord.after.contains(&".archive-0".to_string()) {
-            coord.after.push(".archive-0".to_string());
-            modified = true;
-        }
+    if let Some(coord) = graph.get_task_mut(".coordinator-0")
+        && !coord.after.contains(&".archive-0".to_string())
+    {
+        coord.after.push(".archive-0".to_string());
+        modified = true;
     }
 
-    if modified {
-        if let Err(e) = workgraph::parser::modify_graph(&gp, |fresh| {
+    if modified
+        && let Err(e) = workgraph::parser::modify_graph(&gp, |fresh| {
             // Re-apply all mutations
             for node in graph.nodes() {
-                match node {
-                    workgraph::graph::Node::Task(t) => {
-                        if let Some(ft) = fresh.get_task_mut(&t.id) {
-                            *ft = t.clone();
-                        } else {
-                            fresh.add_node(workgraph::graph::Node::Task(t.clone()));
-                        }
+                if let workgraph::graph::Node::Task(t) = node {
+                    if let Some(ft) = fresh.get_task_mut(&t.id) {
+                        *ft = t.clone();
+                    } else {
+                        fresh.add_node(workgraph::graph::Node::Task(t.clone()));
                     }
-                    _ => {}
                 }
             }
             true
-        }) {
-            eprintln!(
-                "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
-                e
-            );
-        }
+        })
+    {
+        eprintln!(
+            "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
+            e
+        );
     }
 }
 
@@ -1561,13 +1560,13 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
     // be Done, but the coordinator is a persistent task that never completes,
     // so the cycle can never iterate on its own.
     {
-        let mut graph = match load_graph(&gp) {
+        let graph = match load_graph(&gp) {
             Ok(g) => g,
             Err(_) => return,
         };
         let is_done = graph
             .get_task(".compact-0")
-            .map_or(false, |t| t.status == workgraph::graph::Status::Done);
+            .is_some_and(|t| t.status == workgraph::graph::Status::Done);
         if is_done {
             let config = workgraph::config::Config::load_or_default(dir);
             let threshold = config.effective_compaction_threshold();
@@ -2461,13 +2460,12 @@ pub fn run_daemon(
             // hash to avoid false restarts on `touch`.
             if let Some(path) = &exe_path {
                 // Check if the background hash computation has finished.
-                if exe_initial_hash.is_none() {
-                    if let Some(rx) = &exe_hash_receiver {
-                        if let Ok(h) = rx.try_recv() {
-                            logger.info(&format!("Binary hash recorded: {}", short_hash(&h),));
-                            exe_initial_hash = Some(h);
-                        }
-                    }
+                if exe_initial_hash.is_none()
+                    && let Some(rx) = &exe_hash_receiver
+                    && let Ok(h) = rx.try_recv()
+                {
+                    logger.info(&format!("Binary hash recorded: {}", short_hash(&h),));
+                    exe_initial_hash = Some(h);
                 }
 
                 // Cheap metadata check: skip hash if mtime+size unchanged.

@@ -1573,7 +1573,7 @@ pub fn validate_openrouter_model(
     let model_ids: Vec<&str> = cache.models.iter().map(|m| m.id.as_str()).collect();
 
     // Check if model exists in cache
-    if model_ids.iter().any(|id| *id == model) {
+    if model_ids.contains(&model) {
         return ModelValidationResult {
             model: model.to_string(),
             was_valid: true,
@@ -1598,7 +1598,7 @@ pub fn validate_openrouter_model(
     };
 
     // Fall back to openrouter/auto
-    let search_hint = model.split('/').last().unwrap_or(model);
+    let search_hint = model.split('/').next_back().unwrap_or(model);
     let warning = format!(
         "Model '{}' not found in OpenRouter model list.{}\n  \
          Falling back to '{}'.\n  \

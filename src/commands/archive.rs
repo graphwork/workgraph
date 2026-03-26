@@ -105,10 +105,10 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
 /// Tasks with active dependents should not be archived.
 pub fn has_active_dependents(task: &Task, graph: &workgraph::graph::WorkGraph) -> bool {
     for dep_id in &task.before {
-        if let Some(dep) = graph.get_task(dep_id) {
-            if !dep.status.is_terminal() {
-                return true;
-            }
+        if let Some(dep) = graph.get_task(dep_id)
+            && !dep.status.is_terminal()
+        {
+            return true;
         }
     }
     false

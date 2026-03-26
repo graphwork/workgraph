@@ -778,6 +778,7 @@ impl SinglePanelView {
     }
 
     /// Human-readable label for breadcrumb display.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::Graph => "Graph",
@@ -1198,6 +1199,7 @@ pub enum NavEntry {
     /// Task detail view — full task info for a specific task.
     TaskDetail { task_id: String },
     /// Task log view — log entries for a specific task.
+    #[allow(dead_code)]
     TaskLog { task_id: String },
 }
 
@@ -1225,6 +1227,7 @@ impl NavStack {
         self.entries.clear();
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -1364,6 +1367,7 @@ impl DashboardState {
     }
 
     /// Compute sparkline values from a list of event timestamps (for initial population).
+    #[allow(dead_code)]
     pub fn compute_sparkline_from_timestamps(&mut self, timestamps: &[std::time::SystemTime]) {
         let bucket_count = self.sparkline_data.len();
         self.sparkline_data = vec![0; bucket_count];
@@ -1620,6 +1624,7 @@ pub fn format_duration_compact(secs: u64) -> String {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// State for the always-visible vitals strip at the bottom of the TUI.
+#[derive(Default)]
 pub struct VitalsState {
     /// Number of agents currently alive.
     pub agents_alive: usize,
@@ -1635,23 +1640,10 @@ pub struct VitalsState {
     pub daemon_running: bool,
 }
 
-impl Default for VitalsState {
-    fn default() -> Self {
-        Self {
-            agents_alive: 0,
-            open: 0,
-            running: 0,
-            done: 0,
-            last_event_time: None,
-            coord_last_tick: None,
-            daemon_running: false,
-        }
-    }
-}
-
 /// Format a vitals bar string from the current state.
 /// Returns a compact one-line string like:
 /// `● 2 agents | 8 open · 3 running · 45 done | last event 4s ago | coord ● 3s`
+#[allow(dead_code)]
 pub fn format_vitals(vitals: &VitalsState) -> String {
     let mut parts = Vec::new();
 
@@ -2185,7 +2177,7 @@ fn format_event_summary(
         }
         _ => {
             if tid.is_empty() {
-                format!("{}", op)
+                op.to_string()
             } else {
                 format!("{}: {}", op, tid)
             }
@@ -2294,6 +2286,7 @@ impl Default for OutputAgentScroll {
 }
 
 /// Per-agent accumulated text buffer for the Output pane.
+#[derive(Default)]
 pub struct OutputAgentText {
     /// Accumulated extracted markdown text from output.log.
     pub full_text: String,
@@ -2309,23 +2302,11 @@ pub struct OutputAgentText {
     pub finish_status: Option<String>,
 }
 
-impl Default for OutputAgentText {
-    fn default() -> Self {
-        Self {
-            full_text: String::new(),
-            rendered_lines: Vec::new(),
-            dirty: false,
-            file_offset: 0,
-            finished: false,
-            finish_status: None,
-        }
-    }
-}
-
 /// Maximum characters kept in the Output pane per agent.
 const OUTPUT_MAX_CHARS: usize = 50_000;
 
 /// State for the Output pane (tab 9).
+#[derive(Default)]
 pub struct OutputPaneState {
     /// Currently selected agent ID.
     pub active_agent_id: Option<String>,
@@ -2339,19 +2320,6 @@ pub struct OutputPaneState {
     pub total_rendered_lines: usize,
     /// Whether new content has arrived while auto_follow is off (for "new output" indicator).
     pub has_new_content: bool,
-}
-
-impl Default for OutputPaneState {
-    fn default() -> Self {
-        Self {
-            active_agent_id: None,
-            agent_scrolls: HashMap::new(),
-            agent_texts: HashMap::new(),
-            viewport_height: 0,
-            total_rendered_lines: 0,
-            has_new_content: false,
-        }
-    }
 }
 
 /// Direction of a message relative to the task's assigned agent.
@@ -4452,21 +4420,21 @@ impl VizApp {
                     );
 
                     // Pipeline toasts for agency events.
-                    if snapshot.status == Status::Done {
-                        if let Some(source_id) = task.id.strip_prefix(".assign-") {
-                            let msg = task
-                                .description
-                                .as_deref()
-                                .and_then(|d| d.lines().next())
-                                .map(|line| {
-                                    line.strip_prefix("Lightweight assignment: ")
-                                        .unwrap_or(line)
-                                        .to_string()
-                                })
-                                .unwrap_or_else(|| format!("assigned → {}", source_id));
-                            deferred_toasts
-                                .push((format!("\u{26a1} Assigned: {}", msg), ToastSeverity::Info));
-                        }
+                    if snapshot.status == Status::Done
+                        && let Some(source_id) = task.id.strip_prefix(".assign-")
+                    {
+                        let msg = task
+                            .description
+                            .as_deref()
+                            .and_then(|d| d.lines().next())
+                            .map(|line| {
+                                line.strip_prefix("Lightweight assignment: ")
+                                    .unwrap_or(line)
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| format!("assigned → {}", source_id));
+                        deferred_toasts
+                            .push((format!("\u{26a1} Assigned: {}", msg), ToastSeverity::Info));
                     }
                     // Agent spawn: non-system task went to InProgress.
                     if snapshot.status == Status::InProgress
@@ -5783,14 +5751,14 @@ impl VizApp {
                 lines.push(format!("  Delay:     {}", delay));
             }
             let now = chrono::Utc::now();
-            if let Some(ref last_ts) = task.last_iteration_completed_at {
-                if let Ok(parsed) = last_ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                    let ago = now.signed_duration_since(parsed).num_seconds();
-                    lines.push(format!(
-                        "  Last iter: {} ago",
-                        workgraph::format_duration(ago, true)
-                    ));
-                }
+            if let Some(ref last_ts) = task.last_iteration_completed_at
+                && let Ok(parsed) = last_ts.parse::<chrono::DateTime<chrono::Utc>>()
+            {
+                let ago = now.signed_duration_since(parsed).num_seconds();
+                lines.push(format!(
+                    "  Last iter: {} ago",
+                    workgraph::format_duration(ago, true)
+                ));
             }
             // Next due: use ready_after if present, otherwise compute from last_completed + delay
             let next_due = task.ready_after.clone().or_else(|| {
@@ -5806,17 +5774,17 @@ impl VizApp {
                 let next = last_ts + chrono::Duration::seconds(delay_secs as i64);
                 Some(next.to_rfc3339())
             });
-            if let Some(ref next_ts) = next_due {
-                if let Ok(parsed) = next_ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                    if parsed > now {
-                        let secs = (parsed - now).num_seconds();
-                        lines.push(format!(
-                            "  Next due:  in {}",
-                            workgraph::format_duration(secs, true)
-                        ));
-                    } else {
-                        lines.push("  Next due:  ready now".to_string());
-                    }
+            if let Some(ref next_ts) = next_due
+                && let Ok(parsed) = next_ts.parse::<chrono::DateTime<chrono::Utc>>()
+            {
+                if parsed > now {
+                    let secs = (parsed - now).num_seconds();
+                    lines.push(format!(
+                        "  Next due:  in {}",
+                        workgraph::format_duration(secs, true)
+                    ));
+                } else {
+                    lines.push("  Next due:  ready now".to_string());
                 }
             }
             lines.push(String::new());
@@ -5989,14 +5957,14 @@ impl VizApp {
                 lines.push(format!("  Delay:     {}", delay));
             }
             let now = chrono::Utc::now();
-            if let Some(ref last_ts) = task.last_iteration_completed_at {
-                if let Ok(parsed) = last_ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                    let ago = now.signed_duration_since(parsed).num_seconds();
-                    lines.push(format!(
-                        "  Last iter: {} ago",
-                        workgraph::format_duration(ago, true)
-                    ));
-                }
+            if let Some(ref last_ts) = task.last_iteration_completed_at
+                && let Ok(parsed) = last_ts.parse::<chrono::DateTime<chrono::Utc>>()
+            {
+                let ago = now.signed_duration_since(parsed).num_seconds();
+                lines.push(format!(
+                    "  Last iter: {} ago",
+                    workgraph::format_duration(ago, true)
+                ));
             }
             let next_due = task.ready_after.clone().or_else(|| {
                 let delay_secs = cc
@@ -6011,17 +5979,17 @@ impl VizApp {
                 let next = last_ts + chrono::Duration::seconds(delay_secs as i64);
                 Some(next.to_rfc3339())
             });
-            if let Some(ref next_ts) = next_due {
-                if let Ok(parsed) = next_ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                    if parsed > now {
-                        let secs = (parsed - now).num_seconds();
-                        lines.push(format!(
-                            "  Next due:  in {}",
-                            workgraph::format_duration(secs, true)
-                        ));
-                    } else {
-                        lines.push("  Next due:  ready now".to_string());
-                    }
+            if let Some(ref next_ts) = next_due
+                && let Ok(parsed) = next_ts.parse::<chrono::DateTime<chrono::Utc>>()
+            {
+                if parsed > now {
+                    let secs = (parsed - now).num_seconds();
+                    lines.push(format!(
+                        "  Next due:  in {}",
+                        workgraph::format_duration(secs, true)
+                    ));
+                } else {
+                    lines.push("  Next due:  ready now".to_string());
                 }
             }
             lines.push(String::new());
@@ -6238,18 +6206,18 @@ impl VizApp {
             for entry in &task.log {
                 // Try to extract agent_id from actor field.
                 if agent_id.is_none() {
-                    if let Some(ref actor) = entry.actor {
-                        if actor.starts_with("agent-") {
-                            agent_id = Some(actor.clone());
-                        }
+                    if let Some(ref actor) = entry.actor
+                        && actor.starts_with("agent-")
+                    {
+                        agent_id = Some(actor.clone());
                     }
                     // Also check message for "[agent-XXXX]" pattern.
-                    if agent_id.is_none() && entry.message.contains("[agent-") {
-                        if let Some(start) = entry.message.find("[agent-") {
-                            if let Some(end) = entry.message[start..].find(']') {
-                                agent_id = Some(entry.message[start + 1..start + end].to_string());
-                            }
-                        }
+                    if agent_id.is_none()
+                        && entry.message.contains("[agent-")
+                        && let Some(start) = entry.message.find("[agent-")
+                        && let Some(end) = entry.message[start..].find(']')
+                    {
+                        agent_id = Some(entry.message[start + 1..start + end].to_string());
                     }
                 }
                 if self.log_pane.json_mode {
@@ -6474,13 +6442,13 @@ impl VizApp {
         let mut buf = String::new();
         while reader.read_line(&mut buf).unwrap_or(0) > 0 {
             let line = buf.trim();
-            if !line.is_empty() {
-                if let Some(event) = ActivityEvent::parse(line) {
-                    self.activity_feed.events.push_back(event);
-                    // Enforce ring buffer max.
-                    if self.activity_feed.events.len() > ACTIVITY_FEED_MAX_EVENTS {
-                        self.activity_feed.events.pop_front();
-                    }
+            if !line.is_empty()
+                && let Some(event) = ActivityEvent::parse(line)
+            {
+                self.activity_feed.events.push_back(event);
+                // Enforce ring buffer max.
+                if self.activity_feed.events.len() > ACTIVITY_FEED_MAX_EVENTS {
+                    self.activity_feed.events.pop_front();
                 }
             }
             buf.clear();
@@ -7805,7 +7773,7 @@ impl VizApp {
                     AgentStatus::Working | AgentStatus::Done | AgentStatus::Failed
                 )
             })
-            .map(|a| (a.agent_id.clone(), a.task_id.clone(), a.status.clone()))
+            .map(|a| (a.agent_id.clone(), a.task_id.clone(), a.status))
             .collect();
 
         let visible_ids: HashSet<String> =
@@ -7820,10 +7788,10 @@ impl VizApp {
             .retain(|id, _| visible_ids.contains(id));
 
         // If the active agent is gone, auto-select the first Working agent.
-        if let Some(ref active_id) = self.output_pane.active_agent_id {
-            if !visible_ids.contains(active_id) {
-                self.output_pane.active_agent_id = None;
-            }
+        if let Some(ref active_id) = self.output_pane.active_agent_id
+            && !visible_ids.contains(active_id)
+        {
+            self.output_pane.active_agent_id = None;
         }
         if self.output_pane.active_agent_id.is_none() {
             self.output_pane.active_agent_id = visible_agents
@@ -7900,17 +7868,17 @@ impl VizApp {
                 text_entry.dirty = true;
 
                 // Signal new content for the indicator.
-                if let Some(ref active_id) = self.output_pane.active_agent_id {
-                    if active_id == agent_id {
-                        let scroll = self
-                            .output_pane
-                            .agent_scrolls
-                            .get(agent_id)
-                            .map(|s| !s.auto_follow)
-                            .unwrap_or(false);
-                        if scroll {
-                            self.output_pane.has_new_content = true;
-                        }
+                if let Some(ref active_id) = self.output_pane.active_agent_id
+                    && active_id == agent_id
+                {
+                    let scroll = self
+                        .output_pane
+                        .agent_scrolls
+                        .get(agent_id)
+                        .map(|s| !s.auto_follow)
+                        .unwrap_or(false);
+                    if scroll {
+                        self.output_pane.has_new_content = true;
                     }
                 }
             }
@@ -8374,7 +8342,7 @@ impl VizApp {
         let mut agent_toasts = Vec::new();
         for agent in registry.agents.values() {
             let prev = self.prev_agent_statuses.get(&agent.id).copied();
-            let was_alive = prev.map_or(false, |s| {
+            let was_alive = prev.is_some_and(|s| {
                 matches!(
                     s,
                     workgraph::AgentStatus::Starting
@@ -8417,19 +8385,19 @@ impl VizApp {
                     .ok()
                     .and_then(|t| t.elapsed().ok())
                     .map(|d| d.as_secs());
-                if let Some(secs) = output_age_secs {
-                    if secs > 300 {
-                        agent_toasts.push(AgentToast::Dedup(
-                            format!(
-                                "\u{23f3} Agent stuck: {} on {} ({})",
-                                agent.id,
-                                agent.task_id,
-                                format_duration_compact(secs),
-                            ),
-                            ToastSeverity::Warning,
-                            format!("stuck:{}", agent.id),
-                        ));
-                    }
+                if let Some(secs) = output_age_secs
+                    && secs > 300
+                {
+                    agent_toasts.push(AgentToast::Dedup(
+                        format!(
+                            "\u{23f3} Agent stuck: {} on {} ({})",
+                            agent.id,
+                            agent.task_id,
+                            format_duration_compact(secs),
+                        ),
+                        ToastSeverity::Warning,
+                        format!("stuck:{}", agent.id),
+                    ));
                 }
             }
         }

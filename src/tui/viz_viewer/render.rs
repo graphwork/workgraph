@@ -217,7 +217,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     if app.right_panel_visible {
                         // In narrow mode, use a compact side-by-side split.
                         // Graph gets 40%, inspector gets 60% (minimum useful inspector width).
-                        let right_pct = app.right_panel_percent.max(50).min(70);
+                        let right_pct = app.right_panel_percent.clamp(50, 70);
                         let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
                         let left_width = main_area.width.saturating_sub(right_width);
                         let split = Layout::default()
@@ -414,7 +414,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 }
                 _ => {
                     if app.right_panel_visible {
-                        let right_pct = app.right_panel_percent.max(50).min(70);
+                        let right_pct = app.right_panel_percent.clamp(50, 70);
                         let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
                         let left_width = main_area.width.saturating_sub(right_width);
                         let split = Layout::default()
@@ -2184,24 +2184,24 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 
     // ── "Last written X ago" footer ──
-    if let Some(footer_area) = footer_area_opt {
-        if let Some(mtime) = output_mtime {
-            let age_secs = mtime.elapsed().unwrap_or_default().as_secs();
-            let age_str = format_duration_compact(age_secs);
-            let footer_text = format!("─── last written {} ago ───", age_str);
-            let color = if age_secs < 30 {
-                Color::DarkGray
-            } else if age_secs < 300 {
-                Color::Yellow
-            } else {
-                Color::Red
-            };
-            let footer = Paragraph::new(Line::from(Span::styled(
-                footer_text,
-                Style::default().fg(color),
-            )));
-            frame.render_widget(footer, footer_area);
-        }
+    if let Some(footer_area) = footer_area_opt
+        && let Some(mtime) = output_mtime
+    {
+        let age_secs = mtime.elapsed().unwrap_or_default().as_secs();
+        let age_str = format_duration_compact(age_secs);
+        let footer_text = format!("─── last written {} ago ───", age_str);
+        let color = if age_secs < 30 {
+            Color::DarkGray
+        } else if age_secs < 300 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+        let footer = Paragraph::new(Line::from(Span::styled(
+            footer_text,
+            Style::default().fg(color),
+        )));
+        frame.render_widget(footer, footer_area);
     }
 }
 
@@ -3247,8 +3247,8 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .as_deref()
                     .unwrap_or("unknown");
                 let (status_text, status_color) = match status {
-                    "done" => (format!("── agent finished (done) ──"), Color::Green),
-                    "failed" => (format!("── agent finished (failed) ──"), Color::Red),
+                    "done" => ("── agent finished (done) ──".to_string(), Color::Green),
+                    "failed" => ("── agent finished (failed) ──".to_string(), Color::Red),
                     _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
                 };
                 app.log_pane
@@ -3977,8 +3977,8 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             if text_entry.finished {
                 let status = text_entry.finish_status.as_deref().unwrap_or("unknown");
                 let (status_text, status_color) = match status {
-                    "done" => (format!("── agent finished (done) ──"), Color::Green),
-                    "failed" => (format!("── agent finished (failed) ──"), Color::Red),
+                    "done" => ("── agent finished (done) ──".to_string(), Color::Green),
+                    "failed" => ("── agent finished (failed) ──".to_string(), Color::Red),
                     _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
                 };
                 text_entry.rendered_lines.push(Line::from(""));
@@ -4257,19 +4257,18 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             if matches!(
                 row.activity,
                 DashboardAgentActivity::Active | DashboardAgentActivity::Slow
-            ) {
-                if let Some(ref snippet) = row.latest_snippet {
-                    let max_len = width.saturating_sub(6);
-                    let truncated = if snippet.len() > max_len {
-                        format!("{}…", &snippet[..max_len.saturating_sub(1)])
-                    } else {
-                        snippet.clone()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled("    ", Style::default()),
-                        Span::styled(truncated, Style::default().fg(Color::Rgb(100, 100, 100))),
-                    ]));
-                }
+            ) && let Some(ref snippet) = row.latest_snippet
+            {
+                let max_len = width.saturating_sub(6);
+                let truncated = if snippet.len() > max_len {
+                    format!("{}…", &snippet[..max_len.saturating_sub(1)])
+                } else {
+                    snippet.clone()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default()),
+                    Span::styled(truncated, Style::default().fg(Color::Rgb(100, 100, 100))),
+                ]));
             }
         }
     }
@@ -6855,7 +6854,7 @@ fn draw_touch_echoes(frame: &mut Frame, app: &VizApp) {
         }
 
         // Color: bright cyan → dim → gone. Use RGB for smooth fade.
-        let intensity = (1.0 - progress) as f64;
+        let intensity = 1.0 - progress;
         let fg = Color::Rgb(
             (100.0 * intensity) as u8,
             (220.0 * intensity) as u8,

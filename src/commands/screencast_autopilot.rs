@@ -373,10 +373,10 @@ impl Autopilot {
         let deadline = Instant::now() + std::time::Duration::from_secs_f64(timeout);
         while Instant::now() < deadline && !self.is_over() {
             self.cast.capture_frame(&self.session.name)?;
-            if let Some(state) = self.read_screen() {
-                if state.contains(pattern) {
-                    return Ok(true);
-                }
+            if let Some(state) = self.read_screen()
+                && state.contains(pattern)
+            {
+                return Ok(true);
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
@@ -454,13 +454,12 @@ impl Autopilot {
             self.sleep(0.8)?;
 
             // Check if selected task is interesting (in-progress, etc.).
-            if let Some(state) = self.read_screen() {
-                if let Some(ref task) = state.selected_task {
-                    if state.text.contains("in-progress") {
-                        eprintln!("[autopilot]   interesting task: {}", task);
-                        self.sleep(1.5)?;
-                    }
-                }
+            if let Some(state) = self.read_screen()
+                && let Some(ref task) = state.selected_task
+                && state.text.contains("in-progress")
+            {
+                eprintln!("[autopilot]   interesting task: {}", task);
+                self.sleep(1.5)?;
             }
         }
 
@@ -543,12 +542,12 @@ impl Autopilot {
             self.send_key("Down")?;
             self.sleep(0.8)?;
 
-            if let Some(state) = self.read_screen() {
-                if state.contains("in-progress") || state.contains("done") {
-                    // Linger on active/completed tasks.
-                    self.send_key("1")?;
-                    self.sleep(2.0)?;
-                }
+            if let Some(state) = self.read_screen()
+                && (state.contains("in-progress") || state.contains("done"))
+            {
+                // Linger on active/completed tasks.
+                self.send_key("1")?;
+                self.sleep(2.0)?;
             }
         }
 

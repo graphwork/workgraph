@@ -1458,7 +1458,7 @@ fn native_coordinator_loop(
     // like "minimax-m2.5" → "minimax/minimax-m2.5" (the actual API model ID)
     // and also extracts provider/endpoint from the registry entry.
     let config = workgraph::config::Config::load_or_default(dir);
-    let merged_config = workgraph::config::Config::load_merged(dir).unwrap_or_else(|_| config);
+    let merged_config = workgraph::config::Config::load_merged(dir).unwrap_or(config);
     let (effective_model, registry_provider, registry_endpoint) =
         if let Some(entry) = merged_config.registry_lookup(&raw_model) {
             (

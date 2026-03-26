@@ -2478,24 +2478,23 @@ impl Config {
         }
 
         // Rule 2: executor='claude' but provider is non-Anthropic
-        if executor == "claude" {
-            if let Some(p) = provider {
-                if p != "anthropic" {
-                    result.errors.push(ConfigDiagnostic {
-                        rule: "executor-provider-mismatch".into(),
-                        message: format!(
-                            "executor = 'claude' but provider = '{}'. \
-                             Claude CLI only works with Anthropic's API.",
-                            p
-                        ),
-                        fix: format!(
-                            "Set executor = 'native' to use provider '{}', \
-                             or remove the provider setting to use Anthropic.",
-                            p
-                        ),
-                    });
-                }
-            }
+        if executor == "claude"
+            && let Some(p) = provider
+            && p != "anthropic"
+        {
+            result.errors.push(ConfigDiagnostic {
+                rule: "executor-provider-mismatch".into(),
+                message: format!(
+                    "executor = 'claude' but provider = '{}'. \
+                     Claude CLI only works with Anthropic's API.",
+                    p
+                ),
+                fix: format!(
+                    "Set executor = 'native' to use provider '{}', \
+                     or remove the provider setting to use Anthropic.",
+                    p
+                ),
+            });
         }
 
         // Rule 3: [models.*] model value doesn't match registry AND doesn't contain '/'
@@ -2518,24 +2517,25 @@ impl Config {
         };
 
         for (role_name, role_cfg) in &role_configs {
-            if let Some(ref m) = role_cfg.model {
-                if !registry_ids.contains(m.as_str()) && !m.contains('/') {
-                    result.warnings.push(ConfigDiagnostic {
-                        rule: "unresolved-model-id".into(),
-                        message: format!(
-                            "models.{}.model = '{}' doesn't match any registry entry \
-                             and doesn't look like a provider/model path. \
-                             May be an unresolved short ID.",
-                            role_name, m
-                        ),
-                        fix: format!(
-                            "Add a [[model_registry]] entry for '{}', use a known ID \
-                             ({}), or use provider/model format (e.g., 'anthropic/claude-sonnet-4-20250514').",
-                            m,
-                            registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
-                        ),
-                    });
-                }
+            if let Some(ref m) = role_cfg.model
+                && !registry_ids.contains(m.as_str())
+                && !m.contains('/')
+            {
+                result.warnings.push(ConfigDiagnostic {
+                    rule: "unresolved-model-id".into(),
+                    message: format!(
+                        "models.{}.model = '{}' doesn't match any registry entry \
+                         and doesn't look like a provider/model path. \
+                         May be an unresolved short ID.",
+                        role_name, m
+                    ),
+                    fix: format!(
+                        "Add a [[model_registry]] entry for '{}', use a known ID \
+                         ({}), or use provider/model format (e.g., 'anthropic/claude-sonnet-4-20250514').",
+                        m,
+                        registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
+                    ),
+                });
             }
         }
 
@@ -2577,18 +2577,18 @@ impl Config {
                             file_path
                         ),
                     });
-                } else if let Ok(contents) = fs::read_to_string(&expanded) {
-                    if contents.trim().is_empty() {
-                        result.errors.push(ConfigDiagnostic {
-                            rule: "empty-api-key-file".into(),
-                            message: format!(
-                                "Endpoint '{}' (provider: '{}') references api_key_file = '{}' \
-                                 but the file is empty.",
-                                ep.name, ep.provider, file_path
-                            ),
-                            fix: "Add your API key to the file.".into(),
-                        });
-                    }
+                } else if let Ok(contents) = fs::read_to_string(&expanded)
+                    && contents.trim().is_empty()
+                {
+                    result.errors.push(ConfigDiagnostic {
+                        rule: "empty-api-key-file".into(),
+                        message: format!(
+                            "Endpoint '{}' (provider: '{}') references api_key_file = '{}' \
+                             but the file is empty.",
+                            ep.name, ep.provider, file_path
+                        ),
+                        fix: "Add your API key to the file.".into(),
+                    });
                 }
             }
         }

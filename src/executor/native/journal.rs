@@ -133,12 +133,12 @@ impl Journal {
         let seq = if path.exists() {
             // If the file doesn't end with a newline (crash mid-write), add one
             // so the next appended entry starts on its own line.
-            if let Ok(data) = std::fs::read(path) {
-                if !data.is_empty() && data.last() != Some(&b'\n') {
-                    if let Ok(mut f) = OpenOptions::new().append(true).open(path) {
-                        let _ = writeln!(f);
-                    }
-                }
+            if let Ok(data) = std::fs::read(path)
+                && !data.is_empty()
+                && data.last() != Some(&b'\n')
+                && let Ok(mut f) = OpenOptions::new().append(true).open(path)
+            {
+                let _ = writeln!(f);
             }
             Self::last_seq(path)?
         } else {

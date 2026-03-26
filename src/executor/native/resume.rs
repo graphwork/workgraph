@@ -419,15 +419,13 @@ fn detect_stale_state(entries: &[JournalEntry], working_dir: &Path) -> Vec<Strin
                             ));
                         } else if let Some(written_content) =
                             input.get("content").and_then(|v| v.as_str())
+                            && let Ok(current_content) = std::fs::read_to_string(&file_path)
+                            && current_content != written_content
                         {
-                            if let Ok(current_content) = std::fs::read_to_string(&file_path) {
-                                if current_content != written_content {
-                                    annotations.push(format!(
-                                        "STALE: File '{}' was written in prior session but has been modified since",
-                                        path_str
-                                    ));
-                                }
-                            }
+                            annotations.push(format!(
+                                "STALE: File '{}' was written in prior session but has been modified since",
+                                path_str
+                            ));
                         }
                     }
                 }

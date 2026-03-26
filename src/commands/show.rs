@@ -413,18 +413,18 @@ fn print_human_readable(details: &TaskDetails) {
             let next = last_ts + chrono::Duration::seconds(delay_secs as i64);
             Some(next.to_rfc3339())
         });
-        if let Some(ref next_ts) = next_due {
-            if let Ok(parsed) = next_ts.parse::<DateTime<Utc>>() {
-                let now = Utc::now();
-                if parsed > now {
-                    let secs = (parsed - now).num_seconds();
-                    println!(
-                        "  Next iteration due: in {}",
-                        workgraph::format_duration(secs, true)
-                    );
-                } else {
-                    println!("  Next iteration due: ready now");
-                }
+        if let Some(ref next_ts) = next_due
+            && let Ok(parsed) = next_ts.parse::<DateTime<Utc>>()
+        {
+            let now = Utc::now();
+            if parsed > now {
+                let secs = (parsed - now).num_seconds();
+                println!(
+                    "  Next iteration due: in {}",
+                    workgraph::format_duration(secs, true)
+                );
+            } else {
+                println!("  Next iteration due: ready now");
             }
         }
     }

@@ -295,7 +295,7 @@ impl Tool for WgAddTool {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let (mut graph, path) = match load_workgraph(&self.dir) {
+        let (graph, path) = match load_workgraph(&self.dir) {
             Ok(g) => g,
             Err(e) => return ToolOutput::error(e),
         };

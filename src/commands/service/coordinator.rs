@@ -82,14 +82,14 @@ fn cleanup_and_count_alive(
             if !agent.is_alive() || !is_process_alive(agent.pid) {
                 continue;
             }
-            if let Some(task) = graph.get_task(&agent.task_id) {
-                if task.status.is_terminal() {
-                    eprintln!(
-                        "[coordinator] Agent {} (PID {}) still alive but task '{}' is {:?} — sending SIGTERM",
-                        agent.id, agent.pid, agent.task_id, task.status
-                    );
-                    killed.push((agent.id.clone(), agent.pid));
-                }
+            if let Some(task) = graph.get_task(&agent.task_id)
+                && task.status.is_terminal()
+            {
+                eprintln!(
+                    "[coordinator] Agent {} (PID {}) still alive but task '{}' is {:?} — sending SIGTERM",
+                    agent.id, agent.pid, agent.task_id, task.status
+                );
+                killed.push((agent.id.clone(), agent.pid));
             }
         }
         for (agent_id, pid) in &killed {
@@ -1074,16 +1074,16 @@ fn build_auto_assign_tasks(
                         );
                     }
 
-                    let _ = workgraph::parser::modify_graph(&graph_path(dir), |fresh| {
+                    let _ = workgraph::parser::modify_graph(graph_path(dir), |fresh| {
                         // Copy assignment record task from local graph
                         for node in graph.nodes() {
-                            if let workgraph::graph::Node::Task(t) = node {
-                                if let Some(ft) = fresh.get_task_mut(&t.id) {
-                                    ft.after = t.after.clone();
-                                    ft.before = t.before.clone();
-                                    ft.status = t.status.clone();
-                                    ft.log = t.log.clone();
-                                }
+                            if let workgraph::graph::Node::Task(t) = node
+                                && let Some(ft) = fresh.get_task_mut(&t.id)
+                            {
+                                ft.after = t.after.clone();
+                                ft.before = t.before.clone();
+                                ft.status = t.status;
+                                ft.log = t.log.clone();
                             }
                         }
                         true
@@ -2850,14 +2850,14 @@ fn spawn_agents_for_ready_tasks(
                     .as_ref()
                     .and_then(|a| a.preferred_model.as_deref()))
                 .or(task_model.as_deref());
-            if let Some(model) = effective_model_for_detect {
-                if requires_native_executor(model, config) {
-                    eprintln!(
-                        "[coordinator] Model '{}' is non-Anthropic, switching executor from claude to native",
-                        model
-                    );
-                    effective_executor = "native".to_string();
-                }
+            if let Some(model) = effective_model_for_detect
+                && requires_native_executor(model, config)
+            {
+                eprintln!(
+                    "[coordinator] Model '{}' is non-Anthropic, switching executor from claude to native",
+                    model
+                );
+                effective_executor = "native".to_string();
             }
         }
         eprintln!(

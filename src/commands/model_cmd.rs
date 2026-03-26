@@ -150,7 +150,7 @@ pub fn run_set_default(dir: &Path, alias: &str, global: bool) -> Result<()> {
              Add: `wg model add {} --provider <provider>` to register it\n  \
              Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
             alias,
-            alias.split('/').last().unwrap_or(alias),
+            alias.split('/').next_back().unwrap_or(alias),
             alias,
         );
     }

@@ -115,10 +115,10 @@ fn run_inner(dir: &Path, id: &str, reason: Option<&str>, eval_reject: bool) -> R
         });
 
         // Apply pre-resolved token usage
-        if task.token_usage.is_none() {
-            if let Some(ref usage) = token_usage {
-                task.token_usage = Some(usage.clone());
-            }
+        if task.token_usage.is_none()
+            && let Some(ref usage) = token_usage
+        {
+            task.token_usage = Some(usage.clone());
         }
 
         // Extract values we need before cycle restart may modify the task

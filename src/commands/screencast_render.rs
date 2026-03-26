@@ -98,10 +98,10 @@ fn parse_key_code(s: &str) -> Option<KeyCode> {
         return Some(KeyCode::Char(s.chars().next().unwrap()));
     }
     // Function keys
-    if let Some(rest) = s.strip_prefix('F') {
-        if let Ok(n) = rest.parse::<u8>() {
-            return Some(KeyCode::F(n));
-        }
+    if let Some(rest) = s.strip_prefix('F')
+        && let Ok(n) = rest.parse::<u8>()
+    {
+        return Some(KeyCode::F(n));
     }
     match s {
         "Backspace" => Some(KeyCode::Backspace),

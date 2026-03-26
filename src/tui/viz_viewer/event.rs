@@ -249,11 +249,11 @@ fn key_label(code: KeyCode, modifiers: KeyModifiers) -> String {
         // Filter duplicate "Shift" for shifted characters.
         if modifiers.contains(KeyModifiers::SHIFT) && code != KeyCode::BackTab {
             // For plain chars, Shift is implied in the uppercase char itself
-            if let KeyCode::Char(c) = code {
-                if c.is_ascii_alphabetic() {
-                    // Already uppercased — remove Shift prefix
-                    parts.retain(|p| *p != "Shift");
-                }
+            if let KeyCode::Char(c) = code
+                && c.is_ascii_alphabetic()
+            {
+                // Already uppercased — remove Shift prefix
+                parts.retain(|p| *p != "Shift");
             }
         }
         parts.join("+")
@@ -2226,17 +2226,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             if in_minimized_strip {
                 // Click on minimized strip: restore to last normal split mode.
                 app.restore_from_extreme();
-                return;
             } else if in_fullscreen_restore {
                 // Click on full-screen restore strip: transition to normal split
                 // and start divider drag so user can fine-tune position.
                 app.restore_from_extreme();
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
-                return;
             } else if in_divider {
                 // Click on divider between graph and inspector: start resize drag.
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
-                return;
             } else if in_graph_vscrollbar {
                 // Click on graph vertical scrollbar: start drag and jump.
                 app.focused_panel = FocusedPanel::Graph;
@@ -2535,7 +2532,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                         app.focused_panel = super::state::FocusedPanel::Graph;
                         app.scrollbar_drag = None;
                     } else {
-                        let clamped = raw_pct.max(15).min(85);
+                        let clamped = raw_pct.clamp(15, 85);
                         app.right_panel_percent = clamped;
                         app.layout_mode = super::state::VizApp::layout_mode_for_percent(clamped);
                     }

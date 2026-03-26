@@ -881,7 +881,7 @@ fn handle_add_task(
     origin: Option<&str>,
 ) -> IpcResponse {
     let graph_path = graph_path(dir);
-    let mut graph = match load_graph(&graph_path) {
+    let graph = match load_graph(&graph_path) {
         Ok(g) => g,
         Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
     };
@@ -1227,15 +1227,12 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
     match workgraph::parser::modify_graph(&graph_path, |fresh| {
         // Re-apply all mutations to a fresh graph
         for node in graph.nodes() {
-            match node {
-                workgraph::graph::Node::Task(t) => {
-                    if let Some(ft) = fresh.get_task_mut(&t.id) {
-                        *ft = t.clone();
-                    } else {
-                        fresh.add_node(workgraph::graph::Node::Task(t.clone()));
-                    }
+            if let workgraph::graph::Node::Task(t) = node {
+                if let Some(ft) = fresh.get_task_mut(&t.id) {
+                    *ft = t.clone();
+                } else {
+                    fresh.add_node(workgraph::graph::Node::Task(t.clone()));
                 }
-                _ => {}
             }
         }
         true
@@ -1333,17 +1330,15 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let task_id = format!(".coordinator-{}", coordinator_id);
 
     // Kill any running agent (must happen before modify_graph to avoid holding lock)
-    if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
-        if let Some(task) = graph.get_task(&task_id) {
-            if task.agent.is_some() {
-                if let Ok(registry) = AgentRegistry::load(dir) {
-                    for agent in registry.list_agents() {
-                        if agent.task_id == task_id {
-                            let _ = crate::commands::kill::run(dir, &agent.id, false, true);
-                            break;
-                        }
-                    }
-                }
+    if let Ok(graph) = workgraph::parser::load_graph(&graph_path)
+        && let Some(task) = graph.get_task(&task_id)
+        && task.agent.is_some()
+        && let Ok(registry) = AgentRegistry::load(dir)
+    {
+        for agent in registry.list_agents() {
+            if agent.task_id == task_id {
+                let _ = crate::commands::kill::run(dir, &agent.id, false, true);
+                break;
             }
         }
     }

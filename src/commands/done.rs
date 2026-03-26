@@ -463,10 +463,10 @@ fn run_inner(
         });
 
         // Apply pre-resolved token usage
-        if task.token_usage.is_none() {
-            if let Some(ref usage) = token_usage {
-                task.token_usage = Some(usage.clone());
-            }
+        if task.token_usage.is_none()
+            && let Some(ref usage) = token_usage
+        {
+            task.token_usage = Some(usage.clone());
         }
 
         // Evaluate structural cycle iteration

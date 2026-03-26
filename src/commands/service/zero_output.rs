@@ -421,24 +421,24 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
             });
         }
 
-        if graph_modified {
-            if let Err(e) = modify_graph(&graph_path, |fresh_graph| {
+        if graph_modified
+            && let Err(e) = modify_graph(&graph_path, |fresh_graph| {
                 // Replay mutations from our local graph
                 for kill in &result.killed {
-                    if let Some(local) = graph.get_task(&kill.task_id) {
-                        if let Some(fresh) = fresh_graph.get_task_mut(&kill.task_id) {
-                            fresh.status = local.status.clone();
-                            fresh.assigned = local.assigned.clone();
-                            fresh.retry_count = local.retry_count;
-                            fresh.failure_reason = local.failure_reason.clone();
-                            fresh.log = local.log.clone();
-                        }
+                    if let Some(local) = graph.get_task(&kill.task_id)
+                        && let Some(fresh) = fresh_graph.get_task_mut(&kill.task_id)
+                    {
+                        fresh.status = local.status;
+                        fresh.assigned = local.assigned.clone();
+                        fresh.retry_count = local.retry_count;
+                        fresh.failure_reason = local.failure_reason.clone();
+                        fresh.log = local.log.clone();
                     }
                 }
                 true
-            }) {
-                eprintln!("[zero-output] Failed to save graph: {}", e);
-            }
+            })
+        {
+            eprintln!("[zero-output] Failed to save graph: {}", e);
         }
     }
 

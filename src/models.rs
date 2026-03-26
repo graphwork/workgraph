@@ -318,7 +318,7 @@ impl ModelRegistry {
                  Or:  `wg models list` to see the local registry\n  \
                  Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
                 id,
-                id.split('/').last().unwrap_or(id),
+                id.split('/').next_back().unwrap_or(id),
             );
         }
         self.default_model = Some(id.to_string());

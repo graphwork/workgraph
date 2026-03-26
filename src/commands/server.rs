@@ -19,6 +19,7 @@ struct Action {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum ActionStatus {
     Pending,
     Skipped(String),
@@ -142,19 +143,16 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
         println!("\n## Applying changes\n");
         for action in &mut actions {
             if let Some(ref cmd) = action.command {
-                match action.status {
-                    ActionStatus::Skipped(_) => {
-                        println!(
-                            "  SKIP  {}: {}",
-                            action.description,
-                            match &action.status {
-                                ActionStatus::Skipped(r) => r.as_str(),
-                                _ => "",
-                            }
-                        );
-                        continue;
-                    }
-                    _ => {}
+                if let ActionStatus::Skipped(_) = action.status {
+                    println!(
+                        "  SKIP  {}: {}",
+                        action.description,
+                        match &action.status {
+                            ActionStatus::Skipped(r) => r.as_str(),
+                            _ => "",
+                        }
+                    );
+                    continue;
                 }
                 print!("  RUN   {} ... ", action.description);
                 match run_shell_command(cmd) {

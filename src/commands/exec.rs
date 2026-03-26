@@ -35,7 +35,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         };
 
         exec_cmd_opt = task.exec.clone();
-        task_status = task.status.clone();
+        task_status = task.status;
 
         if exec_cmd_opt.is_none() {
             error = Some(anyhow::anyhow!(

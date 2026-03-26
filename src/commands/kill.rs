@@ -175,20 +175,20 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
     }
 
     modify_graph(&path, |graph| {
-        if let Some(task) = graph.get_task_mut(task_id) {
-            if task.status == Status::InProgress {
-                task.status = Status::Open;
-                task.assigned = None;
+        if let Some(task) = graph.get_task_mut(task_id)
+            && task.status == Status::InProgress
+        {
+            task.status = Status::Open;
+            task.assigned = None;
 
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: None,
-                    user: Some(workgraph::current_user()),
-                    message: format!("Task unclaimed: agent '{}' was killed", agent_id),
-                });
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: None,
+                user: Some(workgraph::current_user()),
+                message: format!("Task unclaimed: agent '{}' was killed", agent_id),
+            });
 
-                return true;
-            }
+            return true;
         }
         false
     })

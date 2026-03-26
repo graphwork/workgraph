@@ -170,19 +170,20 @@ pub(crate) fn spawn_agent_inner(
     let (effective_model, model_validation_warning) = {
         let mut model = effective_model;
         let mut warning: Option<String> = None;
-        if let Some(ref m) = model {
-            if m.contains('/') && !BUILTIN_TIER_ALIASES.contains(&m.as_str()) {
-                let validation =
-                    workgraph::executor::native::openai_client::validate_openrouter_model(m, dir);
-                if !validation.was_valid {
-                    if let Some(ref w) = validation.warning {
-                        eprintln!("[spawn] WARNING: {}", w);
-                    }
-                    warning = validation.warning;
-                    model = Some(validation.model);
-                } else {
-                    eprintln!("[spawn] Model '{}' validated against model cache", m);
+        if let Some(ref m) = model
+            && m.contains('/')
+            && !BUILTIN_TIER_ALIASES.contains(&m.as_str())
+        {
+            let validation =
+                workgraph::executor::native::openai_client::validate_openrouter_model(m, dir);
+            if !validation.was_valid {
+                if let Some(ref w) = validation.warning {
+                    eprintln!("[spawn] WARNING: {}", w);
                 }
+                warning = validation.warning;
+                model = Some(validation.model);
+            } else {
+                eprintln!("[spawn] Model '{}' validated against model cache", m);
             }
         }
         (model, warning)
@@ -459,7 +460,7 @@ pub(crate) fn spawn_agent_inner(
     // where two concurrent spawns both pass the status check.
     // Use modify_graph for atomic claim under flock.
     let spawned_by_clone = spawned_by.to_string();
-    let executor_name_clone = executor_name.clone();
+    let executor_name_clone = executor_name;
     let effective_model_clone = effective_model.clone();
     let task_title_for_audit_clone = task_title_for_audit.clone();
     let task_agent_for_audit_clone = task_agent_for_audit.clone();

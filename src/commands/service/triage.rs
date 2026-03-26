@@ -112,10 +112,10 @@ fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64) -> Option<Dead
     // Grace period: don't reap agents that were started very recently.
     // The coordinator may register a PID before the process is fully up,
     // so give it grace_period_secs before treating a missing PID as dead.
-    if let Some(uptime) = agent.uptime_secs() {
-        if uptime < grace_period_secs {
-            return None;
-        }
+    if let Some(uptime) = agent.uptime_secs()
+        && uptime < grace_period_secs
+    {
+        return None;
     }
 
     // Process not running is the only signal — heartbeat is no longer used for detection
@@ -315,30 +315,29 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         modify_graph(graph_path, |fresh_graph| {
             // Replay mutations: for each task we modified, update the fresh graph
             for tid in &tasks_completed_by_triage {
-                if let Some(local) = graph.get_task(tid) {
-                    if let Some(fresh) = fresh_graph.get_task_mut(tid) {
-                        fresh.status = local.status.clone();
-                        fresh.completed_at = local.completed_at.clone();
-                        fresh.failure_reason = local.failure_reason.clone();
-                        fresh.retry_count = local.retry_count;
-                        fresh.log = local.log.clone();
-                        fresh.session_id = local.session_id.clone();
-                        fresh.token_usage = local.token_usage.clone();
-                    }
+                if let Some(local) = graph.get_task(tid)
+                    && let Some(fresh) = fresh_graph.get_task_mut(tid)
+                {
+                    fresh.status = local.status;
+                    fresh.completed_at = local.completed_at.clone();
+                    fresh.failure_reason = local.failure_reason.clone();
+                    fresh.retry_count = local.retry_count;
+                    fresh.log = local.log.clone();
+                    fresh.session_id = local.session_id.clone();
+                    fresh.token_usage = local.token_usage.clone();
                 }
             }
             // Also replay mutations for other dead-agent tasks (unclaim, triage-fail, token/session)
             for (_, task_id, _, _, _) in &dead {
-                if !tasks_completed_by_triage.contains(task_id) {
-                    if let Some(local) = graph.get_task(task_id) {
-                        if let Some(fresh) = fresh_graph.get_task_mut(task_id) {
-                            fresh.status = local.status.clone();
-                            fresh.assigned = local.assigned.clone();
-                            fresh.log = local.log.clone();
-                            fresh.session_id = local.session_id.clone();
-                            fresh.token_usage = local.token_usage.clone();
-                        }
-                    }
+                if !tasks_completed_by_triage.contains(task_id)
+                    && let Some(local) = graph.get_task(task_id)
+                    && let Some(fresh) = fresh_graph.get_task_mut(task_id)
+                {
+                    fresh.status = local.status;
+                    fresh.assigned = local.assigned.clone();
+                    fresh.log = local.log.clone();
+                    fresh.session_id = local.session_id.clone();
+                    fresh.token_usage = local.token_usage.clone();
                 }
             }
             true
