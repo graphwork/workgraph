@@ -2418,12 +2418,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let color = dot_color(cid);
             let has_close = cid != 0;
 
-            // Tab content: " ◉ Label " or " ◉ Label ✕ "
-            // dot(1) + space(1) + label + space(1) + optional close(1+space(1))
+            // Tab content: " ◉ Label [state] " or " ◉ Label [state] ✕ "
+            // dot(1) + space(1) + label + state(2 if active) + space(1) + optional close(1+space(1))
             let label_width = label.len();
             let close_width: usize = if has_close { 2 } else { 0 }; // " ✕"
-            // Content: dot(1) + " "(1) + label + " "(1) + close
-            let tab_content_width = 1 + 1 + label_width + 1 + close_width;
+            let state_width: usize = if is_active { 2 } else { 0 }; // " ●" / " ⟳" / " ○"
+            // Content: dot(1) + " "(1) + label + state + " "(1) + close
+            let tab_content_width = 1 + 1 + label_width + state_width + 1 + close_width;
             // Separator: "│" between tabs (1 column wide)
             let sep_w: usize = if i > 0 { 1 } else { 0 };
 
@@ -2466,6 +2467,19 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             };
             spans.push(Span::styled(format!(" {}", label), label_style));
             col += 1 + label_width; // " " + label
+
+            // Coordinator state indicator (only on active tab).
+            if is_active {
+                let (state_icon, state_style) = if !app.chat.coordinator_active {
+                    (" ○", Style::default().fg(Color::DarkGray))
+                } else if app.chat.awaiting_response {
+                    (" ⟳", Style::default().fg(Color::Yellow))
+                } else {
+                    (" ●", Style::default().fg(Color::Green))
+                };
+                spans.push(Span::styled(state_icon, state_style));
+                col += 2; // " " + icon
+            }
 
             // Close button (padded for wider touch target)
             let mut close_start: u16 = 0;
@@ -2756,6 +2770,38 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                             Style::default().fg(Color::DarkGray),
                         ));
                     }
+                }
+                // Append timestamp for all messages.
+                if let Some(ts) = &msg.msg_timestamp {
+                    let now = chrono::Utc::now();
+                    let rel = format_relative_time(ts, &now);
+                    spans.push(Span::styled(
+                        format!("  {}", rel),
+                        Style::default().fg(Color::Indexed(239)),
+                    ));
+                }
+                // Delivery status for user messages.
+                if is_user {
+                    // Check if a coordinator message follows (= delivered).
+                    let has_response = app.chat.messages.get(msg_idx + 1..)
+                        .map(|rest| rest.iter().any(|m| m.role == super::state::ChatRole::Coordinator))
+                        .unwrap_or(false);
+                    let status_span = if has_response {
+                        Span::styled("  ✓✓", Style::default().fg(Color::DarkGray))
+                    } else if app.chat.awaiting_response {
+                        // Only the last user message shows processing indicator.
+                        let is_last_user = app.chat.messages[msg_idx + 1..]
+                            .iter()
+                            .all(|m| m.role != super::state::ChatRole::User);
+                        if is_last_user {
+                            Span::styled("  ⋯", Style::default().fg(Color::Yellow))
+                        } else {
+                            Span::styled("  ✓", Style::default().fg(Color::DarkGray))
+                        }
+                    } else {
+                        Span::styled("  ✓", Style::default().fg(Color::DarkGray))
+                    };
+                    spans.push(status_span);
                 }
                 let mut built = Line::from(spans);
                 if is_user {
