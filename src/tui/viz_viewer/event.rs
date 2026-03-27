@@ -1154,7 +1154,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.grow_viz_pane();
         }
         // Shrink viz pane by ~5%
-        KeyCode::Char('I') => {
+        KeyCode::Char('v') => {
             app.shrink_viz_pane();
         }
 
@@ -1574,7 +1574,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 KeyCode::Char('\\') => app.toggle_right_panel(),
                 KeyCode::Char('=') | KeyCode::BackTab => app.cycle_layout_mode(),
                 KeyCode::Char('i') => app.grow_viz_pane(),
-                KeyCode::Char('I') => app.shrink_viz_pane(),
+                KeyCode::Char('v') => app.shrink_viz_pane(),
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
                 }
@@ -1633,7 +1633,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('i') => {
             app.grow_viz_pane();
         }
-        KeyCode::Char('I') => {
+        KeyCode::Char('v') => {
             app.shrink_viz_pane();
         }
 

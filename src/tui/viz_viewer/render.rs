@@ -8010,7 +8010,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("Alt-←/→", "Cycle inspector views (with slide animation)"),
         binding("\\", "Toggle right panel visible"),
         binding("i", "Grow viz pane (10% per press, wraps)"),
-        binding("I", "Shrink viz pane (10% per press, wraps)"),
+        binding("v", "Shrink viz pane (10% per press, wraps)"),
         binding("=", "Cycle layout: split/panel/graph"),
         binding("0-7", "Switch tab: Chat/.../Files/Coord"),
         binding("R", "Toggle raw JSON in Detail tab"),
