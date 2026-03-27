@@ -1915,6 +1915,10 @@ pub struct AgencyConfig {
     /// Project ID on the Agency server. Required for assignment requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agency_project_id: Option<String>,
+
+    /// URL for upstream agency bureau CSV. Used by `wg agency import --upstream`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_url: Option<String>,
 }
 
 impl Default for AgencyConfig {
@@ -1961,6 +1965,7 @@ impl Default for AgencyConfig {
             agency_token_path: None,
             assignment_source: None,
             agency_project_id: None,
+            upstream_url: None,
         }
     }
 }

@@ -2608,8 +2608,16 @@ pub enum AgencyCommands {
 
     /// Import Agency's starter.csv primitives into WorkGraph
     Import {
-        /// Path to the CSV file to import
-        csv_path: String,
+        /// Path to the CSV file to import (omit when using --url or --upstream)
+        csv_path: Option<String>,
+
+        /// Fetch CSV from a remote URL instead of local file
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Fetch from the configured upstream URL (agency.upstream_url in config)
+        #[arg(long)]
+        upstream: bool,
 
         /// Show what would be imported without writing files
         #[arg(long)]
@@ -2618,6 +2626,14 @@ pub enum AgencyCommands {
         /// Provenance tag (default: agency-import)
         #[arg(long)]
         tag: Option<String>,
+
+        /// Re-import even if manifest hash matches (skip change detection)
+        #[arg(long)]
+        force: bool,
+
+        /// Only check if upstream has changed (exit 0 = changed, exit 1 = same)
+        #[arg(long)]
+        check: bool,
     },
 
     /// Push local entities to another agency store

@@ -1135,9 +1135,24 @@ fn main() -> Result<()> {
             }
             AgencyCommands::Import {
                 csv_path,
+                url,
+                upstream,
                 dry_run,
                 tag,
-            } => commands::agency_import::run(&workgraph_dir, &csv_path, dry_run, tag.as_deref()).map(|_| ()),
+                force,
+                check,
+            } => {
+                let opts = commands::agency_import::ImportOptions {
+                    csv_path,
+                    url,
+                    upstream,
+                    dry_run,
+                    tag,
+                    force,
+                    check,
+                };
+                commands::agency_import::run_import(&workgraph_dir, opts).map(|_| ())
+            }
             AgencyCommands::Push {
                 target,
                 entity_ids,

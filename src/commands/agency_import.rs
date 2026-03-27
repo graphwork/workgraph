@@ -6,6 +6,7 @@ use workgraph::agency::{
     self, AccessControl, AccessPolicy, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
     PerformanceRecord, RoleComponent, TradeoffConfig,
 };
+use workgraph::config::Config;
 
 /// Counts of primitives imported from a CSV file.
 #[derive(Debug, Clone, Default)]
@@ -69,44 +70,60 @@ pub fn write_manifest(
     Ok(())
 }
 
-/// Detected CSV format based on header or column count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CsvFormat {
-    /// Old 7-column format: type,name,description,col4,col5,domain_tags,quality_score
-    Legacy,
-    /// Agency 9-column format: type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
-    Agency,
+/// Options for the import command (covers local file, URL, and upstream modes).
+pub struct ImportOptions {
+    pub csv_path: Option<String>,
+    pub url: Option<String>,
+    pub upstream: bool,
+    pub dry_run: bool,
+    pub tag: Option<String>,
+    pub force: bool,
+    pub check: bool,
 }
 
-/// Detect the CSV format from the header row.
-fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
-    // Check by column count first
-    if headers.len() >= 9 {
-        return CsvFormat::Agency;
+/// Fetch CSV content from a remote URL.
+fn fetch_csv(url: &str) -> Result<Vec<u8>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let response = client
+        .get(url)
+        .send()
+        .with_context(|| format!("Failed to fetch '{}'", url))?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("HTTP {} fetching '{}'", response.status(), url);
     }
-    // Also check by header names for explicit detection
-    if let Some(col3) = headers.get(3) {
-        let col3 = col3.trim().to_lowercase();
-        if col3 == "quality" || col3 == "domain_specificity" {
-            return CsvFormat::Agency;
-        }
-    }
-    CsvFormat::Legacy
+
+    let bytes = response
+        .bytes()
+        .with_context(|| format!("Failed to read response from '{}'", url))?;
+
+    Ok(bytes.to_vec())
 }
 
-/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into WorkGraph.
-///
-/// Supports two CSV formats:
-///
-/// **Legacy (7 columns):** type,name,description,col4,col5,domain_tags,quality_score
-///   - type: skill | outcome | tradeoff
-///
-/// **Agency (9 columns):** type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
-///   - type: role_component | desired_outcome | trade_off_config
-///
-/// Both formats are auto-detected. Legacy type names (skill/outcome/tradeoff) are also
-/// accepted in the 9-column format and vice versa.
-pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str>) -> Result<ImportCounts> {
+/// Read the existing import manifest, if any.
+pub fn read_manifest(workgraph_dir: &Path) -> Result<Option<ImportManifest>> {
+    let path = manifest_path(workgraph_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path).context("Failed to read import manifest")?;
+    let manifest: ImportManifest =
+        serde_yaml::from_str(&content).context("Failed to parse import manifest")?;
+    Ok(Some(manifest))
+}
+
+/// Run import from raw CSV bytes (shared by local-file and URL-fetch paths).
+pub fn run_from_bytes(
+    workgraph_dir: &Path,
+    source_label: &str,
+    csv_bytes: &[u8],
+    dry_run: bool,
+    tag: Option<&str>,
+) -> Result<ImportCounts> {
     let provenance_tag = tag.unwrap_or("agency-import");
     let agency_dir = workgraph_dir.join("agency");
 
@@ -114,9 +131,7 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         agency::init(&agency_dir).context("Failed to initialize agency directory")?;
     }
 
-    let csv_bytes = std::fs::read(csv_path)
-        .with_context(|| format!("Failed to read '{}'", csv_path))?;
-    let csv_content = String::from_utf8_lossy(&csv_bytes);
+    let csv_content = String::from_utf8_lossy(csv_bytes);
     let mut reader = csv::Reader::from_reader(csv_content.as_bytes());
 
     let format = detect_format(reader.headers().context("Failed to read CSV headers")?);
@@ -133,7 +148,6 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         let name = record.get(1).unwrap_or("").trim().to_string();
         let description = record.get(2).unwrap_or("").trim().to_string();
 
-        // Parse format-specific columns
         let (quality_score, domain_tags, metadata, parent_content_hash) = match format {
             CsvFormat::Agency => parse_agency_columns(&record),
             CsvFormat::Legacy => parse_legacy_columns(&record),
@@ -164,7 +178,6 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
             evaluations: vec![],
         };
 
-        // Normalize type names: accept both old and new format names
         let normalized_type = match ptype {
             "skill" | "role_component" => "component",
             "outcome" | "desired_outcome" => "outcome",
@@ -203,8 +216,6 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
                 components_count += 1;
             }
             "outcome" => {
-                // In legacy format, col5 contains newline-separated success criteria.
-                // In Agency format, there's no separate criteria column; use description as-is.
                 let success_criteria = match format {
                     CsvFormat::Legacy => {
                         let col5 = record.get(4).unwrap_or("").trim().to_string();
@@ -242,9 +253,6 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
                 outcomes_count += 1;
             }
             "tradeoff" => {
-                // In legacy format, col4=acceptable tradeoffs, col5=unacceptable tradeoffs (comma-separated).
-                // In Agency format, the description is a single coherent trade-off statement;
-                // we store it as the description and use the description as a single acceptable entry.
                 let (acceptable, unacceptable) = match format {
                     CsvFormat::Legacy => {
                         let col4 = record.get(3).unwrap_or("").trim().to_string();
@@ -262,8 +270,6 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
                         (acc, unacc)
                     }
                     CsvFormat::Agency => {
-                        // Description is the complete trade-off statement.
-                        // Don't split into acceptable/unacceptable lists.
                         (vec![], vec![])
                     }
                 };
@@ -323,12 +329,139 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         println!("  Skipped:    {}", skipped);
     }
 
-    // Write/update the provenance manifest on non-dry-run imports
     if !dry_run {
-        write_manifest(workgraph_dir, csv_path, &csv_bytes, &counts)?;
+        write_manifest(workgraph_dir, source_label, csv_bytes, &counts)?;
     }
 
     Ok(counts)
+}
+
+/// Unified entry point for `wg agency import` supporting local file, URL, and upstream modes.
+pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCounts> {
+    // Determine the CSV source
+    let source_count = opts.csv_path.is_some() as u8 + opts.url.is_some() as u8 + opts.upstream as u8;
+    if source_count > 1 {
+        anyhow::bail!("Specify only one of: CSV_PATH, --url, or --upstream");
+    }
+
+    if let Some(ref csv_path) = opts.csv_path {
+        // Local file path — existing behavior
+        return run(workgraph_dir, csv_path, opts.dry_run, opts.tag.as_deref());
+    }
+
+    // Resolve the URL (either explicit --url or --upstream from config)
+    let url = if let Some(ref url) = opts.url {
+        url.clone()
+    } else if opts.upstream {
+        let cfg = Config::load_merged(workgraph_dir)?;
+        cfg.agency
+            .upstream_url
+            .ok_or_else(|| anyhow::anyhow!(
+                "No upstream URL configured. Set agency.upstream_url in config:\n  wg config --set agency.upstream_url=<URL>"
+            ))?
+    } else {
+        anyhow::bail!("Specify one of: CSV_PATH, --url <URL>, or --upstream");
+    };
+
+    // Change detection: compare hash of fetched CSV against manifest
+    if !opts.force || opts.check {
+        if let Some(existing_manifest) = read_manifest(workgraph_dir)? {
+            // Fetch and check
+            let csv_bytes = match fetch_csv(&url) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    if opts.check {
+                        eprintln!("Warning: could not fetch upstream: {}", e);
+                        std::process::exit(2);
+                    }
+                    return Err(e);
+                }
+            };
+            let new_hash = sha256_hex(&csv_bytes);
+
+            if opts.check {
+                if new_hash == existing_manifest.content_hash {
+                    println!("Up to date (hash: {}…)", &new_hash[..12]);
+                    std::process::exit(1);
+                } else {
+                    println!("Upstream has changed (local: {}… remote: {}…)",
+                        &existing_manifest.content_hash[..12], &new_hash[..12]);
+                    std::process::exit(0);
+                }
+            }
+
+            if !opts.force && new_hash == existing_manifest.content_hash {
+                println!("Already up to date (hash: {}…)", &new_hash[..12]);
+                return Ok(ImportCounts::default());
+            }
+
+            // Hash differs — import
+            return run_from_bytes(workgraph_dir, &url, &csv_bytes, opts.dry_run, opts.tag.as_deref());
+        }
+    }
+
+    // No existing manifest or --force: fetch and import
+    let csv_bytes = match fetch_csv(&url) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Warning: could not fetch upstream CSV: {}", e);
+            if opts.check {
+                std::process::exit(2);
+            }
+            return Err(e);
+        }
+    };
+
+    if opts.check {
+        // No manifest to compare against — treat as changed
+        println!("No previous import found; upstream available");
+        std::process::exit(0);
+    }
+
+    run_from_bytes(workgraph_dir, &url, &csv_bytes, opts.dry_run, opts.tag.as_deref())
+}
+
+/// Detected CSV format based on header or column count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CsvFormat {
+    /// Old 7-column format: type,name,description,col4,col5,domain_tags,quality_score
+    Legacy,
+    /// Agency 9-column format: type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
+    Agency,
+}
+
+/// Detect the CSV format from the header row.
+fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
+    // Check by column count first
+    if headers.len() >= 9 {
+        return CsvFormat::Agency;
+    }
+    // Also check by header names for explicit detection
+    if let Some(col3) = headers.get(3) {
+        let col3 = col3.trim().to_lowercase();
+        if col3 == "quality" || col3 == "domain_specificity" {
+            return CsvFormat::Agency;
+        }
+    }
+    CsvFormat::Legacy
+}
+
+/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into WorkGraph.
+///
+/// Supports two CSV formats:
+///
+/// **Legacy (7 columns):** type,name,description,col4,col5,domain_tags,quality_score
+///   - type: skill | outcome | tradeoff
+///
+/// **Agency (9 columns):** type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
+///   - type: role_component | desired_outcome | trade_off_config
+///
+/// Both formats are auto-detected. Legacy type names (skill/outcome/tradeoff) are also
+/// accepted in the 9-column format and vice versa.
+pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str>) -> Result<ImportCounts> {
+    let csv_bytes = std::fs::read(csv_path)
+        .with_context(|| format!("Failed to read '{}'", csv_path))?;
+    run_from_bytes(workgraph_dir, csv_path, &csv_bytes, dry_run, tag)
 }
 
 /// Parse columns from Agency's 9-column CSV format.
@@ -834,5 +967,263 @@ mod tests {
 
         assert_eq!(manifest1.content_hash, manifest2.content_hash);
         assert_eq!(manifest1.counts.role_components, manifest2.counts.role_components);
+    }
+
+    // --- Tests for the new URL/upstream import functionality ---
+
+    #[test]
+    fn test_agency_pull_run_from_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                     role_component,Test Skill,Does testing,80,high,testing,inst-001,,task\n";
+
+        let counts = run_from_bytes(&wg_dir, "test://fixture.csv", csv, false, None).unwrap();
+        assert_eq!(counts.role_components, 1);
+        assert_eq!(counts.desired_outcomes, 0);
+        assert_eq!(counts.trade_off_configs, 0);
+
+        // Verify manifest was written with source URL
+        let manifest = read_manifest(&wg_dir).unwrap().unwrap();
+        assert_eq!(manifest.source, "test://fixture.csv");
+        assert_eq!(manifest.counts.role_components, 1);
+    }
+
+    #[test]
+    fn test_agency_pull_read_manifest_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let result = read_manifest(&wg_dir).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_agency_pull_read_manifest_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_agency_format_csv(tmp.path());
+        run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+
+        let manifest = read_manifest(&wg_dir).unwrap().unwrap();
+        assert!(!manifest.content_hash.is_empty());
+        assert_eq!(manifest.counts.role_components, 2);
+    }
+
+    #[test]
+    fn test_agency_pull_change_detection_same_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                     role_component,Detect,Detection test,75,low,test,inst-001,,task\n";
+
+        // First import writes manifest
+        let counts1 = run_from_bytes(&wg_dir, "test://same.csv", csv, false, None).unwrap();
+        assert_eq!(counts1.role_components, 1);
+
+        let manifest = read_manifest(&wg_dir).unwrap().unwrap();
+        let hash = sha256_hex(csv);
+        assert_eq!(manifest.content_hash, hash);
+    }
+
+    #[test]
+    fn test_agency_pull_change_detection_different_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv1 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                      role_component,V1,Version one,75,low,test,inst-001,,task\n";
+        let csv2 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                      role_component,V1,Version one,75,low,test,inst-001,,task\n\
+                      role_component,V2,Version two,80,medium,test,inst-002,,task\n";
+
+        run_from_bytes(&wg_dir, "test://v1.csv", csv1, false, None).unwrap();
+        let m1 = read_manifest(&wg_dir).unwrap().unwrap();
+
+        run_from_bytes(&wg_dir, "test://v2.csv", csv2, false, None).unwrap();
+        let m2 = read_manifest(&wg_dir).unwrap().unwrap();
+
+        assert_ne!(m1.content_hash, m2.content_hash);
+        assert_eq!(m2.counts.role_components, 2);
+    }
+
+    #[test]
+    fn test_agency_pull_import_from_local_via_run_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_agency_format_csv(tmp.path());
+
+        let opts = ImportOptions {
+            csv_path: Some(csv_path.to_str().unwrap().to_string()),
+            url: None,
+            upstream: false,
+            dry_run: false,
+            tag: None,
+            force: false,
+            check: false,
+        };
+        let counts = run_import(&wg_dir, opts).unwrap();
+        assert_eq!(counts.role_components, 2);
+        assert_eq!(counts.desired_outcomes, 1);
+        assert_eq!(counts.trade_off_configs, 1);
+    }
+
+    #[test]
+    fn test_agency_pull_error_multiple_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let opts = ImportOptions {
+            csv_path: Some("file.csv".to_string()),
+            url: Some("http://example.com/file.csv".to_string()),
+            upstream: false,
+            dry_run: false,
+            tag: None,
+            force: false,
+            check: false,
+        };
+        let result = run_import(&wg_dir, opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Specify only one"));
+    }
+
+    #[test]
+    fn test_agency_pull_error_no_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let opts = ImportOptions {
+            csv_path: None,
+            url: None,
+            upstream: false,
+            dry_run: false,
+            tag: None,
+            force: false,
+            check: false,
+        };
+        let result = run_import(&wg_dir, opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Specify one of"));
+    }
+
+    #[test]
+    fn test_agency_pull_upstream_no_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let opts = ImportOptions {
+            csv_path: None,
+            url: None,
+            upstream: true,
+            dry_run: false,
+            tag: None,
+            force: false,
+            check: false,
+        };
+        let result = run_import(&wg_dir, opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No upstream URL configured"));
+    }
+
+    #[test]
+    fn test_agency_pull_url_network_error_graceful() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        // Use a URL that will fail to connect (invalid host)
+        let opts = ImportOptions {
+            csv_path: None,
+            url: Some("http://192.0.2.1:1/nonexistent.csv".to_string()),
+            upstream: false,
+            dry_run: false,
+            tag: None,
+            force: false,
+            check: false,
+        };
+        let result = run_import(&wg_dir, opts);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to fetch") || err_msg.contains("error"),
+            "Error should describe network failure, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_agency_pull_run_from_bytes_dry_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                     role_component,Dry,Dry run test,80,high,testing,inst-001,,task\n";
+
+        let counts = run_from_bytes(&wg_dir, "test://dry.csv", csv, true, None).unwrap();
+        assert_eq!(counts.role_components, 1);
+
+        // No manifest should be written
+        assert!(read_manifest(&wg_dir).unwrap().is_none());
+        // No agency directory should be created
+        assert!(!wg_dir.join("agency/primitives/components").exists());
+    }
+
+    #[test]
+    fn test_agency_pull_run_from_bytes_with_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                     role_component,Tagged,Tagged import,80,high,testing,inst-001,,task\n";
+
+        run_from_bytes(&wg_dir, "test://tagged.csv", csv, false, Some("custom-tag")).unwrap();
+
+        // Verify component was saved with custom tag provenance
+        let components_dir = wg_dir.join("agency/primitives/components");
+        let entries: Vec<_> = std::fs::read_dir(&components_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let component: RoleComponent =
+            agency::load_component(&entries[0].as_ref().unwrap().path()).unwrap();
+        assert!(component.lineage.created_by.starts_with("custom-tag"));
+    }
+
+    #[test]
+    fn test_agency_pull_additive_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv1 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                      role_component,First,First component,80,high,testing,inst-001,,task\n";
+        let csv2 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                      role_component,Second,Second component,85,high,testing,inst-002,,task\n";
+
+        run_from_bytes(&wg_dir, "test://v1.csv", csv1, false, None).unwrap();
+        let count1 = std::fs::read_dir(wg_dir.join("agency/primitives/components"))
+            .unwrap()
+            .count();
+        assert_eq!(count1, 1);
+
+        run_from_bytes(&wg_dir, "test://v2.csv", csv2, false, None).unwrap();
+        let count2 = std::fs::read_dir(wg_dir.join("agency/primitives/components"))
+            .unwrap()
+            .count();
+        // Second import should ADD the new component, not remove the first
+        assert_eq!(count2, 2);
     }
 }
