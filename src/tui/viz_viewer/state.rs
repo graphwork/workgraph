@@ -1011,6 +1011,13 @@ pub struct ChatState {
     pub streaming_text: String,
     /// When `awaiting_response` was set to true (for spinner elapsed time).
     pub awaiting_since: Option<std::time::Instant>,
+    /// Whether there are older messages in the history file that haven't been loaded yet.
+    pub has_more_history: bool,
+    /// Total number of messages in the persisted history file.
+    pub total_history_count: usize,
+    /// Number of messages at the start of the history file that are NOT in memory.
+    /// Used by save to preserve unloaded older messages.
+    pub skipped_history_count: usize,
 }
 
 impl Default for ChatState {
@@ -1035,6 +1042,9 @@ impl Default for ChatState {
             chat_input_dismissed: false,
             streaming_text: String::new(),
             awaiting_since: None,
+            has_more_history: false,
+            total_history_count: 0,
+            skipped_history_count: 0,
         }
     }
 }
@@ -1111,10 +1121,14 @@ struct PersistedChatMessage {
     msg_queue_id: Option<u64>,
 }
 
-/// Path to the persisted chat history file for a specific coordinator.
-/// Coordinator 0 uses `chat-history.json` (backward compatible);
-/// other coordinators use `chat-history-{cid}.json`.
+/// Path to the persisted chat history JSONL file for a specific coordinator.
+/// Uses `chat-history-{cid}.jsonl` for all coordinators.
 fn chat_history_path(workgraph_dir: &std::path::Path, coordinator_id: u32) -> std::path::PathBuf {
+    workgraph_dir.join(format!("chat-history-{}.jsonl", coordinator_id))
+}
+
+/// Path to the legacy JSON array chat history file (for backward-compat migration).
+fn chat_history_legacy_path(workgraph_dir: &std::path::Path, coordinator_id: u32) -> std::path::PathBuf {
     if coordinator_id == 0 {
         workgraph_dir.join("chat-history.json")
     } else {
@@ -1122,56 +1136,257 @@ fn chat_history_path(workgraph_dir: &std::path::Path, coordinator_id: u32) -> st
     }
 }
 
-/// Save chat messages to disk for a specific coordinator. Respects config for max history size.
+fn persisted_to_chat_message(p: PersistedChatMessage) -> ChatMessage {
+    ChatMessage {
+        role: match p.role.as_str() {
+            "user" => ChatRole::User,
+            "coordinator" => ChatRole::Coordinator,
+            "sent_message" => ChatRole::SentMessage,
+            _ => ChatRole::System,
+        },
+        text: p.text,
+        full_text: p.full_text,
+        attachments: p.attachments,
+        edited: p.edited,
+        inbox_id: None,
+        user: p.user,
+        target_task: p.target_task,
+        msg_timestamp: p.msg_timestamp,
+        read_at: p.read_at,
+        msg_queue_id: p.msg_queue_id,
+    }
+}
+
+fn chat_message_to_persisted(m: &ChatMessage) -> PersistedChatMessage {
+    PersistedChatMessage {
+        role: match m.role {
+            ChatRole::User => "user".to_string(),
+            ChatRole::Coordinator => "coordinator".to_string(),
+            ChatRole::System => "system".to_string(),
+            ChatRole::SentMessage => "sent_message".to_string(),
+        },
+        text: m.text.clone(),
+        full_text: m.full_text.clone(),
+        attachments: m.attachments.clone(),
+        timestamp: m.msg_timestamp.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        edited: m.edited,
+        user: m.user.clone(),
+        target_task: m.target_task.clone(),
+        msg_timestamp: m.msg_timestamp.clone(),
+        read_at: m.read_at.clone(),
+        msg_queue_id: m.msg_queue_id,
+    }
+}
+
+/// Save chat messages to disk as JSONL for a specific coordinator.
+/// Respects config for max history size.
 fn save_chat_history(
     workgraph_dir: &std::path::Path,
     coordinator_id: u32,
     messages: &[ChatMessage],
+) {
+    save_chat_history_with_skip(workgraph_dir, coordinator_id, messages, 0);
+}
+
+/// Save chat messages to disk, preserving `skipped_count` older messages from the existing file.
+/// When only a partial page of history was loaded, we must not overwrite unloaded older messages.
+fn save_chat_history_with_skip(
+    workgraph_dir: &std::path::Path,
+    coordinator_id: u32,
+    messages: &[ChatMessage],
+    skipped_count: usize,
 ) {
     let config = Config::load_or_default(workgraph_dir);
     if !config.tui.chat_history {
         return;
     }
     let max = config.tui.chat_history_max;
-    let skip = messages.len().saturating_sub(max);
-    let persisted: Vec<PersistedChatMessage> = messages[skip..]
+    let path = chat_history_path(workgraph_dir, coordinator_id);
+
+    let mut buf = String::new();
+
+    // If there are unloaded older messages in the file, preserve them.
+    if skipped_count > 0 {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
+            // Take the first `skipped_count` lines (the unloaded portion).
+            let preserve_count = skipped_count.min(lines.len());
+            for line in &lines[..preserve_count] {
+                buf.push_str(line);
+                buf.push('\n');
+            }
+        }
+    }
+
+    // Append current in-memory messages.
+    for m in messages {
+        let p = chat_message_to_persisted(m);
+        if let Ok(line) = serde_json::to_string(&p) {
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+    }
+
+    // Trim to max from the end (keeps the most recent messages).
+    let all_lines: Vec<&str> = buf.lines().filter(|l| !l.trim().is_empty()).collect();
+    let total = all_lines.len();
+    let skip = total.saturating_sub(max);
+    let mut final_buf = String::new();
+    for line in &all_lines[skip..] {
+        final_buf.push_str(line);
+        final_buf.push('\n');
+    }
+
+    let _ = std::fs::write(&path, final_buf);
+}
+
+/// Result of a paginated chat history load.
+struct PaginatedChatHistory {
+    /// The loaded messages (most recent page).
+    messages: Vec<ChatMessage>,
+    /// Total number of messages in the history file.
+    total_count: usize,
+    /// Whether there are older messages not yet loaded.
+    has_more: bool,
+}
+
+/// Load the last `limit` persisted chat messages from disk for a specific coordinator.
+/// Handles both new JSONL format and legacy JSON array format (with auto-migration).
+fn load_persisted_chat_history_paginated(
+    workgraph_dir: &std::path::Path,
+    coordinator_id: u32,
+    limit: usize,
+) -> PaginatedChatHistory {
+    let config = Config::load_or_default(workgraph_dir);
+    if !config.tui.chat_history {
+        return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false };
+    }
+
+    let jsonl_path = chat_history_path(workgraph_dir, coordinator_id);
+
+    // Try JSONL format first.
+    if jsonl_path.exists() {
+        return load_jsonl_tail(&jsonl_path, limit);
+    }
+
+    // Fall back to legacy JSON array format and auto-migrate.
+    let legacy_path = chat_history_legacy_path(workgraph_dir, coordinator_id);
+    if legacy_path.exists() {
+        let result = load_legacy_json_paginated(&legacy_path, limit);
+        // Auto-migrate: rewrite as JSONL if we loaded anything.
+        if result.total_count > 0 {
+            // Load ALL messages for migration (not just the page).
+            let all = load_legacy_json_all(&legacy_path);
+            if !all.is_empty() {
+                let mut buf = String::new();
+                for m in &all {
+                    let p = chat_message_to_persisted(m);
+                    if let Ok(line) = serde_json::to_string(&p) {
+                        buf.push_str(&line);
+                        buf.push('\n');
+                    }
+                }
+                let _ = std::fs::write(&jsonl_path, buf);
+                // Remove legacy file after successful migration.
+                let _ = std::fs::remove_file(&legacy_path);
+            }
+        }
+        return result;
+    }
+
+    PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false }
+}
+
+/// Efficiently load the last `limit` messages from a JSONL file by reading from the end.
+fn load_jsonl_tail(path: &std::path::Path, limit: usize) -> PaginatedChatHistory {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false },
+    };
+
+    let file_len = match file.seek(SeekFrom::End(0)) {
+        Ok(len) => len as usize,
+        Err(_) => return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false },
+    };
+
+    if file_len == 0 {
+        return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false };
+    }
+
+    // Read the file contents and extract the tail.
+    let _ = file.seek(SeekFrom::Start(0));
+    let mut all_data = String::new();
+    if file.read_to_string(&mut all_data).is_err() {
+        return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false };
+    }
+
+    let lines: Vec<&str> = all_data.lines().filter(|l| !l.trim().is_empty()).collect();
+    let total_count = lines.len();
+
+    if total_count == 0 {
+        return PaginatedChatHistory { messages: vec![], total_count: 0, has_more: false };
+    }
+
+    let skip = total_count.saturating_sub(limit);
+    let tail_lines = &lines[skip..];
+
+    let messages: Vec<ChatMessage> = tail_lines
         .iter()
-        .map(|m| PersistedChatMessage {
-            role: match m.role {
-                ChatRole::User => "user".to_string(),
-                ChatRole::Coordinator => "coordinator".to_string(),
-                ChatRole::System => "system".to_string(),
-                ChatRole::SentMessage => "sent_message".to_string(),
-            },
-            text: m.text.clone(),
-            full_text: m.full_text.clone(),
-            attachments: m.attachments.clone(),
-            timestamp: m.msg_timestamp.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            edited: m.edited,
-            user: m.user.clone(),
-            target_task: m.target_task.clone(),
-            msg_timestamp: m.msg_timestamp.clone(),
-            read_at: m.read_at.clone(),
-            msg_queue_id: m.msg_queue_id,
+        .filter_map(|line| {
+            serde_json::from_str::<PersistedChatMessage>(line)
+                .ok()
+                .map(persisted_to_chat_message)
         })
         .collect();
-    let path = chat_history_path(workgraph_dir, coordinator_id);
-    if let Ok(json) = serde_json::to_string(&persisted) {
-        let _ = std::fs::write(&path, json);
+
+    PaginatedChatHistory {
+        has_more: skip > 0,
+        total_count,
+        messages,
     }
 }
 
-/// Load persisted chat history from disk for a specific coordinator.
-fn load_persisted_chat_history(
-    workgraph_dir: &std::path::Path,
-    coordinator_id: u32,
+/// Load a specific page of older messages from a JSONL file.
+/// `loaded_count` is how many messages are already loaded from the tail.
+/// Returns the next `page_size` messages before those already loaded.
+fn load_jsonl_page(
+    path: &std::path::Path,
+    loaded_count: usize,
+    page_size: usize,
 ) -> Vec<ChatMessage> {
-    let config = Config::load_or_default(workgraph_dir);
-    if !config.tui.chat_history {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+
+    let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
+    let total = lines.len();
+
+    if loaded_count >= total {
         return vec![];
     }
-    let path = chat_history_path(workgraph_dir, coordinator_id);
-    let data = match std::fs::read_to_string(&path) {
+
+    // Messages are in chronological order. We've loaded the last `loaded_count`.
+    // We want `page_size` messages before those.
+    let end = total.saturating_sub(loaded_count);
+    let start = end.saturating_sub(page_size);
+    let page_lines = &lines[start..end];
+
+    page_lines
+        .iter()
+        .filter_map(|line| {
+            serde_json::from_str::<PersistedChatMessage>(line)
+                .ok()
+                .map(persisted_to_chat_message)
+        })
+        .collect()
+}
+
+/// Load all messages from a legacy JSON array file.
+fn load_legacy_json_all(path: &std::path::Path) -> Vec<ChatMessage> {
+    let data = match std::fs::read_to_string(path) {
         Ok(d) => d,
         Err(_) => return vec![],
     };
@@ -1179,27 +1394,30 @@ fn load_persisted_chat_history(
         Ok(p) => p,
         Err(_) => return vec![],
     };
-    persisted
-        .into_iter()
-        .map(|p| ChatMessage {
-            role: match p.role.as_str() {
-                "user" => ChatRole::User,
-                "coordinator" => ChatRole::Coordinator,
-                "sent_message" => ChatRole::SentMessage,
-                _ => ChatRole::System,
-            },
-            text: p.text,
-            full_text: p.full_text,
-            attachments: p.attachments,
-            edited: p.edited,
-            inbox_id: None,
-            user: p.user,
-            target_task: p.target_task,
-            msg_timestamp: p.msg_timestamp,
-            read_at: p.read_at,
-            msg_queue_id: p.msg_queue_id,
-        })
-        .collect()
+    persisted.into_iter().map(persisted_to_chat_message).collect()
+}
+
+/// Load the last `limit` messages from a legacy JSON array file.
+fn load_legacy_json_paginated(path: &std::path::Path, limit: usize) -> PaginatedChatHistory {
+    let all = load_legacy_json_all(path);
+    let total_count = all.len();
+    let skip = total_count.saturating_sub(limit);
+    let messages = all.into_iter().skip(skip).collect();
+    PaginatedChatHistory {
+        messages,
+        total_count,
+        has_more: skip > 0,
+    }
+}
+
+/// Load persisted chat history from disk (backward-compat wrapper — loads all messages).
+#[cfg(test)]
+fn load_persisted_chat_history(
+    workgraph_dir: &std::path::Path,
+    coordinator_id: u32,
+) -> Vec<ChatMessage> {
+    let result = load_persisted_chat_history_paginated(workgraph_dir, coordinator_id, usize::MAX);
+    result.messages
 }
 
 /// Persisted TUI state for focus restoration across restarts.
@@ -7361,7 +7579,7 @@ impl VizApp {
                             read_at: None,
                             msg_queue_id: None,
                         });
-                        save_chat_history(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages);
+                        save_chat_history_with_skip(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages, self.chat.skipped_history_count);
                         // Clear awaiting on error — no response will come.
                         if self.chat.last_request_id.as_deref() == Some(&request_id) {
                             self.chat.awaiting_response = false;
@@ -8836,17 +9054,22 @@ impl VizApp {
         self.load_chat_history_for_coordinator(self.active_coordinator_id);
 
         // Also pre-load persisted chat for all other known coordinators so
-        // switch_coordinator doesn't lose history.
+        // switch_coordinator doesn't lose history. Use pagination for these too.
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let page_size = config.tui.chat_page_size;
         let other_ids: Vec<u32> = self
             .list_coordinator_ids()
             .into_iter()
             .filter(|id| *id != self.active_coordinator_id)
             .collect();
         for cid in other_ids {
-            let msgs = load_persisted_chat_history(&self.workgraph_dir, cid);
-            if !msgs.is_empty() {
+            let result = load_persisted_chat_history_paginated(&self.workgraph_dir, cid, page_size);
+            if !result.messages.is_empty() {
                 let mut state = ChatState::default();
-                state.messages = msgs;
+                state.messages = result.messages;
+                state.has_more_history = result.has_more;
+                state.total_history_count = result.total_count;
+                state.skipped_history_count = result.total_count.saturating_sub(state.messages.len());
                 // Set outbox cursor so we don't re-display old messages.
                 if let Ok(outbox) =
                     workgraph::chat::read_outbox_since_for(&self.workgraph_dir, cid, 0)
@@ -8858,14 +9081,19 @@ impl VizApp {
         }
     }
 
-    /// Load chat history for a specific coordinator into self.chat.
+    /// Load chat history for a specific coordinator into self.chat (paginated).
     fn load_chat_history_for_coordinator(&mut self, coordinator_id: u32) {
-        let persisted = load_persisted_chat_history(&self.workgraph_dir, coordinator_id);
-        if !persisted.is_empty() {
-            self.chat.messages = persisted;
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let page_size = config.tui.chat_page_size;
+        let result = load_persisted_chat_history_paginated(&self.workgraph_dir, coordinator_id, page_size);
+        if !result.messages.is_empty() {
+            self.chat.messages = result.messages;
+            self.chat.has_more_history = result.has_more;
+            self.chat.total_history_count = result.total_count;
+            self.chat.skipped_history_count = result.total_count.saturating_sub(self.chat.messages.len());
         } else {
             // Fall back to inbox/outbox (e.g. first run after upgrade).
-            let history = workgraph::chat::read_history(&self.workgraph_dir).unwrap_or_default();
+            let history = workgraph::chat::read_history_for(&self.workgraph_dir, coordinator_id).unwrap_or_default();
 
             self.chat.messages.clear();
             for msg in &history {
@@ -8905,6 +9133,10 @@ impl VizApp {
                 });
             }
 
+            self.chat.has_more_history = false;
+            self.chat.total_history_count = self.chat.messages.len();
+            self.chat.skipped_history_count = 0;
+
             // Persist the loaded history so next restart uses the file.
             if !self.chat.messages.is_empty() {
                 save_chat_history(
@@ -8928,15 +9160,16 @@ impl VizApp {
 
     /// Save all coordinator chat states to disk (called on TUI exit).
     pub fn save_all_chat_state(&self) {
-        // Save the active coordinator's chat.
-        save_chat_history(
+        // Save the active coordinator's chat, preserving unloaded older messages.
+        save_chat_history_with_skip(
             &self.workgraph_dir,
             self.active_coordinator_id,
             &self.chat.messages,
+            self.chat.skipped_history_count,
         );
-        // Save all other coordinators' chat states.
+        // Save all other coordinators' chat states, preserving unloaded older messages.
         for (cid, state) in &self.coordinator_chats {
-            save_chat_history(&self.workgraph_dir, *cid, &state.messages);
+            save_chat_history_with_skip(&self.workgraph_dir, *cid, &state.messages, state.skipped_history_count);
         }
         // Save TUI focus state.
         save_tui_state(
@@ -8944,6 +9177,39 @@ impl VizApp {
             self.active_coordinator_id,
             &self.right_panel_tab,
         );
+    }
+
+    /// Load the next page of older chat messages for the active coordinator.
+    /// Prepends older messages to the beginning of `self.chat.messages`.
+    /// Returns true if new messages were loaded.
+    pub fn load_more_chat_history(&mut self) -> bool {
+        if !self.chat.has_more_history {
+            return false;
+        }
+
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let page_size = config.tui.chat_page_size;
+        let loaded_count = self.chat.messages.len();
+
+        let jsonl_path = chat_history_path(&self.workgraph_dir, self.active_coordinator_id);
+        let older_messages = load_jsonl_page(&jsonl_path, loaded_count, page_size);
+
+        if older_messages.is_empty() {
+            self.chat.has_more_history = false;
+            return false;
+        }
+
+        // Prepend older messages to the beginning.
+        let newly_loaded = older_messages.len();
+        let mut combined = older_messages;
+        combined.append(&mut self.chat.messages);
+        self.chat.messages = combined;
+
+        // Update pagination state.
+        self.chat.skipped_history_count = self.chat.skipped_history_count.saturating_sub(newly_loaded);
+        self.chat.has_more_history = self.chat.skipped_history_count > 0;
+
+        true
     }
 
     /// Poll for new coordinator responses in the outbox and streaming updates.
@@ -9000,7 +9266,7 @@ impl VizApp {
         self.poll_interleaved_messages();
 
         // Persist updated chat history.
-        save_chat_history(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages);
+        save_chat_history_with_skip(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages, self.chat.skipped_history_count);
 
         // Phase 1 trigger: New message → Info toast (only when Chat panel isn't focused,
         // so we don't show redundant toasts when the user is already reading the chat).
@@ -9183,7 +9449,7 @@ impl VizApp {
         });
 
         // Persist updated chat history.
-        save_chat_history(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages);
+        save_chat_history_with_skip(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages, self.chat.skipped_history_count);
 
         // Reset scroll to bottom.
         self.chat.scroll = 0;
@@ -9311,7 +9577,7 @@ impl VizApp {
                             &new_text,
                         );
                     }
-                    save_chat_history(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages);
+                    save_chat_history_with_skip(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages, self.chat.skipped_history_count);
                 }
             }
             editor_clear(&mut self.chat.editor);
@@ -9338,7 +9604,7 @@ impl VizApp {
             );
         }
         self.chat.messages.remove(index);
-        save_chat_history(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages);
+        save_chat_history_with_skip(&self.workgraph_dir, self.active_coordinator_id, &self.chat.messages, self.chat.skipped_history_count);
         // Clear edit state
         self.chat.editing_index = None;
         self.chat.history_cursor = None;
@@ -9430,17 +9696,22 @@ impl VizApp {
         self.coordinator_chats
             .insert(self.active_coordinator_id, current);
 
-        // Load target chat state: try in-memory first, then persisted file, then default.
+        // Load target chat state: try in-memory first, then persisted file (paginated), then default.
         self.chat = self
             .coordinator_chats
             .remove(&target_id)
             .unwrap_or_else(|| {
-                let msgs = load_persisted_chat_history(&self.workgraph_dir, target_id);
-                if msgs.is_empty() {
+                let config = Config::load_or_default(&self.workgraph_dir);
+                let page_size = config.tui.chat_page_size;
+                let result = load_persisted_chat_history_paginated(&self.workgraph_dir, target_id, page_size);
+                if result.messages.is_empty() {
                     ChatState::default()
                 } else {
                     let mut state = ChatState::default();
-                    state.messages = msgs;
+                    state.has_more_history = result.has_more;
+                    state.total_history_count = result.total_count;
+                    state.skipped_history_count = result.total_count.saturating_sub(result.messages.len());
+                    state.messages = result.messages;
                     state
                 }
             });
@@ -16152,19 +16423,18 @@ mod tui_chat_tests {
         let tmp = TempDir::new().unwrap();
         let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 1, 2]);
 
-        // Coordinator 0 uses chat-history.json (backward compatible)
+        // All coordinators use chat-history-{N}.jsonl
         assert_eq!(
             chat_history_path(&wg_dir, 0),
-            wg_dir.join("chat-history.json")
+            wg_dir.join("chat-history-0.jsonl")
         );
-        // Others use chat-history-{N}.json
         assert_eq!(
             chat_history_path(&wg_dir, 1),
-            wg_dir.join("chat-history-1.json")
+            wg_dir.join("chat-history-1.jsonl")
         );
         assert_eq!(
             chat_history_path(&wg_dir, 2),
-            wg_dir.join("chat-history-2.json")
+            wg_dir.join("chat-history-2.jsonl")
         );
 
         // Save to different coordinators, verify files are independent
@@ -16181,6 +16451,38 @@ mod tui_chat_tests {
         assert_eq!(loaded_0[0].text, "coord 0");
         assert_eq!(loaded_1.len(), 1);
         assert_eq!(loaded_1[0].text, "coord 1");
+    }
+
+    /// Regression test: the fallback path in load_chat_history_for_coordinator
+    /// must use the coordinator-specific inbox/outbox, not the backward-compat
+    /// coordinator-0 wrappers. Otherwise coordinator N loads coordinator 0's
+    /// messages when no persisted chat-history file exists yet.
+    #[test]
+    fn chat_fallback_loads_correct_coordinator_inbox_outbox() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 3]);
+
+        // Write messages directly to coordinator 0 and 3 inbox/outbox
+        // (simulating the daemon writing chat without any persisted TUI history).
+        workgraph::chat::append_inbox_for(&wg_dir, 0, "hello from coord 0", "r0").unwrap();
+        workgraph::chat::append_outbox_for(&wg_dir, 0, "reply from coord 0", "r0").unwrap();
+        workgraph::chat::append_inbox_for(&wg_dir, 3, "hello from coord 3", "r3").unwrap();
+        workgraph::chat::append_outbox_for(&wg_dir, 3, "reply from coord 3", "r3").unwrap();
+
+        // Load for coordinator 3 — must NOT see coordinator 0's messages.
+        let mut app = build_test_app(&viz, &wg_dir);
+        app.active_coordinator_id = 3;
+        app.load_chat_history_for_coordinator(3);
+
+        // Should have exactly the coordinator 3 messages, not coordinator 0's.
+        let texts: Vec<&str> = app.chat.messages.iter().map(|m| m.text.as_str()).collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("coord 0")),
+            "Coordinator 3 loaded coordinator 0's messages (mixing bug): {:?}",
+            texts,
+        );
+        assert_eq!(app.chat.messages.len(), 2, "Expected 2 messages for coord 3, got: {:?}", texts);
+        assert!(texts.iter().any(|t| t.contains("coord 3")), "Missing coord 3 messages: {:?}", texts);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -16477,6 +16779,235 @@ mod tui_chat_tests {
         assert_eq!(
             app2.chat.messages[0].user.as_deref(),
             Some("coordinator-agent")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Pagination tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn chat_pagination_loads_only_last_page() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Set page size to 3
+        let config_path = wg_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[tui]\nchat_history = true\nchat_history_max = 1000\nchat_page_size = 3\n",
+        )
+        .unwrap();
+
+        // Save 10 messages
+        let messages: Vec<ChatMessage> = (0..10)
+            .map(|i| make_chat_message(ChatRole::User, &format!("message {}", i)))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        // Load paginated: should get last 3
+        let result = load_persisted_chat_history_paginated(&wg_dir, 0, 3);
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.total_count, 10);
+        assert!(result.has_more);
+        assert_eq!(result.messages[0].text, "message 7");
+        assert_eq!(result.messages[1].text, "message 8");
+        assert_eq!(result.messages[2].text, "message 9");
+    }
+
+    #[test]
+    fn chat_pagination_small_history_loads_all() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Save 2 messages, page_size = 100
+        let messages: Vec<ChatMessage> = (0..2)
+            .map(|i| make_chat_message(ChatRole::User, &format!("msg {}", i)))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        let result = load_persisted_chat_history_paginated(&wg_dir, 0, 100);
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.total_count, 2);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn chat_pagination_load_older_page() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Save 10 messages
+        let messages: Vec<ChatMessage> = (0..10)
+            .map(|i| make_chat_message(ChatRole::User, &format!("message {}", i)))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        let path = chat_history_path(&wg_dir, 0);
+
+        // Load last 3 (messages 7,8,9)
+        let tail = load_jsonl_tail(&path, 3);
+        assert_eq!(tail.messages.len(), 3);
+        assert_eq!(tail.messages[0].text, "message 7");
+
+        // Load next page of 3 (messages 4,5,6)
+        let page = load_jsonl_page(&path, 3, 3);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].text, "message 4");
+        assert_eq!(page[1].text, "message 5");
+        assert_eq!(page[2].text, "message 6");
+
+        // Load next page of 3 (messages 1,2,3)
+        let page2 = load_jsonl_page(&path, 6, 3);
+        assert_eq!(page2.len(), 3);
+        assert_eq!(page2[0].text, "message 1");
+        assert_eq!(page2[1].text, "message 2");
+        assert_eq!(page2[2].text, "message 3");
+
+        // Load remaining (message 0)
+        let page3 = load_jsonl_page(&path, 9, 3);
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].text, "message 0");
+
+        // Nothing left
+        let page4 = load_jsonl_page(&path, 10, 3);
+        assert!(page4.is_empty());
+    }
+
+    #[test]
+    fn chat_pagination_legacy_json_migration() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Write a legacy JSON array file
+        let legacy_path = chat_history_legacy_path(&wg_dir, 0);
+        let msgs: Vec<PersistedChatMessage> = (0..5)
+            .map(|i| {
+                let msg = make_chat_message(ChatRole::User, &format!("legacy {}", i));
+                chat_message_to_persisted(&msg)
+            })
+            .collect();
+        let json = serde_json::to_string(&msgs).unwrap();
+        std::fs::write(&legacy_path, json).unwrap();
+
+        // Load paginated — should auto-migrate
+        let result = load_persisted_chat_history_paginated(&wg_dir, 0, 3);
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.total_count, 5);
+        assert!(result.has_more);
+        assert_eq!(result.messages[0].text, "legacy 2");
+
+        // Legacy file should be removed, JSONL file should exist
+        let jsonl_path = chat_history_path(&wg_dir, 0);
+        assert!(jsonl_path.exists(), "JSONL file should exist after migration");
+        assert!(!legacy_path.exists(), "Legacy JSON file should be removed after migration");
+
+        // Second load should use the JSONL file directly
+        let result2 = load_persisted_chat_history_paginated(&wg_dir, 0, 3);
+        assert_eq!(result2.messages.len(), 3);
+        assert_eq!(result2.messages[0].text, "legacy 2");
+    }
+
+    #[test]
+    fn chat_pagination_jsonl_format_correctness() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Save messages and verify file is JSONL format
+        let messages: Vec<ChatMessage> = (0..3)
+            .map(|i| make_chat_message(ChatRole::User, &format!("msg {}", i)))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        let path = chat_history_path(&wg_dir, 0);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+
+        // Each line should be valid JSON
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            assert!(
+                serde_json::from_str::<PersistedChatMessage>(line).is_ok(),
+                "Each line should be valid JSON: {}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn chat_pagination_save_preserves_unloaded_messages() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Save 10 messages
+        let messages: Vec<ChatMessage> = (0..10)
+            .map(|i| make_chat_message(ChatRole::User, &format!("message {}", i)))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        // Load only the last 3 (simulating paginated load)
+        let result = load_persisted_chat_history_paginated(&wg_dir, 0, 3);
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.total_count, 10);
+
+        // Add a new message (simulating a message arriving during the session)
+        let mut loaded = result.messages;
+        loaded.push(make_chat_message(ChatRole::Coordinator, "new response"));
+
+        // Save with skipped count — should preserve the 7 unloaded messages
+        let skipped = result.total_count.saturating_sub(3);
+        save_chat_history_with_skip(&wg_dir, 0, &loaded, skipped);
+
+        // Load everything back — should have all 10 + 1 new = 11
+        let all = load_persisted_chat_history(&wg_dir, 0);
+        assert_eq!(all.len(), 11, "Save should preserve unloaded messages + add new ones");
+        assert_eq!(all[0].text, "message 0", "First original message preserved");
+        assert_eq!(all[9].text, "message 9", "Last original message preserved");
+        assert_eq!(all[10].text, "new response", "New message appended");
+    }
+
+    #[test]
+    fn chat_pagination_10k_messages_loads_under_1s() {
+        let tmp = TempDir::new().unwrap();
+        let (_, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        // Write config with high chat_history_max to allow 10k messages.
+        let config_path = wg_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[tui]\nchat_history = true\nchat_history_max = 20000\nchat_page_size = 100\n",
+        )
+        .unwrap();
+
+        // Create 10,000 messages and write directly as JSONL.
+        let path = chat_history_path(&wg_dir, 0);
+        let mut buf = String::new();
+        for i in 0..10_000u32 {
+            let m = make_chat_message(ChatRole::User, &format!("message number {} with some extra text to simulate realistic message length", i));
+            let p = chat_message_to_persisted(&m);
+            if let Ok(line) = serde_json::to_string(&p) {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+        std::fs::write(&path, buf).unwrap();
+
+        // Verify the file was written.
+        assert!(path.exists());
+
+        // Time the paginated load (default page_size = 100).
+        let start = std::time::Instant::now();
+        let result = load_persisted_chat_history_paginated(&wg_dir, 0, 100);
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.messages.len(), 100, "Should load exactly 100 messages");
+        assert_eq!(result.total_count, 10_000, "Should report total count");
+        assert!(result.has_more, "Should indicate more history available");
+        assert_eq!(result.messages[99].text, "message number 9999 with some extra text to simulate realistic message length");
+        assert!(
+            elapsed.as_millis() < 1000,
+            "Paginated load of 10k messages should complete in <1s, took {}ms",
+            elapsed.as_millis()
         );
     }
 }
