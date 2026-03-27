@@ -3294,6 +3294,9 @@ pub struct VizApp {
     pub layout_mode: LayoutMode,
     /// Current responsive breakpoint (recomputed each frame from terminal width).
     pub responsive_breakpoint: ResponsiveBreakpoint,
+    /// Hysteresis: whether inspector is currently laid out beside (right) rather than below.
+    /// Used to prevent oscillation at the SIDE_MIN_WIDTH boundary.
+    pub inspector_is_beside: bool,
     /// Which panel is shown in compact (< 50 cols) single-panel mode.
     pub single_panel_view: SinglePanelView,
     /// Current input mode.
@@ -3464,6 +3467,7 @@ pub struct VizApp {
     pub last_panel_hscrollbar_area: Rect,
 
     /// Hit-test area for the "▼ new output" indicator in the Log tab.
+    #[allow(dead_code)]
     pub last_log_new_output_area: Rect,
 
     // ── Touch echo (click/touch visual feedback) ──
@@ -3657,6 +3661,7 @@ impl VizApp {
             hud_size: HudSize::Normal,
             layout_mode: LayoutMode::from_config_str(&config.tui.default_inspector_size),
             responsive_breakpoint: ResponsiveBreakpoint::Full,
+            inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
 
             input_mode: InputMode::Normal,
@@ -7407,6 +7412,7 @@ impl VizApp {
             hud_size: HudSize::Normal,
             layout_mode: LayoutMode::ThirdInspector,
             responsive_breakpoint: ResponsiveBreakpoint::Full,
+            inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
 
             input_mode: InputMode::Normal,
