@@ -8733,7 +8733,12 @@ impl VizApp {
         }
 
         // Set outbox cursor to latest outbox message ID so we don't re-display old messages.
-        if let Ok(msgs) = workgraph::chat::read_outbox_since(&self.workgraph_dir, 0) {
+        // Use the active coordinator's outbox (each coordinator has independent ID sequences).
+        if let Ok(msgs) = workgraph::chat::read_outbox_since_for(
+            &self.workgraph_dir,
+            self.active_coordinator_id,
+            0,
+        ) {
             self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
         }
     }
@@ -9106,6 +9111,19 @@ impl VizApp {
             .coordinator_chats
             .remove(&target_id)
             .unwrap_or_default();
+
+        // Initialize outbox cursor for newly created chat states so we don't
+        // re-display old messages or miss new ones (each coordinator has independent
+        // ID sequences — a cursor from coordinator-0 is meaningless for coordinator-6).
+        if self.chat.outbox_cursor == 0 {
+            if let Ok(msgs) = workgraph::chat::read_outbox_since_for(
+                &self.workgraph_dir,
+                target_id,
+                0,
+            ) {
+                self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
+            }
+        }
 
         // Always reset to Normal when switching coordinators so arrow-key
         // navigation doesn't get stuck in input mode. The user must explicitly
