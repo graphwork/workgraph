@@ -2459,22 +2459,20 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             && column < hit.close_end
                         {
                             let cid = hit.cid;
-                            if cid != 0 {
-                                let options = vec![
-                                    ('a', "Archive".into(), "Mark as done — work complete".into()),
-                                    (
-                                        's',
-                                        "Stop".into(),
-                                        "Pause coordinator — resume later".into(),
-                                    ),
-                                    ('x', "Abandon".into(), "Permanently discard".into()),
-                                ];
-                                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-                                    action: ChoiceDialogAction::RemoveCoordinator(cid),
-                                    selected: 0,
-                                    options,
-                                });
-                            }
+                            let options = vec![
+                                ('a', "Archive".into(), "Mark as done — work complete".into()),
+                                (
+                                    's',
+                                    "Stop".into(),
+                                    "Pause coordinator — resume later".into(),
+                                ),
+                                ('x', "Abandon".into(), "Permanently discard".into()),
+                            ];
+                            app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                                action: ChoiceDialogAction::RemoveCoordinator(cid),
+                                selected: 0,
+                                options,
+                            });
                         } else {
                             app.switch_coordinator(hit.cid);
                         }

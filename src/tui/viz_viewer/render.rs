@@ -20,7 +20,13 @@ use workgraph::graph::{TokenUsage, format_tokens};
 use crate::tui::markdown::markdown_to_lines;
 
 /// Minimum terminal width for side-by-side right panel layout.
+/// When the inspector is currently on the right and terminal shrinks below this,
+/// the inspector moves to the bottom.
 const SIDE_MIN_WIDTH: u16 = 100;
+
+/// Width at which the inspector restores to side-by-side after being moved to the bottom.
+/// Higher than SIDE_MIN_WIDTH to prevent flapping at the boundary (hysteresis).
+const SIDE_RESTORE_WIDTH: u16 = 120;
 
 /// Creates a [`Line`] with the lightning-wave animation and elapsed time.
 ///
@@ -249,17 +255,19 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_right_border_area = Rect::default();
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
+                    // Narrow mode is always below SIDE_MIN_WIDTH, so inspector
+                    // goes to the bottom (vertical split) to avoid oscillation.
+                    app.inspector_is_beside = false;
                     if app.right_panel_visible {
-                        // In narrow mode, use a compact side-by-side split.
-                        // Graph gets 40%, inspector gets 60% (minimum useful inspector width).
-                        let right_pct = app.right_panel_percent.clamp(50, 70);
-                        let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
-                        let left_width = main_area.width.saturating_sub(right_width);
+                        let panel_height =
+                            (main_area.height as u32 * app.right_panel_percent as u32 / 100)
+                                .max(5) as u16;
+                        let top_height = main_area.height.saturating_sub(panel_height);
                         let split = Layout::default()
-                            .direction(Direction::Horizontal)
+                            .direction(Direction::Vertical)
                             .constraints([
-                                Constraint::Length(left_width),
-                                Constraint::Length(right_width),
+                                Constraint::Length(top_height),
+                                Constraint::Length(panel_height),
                             ])
                             .split(main_area);
                         app.last_graph_area = split[0];
@@ -354,7 +362,15 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
                     if app.right_panel_visible {
-                        if area.width >= SIDE_MIN_WIDTH {
+                        // Hysteresis: use different thresholds for switching directions
+                        // to prevent oscillation at the boundary.
+                        let use_side = if app.inspector_is_beside {
+                            area.width >= SIDE_MIN_WIDTH
+                        } else {
+                            area.width >= SIDE_RESTORE_WIDTH
+                        };
+                        app.inspector_is_beside = use_side;
+                        if use_side {
                             let right_width = (main_area.width as u32
                                 * app.right_panel_percent as u32
                                 / 100) as u16;
@@ -472,15 +488,17 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     );
                 }
                 _ => {
+                    // Narrow mode: inspector below (vertical split).
                     if app.right_panel_visible {
-                        let right_pct = app.right_panel_percent.clamp(50, 70);
-                        let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
-                        let left_width = main_area.width.saturating_sub(right_width);
+                        let panel_height =
+                            (main_area.height as u32 * app.right_panel_percent as u32 / 100)
+                                .max(5) as u16;
+                        let top_height = main_area.height.saturating_sub(panel_height);
                         let split = Layout::default()
-                            .direction(Direction::Horizontal)
+                            .direction(Direction::Vertical)
                             .constraints([
-                                Constraint::Length(left_width),
-                                Constraint::Length(right_width),
+                                Constraint::Length(top_height),
+                                Constraint::Length(panel_height),
                             ])
                             .split(main_area);
 
@@ -560,7 +578,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 | LayoutMode::HalfInspector
                 | LayoutMode::TwoThirdsInspector => {
                     if app.right_panel_visible {
-                        if area.width >= SIDE_MIN_WIDTH {
+                        // Use the hysteresis state computed in Phase 1.
+                        if app.inspector_is_beside {
                             let right_width = (main_area.width as u32
                                 * app.right_panel_percent as u32
                                 / 100) as u16;
@@ -2606,12 +2625,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let cid = *cid;
             let is_active = cid == app.active_coordinator_id;
             let color = dot_color(cid);
-            let has_close = cid != 0;
-
             // Tab content: " ◉ Label [state] " or " ◉ Label [state] ✕ "
-            // dot(1) + space(1) + label + state(2 if active) + space(1) + optional close(1+space(1))
+            // dot(1) + space(1) + label + state(2 if active) + space(1) + close(2)
             let label_width = label.len();
-            let close_width: usize = if has_close { 2 } else { 0 }; // " ✕"
+            let close_width: usize = 2; // " ✕"
             let state_width: usize = if is_active { 2 } else { 0 }; // " ●" / " ⟳" / " ○"
             // Content: dot(1) + " "(1) + label + state + " "(1) + close
             let tab_content_width = 1 + 1 + label_width + state_width + 1 + close_width;
@@ -2672,14 +2689,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             }
 
             // Close button (padded for wider touch target)
-            let mut close_start: u16 = 0;
-            let mut close_end: u16 = 0;
-            if has_close {
-                close_start = (bar_x as usize + col) as u16;
-                spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
-                col += 2; // " ✕"
-                close_end = (bar_x as usize + col) as u16;
-            }
+            let close_start = (bar_x as usize + col) as u16;
+            spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+            col += 2; // " ✕"
+            let close_end = (bar_x as usize + col) as u16;
 
             // Trailing space
             spans.push(Span::raw(" "));
@@ -12467,7 +12480,7 @@ mod tests {
     #[test]
     fn test_responsive_narrow_split_layout() {
         // In narrow mode (50-80 cols) with inspector visible, should use
-        // side-by-side split with constrained proportions.
+        // vertical (bottom) split to avoid oscillation with Full breakpoint.
         use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -12483,17 +12496,25 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
-        // Both panels should be visible.
-        assert!(app.last_graph_area.width > 0, "graph should have width");
+        // Both panels should be visible (stacked vertically).
+        assert!(app.last_graph_area.height > 0, "graph should have height");
         assert!(
-            app.last_right_panel_area.width > 0,
-            "inspector should have width"
+            app.last_right_panel_area.height > 0,
+            "inspector should have height"
         );
-        // Total widths should sum to terminal width.
+        // Inspector should be below (same width as terminal, not beside).
         assert_eq!(
-            app.last_graph_area.width + app.last_right_panel_area.width,
-            60,
-            "graph + inspector should span full width"
+            app.last_graph_area.width, 60,
+            "graph should span full width in vertical layout"
+        );
+        assert_eq!(
+            app.last_right_panel_area.width, 60,
+            "inspector should span full width in vertical layout"
+        );
+        // Inspector should NOT be beside in narrow mode.
+        assert!(
+            !app.inspector_is_beside,
+            "inspector should be below, not beside, in narrow mode"
         );
     }
 
@@ -12531,6 +12552,61 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Full);
+    }
+
+    #[test]
+    fn test_inspector_layout_no_oscillation_on_zoom() {
+        // Verify inspector position is monotonic when zooming in/out:
+        // no oscillation between side and bottom layouts.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.right_panel_visible = true;
+        app.layout_mode = crate::tui::viz_viewer::state::LayoutMode::ThirdInspector;
+
+        // Wide: inspector on the right (side-by-side).
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.inspector_is_beside, "140 cols: should be side-by-side");
+
+        // Zoom in to 110: still above SIDE_MIN_WIDTH, stays beside.
+        let backend = TestBackend::new(110, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.inspector_is_beside, "110 cols: should still be side-by-side");
+
+        // Zoom in to 95: below SIDE_MIN_WIDTH, moves to bottom.
+        let backend = TestBackend::new(95, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(!app.inspector_is_beside, "95 cols: should be bottom");
+
+        // Zoom in to 70 (Narrow breakpoint): stays at bottom — NO oscillation.
+        let backend = TestBackend::new(70, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(!app.inspector_is_beside, "70 cols: should stay bottom (no oscillation)");
+
+        // Zoom in to 45 (Compact): single panel mode.
+        let backend = TestBackend::new(45, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(!app.inspector_is_beside, "45 cols: compact mode, not beside");
+
+        // Zoom back out to 105: still below SIDE_RESTORE_WIDTH (120), stays bottom (hysteresis).
+        let backend = TestBackend::new(105, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(!app.inspector_is_beside, "105 cols: hysteresis — stays bottom until 120");
+
+        // Zoom out to 125: above SIDE_RESTORE_WIDTH, restores to side-by-side.
+        let backend = TestBackend::new(125, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.inspector_is_beside, "125 cols: restores to side-by-side");
     }
 
     #[test]
