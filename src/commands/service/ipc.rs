@@ -1274,13 +1274,16 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let task_id = format!(".coordinator-{}", coordinator_id);
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(&task_id) {
-            Some(t) => t,
-            None => {
-                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
-                return false;
-            }
+        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        let resolved_id = if graph.get_task(&task_id).is_some() {
+            task_id.as_str()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator"
+        } else {
+            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            return false;
         };
+        let task = graph.get_task_mut(resolved_id).unwrap();
         task.status = workgraph::graph::Status::Abandoned;
         task.log.push(workgraph::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1310,13 +1313,16 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let task_id = format!(".coordinator-{}", coordinator_id);
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(&task_id) {
-            Some(t) => t,
-            None => {
-                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
-                return false;
-            }
+        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        let resolved_id = if graph.get_task(&task_id).is_some() {
+            task_id.as_str()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator"
+        } else {
+            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            return false;
         };
+        let task = graph.get_task_mut(resolved_id).unwrap();
         task.status = workgraph::graph::Status::Done;
         task.tags.retain(|t| t != "coordinator-loop");
         if !task.tags.contains(&"archived".to_string()) {
@@ -1349,14 +1355,27 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let task_id = format!(".coordinator-{}", coordinator_id);
 
+    // Resolve the actual task ID (legacy .coordinator for ID 0)
+    let resolved_task_id = if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+        if graph.get_task(&task_id).is_some() {
+            task_id.clone()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator".to_string()
+        } else {
+            task_id.clone()
+        }
+    } else {
+        task_id.clone()
+    };
+
     // Kill any running agent (must happen before modify_graph to avoid holding lock)
     if let Ok(graph) = workgraph::parser::load_graph(&graph_path)
-        && let Some(task) = graph.get_task(&task_id)
+        && let Some(task) = graph.get_task(&resolved_task_id)
         && task.agent.is_some()
         && let Ok(registry) = AgentRegistry::load(dir)
     {
         for agent in registry.list_agents() {
-            if agent.task_id == task_id {
+            if agent.task_id == resolved_task_id {
                 let _ = crate::commands::kill::run(dir, &agent.id, false, true);
                 break;
             }
@@ -1365,13 +1384,16 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(&task_id) {
-            Some(t) => t,
-            None => {
-                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
-                return false;
-            }
+        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        let actual_id = if graph.get_task(&task_id).is_some() {
+            task_id.as_str()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator"
+        } else {
+            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            return false;
         };
+        let task = graph.get_task_mut(actual_id).unwrap();
         task.status = workgraph::graph::Status::Open;
         task.assigned = None;
         task.log.push(workgraph::graph::LogEntry {

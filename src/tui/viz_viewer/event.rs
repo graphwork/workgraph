@@ -1869,25 +1869,23 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             super::state::editor_clear(&mut app.text_prompt.editor);
             app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
         }
-        // Chat tab: '-' opens choice dialog for coordinator removal (except coordinator 0)
+        // Chat tab: '-' opens choice dialog for coordinator removal
         KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Chat => {
             let cid = app.active_coordinator_id;
-            if cid != 0 {
-                let options = vec![
-                    ('a', "Archive".into(), "Mark as done — work complete".into()),
-                    (
-                        's',
-                        "Stop".into(),
-                        "Pause coordinator — resume later".into(),
-                    ),
-                    ('x', "Abandon".into(), "Permanently discard".into()),
-                ];
-                app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-                    action: ChoiceDialogAction::RemoveCoordinator(cid),
-                    selected: 0,
-                    options,
-                });
-            }
+            let options = vec![
+                ('a', "Archive".into(), "Mark as done — work complete".into()),
+                (
+                    's',
+                    "Stop".into(),
+                    "Pause coordinator — resume later".into(),
+                ),
+                ('x', "Abandon".into(), "Permanently discard".into()),
+            ];
+            app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                action: ChoiceDialogAction::RemoveCoordinator(cid),
+                selected: 0,
+                options,
+            });
         }
 
         // Detail tab: 'R' toggles raw JSON display

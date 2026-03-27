@@ -7840,7 +7840,9 @@ impl VizApp {
                 CommandEffect::DeleteCoordinator(cid) => {
                     if result.success {
                         if cid == self.active_coordinator_id {
-                            self.switch_coordinator(0);
+                            // Switch to another available coordinator (not the one being deleted)
+                            let other = self.list_coordinator_ids().into_iter().find(|&id| id != cid).unwrap_or(0);
+                            self.switch_coordinator(other);
                         }
                         self.coordinator_chats.remove(&cid);
                         self.force_refresh();
@@ -7860,7 +7862,9 @@ impl VizApp {
                 CommandEffect::ArchiveCoordinator(cid) => {
                     if result.success {
                         if cid == self.active_coordinator_id {
-                            self.switch_coordinator(0);
+                            // Switch to another available coordinator (not the one being archived)
+                            let other = self.list_coordinator_ids().into_iter().find(|&id| id != cid).unwrap_or(0);
+                            self.switch_coordinator(other);
                         }
                         self.coordinator_chats.remove(&cid);
                         self.force_refresh();
@@ -10168,13 +10172,10 @@ impl VizApp {
         self.exec_command(args, CommandEffect::CreateCoordinator);
     }
 
-    /// Delete a coordinator session via IPC. Coordinator 0 cannot be deleted.
+    /// Delete a coordinator session via IPC.
     /// Sends the delete command to the backend; on success the effect handler
-    /// cleans up local chat state, switches to coordinator 0, and refreshes.
+    /// cleans up local chat state, switches to another coordinator, and refreshes.
     pub fn delete_coordinator(&mut self, cid: u32) {
-        if cid == 0 {
-            return;
-        }
         let args = vec![
             "service".to_string(),
             "delete-coordinator".to_string(),
