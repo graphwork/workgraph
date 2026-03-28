@@ -6103,3 +6103,114 @@ fn test_deadlock_breaker_e2e_three_task_cycle() {
         analysis.cycles[0].members
     );
 }
+
+// ===========================================================================
+// Archived cycle header suppresses reset
+// ===========================================================================
+
+#[test]
+fn test_archived_cycle_header_suppresses_reset() {
+    // Scenario: 2-node cycle (header ↔ archive-task), header is Done + tagged 'archived',
+    // archive-task completes afterward. The cycle should NOT reset.
+    let mut header = make_task_with_status("coordinator-0", "Coordinator", Status::Done);
+    header.after = vec!["archive-0".to_string()];
+    header.cycle_config = Some(CycleConfig {
+        max_iterations: 0, // unlimited
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    header.tags = vec!["archived".to_string()];
+
+    let mut archive = make_task_with_status("archive-0", "Archive", Status::Done);
+    archive.after = vec!["coordinator-0".to_string()];
+
+    let mut graph = build_graph(vec![header, archive]);
+    let analysis = graph.compute_cycle_analysis();
+
+    // Simulate archive-0 completing last — trigger cycle evaluation
+    let reactivated = evaluate_cycle_iteration(&mut graph, "archive-0", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "Archived cycle header should suppress reset, got: {:?}",
+        reactivated
+    );
+
+    // Both tasks should remain Done
+    assert_eq!(graph.get_task("coordinator-0").unwrap().status, Status::Done);
+    assert_eq!(graph.get_task("archive-0").unwrap().status, Status::Done);
+
+    // loop_iteration should NOT have been incremented
+    assert_eq!(
+        graph.get_task("coordinator-0").unwrap().loop_iteration, 0,
+        "Header loop_iteration should remain 0"
+    );
+    assert_eq!(
+        graph.get_task("archive-0").unwrap().loop_iteration, 0,
+        "Archive task loop_iteration should remain 0"
+    );
+}
+
+#[test]
+fn test_archived_cycle_header_suppresses_evaluate_all() {
+    // Same scenario but via evaluate_all_cycle_iterations (coordinator safety net path).
+    let mut header = make_task_with_status("coordinator-0", "Coordinator", Status::Done);
+    header.after = vec!["archive-0".to_string()];
+    header.cycle_config = Some(CycleConfig {
+        max_iterations: 0,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    header.tags = vec!["archived".to_string()];
+
+    let mut archive = make_task_with_status("archive-0", "Archive", Status::Done);
+    archive.after = vec!["coordinator-0".to_string()];
+
+    let mut graph = build_graph(vec![header, archive]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_all_cycle_iterations(&mut graph, &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "evaluate_all should not reactivate archived cycle, got: {:?}",
+        reactivated
+    );
+    assert_eq!(graph.get_task("coordinator-0").unwrap().status, Status::Done);
+    assert_eq!(graph.get_task("archive-0").unwrap().status, Status::Done);
+}
+
+#[test]
+fn test_non_archived_cycle_still_resets_normally() {
+    // Sanity check: a cycle without the archived tag should still reset as expected.
+    let mut header = make_task_with_status("coordinator-0", "Coordinator", Status::Done);
+    header.after = vec!["archive-0".to_string()];
+    header.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    // No 'archived' tag
+
+    let mut archive = make_task_with_status("archive-0", "Archive", Status::Done);
+    archive.after = vec!["coordinator-0".to_string()];
+
+    let mut graph = build_graph(vec![header, archive]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "archive-0", &analysis);
+    assert_eq!(
+        reactivated.len(),
+        2,
+        "Non-archived cycle should reactivate both members"
+    );
+    assert_eq!(graph.get_task("coordinator-0").unwrap().status, Status::Open);
+    assert_eq!(graph.get_task("archive-0").unwrap().status, Status::Open);
+}

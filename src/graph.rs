@@ -1424,6 +1424,15 @@ fn reactivate_cycle(
     config_owner_id: &str,
     cycle_config: &CycleConfig,
 ) -> Vec<String> {
+    // If the cycle header (config owner) is archived, suppress the entire cycle.
+    // An archived header means the cycle was intentionally retired — no further
+    // iterations should occur, even if non-archived members complete afterward.
+    if let Some(owner) = graph.get_task(config_owner_id) {
+        if owner.tags.contains(&"archived".to_string()) {
+            return vec![];
+        }
+    }
+
     // Check if ALL members are terminal (Done or Abandoned).
     // Abandoned and archived-Done are terminal — they won't produce more work.
     let mut has_done_member = false;
@@ -2618,17 +2627,15 @@ mod tests {
 
         let reactivated = reactivate_cycle(&mut graph, &members, "coord-a", &config);
 
-        // Only the non-archived member should be reactivated
-        assert_eq!(reactivated.len(), 1);
-        assert_eq!(reactivated[0], "coord-b");
+        // Archived header suppresses the entire cycle — nothing reactivated
+        assert_eq!(reactivated.len(), 0);
 
-        // Archived member should still be Done
+        // Both members should still be Done
         let archived = graph.get_task("coord-a").unwrap();
         assert_eq!(archived.status, Status::Done);
 
-        // Normal member should be Open
         let normal = graph.get_task("coord-b").unwrap();
-        assert_eq!(normal.status, Status::Open);
+        assert_eq!(normal.status, Status::Done);
     }
 
     #[test]
