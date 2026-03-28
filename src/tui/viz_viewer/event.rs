@@ -2753,7 +2753,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             .map(|line| {
                                 let chars: Vec<char> = line.chars().collect();
                                 let text_start =
-                                    chars.iter().position(|c| c.is_alphanumeric() || *c == '✉');
+                                    chars.iter().position(|c| c.is_alphanumeric() || is_message_indicator(*c));
                                 let text_end = chars
                                     .iter()
                                     .rposition(|c| !c.is_whitespace())
@@ -2770,7 +2770,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     .get(orig_line)
                                     .and_then(|line| {
                                         let envelope_char_col =
-                                            line.char_indices().position(|(_, c)| c == '✉')?;
+                                            line.char_indices().position(|(_, c)| is_message_indicator(c))?;
                                         let after_envelope: String = line
                                             .chars()
                                             .skip(envelope_char_col + 1)
@@ -3913,6 +3913,12 @@ fn nav_stack_pop(app: &mut VizApp) {
             app.focused_panel = FocusedPanel::Graph;
         }
     }
+}
+
+/// Check whether a character is a message indicator icon in the viz view.
+/// Covers all `CoordinatorMessageStatus` icons: ✉ (Unseen), ↩ (Seen), ✓ (Replied).
+fn is_message_indicator(c: char) -> bool {
+    matches!(c, '✉' | '↩' | '✓')
 }
 
 /// Check whether a task ID belongs to the agency pipeline (internal system tasks
