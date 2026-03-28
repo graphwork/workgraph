@@ -240,6 +240,10 @@ wg service resume           # Resume dispatching
 | `wg add "X" --exec-mode light` | Set execution weight (full/light/bare/shell) |
 | `wg add "X" --verify "Tests pass"` | Task requiring review before completion |
 | `wg add "X" --tag important --hours 2` | Tags and estimates |
+| `wg add "X" --cost 50` | Estimated cost |
+| `wg add "X" --assign <agent-hash>` | Assign to an agent at creation |
+| `wg add "X" --max-retries 3` | Maximum retries on failure |
+| `wg add "X" --visibility public` | Visibility zone (internal/public/peer) |
 | `wg add "X" --after Y --max-iterations 3` | Create cycle header with max 3 iterations |
 | `wg add "X" --paused` | Create task in paused state |
 | `wg add "X" --delay 1h` | Task becomes ready after delay (30s, 5m, 1h, 1d) |
@@ -258,6 +262,9 @@ wg service resume           # Resume dispatching
 | `wg edit <id> --context-scope graph` | Change context scope |
 | `wg edit <id> --exec-mode bare` | Change execution weight |
 | `wg edit <id> --verify "cargo test passes"` | Set or update verification criteria |
+| `wg edit <id> --visibility peer` | Set visibility zone (internal/public/peer) |
+| `wg edit <id> --cycle-guard "task:check=done"` | Set cycle guard condition |
+| `wg edit <id> --cycle-delay 5m` | Set delay between cycle iterations |
 | `wg edit <id> --delay 30m` | Set scheduling delay |
 | `wg edit <id> --not-before "2026-03-20T00:00:00Z"` | Set absolute schedule |
 | `wg edit <id> --no-converge` | Force all cycle iterations |
@@ -326,6 +333,7 @@ wg service resume           # Resume dispatching
 | `wg viz --show-internal` | Show internal tasks (assign-*, evaluate-*) normally hidden |
 | `wg viz --no-tui` | Force static output even when stdout is interactive |
 | `wg tui` | Interactive TUI dashboard |
+| `wg tui-dump` | Dump current TUI screen contents (requires a running `wg tui`) |
 
 ### Monitoring & event streaming
 
@@ -456,6 +464,33 @@ wg service resume           # Resume dispatching
 | `wg replay --subgraph <id>` | Only replay tasks in subgraph rooted at given task |
 | `wg replay --keep-done 0.9` | Preserve done tasks scoring above threshold (default: 0.9) |
 | `wg replay --plan-only` | Dry run: show what would be reset |
+
+### Screencast (TUI recording)
+
+| Command | Purpose |
+|---------|---------|
+| `wg screencast render --trace <file> --output <file>` | Render a TUI event trace into an asciinema .cast file |
+| `wg screencast render --compress-idle 5:2` | Idle compression ratio (gaps >5s compressed to 2s) |
+| `wg screencast render --target-duration 30` | Target total duration in seconds |
+| `wg screencast render --width 120 --height 36` | Set terminal dimensions |
+| `wg screencast autopilot` | Launch autopilot that drives the TUI for screencast recording |
+| `wg screencast autopilot --output demo.cast` | Set output .cast file path |
+| `wg screencast autopilot --cols 80 --rows 24` | Set terminal dimensions |
+| `wg screencast autopilot --duration 60` | Max recording duration in seconds |
+
+### Server (multi-user setup)
+
+| Command | Purpose |
+|---------|---------|
+| `wg server init` | Initialize multi-user server setup (dry-run by default) |
+| `wg server init --apply` | Actually apply server setup changes |
+| `wg server init --group <name>` | Unix group name (default: wg-<project>) |
+| `wg server init --user <name>` | Add a user to the project group (repeatable) |
+| `wg server init --ttyd` | Generate ttyd web terminal configuration |
+| `wg server init --caddy` | Generate Caddy reverse-proxy configuration |
+| `wg server init --ttyd-port 7681` | Set port for ttyd web terminal |
+| `wg server connect` | Create or attach to a user's tmux session |
+| `wg server connect --user <name>` | Specify user (defaults to $WG_USER) |
 
 ### Agency (roles, tradeoffs, agents)
 
@@ -588,6 +623,7 @@ wg service resume           # Resume dispatching
 
 | Command | Purpose |
 |---------|---------|
+| `wg init` | Initialize a new workgraph in the current directory |
 | `wg setup` | Interactive configuration wizard for first-time setup |
 | `wg config --show` | Show current config |
 | `wg config --list` | Show merged config with source annotations (global/local/default) |
@@ -601,6 +637,8 @@ wg service resume           # Resume dispatching
 | `wg config --coordinator-interval 30` | Set coordinator poll interval in seconds |
 | `wg config --poll-interval 60` | Set service daemon background poll interval in seconds |
 | `wg config --coordinator-executor claude` | Set coordinator executor |
+| `wg config --coordinator-model opus` | Set coordinator model |
+| `wg config --coordinator-provider openrouter` | Set coordinator provider |
 | `wg config --auto-evaluate true` | Enable auto-evaluation |
 | `wg config --auto-assign true` | Enable auto-assignment |
 | `wg config --auto-place true` | Enable automatic placement analysis on new tasks |
@@ -628,7 +666,10 @@ wg service resume           # Resume dispatching
 | `wg config --chat-history true` | Enable chat history persistence |
 | `wg config --chat-history-max 100` | Max chat history entries |
 | `wg config --retry-context-tokens 2000` | Max tokens of previous-attempt context on retry |
+| `wg config --max-child-tasks 15` | Max tasks a single agent can create per execution |
+| `wg config --max-task-depth 10` | Max depth of task dependency chains from root |
 | `wg config --install-global` | Install project config as global default |
+| `wg config --install-global --force` | Skip confirmation when overwriting existing global config |
 | `wg config --viz-edge-color mixed` | Viz edge color style (gray/white/mixed) |
 | `wg config --tui-counters uptime,active` | TUI time counters (uptime, cumulative, active, session) |
 | `wg config --tiers` | Show current tier-to-model assignments |
@@ -641,9 +682,13 @@ wg service resume           # Resume dispatching
 | `wg config --role-provider <role>=<provider>` | Set provider for dispatch role (key=value syntax) |
 | `wg config --set-key <provider> --file <path>` | Set API key file for a provider |
 | `wg config --check-key` | Check OpenRouter API key validity |
-| `wg config --registry` | Show all model registry entries |
+| `wg config --registry` | Show all model registry entries (built-in + user-defined) |
 | `wg config --registry-add --id <id> --provider <p> --reg-model <m> --reg-tier <t>` | Add model to registry |
+| `wg config --registry-add --endpoint <url> --context-window <n> --cost-input <n> --cost-output <n>` | Registry add with optional endpoint/cost fields |
 | `wg config --registry-remove <id>` | Remove model from registry |
+| `wg config --matrix --homeserver <url> --room <room>` | Configure Matrix integration |
+| `wg config --matrix --username <user> --password <pass>` | Set Matrix credentials |
+| `wg config --matrix --access-token <token>` | Set Matrix access token directly |
 
 ### Output options
 
