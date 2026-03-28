@@ -10301,7 +10301,7 @@ impl VizApp {
     }
 
     /// Get coordinator IDs with display labels from the graph.
-    /// Returns Vec of (id, label) where label is `coord:N` (sequential).
+    /// Returns Vec of (id, label) where label is `coord:N` matching the task ID number.
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match workgraph::parser::load_graph(&graph_path) {
@@ -10333,9 +10333,9 @@ impl VizApp {
         if entries.is_empty() {
             entries.push((0, String::new()));
         }
-        // Assign sequential coord:N labels based on sorted order
-        for (i, (_cid, label)) in entries.iter_mut().enumerate() {
-            *label = format!("coord:{}", i + 1);
+        // Assign coord:N labels using the actual coordinator ID from the task ID
+        for (cid, label) in entries.iter_mut() {
+            *label = format!("coord:{}", cid);
         }
         entries
     }
