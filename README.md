@@ -443,7 +443,7 @@ wg dead-agents --cleanup   # mark dead and unclaim their tasks
 wg dead-agents --remove    # remove dead agents from registry
 wg dead-agents --purge     # remove all dead agents and clean up
 wg dead-agents --delete-dirs  # also delete agent working directories
-wg dead-agents --threshold 10m  # custom staleness threshold
+wg dead-agents --threshold 10   # custom staleness threshold (minutes)
 ```
 
 **Smart triage:** When a dead agent is detected, the coordinator can automatically triage the situation using an LLM. Triage reads the agent's output log and decides whether the task was actually completed (mark done), still running (leave alone), or needs to be restarted (re-spawn). Enable it with:
@@ -812,15 +812,6 @@ wg show <task-id>      # Shows cycle membership and current iteration on a task
 wg viz                 # Cycle edges appear as dashed lines in graph output
 ```
 
-### Migrating from loops_to
-
-If you have existing graphs using the old `loops_to` edge system, migrate them:
-
-```bash
-wg migrate-loops --dry-run   # Preview what would change
-wg migrate-loops             # Convert loops_to edges to structural cycles
-```
-
 ## Trace & sharing
 
 Workgraph records every operation in a trace log — the project's organizational memory. Use it for introspection, sharing, and workflow reuse.
@@ -947,6 +938,9 @@ wg key list               # API key status (see API key management section)
 wg viz --mermaid          # generate Mermaid flowchart output
 wg viz --graph            # 2D spatial layout with box-drawing characters
 wg archive                # archive completed tasks
+wg screencast             # render TUI event traces into asciinema screencasts
+wg server                 # multi-user server setup automation
+wg tui-dump               # dump current TUI screen contents (requires running tui)
 wg check                  # check graph for cycles and issues
 wg trajectory <id>        # optimal task claim order for agents
 wg runs list              # list run snapshots
