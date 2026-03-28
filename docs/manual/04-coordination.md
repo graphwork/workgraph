@@ -42,6 +42,10 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 
 4.5. **FLIP verification.** If `flip_verification_threshold` is configured, the coordinator scans for tasks with FLIP scores below the threshold and creates `.verify-flip-{task-id}` verification tasks dispatched to a stronger model (Opus by default). FLIP (Fidelity via Latent Intent Probing) is an independent fidelity check that reconstructs what the task prompt must have been from the agent's output alone, then scores the match—see *Section 5* for details.
 
+4.6. **Auto-evolve.** If `auto_evolve` is enabled, the coordinator triggers agent evolution when evaluation data warrants it. The evolver reads performance summaries and proposes structured operations—mutations, crossovers, gap-analysis, retirements—to improve the agency's identity space.
+
+4.7. **Auto-create.** If `auto_create` is enabled, the coordinator invokes the creator agent to expand the primitive store (roles, tradeoffs) when enough tasks have completed since the last invocation. The threshold is configurable via `auto_create_threshold` (default: 20 completed tasks).
+
 5. **Save graph and find ready tasks.** If previous phases modified the graph (adding meta-tasks, adjusting dependencies), the coordinator saves it before proceeding. Then it computes the set of ready tasks. If no tasks are ready, the tick ends. If all tasks in the graph are terminal, the coordinator logs that the project is complete. A global zero-output backoff check also runs here: if the backoff is active (from phase 1.3), spawning is skipped entirely.
 
 6. **Spawn agents.** For each ready task, up to the number of available slots, the coordinator dispatches an agent. This is where the dispatch cycle—the core of the system—begins.
@@ -62,6 +66,8 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 │  3.  build_auto_assign_tasks       (if enabled)       │
 │  4.  build_auto_evaluate_tasks     (if enabled)       │
 │  4.5 build_flip_verification_tasks (if enabled)       │
+│  4.6 auto_evolve                   (if enabled)       │
+│  4.7 auto_create                   (if enabled)       │
 │  5.  save graph → find ready tasks                    │
 │  6.  spawn_agents_for_ready_tasks(slots_available)    │
 │                                                       │
@@ -222,6 +228,18 @@ The full set of IPC commands:
 | `resume`      | Resumes the coordinator and triggers an immediate tick.                                            |
 | `reconfigure` | Updates `max_agents`, `executor`, `poll_interval`, or `model` at runtime without restart.          |
 | `heartbeat`   | Records a heartbeat for an agent (used for liveness tracking).                                     |
+| `freeze`      | SIGSTOP all running agents and pause the coordinator.                                              |
+| `thaw`        | SIGCONT all frozen agents and resume the coordinator.                                              |
+| `add_task`    | Create a task (supports cross-repo dispatch via peers).                                            |
+| `query_task`  | Query a task's status (supports cross-repo query via peers).                                       |
+| `send_message`| Send a message to a task's message queue.                                                          |
+| `user_chat`   | Send a chat message to the coordinator agent.                                                      |
+| `create_coordinator` | Create a new coordinator instance.                                                           |
+| `delete_coordinator` | Delete a coordinator instance.                                                               |
+| `archive_coordinator` | Archive a coordinator (mark as Done).                                                       |
+| `stop_coordinator` | Stop a coordinator (kill agent, reset to Open).                                                |
+| `interrupt_coordinator` | Interrupt a coordinator's current generation (SIGINT, does not kill).                     |
+| `list_coordinators` | List all active coordinators.                                                                 |
 
 The `reconfigure` command is particularly useful for live tuning. If a fan-out creates twenty parallel tasks and you only have five slots, you can bump `max_agents` to ten without stopping anything. When the fan-out completes and work converges, scale back down.
 

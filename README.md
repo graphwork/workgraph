@@ -366,9 +366,10 @@ wg config --eval-gate-threshold 0.7
 wg config --flip-enabled true
 
 # Model registry and routing
-wg config --registry add my-model     # manage model registry
-wg config --set-model sonnet          # set default model
-wg config --role-model evaluator opus # per-role model routing
+wg config --registry                  # show model registry
+wg config --registry-add --id my-model --provider openrouter --reg-model my-model --reg-tier standard  # add to registry
+wg config --set-model default sonnet  # set default dispatch model
+wg config --set-model evaluator opus  # per-role model routing
 
 # Multi-coordinator
 wg config --max-coordinators 3
@@ -398,12 +399,15 @@ wg service start --max-agents 8 --executor shell --interval 120 --model haiku
 | `wg service restart` | Graceful stop then start |
 | `wg service pause` | Pause coordinator (running agents continue, no new spawns) |
 | `wg service resume` | Resume coordinator (immediate tick) |
+| `wg service freeze` | SIGSTOP all running agents and pause coordinator |
+| `wg service thaw` | SIGCONT all frozen agents and resume coordinator |
 | `wg service install` | Generate a systemd user service file |
 | `wg service tick` | Run a single coordinator tick (debug) |
 | `wg service create-coordinator` | Create a new coordinator session |
 | `wg service stop-coordinator` | Stop a running coordinator session |
 | `wg service archive-coordinator` | Archive a coordinator session |
 | `wg service delete-coordinator` | Delete a coordinator session |
+| `wg service interrupt-coordinator` | Interrupt a coordinator's current generation |
 
 Reload lets you change settings at runtime:
 
