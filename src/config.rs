@@ -288,7 +288,7 @@ pub struct TuiConfig {
     #[serde(default = "default_counters")]
     pub counters: String,
     /// Show all system tasks (dot-prefixed) by default in TUI
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub show_system_tasks: bool,
     /// Show only running (in-progress/open) system tasks by default
     #[serde(default)]
@@ -356,7 +356,7 @@ impl Default for TuiConfig {
             chat_history_max: default_chat_history_max(),
             chat_page_size: default_chat_page_size(),
             counters: default_counters(),
-            show_system_tasks: true,
+            show_system_tasks: false,
             show_running_system_tasks: false,
             show_keys: false,
             session_gap_minutes: default_session_gap_minutes(),
@@ -1120,22 +1120,42 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
     /// Provider prefix, if explicitly specified (e.g., `"openrouter"`).
-    /// `None` for bare model names (backward compat).
+    /// `None` for bare model names (lenient parsing only).
     pub provider: Option<String>,
     /// The model identifier sent to the provider's API.
     pub model_id: String,
 }
 
-/// Parse a model spec into provider and model ID components.
+/// Error returned when a model spec string fails strict validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSpecError {
+    /// The original input string that failed parsing.
+    pub input: String,
+    /// Human-readable error message with migration guidance.
+    pub message: String,
+}
+
+impl std::fmt::Display for ModelSpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ModelSpecError {}
+
+/// Parse a model spec into provider and model ID components (lenient).
 ///
 /// - `"openrouter:deepseek/deepseek-v3.2"` → `ModelSpec { provider: Some("openrouter"), model_id: "deepseek/deepseek-v3.2" }`
 /// - `"claude:opus"` → `ModelSpec { provider: Some("claude"), model_id: "opus" }`
 /// - `"opus"` → `ModelSpec { provider: None, model_id: "opus" }`
-/// - `"deepseek/deepseek-v3.2"` → `ModelSpec { provider: None, model_id: "deepseek/deepseek-v3.2" }`
 ///
 /// Only recognized provider prefixes are treated as providers. If the text before
 /// `:` is not in `KNOWN_PROVIDERS`, the entire string is treated as a bare model name
 /// (e.g., `"deepseek-coder-v2:16b"` for Ollama model tags).
+///
+/// **Note:** Prefer [`parse_model_spec_strict`] at entry points (CLI, config loading)
+/// to enforce the `provider:model` format. This lenient version is for internal
+/// resolution paths where the model string may already be partially resolved.
 pub fn parse_model_spec(spec: &str) -> ModelSpec {
     if let Some((prefix, rest)) = spec.split_once(':') {
         if KNOWN_PROVIDERS.contains(&prefix) {
@@ -1149,6 +1169,80 @@ pub fn parse_model_spec(spec: &str) -> ModelSpec {
         provider: None,
         model_id: spec.to_string(),
     }
+}
+
+/// Parse a model spec **strictly**: requires `provider:model` format.
+///
+/// Returns an error with a helpful migration message for:
+/// - Bare model names without a provider prefix (e.g., `"opus"`)
+/// - Unknown provider prefixes (e.g., `"foobar:gpt-4"`)
+///
+/// # Examples
+///
+/// ```
+/// use workgraph::config::parse_model_spec_strict;
+///
+/// // Valid: known provider prefix
+/// let spec = parse_model_spec_strict("claude:opus").unwrap();
+/// assert_eq!(spec.provider.as_deref(), Some("claude"));
+/// assert_eq!(spec.model_id, "opus");
+///
+/// // Invalid: bare model name
+/// assert!(parse_model_spec_strict("opus").is_err());
+///
+/// // Invalid: unknown provider
+/// assert!(parse_model_spec_strict("foobar:gpt-4").is_err());
+/// ```
+pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> {
+    if spec.is_empty() {
+        return Err(ModelSpecError {
+            input: spec.to_string(),
+            message: "Model spec cannot be empty. Use provider:model format (e.g., 'claude:opus').".to_string(),
+        });
+    }
+
+    if let Some((prefix, rest)) = spec.split_once(':') {
+        if KNOWN_PROVIDERS.contains(&prefix) {
+            if rest.is_empty() {
+                return Err(ModelSpecError {
+                    input: spec.to_string(),
+                    message: format!(
+                        "Model spec '{}' has provider '{}' but no model name. \
+                         Use provider:model format (e.g., '{}:opus').",
+                        spec, prefix, prefix
+                    ),
+                });
+            }
+            return Ok(ModelSpec {
+                provider: Some(prefix.to_string()),
+                model_id: rest.to_string(),
+            });
+        }
+        // Has a colon but prefix is not a known provider
+        return Err(ModelSpecError {
+            input: spec.to_string(),
+            message: format!(
+                "Unknown provider '{}' in model spec '{}'. \
+                 Known providers: {}. \
+                 Use provider:model format (e.g., 'claude:opus', 'openrouter:deepseek/deepseek-v3.2').",
+                prefix,
+                spec,
+                KNOWN_PROVIDERS.join(", "),
+            ),
+        });
+    }
+
+    // No colon at all — bare model name
+    Err(ModelSpecError {
+        input: spec.to_string(),
+        message: format!(
+            "Invalid model format '{}'. Models must use provider:model format. \
+             For example: 'claude:{}', 'openrouter:{}', 'openai:{}'. \
+             Known providers: {}.",
+            spec, spec, spec, spec,
+            KNOWN_PROVIDERS.join(", "),
+        ),
+    })
 }
 
 /// Map a provider prefix to the executor type it requires.
