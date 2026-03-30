@@ -101,6 +101,16 @@ pub fn run(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
+    // Validate model uses provider:model format
+    if let Some(m) = model {
+        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+            anyhow::bail!(
+                "Invalid --model format: {}",
+                e
+            );
+        }
+    }
+
     let path = graph_path(dir);
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
@@ -431,6 +441,16 @@ pub fn run_remote(
 
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
+    }
+
+    // Validate model uses provider:model format
+    if let Some(m) = model {
+        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+            anyhow::bail!(
+                "Invalid --model format: {}",
+                e
+            );
+        }
     }
 
     // Resolve peer reference to a concrete .workgraph directory

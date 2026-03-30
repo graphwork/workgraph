@@ -48,6 +48,16 @@ pub fn run(
         }
     }
 
+    // Validate model uses provider:model format
+    if let Some(m) = model {
+        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+            anyhow::bail!(
+                "Invalid --model format: {}",
+                e
+            );
+        }
+    }
+
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
     let mut error: Option<anyhow::Error> = None;
@@ -492,7 +502,7 @@ mod tests {
             &[],
             &[],
             None,
-            Some("sonnet"),
+            Some("claude:sonnet"),
             None,
             None,
             None,
@@ -569,7 +579,7 @@ mod tests {
             &[],
             &[],
             None,
-            Some("sonnet"),
+            Some("claude:sonnet"),
             None,
             None,
             None,
@@ -842,7 +852,7 @@ mod tests {
             &[],
             &[],
             &[],
-            Some("opus"),
+            Some("claude:opus"),
             None,
             &[],
             &[],
@@ -864,7 +874,7 @@ mod tests {
         let path = graph_path(temp_dir.path());
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("test-task").unwrap();
-        assert_eq!(task.model, Some("opus".to_string()));
+        assert_eq!(task.model, Some("claude:opus".to_string()));
     }
 
     #[test]
