@@ -2547,36 +2547,6 @@ pub fn build_coordinator_context(
         }
     }
 
-    // --- User Board Context ---
-    {
-        use workgraph::graph::resolve_user_board_alias;
-        let handle = workgraph::current_user();
-        let alias = format!(".user-{}", handle);
-        let resolved = resolve_user_board_alias(&graph, &alias);
-        if resolved != alias {
-            // Include recent messages from the user board
-            if let Ok(msgs) = workgraph::messages::list_messages(dir, &resolved) {
-                let recent: Vec<_> = msgs.iter().rev().take(10).collect();
-                if !recent.is_empty() {
-                    let mut board_lines = Vec::new();
-                    board_lines.push(format!(
-                        "\n### User Board ({})\n_Active board: {}_",
-                        handle, resolved
-                    ));
-                    for msg in recent.iter().rev() {
-                        board_lines.push(format!(
-                            "- [{}] {}: {}",
-                            &msg.timestamp[..19.min(msg.timestamp.len())],
-                            msg.sender,
-                            msg.body,
-                        ));
-                    }
-                    parts.push(board_lines.join("\n"));
-                }
-            }
-        }
-    }
-
     // --- Injected History Context (from Ctrl+H history browser) ---
     if let Some(injected) = workgraph::chat::take_injected_context(dir, coordinator_id) {
         parts.push(format!(
