@@ -1099,6 +1099,12 @@ pub enum Commands {
         command: EvolveCommands,
     },
 
+    /// Manage provider profiles (model tier presets)
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommands,
+    },
+
     /// View or modify project configuration
     Config {
         /// Show current configuration
@@ -2079,6 +2085,19 @@ pub enum EvaluateCommands {
         #[arg(long)]
         limit: Option<usize>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCommands {
+    /// Set the active provider profile
+    Set {
+        /// Profile name (e.g., anthropic, openrouter, openai)
+        name: String,
+    },
+    /// Show current profile and resolved model mappings
+    Show,
+    /// List available profiles
+    List,
 }
 
 #[derive(Subcommand)]
@@ -3361,6 +3380,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Evaluate { .. } => "evaluate",
         Commands::Watch { .. } => "watch",
         Commands::Evolve { .. } => "evolve",
+        Commands::Profile { .. } => "profile",
         Commands::Config { .. } => "config",
         Commands::DeadAgents { .. } => "dead-agents",
         Commands::Sweep { .. } => "sweep",
@@ -3440,6 +3460,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Evaluate { .. }
             | Commands::Watch { .. }
             | Commands::Evolve { .. }
+            | Commands::Profile { .. }
             | Commands::Config { .. }
             | Commands::DeadAgents { .. }
             | Commands::Sweep { .. }

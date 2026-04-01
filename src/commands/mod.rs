@@ -72,6 +72,7 @@ pub mod pause;
 pub mod peer;
 pub mod placement;
 pub mod plan;
+pub mod profile_cmd;
 pub mod quickstart;
 pub mod ready;
 pub mod reclaim;

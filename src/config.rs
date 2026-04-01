@@ -66,6 +66,12 @@ pub struct Config {
     #[serde(default)]
     pub models: ModelRoutingConfig,
 
+    /// Active provider profile name (e.g., "anthropic", "openrouter", "openai").
+    /// When set, the profile supplies tier defaults. Explicit [tiers] entries
+    /// and per-role [models] overrides still take precedence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+
     /// Quality tier defaults: which model ID each tier resolves to
     #[serde(default)]
     pub tiers: TierConfig,
@@ -1468,23 +1474,46 @@ impl Config {
         self.effective_tiers()
     }
 
+    /// Resolve the active profile's tier defaults (if any).
+    fn resolve_profile_tiers(&self) -> TierConfig {
+        use crate::profile;
+        match self.profile.as_deref() {
+            Some(name) => {
+                if let Some(p) = profile::get_profile(name) {
+                    // Static profiles return their hardcoded tiers.
+                    // Dynamic profiles return None; we fall through to hardcoded defaults.
+                    p.resolve_tiers().unwrap_or_default()
+                } else {
+                    TierConfig::default()
+                }
+            }
+            None => TierConfig::default(),
+        }
+    }
+
     /// Effective tier config (internal).
+    ///
+    /// Precedence: explicit [tiers] > profile defaults > hardcoded Anthropic fallback.
     fn effective_tiers(&self) -> TierConfig {
+        let profile_tiers = self.resolve_profile_tiers();
         TierConfig {
             fast: self
                 .tiers
                 .fast
                 .clone()
+                .or(profile_tiers.fast)
                 .or_else(|| Some("claude:haiku".into())),
             standard: self
                 .tiers
                 .standard
                 .clone()
+                .or(profile_tiers.standard)
                 .or_else(|| Some("claude:sonnet".into())),
             premium: self
                 .tiers
                 .premium
                 .clone()
+                .or(profile_tiers.premium)
                 .or_else(|| Some("claude:opus".into())),
         }
     }
@@ -5046,6 +5075,108 @@ provider = "openrouter"
         assert_eq!(
             EndpointConfig::default_url_for_provider("gemini"),
             "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+    }
+
+    // ---- Profile-aware tier resolution tests ----
+
+    #[test]
+    fn test_effective_tiers_no_profile_uses_defaults() {
+        let config = Config::default();
+        let tiers = config.effective_tiers();
+        assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
+    }
+
+    #[test]
+    fn test_effective_tiers_anthropic_profile() {
+        let mut config = Config::default();
+        config.profile = Some("anthropic".into());
+        let tiers = config.effective_tiers();
+        assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
+    }
+
+    #[test]
+    fn test_effective_tiers_openai_profile() {
+        let mut config = Config::default();
+        config.profile = Some("openai".into());
+        let tiers = config.effective_tiers();
+        assert_eq!(tiers.fast.as_deref(), Some("openrouter:openai/gpt-4o-mini"));
+        assert_eq!(tiers.standard.as_deref(), Some("openrouter:openai/gpt-4o"));
+        assert_eq!(tiers.premium.as_deref(), Some("openrouter:openai/o3-pro"));
+    }
+
+    #[test]
+    fn test_explicit_tiers_override_profile() {
+        let mut config = Config::default();
+        config.profile = Some("openai".into());
+        config.tiers.fast = Some("claude:haiku".into());
+        let tiers = config.effective_tiers();
+        // Explicit tier wins over profile
+        assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
+        // Profile fills in the rest
+        assert_eq!(tiers.standard.as_deref(), Some("openrouter:openai/gpt-4o"));
+        assert_eq!(tiers.premium.as_deref(), Some("openrouter:openai/o3-pro"));
+    }
+
+    #[test]
+    fn test_unknown_profile_falls_through_to_defaults() {
+        let mut config = Config::default();
+        config.profile = Some("nonexistent".into());
+        let tiers = config.effective_tiers();
+        // Unknown profile produces no tiers, so hardcoded defaults are used
+        assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
+    }
+
+    #[test]
+    fn test_dynamic_profile_falls_through_to_defaults() {
+        let mut config = Config::default();
+        config.profile = Some("openrouter".into());
+        // Dynamic profiles return None from resolve_tiers(), so defaults are used
+        let tiers = config.effective_tiers();
+        assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
+    }
+
+    #[test]
+    fn test_profile_resolve_model_for_role() {
+        let mut config = Config::default();
+        config.profile = Some("openai".into());
+        // Triage role defaults to Fast tier
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        // openai profile maps fast → openrouter:openai/gpt-4o-mini
+        // Since openai/gpt-4o-mini is unlikely to be in the default registry,
+        // it resolves to the model ID from the tier spec
+        assert!(
+            resolved.model.contains("gpt-4o-mini"),
+            "Expected gpt-4o-mini in resolved model, got: {}",
+            resolved.model
+        );
+    }
+
+    #[test]
+    fn test_profile_config_roundtrip() {
+        let mut config = Config::default();
+        config.profile = Some("openai".into());
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(toml_str.contains("profile = \"openai\""));
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.profile.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn test_profile_none_not_serialized() {
+        let config = Config::default();
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !toml_str.contains("profile"),
+            "profile = None should be skipped in serialization"
         );
     }
 }

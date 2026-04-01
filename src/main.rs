@@ -1530,6 +1530,17 @@ fn main() -> Result<()> {
                 }
             },
         },
+        Commands::Profile { command } => match command {
+            ProfileCommands::Set { name } => {
+                commands::profile_cmd::set(&workgraph_dir, &name)
+            }
+            ProfileCommands::Show => {
+                commands::profile_cmd::show(&workgraph_dir, cli.json)
+            }
+            ProfileCommands::List => {
+                commands::profile_cmd::list(&workgraph_dir, cli.json)
+            }
+        },
         Commands::Config {
             show,
             init,
