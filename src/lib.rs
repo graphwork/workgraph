@@ -21,6 +21,7 @@ pub mod models;
 pub mod notify;
 pub mod parser;
 pub mod plan_validator;
+pub mod profile;
 pub mod provenance;
 pub mod query;
 pub mod runs;
@@ -28,6 +29,7 @@ pub mod service;
 pub mod stream_event;
 pub mod telegram_commands;
 pub mod usage;
+pub mod verify_lint;
 
 pub use config::MatrixConfig;
 pub use graph::WorkGraph;

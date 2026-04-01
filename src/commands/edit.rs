@@ -167,6 +167,7 @@ pub fn run(
 
         // Update verify command
         if let Some(new_verify) = verify {
+            workgraph::verify_lint::print_warnings(new_verify);
             task.verify = Some(new_verify.to_string());
             println!("Updated verify: {}", new_verify);
             changed = true;

@@ -212,6 +212,11 @@ pub fn run(
         None
     };
 
+    // Validate verify command (warn about descriptive text)
+    if let Some(v) = verify {
+        workgraph::verify_lint::print_warnings(v);
+    }
+
     let log = if paused {
         vec![workgraph::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -465,6 +470,11 @@ pub fn run_remote(
         if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
             anyhow::bail!("Invalid --model format: {}", e);
         }
+    }
+
+    // Validate verify command (warn about descriptive text)
+    if let Some(v) = verify {
+        workgraph::verify_lint::print_warnings(v);
     }
 
     // Resolve peer reference to a concrete .workgraph directory
