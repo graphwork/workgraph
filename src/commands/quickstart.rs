@@ -231,16 +231,20 @@ CYCLES (repeating workflows)
     wg add "Commit changes" --after cleanup-code
     wg add "Verify build" --after commit-changes
 
-    # 3. Close the loop with a back-edge + iteration cap
-    wg add "Cleanup code" --after verify-build --max-iterations 5
+    # 3. Close the loop: edit the FIRST task to add a back-edge + iteration cap
+    wg edit cleanup-code --add-after verify-build --max-iterations 5
 
     This creates: cleanup → commit → verify → cleanup (up to 5 iterations)
+
+    NOTE: Do NOT use 'wg add "Cleanup code" --after verify-build' here — that
+    creates a NEW task instead of adding a back-edge to the existing one.
+    Always use 'wg edit <id> --add-after <last-task>' to close cycles.
 
   ANOTHER EXAMPLE — write/review cycle:
 
     wg add "Write draft"
     wg add "Review draft" --after write-draft
-    wg add "Write draft" --after review-draft --max-iterations 3
+    wg edit write-draft --add-after review-draft --max-iterations 3
 
   INSPECTING CYCLES:
 
@@ -635,7 +639,7 @@ fn json_output() -> serde_json::Value {
         },
         "cycles": {
             "description": "Structural cycles model repeating workflows via after back-edges with CycleConfig.",
-            "create": "wg add \"Write\" --after review --max-iterations 3",
+            "create": "wg edit write --add-after review --max-iterations 3",
             "inspect": ["wg show <task-id>", "wg cycles"],
             "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a cycle when work is complete. Plain 'wg done' causes the cycle to iterate again.",
             "advanced": {
