@@ -2297,6 +2297,7 @@ impl Default for CoordinatorConfig {
             archive_retention_days: default_archive_retention_days(),
             registry_refresh_interval: default_registry_refresh_interval(),
             max_verify_failures: default_max_verify_failures(),
+            max_spawn_failures: default_max_spawn_failures(),
         }
     }
 }

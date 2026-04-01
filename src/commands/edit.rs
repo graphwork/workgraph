@@ -393,6 +393,13 @@ pub fn run(
             println!("Set not_before: {}", ts);
             changed = true;
         }
+        // Reset spawn failure counter on any edit — the user may have fixed
+        // the root cause (e.g., exec_mode mismatch), so the circuit breaker
+        // should give the task a fresh set of attempts.
+        if changed && task.spawn_failures > 0 {
+            task.spawn_failures = 0;
+            println!("Reset spawn failure counter");
+        }
     } // task borrow released here
 
     // When new dependencies are added, clear any existing auto-assignment.
