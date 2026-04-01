@@ -834,6 +834,19 @@ impl ExecMode {
             _ => &[ExecMode::Bare, ExecMode::Light, ExecMode::Full],
         }
     }
+
+    /// Return the safe default exec_mode for a given executor type.
+    pub fn default_for_executor(executor: &str) -> ExecMode {
+        match executor {
+            "shell" => ExecMode::Shell,
+            _ => ExecMode::Full,
+        }
+    }
+
+    /// Check whether this exec_mode is valid for the given executor.
+    pub fn is_valid_for_executor(&self, executor: &str) -> bool {
+        Self::valid_for_executor(executor).contains(self)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2146,6 +2159,13 @@ pub struct CoordinatorConfig {
     /// Set to 0 to disable automatic registry refresh.
     #[serde(default = "default_registry_refresh_interval")]
     pub registry_refresh_interval: u64,
+
+    /// Maximum consecutive verify command failures before a task is auto-failed.
+    /// When a task's verify command fails this many times in a row, the task
+    /// transitions to Failed with a descriptive error. Default: 3.
+    /// Set to 0 to disable the circuit breaker (unlimited retries).
+    #[serde(default = "default_max_verify_failures")]
+    pub max_verify_failures: u32,
 }
 
 fn default_max_agents() -> usize {
@@ -2194,6 +2214,10 @@ fn default_max_coordinators() -> usize {
 
 fn default_archive_retention_days() -> u64 {
     7
+}
+
+fn default_max_verify_failures() -> u32 {
+    3
 }
 
 fn default_registry_refresh_interval() -> u64 {
@@ -2260,6 +2284,7 @@ impl Default for CoordinatorConfig {
             max_coordinators: default_max_coordinators(),
             archive_retention_days: default_archive_retention_days(),
             registry_refresh_interval: default_registry_refresh_interval(),
+            max_verify_failures: default_max_verify_failures(),
         }
     }
 }

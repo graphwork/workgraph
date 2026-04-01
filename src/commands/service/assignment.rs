@@ -319,21 +319,14 @@ pub(crate) fn run_lightweight_assignment(
         )
     })?;
 
-    let verdict: AssignmentVerdict = serde_json::from_str(&json_str)
+    let mut verdict: AssignmentVerdict = serde_json::from_str(&json_str)
         .with_context(|| format!("Failed to parse assignment JSON: {}", json_str))?;
 
-    // Validate exec_mode
-    if let Some(ref mode) = verdict.exec_mode {
-        match mode.as_str() {
-            "shell" | "bare" | "light" | "full" => {}
-            other => {
-                eprintln!(
-                    "[assignment] Warning: invalid exec_mode '{}', defaulting to 'full'",
-                    other
-                );
-            }
-        }
-    }
+    // Validate exec_mode against the configured executor
+    verdict.exec_mode = Some(validate_exec_mode(
+        verdict.exec_mode.as_deref(),
+        &executor_type,
+    ));
 
     // Validate context_scope
     if let Some(ref scope) = verdict.context_scope {
@@ -373,6 +366,43 @@ pub(crate) fn build_active_tasks_context(graph: &WorkGraph, exclude_task_id: &st
         out.push_str(&format!("- {} ({})\n", t.id, t.title));
     }
     out
+}
+
+/// Validate that exec_mode is compatible with the configured executor.
+/// Returns the validated mode string. If the mode is incompatible or invalid,
+/// overrides to the safe default for that executor and logs a warning.
+pub(crate) fn validate_exec_mode(mode: Option<&str>, executor_type: &str) -> String {
+    use workgraph::config::ExecMode;
+
+    let default = ExecMode::default_for_executor(executor_type);
+
+    let mode_str = match mode {
+        Some(m) => m,
+        None => return default.to_string(),
+    };
+
+    // Parse the mode string
+    let parsed: ExecMode = match mode_str.parse() {
+        Ok(m) => m,
+        Err(_) => {
+            eprintln!(
+                "[assignment] Warning: invalid exec_mode '{}'. Overriding to '{}' for executor '{}'.",
+                mode_str, default, executor_type
+            );
+            return default.to_string();
+        }
+    };
+
+    // Check compatibility with the executor
+    if !parsed.is_valid_for_executor(executor_type) {
+        eprintln!(
+            "[assignment] Warning: exec_mode '{}' is incompatible with executor '{}'. Overriding to '{}'.",
+            mode_str, executor_type, default
+        );
+        return default.to_string();
+    }
+
+    mode_str.to_string()
 }
 
 /// Extract a JSON object from potentially noisy LLM output.
@@ -591,5 +621,40 @@ mod tests {
         assert!(prompt.contains("Valid exec_modes:** shell"));
         // Should NOT include bare/light/full in the valid modes list
         assert!(!prompt.contains("bare, light, full"));
+    }
+
+    #[test]
+    fn test_exec_mode_validation() {
+        // Valid mode for claude executor — no override
+        assert_eq!(validate_exec_mode(Some("full"), "claude"), "full");
+        assert_eq!(validate_exec_mode(Some("bare"), "claude"), "bare");
+        assert_eq!(validate_exec_mode(Some("light"), "claude"), "light");
+
+        // shell is incompatible with claude executor — override to full
+        assert_eq!(validate_exec_mode(Some("shell"), "claude"), "full");
+
+        // Valid mode for shell executor
+        assert_eq!(validate_exec_mode(Some("shell"), "shell"), "shell");
+
+        // bare/light/full are incompatible with shell executor — override to shell
+        assert_eq!(validate_exec_mode(Some("full"), "shell"), "shell");
+        assert_eq!(validate_exec_mode(Some("bare"), "shell"), "shell");
+        assert_eq!(validate_exec_mode(Some("light"), "shell"), "shell");
+
+        // Invalid mode string — override to default for executor
+        assert_eq!(validate_exec_mode(Some("invalid"), "claude"), "full");
+        assert_eq!(validate_exec_mode(Some("invalid"), "shell"), "shell");
+
+        // None — return default for executor
+        assert_eq!(validate_exec_mode(None, "claude"), "full");
+        assert_eq!(validate_exec_mode(None, "shell"), "shell");
+
+        // native executor — same valid modes as claude
+        assert_eq!(validate_exec_mode(Some("full"), "native"), "full");
+        assert_eq!(validate_exec_mode(Some("shell"), "native"), "full");
+
+        // amplifier executor — same valid modes as claude
+        assert_eq!(validate_exec_mode(Some("light"), "amplifier"), "light");
+        assert_eq!(validate_exec_mode(Some("shell"), "amplifier"), "full");
     }
 }
