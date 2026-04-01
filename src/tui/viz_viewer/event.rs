@@ -11,12 +11,10 @@ use ratatui::layout::Position;
 use super::render;
 
 /// Minimum inspector panel percentage during divider drag.
-/// Prevents collapsing a pane to nothing — the user must use keyboard
-/// shortcuts (`=`, `\`) to reach Off or FullInspector modes.
+/// Prevents collapsing the inspector to nothing — the panel always gets at
+/// least this share of the space.  The user can still reach Off mode via
+/// keyboard shortcuts (`=`, `\`).
 const MIN_DRAG_PERCENT: i32 = 10;
-/// Maximum inspector panel percentage during divider drag (graph gets at
-/// least `100 - MAX_DRAG_PERCENT` percent).
-const MAX_DRAG_PERCENT: i32 = 90;
 
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
@@ -2910,7 +2908,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     let delta = column as i32 - app.divider_drag_start_col as i32;
                     let delta_pct = delta * 100 / total_width as i32;
                     let pct = (app.divider_drag_start_pct as i32 - delta_pct)
-                        .clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16;
+                        .clamp(MIN_DRAG_PERCENT, 100) as u16;
                     app.right_panel_percent = pct;
                     app.right_panel_visible = true;
                     // Preserve last non-extreme split state for restore.
@@ -2941,7 +2939,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     let delta = row as i32 - app.divider_drag_start_row as i32;
                     let delta_pct = delta * 100 / total_height as i32;
                     let pct = (app.divider_drag_start_pct as i32 - delta_pct)
-                        .clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16;
+                        .clamp(MIN_DRAG_PERCENT, 100) as u16;
                     app.right_panel_percent = pct;
                     app.right_panel_visible = true;
                     if pct > 0 && pct < 100 {
