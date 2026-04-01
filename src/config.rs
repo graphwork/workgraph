@@ -823,6 +823,17 @@ impl ExecMode {
             None => Ok(Self::Full),
         }
     }
+
+    /// Return the valid exec_modes for a given executor type.
+    ///
+    /// - `"shell"` executor: only `Shell`
+    /// - `"claude"`, `"native"`, `"amplifier"`, or any other: `Bare`, `Light`, `Full`
+    pub fn valid_for_executor(executor: &str) -> &'static [ExecMode] {
+        match executor {
+            "shell" => &[ExecMode::Shell],
+            _ => &[ExecMode::Bare, ExecMode::Light, ExecMode::Full],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

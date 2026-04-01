@@ -134,6 +134,7 @@ pub(crate) fn build_assignment_prompt(
     agent_catalog: &str,
     underspec_warning: Option<&str>,
     active_tasks_context: &str,
+    executor_type: &str,
 ) -> String {
     let task_id = &task.id;
     let task_title = &task.title;
@@ -188,6 +189,30 @@ If no placement changes are needed, set `placement` to null.
             .to_string()
     };
 
+    let valid_modes = workgraph::config::ExecMode::valid_for_executor(executor_type);
+    let valid_modes_str: Vec<String> = valid_modes.iter().map(|m| m.to_string()).collect();
+    let valid_modes_list = valid_modes_str.join(", ");
+    let valid_modes_pipe = valid_modes_str.join("|");
+
+    let exec_mode_descriptions: String = valid_modes
+        .iter()
+        .map(|m| match m {
+            workgraph::config::ExecMode::Shell => {
+                "- **shell**: Task has exec command, no LLM needed."
+            }
+            workgraph::config::ExecMode::Bare => {
+                "- **bare**: Pure reasoning, synthesis, no file access needed."
+            }
+            workgraph::config::ExecMode::Light => {
+                "- **light**: Read-only file access (research, review, exploration)."
+            }
+            workgraph::config::ExecMode::Full => {
+                "- **full**: Modifies files (implementation, debugging, refactoring, test writing). Default if unsure."
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     format!(
         r#"You are an agent assignment system. Given a task and available agents, select the best agent and configure execution parameters.
 
@@ -211,11 +236,13 @@ If no placement changes are needed, set `placement` to null.
 4. **Capabilities**: Match agent capabilities to task tags/skills.
 5. **Cold start**: When agents have no scores, match on role and spread work across untested agents.
 
+## System Configuration
+- **Available executor:** {executor_type}
+- **Valid exec_modes:** {valid_modes_list}
+- Do NOT use exec_modes outside this list. They will cause spawn failures.
+
 ## exec_mode Selection
-- **shell**: Task has exec command, no LLM needed.
-- **bare**: Pure reasoning, synthesis, no file access needed.
-- **light**: Read-only file access (research, review, exploration).
-- **full**: Modifies files (implementation, debugging, refactoring, test writing). Default if unsure.
+{exec_mode_descriptions}
 
 ## context_scope Selection
 - **clean**: Self-contained computation/writing, no workgraph interaction needed.
@@ -229,7 +256,7 @@ Respond with ONLY a JSON object (no markdown fences, no commentary):
 
 {{
   "agent_hash": "<hash prefix of selected agent>",
-  "exec_mode": "<shell|bare|light|full>",
+  "exec_mode": "<{valid_modes_pipe}>",
   "context_scope": "<clean|task|graph|full>",
   "reason": "<one-sentence explanation>",
   "create_needed": false{placement_json}
@@ -264,12 +291,14 @@ pub(crate) fn run_lightweight_assignment(
     let catalog_entries = build_agent_catalog(agents, roles_dir, tradeoffs_dir);
     let catalog_text = render_agent_catalog(&catalog_entries);
 
+    let executor_type = config.coordinator.effective_executor();
     let prompt = build_assignment_prompt(
         task,
         mode_context,
         &catalog_text,
         underspec_warning,
         active_tasks_context,
+        &executor_type,
     );
 
     let result = workgraph::service::llm::run_lightweight_llm_call(
@@ -423,6 +452,7 @@ mod tests {
             "- Agent1 (hash: abc)\n",
             None,
             "",
+            "claude",
         );
         assert!(prompt.contains("test-task"));
         assert!(prompt.contains("Fix the bug"));
@@ -466,7 +496,8 @@ mod tests {
             ..Default::default()
         };
         let active_ctx = "- other-task (Other Task)\n- third-task (Third Task)\n";
-        let prompt = build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, active_ctx);
+        let prompt =
+            build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, active_ctx, "claude");
         assert!(prompt.contains("Active Tasks"));
         assert!(prompt.contains("other-task"));
         assert!(prompt.contains("Placement Instructions"));
@@ -481,7 +512,7 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         };
-        let prompt = build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "");
+        let prompt = build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "", "claude");
         assert!(!prompt.contains("Active Tasks"));
         assert!(!prompt.contains("Placement Instructions"));
     }
@@ -522,5 +553,43 @@ mod tests {
         }"#;
         let verdict: AssignmentVerdict = serde_json::from_str(json).unwrap();
         assert!(verdict.placement.is_none());
+    }
+
+    #[test]
+    fn test_build_assignment_prompt_contains_executor_info_claude() {
+        let task = Task {
+            id: "test-task".to_string(),
+            title: "Some task".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let prompt = build_assignment_prompt(&task, "", "- Agent1\n", None, "", "claude");
+        // Should mention the configured executor
+        assert!(prompt.contains("Available executor:** claude"));
+        // Should list valid modes for claude (bare, light, full — NOT shell)
+        assert!(prompt.contains("bare, light, full"));
+        assert!(!prompt.contains("Valid exec_modes:** shell"));
+        // The exec_mode enum in the JSON response should only show valid options
+        assert!(prompt.contains("bare|light|full"));
+        assert!(!prompt.contains("shell|bare|light|full"));
+        // Should warn against using invalid modes
+        assert!(prompt.contains("Do NOT use exec_modes outside this list"));
+    }
+
+    #[test]
+    fn test_build_assignment_prompt_contains_executor_info_shell() {
+        let task = Task {
+            id: "test-task".to_string(),
+            title: "Shell task".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let prompt = build_assignment_prompt(&task, "", "- Agent1\n", None, "", "shell");
+        // Should mention shell executor
+        assert!(prompt.contains("Available executor:** shell"));
+        // Should only list shell as valid mode
+        assert!(prompt.contains("Valid exec_modes:** shell"));
+        // Should NOT include bare/light/full in the valid modes list
+        assert!(!prompt.contains("bare, light, full"));
     }
 }
