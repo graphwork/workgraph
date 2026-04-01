@@ -241,7 +241,7 @@ fn test_create_provider_prefixed_is_openai() {
     // create_provider with a prefixed model should choose OpenAI-compatible
     let tmp = setup_workgraph_dir();
 
-    let mock_body = openai_mock_response("deepseek/deepseek-chat-v3");
+    let mock_body = openai_mock_response("deepseek/deepseek-chat");
     let base_url = start_mock_server(mock_body, 1);
 
     let config_content = format!(
@@ -260,9 +260,9 @@ is_default = true
     );
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
-    let provider = create_provider(tmp.path(), "deepseek/deepseek-chat-v3").unwrap();
+    let provider = create_provider(tmp.path(), "deepseek/deepseek-chat").unwrap();
     assert_eq!(provider.name(), "openai");
-    assert_eq!(provider.model(), "deepseek/deepseek-chat-v3");
+    assert_eq!(provider.model(), "deepseek/deepseek-chat");
 }
 
 #[test]
@@ -621,7 +621,7 @@ fn test_model_registry_default_models() {
     // Should contain models from multiple providers
     assert!(registry.get("anthropic/claude-opus-4-6").is_some());
     assert!(registry.get("openai/gpt-4o").is_some());
-    assert!(registry.get("deepseek/deepseek-chat-v3").is_some());
+    assert!(registry.get("deepseek/deepseek-chat").is_some());
     assert!(registry.get("google/gemini-2.5-pro").is_some());
 }
 
