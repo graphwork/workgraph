@@ -1006,6 +1006,7 @@ fn handle_add_task(
         max_rejections: None,
         exec_mode: None,
         verify_failures: 0,
+        spawn_failures: 0,
         superseded_by: vec![],
         supersedes: None,
         unplaced: false,

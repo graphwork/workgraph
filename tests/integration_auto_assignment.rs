@@ -276,6 +276,7 @@ fn build_assign_subgraph(dir: &Path) {
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            spawn_failures: 0,
             superseded_by: vec![],
             supersedes: None,
             unplaced: false,

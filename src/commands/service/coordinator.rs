@@ -1391,6 +1391,7 @@ fn build_auto_assign_tasks(
                     rejection_count: 0,
                     max_rejections: None,
                     verify_failures: 0,
+                    spawn_failures: 0,
                     superseded_by: vec![],
                     supersedes: None,
                     unplaced: false,
@@ -1741,6 +1742,7 @@ fn build_flip_verification_tasks(
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            spawn_failures: 0,
             superseded_by: vec![],
             supersedes: None,
             unplaced: false,
@@ -1939,6 +1941,7 @@ fn build_auto_evolve_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        spawn_failures: 0,
         superseded_by: vec![],
         supersedes: None,
         unplaced: false,
@@ -2119,6 +2122,7 @@ fn build_auto_create_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        spawn_failures: 0,
         superseded_by: vec![],
         supersedes: None,
         unplaced: false,
@@ -2686,6 +2690,99 @@ pub(crate) fn requires_native_executor(model: &str, config: &Config) -> bool {
     false
 }
 
+/// Check if a task has exceeded the spawn failure threshold and should be skipped.
+///
+/// Returns:
+/// - `Ok(())` if spawning should proceed
+/// - `Err(reason)` if spawning should be skipped (already failed by circuit breaker)
+fn check_spawn_circuit_breaker(
+    task: &Task,
+    max_spawn_failures: u32,
+) -> std::result::Result<(), String> {
+    if max_spawn_failures == 0 {
+        return Ok(()); // circuit breaker disabled
+    }
+    if task.spawn_failures >= max_spawn_failures {
+        Err(format!(
+            "spawn circuit breaker: {} consecutive spawn failures (threshold: {})",
+            task.spawn_failures, max_spawn_failures,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Record a spawn failure: increment the counter, log the error, and auto-fail
+/// the task if the threshold is reached. Returns true if the task was auto-failed.
+fn record_spawn_failure(
+    graph_path: &Path,
+    task_id: &str,
+    error: &str,
+    executor: &str,
+    exec_mode: Option<&str>,
+    max_spawn_failures: u32,
+) -> bool {
+    let now = Utc::now();
+    let task_id_owned = task_id.to_string();
+    let error_owned = error.to_string();
+    let executor_owned = executor.to_string();
+    let exec_mode_owned = exec_mode.map(|s| s.to_string());
+    let mut tripped = false;
+
+    let _ = modify_graph(graph_path, |graph| {
+        let task = match graph.get_task_mut(&task_id_owned) {
+            Some(t) => t,
+            None => return false,
+        };
+        task.spawn_failures += 1;
+        let failures = task.spawn_failures;
+
+        let mode_str = exec_mode_owned.as_deref().unwrap_or("default");
+
+        // Log the spawn failure
+        task.log.push(LogEntry {
+            timestamp: now.to_rfc3339(),
+            actor: Some("spawn".to_string()),
+            user: None,
+            message: format!(
+                "Spawn failed (attempt {}/{}): {}. exec_mode={}, executor={}",
+                failures,
+                if max_spawn_failures > 0 {
+                    max_spawn_failures.to_string()
+                } else {
+                    "unlimited".to_string()
+                },
+                error_owned,
+                mode_str,
+                executor_owned,
+            ),
+        });
+
+        // Circuit breaker: auto-fail after threshold
+        if max_spawn_failures > 0 && failures >= max_spawn_failures {
+            task.status = Status::Failed;
+            task.assigned = None;
+            task.failure_reason = Some(format!(
+                "Spawn failed {} consecutive times. Last error: {}. exec_mode={}, executor={}",
+                failures, error_owned, mode_str, executor_owned,
+            ));
+            task.log.push(LogEntry {
+                timestamp: now.to_rfc3339(),
+                actor: Some("spawn-circuit-breaker".to_string()),
+                user: None,
+                message: format!(
+                    "Circuit breaker tripped: spawn failed {} times, auto-failing task",
+                    failures,
+                ),
+            });
+            tripped = true;
+        }
+        true
+    });
+
+    tripped
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &workgraph::graph::WorkGraph,
@@ -2717,6 +2814,14 @@ fn spawn_agents_for_ready_tasks(
 
         // Respawn throttle: detect rapid respawn loops and back off
         if let Err(reason) = check_respawn_throttle(task, &gp) {
+            eprintln!("[coordinator] Skipping '{}': {}", task.id, reason);
+            continue;
+        }
+
+        // Spawn circuit breaker: skip tasks that have already hit the spawn failure threshold
+        if let Err(reason) =
+            check_spawn_circuit_breaker(task, config.coordinator.max_spawn_failures)
+        {
             eprintln!("[coordinator] Skipping '{}': {}", task.id, reason);
             continue;
         }
@@ -2778,6 +2883,14 @@ fn spawn_agents_for_ready_tasks(
                             "[coordinator] Failed to spawn assignment for {}: {}",
                             task_id, e
                         );
+                        record_spawn_failure(
+                            &gp,
+                            &task_id,
+                            &format!("{}", e),
+                            "inline-assignment",
+                            task.exec_mode.as_deref(),
+                            config.coordinator.max_spawn_failures,
+                        );
                     }
                 }
             } else {
@@ -2796,6 +2909,14 @@ fn spawn_agents_for_ready_tasks(
                     }
                     Err(e) => {
                         eprintln!("[coordinator] Failed to spawn eval for {}: {}", task_id, e);
+                        record_spawn_failure(
+                            &gp,
+                            &task_id,
+                            &format!("{}", e),
+                            "inline-eval",
+                            task.exec_mode.as_deref(),
+                            config.coordinator.max_spawn_failures,
+                        );
                     }
                 }
             }
@@ -2869,6 +2990,14 @@ fn spawn_agents_for_ready_tasks(
             }
             Err(e) => {
                 eprintln!("[coordinator] Failed to spawn for {}: {}", task.id, e);
+                record_spawn_failure(
+                    &gp,
+                    &task.id,
+                    &format!("{}", e),
+                    &effective_executor,
+                    task.exec_mode.as_deref(),
+                    config.coordinator.max_spawn_failures,
+                );
             }
         }
     }
@@ -5083,6 +5212,190 @@ mod tests {
         assert_eq!(
             assign.title, "Existing assign",
             "should keep existing assignment"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Spawn circuit breaker tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_spawn_circuit_breaker_allows_below_threshold() {
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 0;
+        assert!(check_spawn_circuit_breaker(&task, 5).is_ok());
+
+        task.spawn_failures = 4;
+        assert!(check_spawn_circuit_breaker(&task, 5).is_ok());
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_blocks_at_threshold() {
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 5;
+        let result = check_spawn_circuit_breaker(&task, 5);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("spawn circuit breaker"), "msg: {}", msg);
+        assert!(msg.contains("5 consecutive"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_disabled_when_zero() {
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 100;
+        // threshold=0 means disabled
+        assert!(check_spawn_circuit_breaker(&task, 0).is_ok());
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker() {
+        // Full integration test: record_spawn_failure increments counter
+        // and auto-fails after threshold
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let gp = wg_dir.join("graph.jsonl");
+
+        // Create a task with status Open
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "test-task".to_string();
+        task.title = "Test Task".to_string();
+        task.status = Status::Open;
+        task.exec_mode = Some("shell".to_string());
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &gp).unwrap();
+
+        let max_failures: u32 = 5;
+
+        // Record 4 failures — task should remain open
+        for i in 1..=4 {
+            let tripped = record_spawn_failure(
+                &gp,
+                "test-task",
+                &format!("error {}", i),
+                "claude",
+                Some("shell"),
+                max_failures,
+            );
+            assert!(!tripped, "should not trip at failure {}", i);
+
+            let g = load_graph(&gp).unwrap();
+            let t = g.get_task("test-task").unwrap();
+            assert_eq!(t.spawn_failures, i as u32);
+            assert_eq!(t.status, Status::Open);
+        }
+
+        // 5th failure — should trip the circuit breaker
+        let tripped = record_spawn_failure(
+            &gp,
+            "test-task",
+            "final error: exec_mode mismatch",
+            "claude",
+            Some("shell"),
+            max_failures,
+        );
+        assert!(tripped, "should trip at failure 5");
+
+        let g = load_graph(&gp).unwrap();
+        let t = g.get_task("test-task").unwrap();
+        assert_eq!(t.spawn_failures, 5);
+        assert_eq!(t.status, Status::Failed);
+
+        // Check failure reason includes exec_mode and executor
+        let reason = t.failure_reason.as_ref().unwrap();
+        assert!(
+            reason.contains("exec_mode=shell"),
+            "reason should include exec_mode, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("executor=claude"),
+            "reason should include executor, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("final error"),
+            "reason should include last error, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("5 consecutive"),
+            "reason should include count, got: {}",
+            reason
+        );
+
+        // Check log entries
+        assert!(
+            t.log.iter().any(|e| e.actor == Some("spawn".to_string())
+                && e.message.contains("Spawn failed")),
+            "Expected spawn failure log entry"
+        );
+        assert!(
+            t.log.iter().any(|e| e.actor == Some("spawn-circuit-breaker".to_string())
+                && e.message.contains("Circuit breaker tripped")),
+            "Expected circuit breaker log entry"
+        );
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_reset_on_edit() {
+        // Verify that editing a task resets spawn_failures
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let gp = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "reset-task".to_string();
+        task.title = "Reset Test".to_string();
+        task.status = Status::Open;
+        task.spawn_failures = 3;
+        task.exec_mode = Some("shell".to_string());
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &gp).unwrap();
+
+        // Edit the task (change exec_mode)
+        crate::commands::edit::run(
+            &wg_dir,
+            "reset-task",
+            None, // title
+            None, // description
+            &[],  // add_after
+            &[],  // remove_after
+            &[],  // add_tag
+            &[],  // remove_tag
+            None, // model
+            None, // provider
+            &[],  // add_skill
+            &[],  // remove_skill
+            None, // max_iterations
+            None, // cycle_guard
+            None, // cycle_delay
+            false, // no_converge
+            false, // no_restart_on_failure
+            None,  // max_failure_restarts
+            None,  // visibility
+            None,  // context_scope
+            Some("full"), // exec_mode — the fix
+            None,  // delay
+            None,  // not_before
+            None,  // verify
+        )
+        .unwrap();
+
+        let g = load_graph(&gp).unwrap();
+        let t = g.get_task("reset-task").unwrap();
+        assert_eq!(t.spawn_failures, 0, "spawn_failures should be reset after edit");
+        assert_eq!(
+            t.exec_mode.as_deref(),
+            Some("full"),
+            "exec_mode should be updated"
         );
     }
 }
