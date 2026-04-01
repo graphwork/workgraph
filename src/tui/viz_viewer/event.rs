@@ -9,6 +9,15 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::Position;
 
 use super::render;
+
+/// Minimum inspector panel percentage during divider drag.
+/// Prevents collapsing a pane to nothing — the user must use keyboard
+/// shortcuts (`=`, `\`) to reach Off or FullInspector modes.
+const MIN_DRAG_PERCENT: i32 = 10;
+/// Maximum inspector panel percentage during divider drag (graph gets at
+/// least `100 - MAX_DRAG_PERCENT` percent).
+const MAX_DRAG_PERCENT: i32 = 90;
+
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
     ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, NavEntry, ResponsiveBreakpoint,
@@ -2900,7 +2909,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     // when the divider drag started.
                     let delta = column as i32 - app.divider_drag_start_col as i32;
                     let delta_pct = delta * 100 / total_width as i32;
-                    let pct = (app.divider_drag_start_pct as i32 - delta_pct).clamp(0, 100) as u16;
+                    let pct = (app.divider_drag_start_pct as i32 - delta_pct)
+                        .clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16;
                     app.right_panel_percent = pct;
                     app.right_panel_visible = true;
                     // Preserve last non-extreme split state for restore.
@@ -2930,7 +2940,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     // the inspector (bottom panel), dragging UP grows it.
                     let delta = row as i32 - app.divider_drag_start_row as i32;
                     let delta_pct = delta * 100 / total_height as i32;
-                    let pct = (app.divider_drag_start_pct as i32 - delta_pct).clamp(0, 100) as u16;
+                    let pct = (app.divider_drag_start_pct as i32 - delta_pct)
+                        .clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16;
                     app.right_panel_percent = pct;
                     app.right_panel_visible = true;
                     if pct > 0 && pct < 100 {
@@ -5612,7 +5623,8 @@ mod scrollbar_tests {
             10,
         );
 
-        // Drag far DOWN past the bottom: percent should clamp at 0.
+        // Drag far DOWN past the bottom: percent should clamp at MIN_DRAG_PERCENT (10),
+        // enforcing a minimum pane size so the inspector can't collapse to nothing.
         handle_mouse(
             &mut app,
             MouseEventKind::Drag(MouseButton::Left),
@@ -5620,21 +5632,22 @@ mod scrollbar_tests {
             10,
         );
         assert_eq!(
-            app.right_panel_percent, 0,
-            "percent should clamp at 0 when dragged far down"
+            app.right_panel_percent,
+            MIN_DRAG_PERCENT as u16,
+            "percent should clamp at MIN_DRAG_PERCENT when dragged far down"
         );
 
-        // Release and check finalization.
+        // Release — should NOT finalize to Off because MIN_DRAG_PERCENT > 0.
         handle_mouse(
             &mut app,
             MouseEventKind::Up(MouseButton::Left),
             click_row + 50,
             10,
         );
-        assert_eq!(
+        assert_ne!(
             app.layout_mode,
             super::super::state::LayoutMode::Off,
-            "should finalize to Off when percent is 0"
+            "should not finalize to Off — minimum pane size enforced"
         );
     }
 
