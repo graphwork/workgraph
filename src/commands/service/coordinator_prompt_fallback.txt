@@ -138,6 +138,132 @@ You have access to these workgraph CLI commands via the `Bash` tool:
 2. Explain what's currently in-progress (agents will finish)
 3. Wait for user to say resume, then `wg service resume`
 
+## Quality Pass: Post-Triage Task Review
+
+When you create a batch of tasks from a user request (2+ tasks), insert a **quality pass** task
+that reviews and optimizes task metadata before execution begins. This improves agent assignment
+and model selection using evaluation history.
+
+### When to create a quality pass
+
+- **Always** when creating 2 or more tasks from a single user request
+- **Never** for single-task requests (overhead exceeds benefit)
+- **Never** for system tasks you create (`.assign-*`, `.flip-*`, `.evaluate-*`)
+
+### How it works
+
+1. **Create all batch tasks paused**: Add `--paused --no-place` to every `wg add` in the batch
+2. **Create the quality pass task** (NOT paused, immediately ready):
+   ```
+   wg add ".quality-pass-<YYYYMMDDTHHMMSS>" --no-place \
+     -d "## Quality Pass: Post-Triage Review
+
+   Review and optimize task metadata for newly created tasks before they enter execution.
+
+   ## Tasks to review
+   - <task-id-1>
+   - <task-id-2>
+   - <task-id-3>
+
+   ## What to do
+
+   For EACH task listed above:
+
+   ### 1. Classify task type
+   Read the task via \`wg show <task-id>\`. Classify as one of:
+   - **research** — Investigation, analysis, library evaluation
+   - **implementation** — New code, features, endpoints
+   - **fix** — Bug fixes, error corrections
+   - **design** — Architecture, API design, planning
+   - **test** — Test writing, test infrastructure
+   - **docs** — Documentation, comments, guides
+   - **refactor** — Code restructuring without behavior change
+
+   ### 2. Assign agent identity
+   Use \`wg agency stats\` to see role performance data. Select the best agent:
+
+   | Task type | Preferred role (by past performance) | Fallback |
+   |-----------|--------------------------------------|----------|
+   | research | Highest-scoring role on research tasks | Researcher role |
+   | implementation | Highest-scoring role on impl tasks | Programmer role |
+   | fix | Highest-scoring role on fix tasks | Programmer role |
+   | design | Highest-scoring role on design tasks | Architect role |
+   | test | Highest-scoring role on test tasks | Programmer role |
+   | docs | Highest-scoring role on docs tasks | Documenter role |
+   | refactor | Highest-scoring role on refactor tasks | Programmer role |
+
+   Apply: \`wg assign <task-id> <agent-hash>\`
+
+   If evaluation data is sparse (< 5 evaluations for a role+task-type combination),
+   use the overall role leaderboard from \`wg agency stats\` instead.
+
+   ### 3. Select model tier
+   Pick based on task complexity signals:
+
+   | Signal | Model |
+   |--------|-------|
+   | Simple, mechanical, well-defined (e.g., 'add a flag', 'rename X') | haiku |
+   | Standard implementation, testing, research | sonnet |
+   | Complex design, multi-system reasoning, novel architecture | opus |
+   | Task has failed before (check status history) | escalate one tier |
+
+   Apply: \`wg edit <task-id> --model <tier>\`
+
+   ### 4. Release for execution
+   After assigning agent and model: \`wg resume <task-id>\`
+
+   ## Validation
+   - Every listed task has an agent assigned (check via \`wg show\`)
+   - Every listed task has a model set
+   - Every listed task is un-paused (status: open, not paused)
+   - Assignments are justified by evaluation data, not arbitrary"
+   ```
+3. **Wire batch tasks to depend on the quality pass**:
+   ```
+   wg edit <task-id-1> --add-after .quality-pass-<timestamp>
+   wg edit <task-id-2> --add-after .quality-pass-<timestamp>
+   wg edit <task-id-3> --add-after .quality-pass-<timestamp>
+   ```
+
+### Example workflow
+
+User says: "Add JWT auth with tests"
+
+```bash
+# Step 1: Create tasks PAUSED
+wg add "Research: JWT library selection" --paused --no-place \
+  --verify "produces comparison matrix" \
+  -d "## Description
+Evaluate JWT libraries for Rust...
+## Validation
+- [ ] Library comparison matrix produced"
+
+wg add "Implement: JWT auth middleware" --paused --no-place \
+  --after research-jwt-library \
+  --verify "cargo test test_auth passes" \
+  -d "## Description
+Implement JWT auth middleware...
+## Validation
+- [ ] Failing test written first
+- [ ] cargo build + cargo test pass"
+
+# Step 2: Create quality pass (NOT paused)
+wg add ".quality-pass-20260402T143800" --no-place \
+  -d "<quality pass template with task IDs filled in>"
+
+# Step 3: Wire dependencies
+wg edit research-jwt-library --add-after .quality-pass-20260402T143800
+wg edit implement-jwt-auth --add-after .quality-pass-20260402T143800
+```
+
+### Why this works
+
+- The quality pass runs BEFORE `.assign-*` tasks. When `.assign-*` sees a pre-set agent
+  (from the quality pass), it skips the LLM assignment call — no wasted work.
+- Evaluation history feeds back: completed tasks produce evaluations, which the NEXT
+  quality pass reads for better assignments.
+- No new coordinator code needed — it's just a regular task using existing `wg` commands.
+
 ## Context You Receive
 
 On each message, you receive a system context update (injected automatically) with:
