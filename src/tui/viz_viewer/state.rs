@@ -1292,8 +1292,12 @@ fn save_chat_history_with_skip(
         }
     }
 
-    // Append current in-memory messages.
+    // Append current in-memory messages (skip SentMessage entries — they were
+    // interleaved from task message queues and don't belong in the coordinator chat).
     for m in messages {
+        if m.role == ChatRole::SentMessage {
+            continue;
+        }
         let p = chat_message_to_persisted(m);
         if let Ok(line) = serde_json::to_string(&p) {
             buf.push_str(&line);
@@ -1445,6 +1449,10 @@ fn load_jsonl_tail(path: &std::path::Path, limit: usize) -> PaginatedChatHistory
                 .ok()
                 .map(persisted_to_chat_message)
         })
+        // Filter out SentMessage entries — these were interleaved from task message
+        // queues and don't belong in the coordinator chat. Task messages are visible
+        // in the dedicated Messages panel.
+        .filter(|m| m.role != ChatRole::SentMessage)
         .collect();
 
     PaginatedChatHistory {
@@ -1487,6 +1495,7 @@ fn load_jsonl_page(
                 .ok()
                 .map(persisted_to_chat_message)
         })
+        .filter(|m| m.role != ChatRole::SentMessage)
         .collect()
 }
 
@@ -1503,6 +1512,7 @@ fn load_legacy_json_all(path: &std::path::Path) -> Vec<ChatMessage> {
     persisted
         .into_iter()
         .map(persisted_to_chat_message)
+        .filter(|m| m.role != ChatRole::SentMessage)
         .collect()
 }
 
@@ -9811,9 +9821,6 @@ impl VizApp {
             });
         }
 
-        // Interleave recently-read sent messages into the chat stream.
-        self.poll_interleaved_messages();
-
         // Persist updated chat history.
         save_chat_history_with_skip(
             &self.workgraph_dir,
@@ -9877,6 +9884,10 @@ impl VizApp {
 
     /// Poll for messages sent to agents that have been read, and interleave them
     /// into the chat stream as `SentMessage` entries at their read-at position.
+    /// NOTE: No longer called in production — the coordinator chat now only shows
+    /// user↔coordinator messages. Task messages are visible in the Messages panel.
+    /// Kept for test coverage of the interleaving logic.
+    #[cfg(test)]
     fn poll_interleaved_messages(&mut self) {
         // Collect IDs of messages already shown in the chat stream for dedup.
         let shown_ids: std::collections::HashSet<(String, u64)> = self
@@ -16638,13 +16649,16 @@ mod tui_chat_tests {
     }
 
     #[test]
-    fn chat_persistence_preserves_sent_message_fields() {
+    fn chat_persistence_filters_out_sent_messages() {
         let tmp = TempDir::new().unwrap();
         let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
 
         let mut app = build_test_app(&viz, &wg_dir);
 
-        // Add a SentMessage with all metadata fields
+        // Add a real user message and a SentMessage (interleaved task message)
+        app.chat
+            .messages
+            .push(make_chat_message(ChatRole::User, "Hello coordinator"));
         let mut sent = make_chat_message(ChatRole::SentMessage, "Check this task");
         sent.target_task = Some("task-xyz".to_string());
         sent.msg_timestamp = Some("2026-03-27T10:00:00Z".to_string());
@@ -16657,14 +16671,10 @@ mod tui_chat_tests {
         let mut app2 = build_test_app(&viz, &wg_dir);
         app2.load_chat_history();
 
+        // SentMessage entries should be filtered out — only the user message survives
         assert_eq!(app2.chat.messages.len(), 1);
-        let m = &app2.chat.messages[0];
-        assert!(matches!(m.role, ChatRole::SentMessage));
-        assert_eq!(m.text, "Check this task");
-        assert_eq!(m.target_task.as_deref(), Some("task-xyz"));
-        assert_eq!(m.msg_timestamp.as_deref(), Some("2026-03-27T10:00:00Z"));
-        assert_eq!(m.read_at.as_deref(), Some("2026-03-27T10:01:00Z"));
-        assert_eq!(m.msg_queue_id, Some(42));
+        assert!(matches!(app2.chat.messages[0].role, ChatRole::User));
+        assert_eq!(app2.chat.messages[0].text, "Hello coordinator");
     }
 
     #[test]
