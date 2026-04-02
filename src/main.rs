@@ -2087,7 +2087,24 @@ fn main() -> Result<()> {
             }
             ServerCommands::Connect { user } => commands::server::connect(user.as_deref()),
         },
-        Commands::Setup => commands::setup::run(),
+        Commands::Setup {
+            provider,
+            api_key_file,
+            api_key_env,
+            url,
+            model,
+            skip_validation,
+        } => {
+            let args = commands::setup::SetupArgs {
+                provider,
+                api_key_file,
+                api_key_env,
+                url,
+                model,
+                skip_validation,
+            };
+            commands::setup::run_with_args(&args)
+        }
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),

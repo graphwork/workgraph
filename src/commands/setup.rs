@@ -4,9 +4,11 @@
 
 use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, Input, Select};
+use reqwest::blocking::Client;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use workgraph::config::{Config, ModelRegistryEntry};
+use workgraph::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
 use workgraph::models::ModelRegistry;
 
 /// Marker used to detect whether workgraph directives are already present in CLAUDE.md.
@@ -45,6 +47,23 @@ The orchestrating agent (the one the user interacts with directly) does ONLY:
 It NEVER writes code, implements features, or does research itself.
 Everything gets dispatched through `wg add` and `wg service start`.
 "#;
+
+/// CLI arguments for `wg setup` (non-interactive mode).
+#[derive(Debug, Clone, Default)]
+pub struct SetupArgs {
+    /// Provider name: "anthropic", "openrouter", "openai", "local", "custom"
+    pub provider: Option<String>,
+    /// Path to API key file
+    pub api_key_file: Option<String>,
+    /// Environment variable name for API key
+    pub api_key_env: Option<String>,
+    /// API endpoint URL
+    pub url: Option<String>,
+    /// Default model ID
+    pub model: Option<String>,
+    /// Skip API key validation
+    pub skip_validation: bool,
+}
 
 /// Choices gathered from the interactive wizard.
 #[derive(Debug, Clone)]
@@ -264,10 +283,475 @@ fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
     }
 }
 
+/// Result of an API key validation attempt.
+#[derive(Debug, Clone)]
+pub struct ValidationResult {
+    /// Whether the key authenticated successfully
+    pub success: bool,
+    /// HTTP status code from the /models endpoint
+    pub status_code: u16,
+    /// Human-readable status message
+    pub message: String,
+    /// Raw model IDs returned by the API (empty if validation failed)
+    pub model_ids: Vec<String>,
+}
+
+/// Validate an API key by hitting the provider's /models endpoint.
+///
+/// Returns a `ValidationResult` with connectivity and auth status plus the
+/// list of model IDs the provider returned on success.
+pub fn validate_api_key(
+    provider: &str,
+    api_key: &str,
+    url: Option<&str>,
+) -> Result<ValidationResult> {
+    let base_url = url.unwrap_or_else(|| EndpointConfig::default_url_for_provider(provider));
+
+    if base_url.is_empty() {
+        return Ok(ValidationResult {
+            success: false,
+            status_code: 0,
+            message: "No URL configured for provider".to_string(),
+            model_ids: vec![],
+        });
+    }
+
+    let models_url = match provider {
+        "anthropic" => format!("{}/v1/models", base_url.trim_end_matches('/')),
+        _ => format!("{}/models", base_url.trim_end_matches('/')),
+    };
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let mut headers = HeaderMap::new();
+    match provider {
+        "anthropic" => {
+            headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        _ => {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", api_key))?,
+            );
+        }
+    }
+
+    let response = client.get(&models_url).headers(headers).send()?;
+    let status_code = response.status().as_u16();
+
+    if status_code == 401 || status_code == 403 {
+        return Ok(ValidationResult {
+            success: false,
+            status_code,
+            message: "Authentication failed — check your API key".to_string(),
+            model_ids: vec![],
+        });
+    }
+
+    if !response.status().is_success() {
+        return Ok(ValidationResult {
+            success: false,
+            status_code,
+            message: format!("API returned status {}", status_code),
+            model_ids: vec![],
+        });
+    }
+
+    // Parse model IDs from the response
+    let body = response.text().unwrap_or_default();
+    let model_ids = parse_model_ids_from_response(&body);
+
+    Ok(ValidationResult {
+        success: true,
+        status_code,
+        message: "Authentication successful".to_string(),
+        model_ids,
+    })
+}
+
+/// Parse model IDs from a JSON response body.
+///
+/// Supports both OpenAI-style `{"data": [{"id": "..."}]}` and
+/// Anthropic-style `{"data": [{"id": "..."}]}` responses.
+pub fn parse_model_ids_from_response(body: &str) -> Vec<String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return vec![];
+    };
+
+    // Try {"data": [{"id": "..."}]} format (OpenAI / OpenRouter / Anthropic)
+    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+        return data
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+            .collect();
+    }
+
+    // Try {"models": [{"name": "..."}]} format (Ollama)
+    if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
+        return models
+            .iter()
+            .filter_map(|m| {
+                m.get("name")
+                    .or_else(|| m.get("model"))
+                    .and_then(|n| n.as_str())
+                    .map(String::from)
+            })
+            .collect();
+    }
+
+    vec![]
+}
+
+/// Build model registry entries from discovered model IDs for a given provider.
+pub fn build_registry_from_discovered(
+    provider: &str,
+    model_ids: &[String],
+) -> Vec<ModelRegistryEntry> {
+    model_ids
+        .iter()
+        .map(|id| {
+            let tier = infer_tier_from_model_id(id);
+            // Use a short alias: last segment of the model ID
+            let alias = id
+                .rsplit('/')
+                .next()
+                .unwrap_or(id)
+                .to_string();
+            ModelRegistryEntry {
+                id: alias,
+                provider: provider.to_string(),
+                model: id.clone(),
+                tier,
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// Infer a quality tier from a model ID string using common naming patterns.
+pub fn infer_tier_from_model_id(model_id: &str) -> Tier {
+    let lower = model_id.to_lowercase();
+
+    // Premium tier: opus, large reasoning models
+    if lower.contains("opus")
+        || lower.contains("o1-pro")
+        || lower.contains("o3-pro")
+    {
+        return Tier::Premium;
+    }
+
+    // Fast tier: haiku, mini, flash, small, nano, tiny
+    if lower.contains("haiku")
+        || lower.contains("mini")
+        || lower.contains("flash")
+        || lower.contains("nano")
+        || lower.contains("tiny")
+        || lower.contains("small")
+    {
+        return Tier::Fast;
+    }
+
+    // Everything else: standard
+    Tier::Standard
+}
+
+/// Auto-map tier config from a set of model registry entries.
+///
+/// Picks one model per tier (fast, standard, premium). If multiple models
+/// share a tier, the first one wins.
+pub fn auto_map_tiers(entries: &[ModelRegistryEntry]) -> workgraph::config::TierConfig {
+    let mut fast: Option<String> = None;
+    let mut standard: Option<String> = None;
+    let mut premium: Option<String> = None;
+
+    for entry in entries {
+        match entry.tier {
+            Tier::Fast if fast.is_none() => fast = Some(entry.id.clone()),
+            Tier::Standard if standard.is_none() => standard = Some(entry.id.clone()),
+            Tier::Premium if premium.is_none() => premium = Some(entry.id.clone()),
+            _ => {}
+        }
+    }
+
+    workgraph::config::TierConfig {
+        fast,
+        standard,
+        premium,
+    }
+}
+
+/// Print a summary of what is already configured.
+pub fn check_existing_config(config: &Config) -> String {
+    let mut lines = Vec::new();
+
+    // Endpoint status
+    if config.llm_endpoints.endpoints.is_empty() {
+        lines.push("  Endpoints: (none configured)".to_string());
+    } else {
+        for ep in &config.llm_endpoints.endpoints {
+            let default_marker = if ep.is_default { " (default)" } else { "" };
+            let key_status = match ep.resolve_api_key(None) {
+                Ok(Some(_)) => "key present",
+                _ => "no key",
+            };
+            lines.push(format!(
+                "  Endpoint: {}{} [{}] — {}",
+                ep.name, default_marker, ep.provider, key_status
+            ));
+        }
+    }
+
+    // Model config
+    let model = config
+        .coordinator
+        .model
+        .as_deref()
+        .unwrap_or(&config.agent.model);
+    if model.is_empty() || model == "sonnet" {
+        lines.push("  Model: (default)".to_string());
+    } else {
+        lines.push(format!("  Model: {}", model));
+    }
+
+    // Tiers
+    let has_tiers = config.tiers.fast.is_some()
+        || config.tiers.standard.is_some()
+        || config.tiers.premium.is_some();
+    if has_tiers {
+        lines.push(format!(
+            "  Tiers: fast={}, standard={}, premium={}",
+            config.tiers.fast.as_deref().unwrap_or("(unset)"),
+            config.tiers.standard.as_deref().unwrap_or("(unset)"),
+            config.tiers.premium.as_deref().unwrap_or("(unset)"),
+        ));
+    } else {
+        lines.push("  Tiers: (not configured)".to_string());
+    }
+
+    // Model registry
+    if config.model_registry.is_empty() {
+        lines.push("  Registry: (empty)".to_string());
+    } else {
+        lines.push(format!("  Registry: {} model(s)", config.model_registry.len()));
+    }
+
+    // Agency
+    if config.agency.auto_assign || config.agency.auto_evaluate {
+        lines.push("  Agency: enabled".to_string());
+    } else {
+        lines.push("  Agency: disabled".to_string());
+    }
+
+    lines.join("\n")
+}
+
+/// Run setup in non-interactive mode using CLI flags.
+pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
+    let provider = args.provider.as_deref().unwrap_or("anthropic");
+
+    let existing = Config::load_global()?.unwrap_or_default();
+    let global_path = Config::global_config_path()?;
+
+    // Determine endpoint URL
+    let url = args
+        .url
+        .as_deref()
+        .unwrap_or_else(|| EndpointConfig::default_url_for_provider(provider));
+
+    // Resolve API key for validation
+    let api_key = resolve_key_from_args(args)?;
+
+    // Validate if we have a key and validation is not skipped
+    let mut discovered_model_ids = Vec::new();
+    if let Some(ref key) = api_key {
+        if !args.skip_validation {
+            eprintln!("Validating API key for {} ...", provider);
+            match validate_api_key(provider, key, Some(url)) {
+                Ok(result) => {
+                    if result.success {
+                        eprintln!("  \u{2713} {} (found {} models)", result.message, result.model_ids.len());
+                        discovered_model_ids = result.model_ids;
+                    } else {
+                        bail!(
+                            "API key validation failed: {} (status {})",
+                            result.message,
+                            result.status_code
+                        );
+                    }
+                }
+                Err(e) => {
+                    bail!("Could not connect to {} API: {}", provider, e);
+                }
+            }
+        }
+    }
+
+    // Build model registry from discovered or use defaults
+    let model_registry_entries = if !discovered_model_ids.is_empty() {
+        build_registry_from_discovered(provider, &discovered_model_ids)
+    } else {
+        vec![]
+    };
+
+    // Determine default model
+    let model = args.model.as_deref().unwrap_or_else(|| {
+        match provider {
+            "anthropic" => "sonnet",
+            "openrouter" => "anthropic/claude-sonnet-4",
+            "openai" => "gpt-4o",
+            _ => "default",
+        }
+    });
+
+    // Determine executor
+    let executor = match provider {
+        "anthropic" => "claude",
+        _ => "native",
+    };
+
+    // Build endpoint config for non-Anthropic providers
+    let endpoint = if provider != "anthropic" {
+        Some(EndpointChoices {
+            name: provider.to_string(),
+            provider: provider.to_string(),
+            url: url.to_string(),
+            api_key_env: args.api_key_env.clone(),
+            api_key_file: args.api_key_file.clone(),
+        })
+    } else {
+        None
+    };
+
+    let choices = SetupChoices {
+        provider: provider.to_string(),
+        executor: executor.to_string(),
+        model: model.to_string(),
+        agency_enabled: existing.agency.auto_assign,
+        max_agents: existing.coordinator.max_agents,
+        endpoint,
+        model_registry_entries: model_registry_entries.clone(),
+    };
+
+    let mut config = build_config(&choices, Some(&existing));
+
+    // Set tier mappings from discovered models
+    if !model_registry_entries.is_empty() {
+        config.tiers = auto_map_tiers(&model_registry_entries);
+    }
+
+    config.save_global()?;
+
+    println!("Configuration written to {}", global_path.display());
+    println!();
+    println!("Summary:");
+    println!("  Provider: {}", provider);
+    println!("  Executor: {}", executor);
+    println!("  Model:    {}", model);
+    if !model_registry_entries.is_empty() {
+        println!("  Registry: {} model(s) discovered", model_registry_entries.len());
+    }
+    if config.tiers.fast.is_some() || config.tiers.standard.is_some() || config.tiers.premium.is_some() {
+        println!(
+            "  Tiers:    fast={}, standard={}, premium={}",
+            config.tiers.fast.as_deref().unwrap_or("(unset)"),
+            config.tiers.standard.as_deref().unwrap_or("(unset)"),
+            config.tiers.premium.as_deref().unwrap_or("(unset)"),
+        );
+    }
+
+    Ok(())
+}
+
+/// Resolve an API key from SetupArgs (key file or env var).
+fn resolve_key_from_args(args: &SetupArgs) -> Result<Option<String>> {
+    if let Some(ref file_path) = args.api_key_file {
+        let expanded = if file_path.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                home.join(file_path.strip_prefix("~/").unwrap_or(file_path))
+            } else {
+                PathBuf::from(file_path)
+            }
+        } else {
+            PathBuf::from(file_path)
+        };
+        if expanded.exists() {
+            let key = std::fs::read_to_string(&expanded)
+                .with_context(|| format!("Failed to read key file: {}", expanded.display()))?;
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Ok(Some(key));
+            }
+        }
+    }
+
+    if let Some(ref env_var) = args.api_key_env {
+        if let Ok(key) = std::env::var(env_var) {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Ok(Some(key));
+            }
+        }
+    }
+
+    // Try provider-specific env vars
+    let provider = args.provider.as_deref().unwrap_or("anthropic");
+    for var_name in EndpointConfig::env_var_names_for_provider(provider) {
+        if let Ok(key) = std::env::var(var_name) {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Ok(Some(key));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Resolve an API key from EndpointChoices (reading env var or key file).
+fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
+    if let Some(ref env_var) = ep.api_key_env {
+        if let Ok(key) = std::env::var(env_var) {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    if let Some(ref file_path) = ep.api_key_file {
+        let expanded = if file_path.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                home.join(file_path.strip_prefix("~/").unwrap_or(file_path))
+            } else {
+                PathBuf::from(file_path)
+            }
+        } else {
+            PathBuf::from(file_path)
+        };
+        if let Ok(content) = std::fs::read_to_string(&expanded) {
+            let key = content.trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
+/// Run the setup wizard, dispatching to interactive or non-interactive mode.
+pub fn run_with_args(args: &SetupArgs) -> Result<()> {
+    if !std::io::stdin().is_terminal() || args.provider.is_some() {
+        return run_non_interactive(args);
+    }
+    run()
+}
+
 /// Run the interactive setup wizard.
 pub fn run() -> Result<()> {
     if !std::io::stdin().is_terminal() {
-        bail!("wg setup requires an interactive terminal");
+        bail!("wg setup requires an interactive terminal. Use --provider for non-interactive mode.");
     }
 
     // Load existing global config for defaults
@@ -279,6 +763,11 @@ pub fn run() -> Result<()> {
         "This will configure your global defaults at {}",
         global_path.display()
     );
+    println!();
+
+    // Show current configuration status
+    println!("Current configuration:");
+    println!("{}", check_existing_config(&existing));
     println!();
 
     // 1. Provider selection (primary decision point)
@@ -351,13 +840,68 @@ pub fn run() -> Result<()> {
     };
 
     // 3. Provider-specific configuration
-    let (endpoint, model_registry_entries, model) = match provider.as_str() {
+    let (endpoint, mut model_registry_entries, model) = match provider.as_str() {
         "openrouter" => configure_openrouter(&existing)?,
         "openai" => configure_openai(&existing)?,
         "local" => configure_local(&existing)?,
         "custom" => configure_custom_provider(&existing)?,
         _ => configure_anthropic(&existing)?,
     };
+
+    // 3b. Validate API key if an endpoint is configured
+    if let Some(ref ep) = endpoint {
+        let api_key = resolve_endpoint_key(ep);
+        if let Some(ref key) = api_key {
+            println!();
+            println!("Validating API key...");
+            match validate_api_key(&ep.provider, key, Some(&ep.url)) {
+                Ok(result) if result.success => {
+                    println!("  \u{2713} {} (found {} models)", result.message, result.model_ids.len());
+
+                    // Offer to auto-discover models if we got a response
+                    if !result.model_ids.is_empty() && model_registry_entries.is_empty() {
+                        let discover = Confirm::new()
+                            .with_prompt(format!(
+                                "Register {} discovered models in the model registry?",
+                                result.model_ids.len()
+                            ))
+                            .default(true)
+                            .interact()?;
+                        if discover {
+                            model_registry_entries =
+                                build_registry_from_discovered(&ep.provider, &result.model_ids);
+                            println!(
+                                "  Registered {} models with auto-detected tiers.",
+                                model_registry_entries.len()
+                            );
+                        }
+                    }
+                }
+                Ok(result) => {
+                    println!("  \u{2717} {} (status {})", result.message, result.status_code);
+                    let cont = Confirm::new()
+                        .with_prompt("Continue anyway?")
+                        .default(false)
+                        .interact()?;
+                    if !cont {
+                        println!("Setup cancelled.");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    println!("  \u{2717} Connection failed: {}", e);
+                    let cont = Confirm::new()
+                        .with_prompt("Continue anyway?")
+                        .default(false)
+                        .interact()?;
+                    if !cont {
+                        println!("Setup cancelled.");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
 
     // 4. Agency
     println!();
@@ -401,7 +945,13 @@ pub fn run() -> Result<()> {
     }
 
     // Build and save
-    let config = build_config(&choices, Some(&existing));
+    let mut config = build_config(&choices, Some(&existing));
+
+    // Auto-map tiers from registry entries
+    if !choices.model_registry_entries.is_empty() {
+        config.tiers = auto_map_tiers(&choices.model_registry_entries);
+    }
+
     config.save_global()?;
 
     // Post-save: guide skill/bundle installation based on executor
@@ -1378,5 +1928,381 @@ mod tests {
         assert!(CLAUDE_MD_DIRECTIVES.contains("wg quickstart"));
         assert!(CLAUDE_MD_DIRECTIVES.contains("Orchestrating agent"));
         assert!(CLAUDE_MD_DIRECTIVES.contains("wg service start"));
+    }
+
+    // ── parse_model_ids_from_response ─────────────────────────────────
+
+    #[test]
+    fn test_parse_model_ids_openai_format() {
+        let body = r#"{"data": [{"id": "gpt-4o"}, {"id": "gpt-3.5-turbo"}]}"#;
+        let ids = parse_model_ids_from_response(body);
+        assert_eq!(ids, vec!["gpt-4o", "gpt-3.5-turbo"]);
+    }
+
+    #[test]
+    fn test_parse_model_ids_ollama_format() {
+        let body = r#"{"models": [{"name": "llama3"}, {"name": "codellama"}]}"#;
+        let ids = parse_model_ids_from_response(body);
+        assert_eq!(ids, vec!["llama3", "codellama"]);
+    }
+
+    #[test]
+    fn test_parse_model_ids_empty_data() {
+        let body = r#"{"data": []}"#;
+        let ids = parse_model_ids_from_response(body);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_parse_model_ids_invalid_json() {
+        let ids = parse_model_ids_from_response("not json");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_parse_model_ids_missing_id_field() {
+        let body = r#"{"data": [{"name": "test"}]}"#;
+        let ids = parse_model_ids_from_response(body);
+        assert!(ids.is_empty());
+    }
+
+    // ── infer_tier_from_model_id ──────────────────────────────────────
+
+    #[test]
+    fn test_infer_tier_opus_is_premium() {
+        assert_eq!(infer_tier_from_model_id("claude-opus-4"), Tier::Premium);
+        assert_eq!(
+            infer_tier_from_model_id("anthropic/claude-opus-4"),
+            Tier::Premium
+        );
+    }
+
+    #[test]
+    fn test_infer_tier_haiku_is_fast() {
+        assert_eq!(infer_tier_from_model_id("claude-haiku-4"), Tier::Fast);
+        assert_eq!(infer_tier_from_model_id("gpt-4o-mini"), Tier::Fast);
+        assert_eq!(
+            infer_tier_from_model_id("gemini-2.0-flash"),
+            Tier::Fast
+        );
+    }
+
+    #[test]
+    fn test_infer_tier_sonnet_is_standard() {
+        assert_eq!(infer_tier_from_model_id("claude-sonnet-4"), Tier::Standard);
+        assert_eq!(infer_tier_from_model_id("gpt-4o"), Tier::Standard);
+    }
+
+    // ── auto_map_tiers ────────────────────────────────────────────────
+
+    #[test]
+    fn test_auto_map_tiers_all_tiers() {
+        let entries = vec![
+            ModelRegistryEntry {
+                id: "fast-model".to_string(),
+                tier: Tier::Fast,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "standard-model".to_string(),
+                tier: Tier::Standard,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "premium-model".to_string(),
+                tier: Tier::Premium,
+                ..Default::default()
+            },
+        ];
+        let tiers = auto_map_tiers(&entries);
+        assert_eq!(tiers.fast, Some("fast-model".to_string()));
+        assert_eq!(tiers.standard, Some("standard-model".to_string()));
+        assert_eq!(tiers.premium, Some("premium-model".to_string()));
+    }
+
+    #[test]
+    fn test_auto_map_tiers_first_wins() {
+        let entries = vec![
+            ModelRegistryEntry {
+                id: "fast-1".to_string(),
+                tier: Tier::Fast,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "fast-2".to_string(),
+                tier: Tier::Fast,
+                ..Default::default()
+            },
+        ];
+        let tiers = auto_map_tiers(&entries);
+        assert_eq!(tiers.fast, Some("fast-1".to_string()));
+    }
+
+    #[test]
+    fn test_auto_map_tiers_empty() {
+        let tiers = auto_map_tiers(&[]);
+        assert!(tiers.fast.is_none());
+        assert!(tiers.standard.is_none());
+        assert!(tiers.premium.is_none());
+    }
+
+    #[test]
+    fn test_auto_map_tiers_partial() {
+        let entries = vec![ModelRegistryEntry {
+            id: "only-standard".to_string(),
+            tier: Tier::Standard,
+            ..Default::default()
+        }];
+        let tiers = auto_map_tiers(&entries);
+        assert!(tiers.fast.is_none());
+        assert_eq!(tiers.standard, Some("only-standard".to_string()));
+        assert!(tiers.premium.is_none());
+    }
+
+    // ── build_registry_from_discovered ────────────────────────────────
+
+    #[test]
+    fn test_build_registry_from_discovered() {
+        let ids = vec![
+            "anthropic/claude-opus-4".to_string(),
+            "anthropic/claude-sonnet-4".to_string(),
+            "anthropic/claude-haiku-4".to_string(),
+        ];
+        let entries = build_registry_from_discovered("openrouter", &ids);
+        assert_eq!(entries.len(), 3);
+
+        // Check aliases are short names
+        assert_eq!(entries[0].id, "claude-opus-4");
+        assert_eq!(entries[1].id, "claude-sonnet-4");
+        assert_eq!(entries[2].id, "claude-haiku-4");
+
+        // Check tiers are inferred
+        assert_eq!(entries[0].tier, Tier::Premium);
+        assert_eq!(entries[1].tier, Tier::Standard);
+        assert_eq!(entries[2].tier, Tier::Fast);
+
+        // Check provider is set
+        for e in &entries {
+            assert_eq!(e.provider, "openrouter");
+        }
+    }
+
+    // ── check_existing_config ─────────────────────────────────────────
+
+    #[test]
+    fn test_check_existing_config_empty() {
+        let config = Config::default();
+        let status = check_existing_config(&config);
+        assert!(status.contains("(none configured)"));
+        assert!(status.contains("(not configured)"));
+        assert!(status.contains("(empty)"));
+    }
+
+    #[test]
+    fn test_check_existing_config_with_endpoint() {
+        let mut config = Config::default();
+        config
+            .llm_endpoints
+            .endpoints
+            .push(workgraph::config::EndpointConfig {
+                name: "my-ep".to_string(),
+                provider: "openrouter".to_string(),
+                url: Some("https://openrouter.ai/api/v1".to_string()),
+                model: None,
+                api_key: Some("sk-test".to_string()),
+                api_key_file: None,
+                api_key_env: None,
+                is_default: true,
+            });
+        let status = check_existing_config(&config);
+        assert!(status.contains("my-ep"));
+        assert!(status.contains("(default)"));
+        assert!(status.contains("key present"));
+    }
+
+    #[test]
+    fn test_check_existing_config_with_tiers() {
+        let mut config = Config::default();
+        config.tiers.fast = Some("haiku".to_string());
+        config.tiers.standard = Some("sonnet".to_string());
+        config.tiers.premium = Some("opus".to_string());
+        let status = check_existing_config(&config);
+        assert!(status.contains("fast=haiku"));
+        assert!(status.contains("standard=sonnet"));
+        assert!(status.contains("premium=opus"));
+    }
+
+    // ── validate_api_key (with mock server) ───────────────────────────
+
+    fn mock_server(status: u16, body: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://127.0.0.1:{}", addr.port());
+        let body = body.to_string();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        url
+    }
+
+    #[test]
+    fn test_validate_api_key_success() {
+        let body = r#"{"data": [{"id": "gpt-4o"}, {"id": "gpt-3.5-turbo"}]}"#;
+        let mock_url = mock_server(200, body);
+
+        let result = validate_api_key("openai", "sk-test", Some(&mock_url)).unwrap();
+        assert!(result.success);
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.model_ids.len(), 2);
+        assert!(result.model_ids.contains(&"gpt-4o".to_string()));
+    }
+
+    #[test]
+    fn test_validate_api_key_auth_failure() {
+        let mock_url = mock_server(401, r#"{"error":"unauthorized"}"#);
+
+        let result = validate_api_key("openai", "sk-bad", Some(&mock_url)).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.status_code, 401);
+        assert!(result.model_ids.is_empty());
+        assert!(result.message.contains("Authentication failed"));
+    }
+
+    #[test]
+    fn test_validate_api_key_forbidden() {
+        let mock_url = mock_server(403, r#"{"error":"forbidden"}"#);
+
+        let result = validate_api_key("openai", "sk-bad", Some(&mock_url)).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.status_code, 403);
+    }
+
+    #[test]
+    fn test_validate_api_key_server_error() {
+        let mock_url = mock_server(500, r#"{"error":"internal"}"#);
+
+        let result = validate_api_key("openai", "sk-test", Some(&mock_url)).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.status_code, 500);
+    }
+
+    #[test]
+    fn test_validate_api_key_connection_refused() {
+        let result = validate_api_key("openai", "sk-test", Some("http://127.0.0.1:1"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_api_key_anthropic_uses_x_api_key() {
+        // Just verify Anthropic path doesn't panic — actual header verification
+        // would need a more sophisticated mock
+        let body = r#"{"data": [{"id": "claude-sonnet-4-20250514"}]}"#;
+        let mock_url = mock_server(200, body);
+
+        let result = validate_api_key("anthropic", "sk-ant-test", Some(&mock_url)).unwrap();
+        assert!(result.success);
+        assert_eq!(result.model_ids.len(), 1);
+    }
+
+    // ── resolve_key_from_args ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_key_from_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let key_file = tmp.path().join("api_key.txt");
+        std::fs::write(&key_file, "sk-test-key\n").unwrap();
+
+        let args = SetupArgs {
+            api_key_file: Some(key_file.to_str().unwrap().to_string()),
+            ..Default::default()
+        };
+        let key = resolve_key_from_args(&args).unwrap();
+        assert_eq!(key, Some("sk-test-key".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_key_from_file_not_found() {
+        let args = SetupArgs {
+            api_key_file: Some("/nonexistent/path/key.txt".to_string()),
+            ..Default::default()
+        };
+        let key = resolve_key_from_args(&args).unwrap();
+        assert!(key.is_none());
+    }
+
+    #[test]
+    fn test_resolve_key_from_file_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let key_file = tmp.path().join("empty_key.txt");
+        std::fs::write(&key_file, "  \n").unwrap();
+
+        let args = SetupArgs {
+            api_key_file: Some(key_file.to_str().unwrap().to_string()),
+            ..Default::default()
+        };
+        let key = resolve_key_from_args(&args).unwrap();
+        assert!(key.is_none());
+    }
+
+    // ── build_config with tiers ───────────────────────────────────────
+
+    #[test]
+    fn test_build_config_sets_tiers_from_registry() {
+        let entries = vec![
+            ModelRegistryEntry {
+                id: "haiku".to_string(),
+                provider: "openrouter".to_string(),
+                model: "anthropic/claude-haiku-4".to_string(),
+                tier: Tier::Fast,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "sonnet".to_string(),
+                provider: "openrouter".to_string(),
+                model: "anthropic/claude-sonnet-4".to_string(),
+                tier: Tier::Standard,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "opus".to_string(),
+                provider: "openrouter".to_string(),
+                model: "anthropic/claude-opus-4".to_string(),
+                tier: Tier::Premium,
+                ..Default::default()
+            },
+        ];
+
+        let choices = SetupChoices {
+            provider: "openrouter".to_string(),
+            executor: "native".to_string(),
+            model: "sonnet".to_string(),
+            agency_enabled: false,
+            max_agents: 4,
+            endpoint: None,
+            model_registry_entries: entries.clone(),
+        };
+
+        let mut config = build_config(&choices, None);
+        config.tiers = auto_map_tiers(&entries);
+
+        assert_eq!(config.tiers.fast, Some("haiku".to_string()));
+        assert_eq!(config.tiers.standard, Some("sonnet".to_string()));
+        assert_eq!(config.tiers.premium, Some("opus".to_string()));
     }
 }

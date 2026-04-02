@@ -1521,7 +1521,26 @@ pub enum Commands {
     },
 
     /// Interactive configuration wizard for first-time setup
-    Setup,
+    Setup {
+        /// Provider (anthropic, openrouter, openai, local, custom) — enables non-interactive mode
+        #[arg(long)]
+        provider: Option<String>,
+        /// Path to API key file
+        #[arg(long)]
+        api_key_file: Option<String>,
+        /// Environment variable name for API key
+        #[arg(long)]
+        api_key_env: Option<String>,
+        /// API endpoint URL
+        #[arg(long)]
+        url: Option<String>,
+        /// Default model ID
+        #[arg(long)]
+        model: Option<String>,
+        /// Skip API key validation
+        #[arg(long)]
+        skip_validation: bool,
+    },
 
     /// Print a concise cheat sheet for agent onboarding
     Quickstart,
@@ -3395,7 +3414,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Screencast { .. } => "screencast",
         Commands::Tui { .. } => "tui",
         Commands::TuiDump { .. } => "tui-dump",
-        Commands::Setup => "setup",
+        Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
         Commands::Status => "status",
         Commands::Stats => "stats",
