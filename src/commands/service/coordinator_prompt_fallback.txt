@@ -180,25 +180,24 @@ and model selection using evaluation history.
    - **refactor** — Code restructuring without behavior change
 
    ### 2. Assign agent identity
-   Use \`wg agency stats\` to see role performance data. Select the best agent:
+   Run \`wg agency stats --by-task-type\` to see role performance by task type.
+   The **Recommendations by Task Type** table shows the best role for each type.
 
-   | Task type | Preferred role (by past performance) | Fallback |
-   |-----------|--------------------------------------|----------|
-   | research | Highest-scoring role on research tasks | Researcher role |
-   | implementation | Highest-scoring role on impl tasks | Programmer role |
-   | fix | Highest-scoring role on fix tasks | Programmer role |
-   | design | Highest-scoring role on design tasks | Architect role |
-   | test | Highest-scoring role on test tasks | Programmer role |
-   | docs | Highest-scoring role on docs tasks | Documenter role |
-   | refactor | Highest-scoring role on refactor tasks | Programmer role |
+   Use the recommended role for the task's classified type. If the recommendation
+   says '(insufficient data)', fall back to the overall Role Leaderboard.
+
+   For JSON access (machine-readable): \`wg agency stats --by-task-type --json\`
+   Look at \`.task_type_breakdown.recommendations[].best_role\`.
 
    Apply: \`wg assign <task-id> <agent-hash>\`
 
-   If evaluation data is sparse (< 5 evaluations for a role+task-type combination),
-   use the overall role leaderboard from \`wg agency stats\` instead.
-
    ### 3. Select model tier
-   Pick based on task complexity signals:
+   Run \`wg agency stats --by-task-type\` and check the **Best Model by Task Type**
+   table. Use the top-scoring model for the task's classified type.
+
+   For JSON access: \`.task_type_breakdown.recommendations[].best_model\`.
+
+   Override heuristics (when evaluation data is sparse or absent):
 
    | Signal | Model |
    |--------|-------|

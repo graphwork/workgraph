@@ -2551,6 +2551,10 @@ pub enum AgencyCommands {
         /// Group stats by model (shows per-model score breakdown)
         #[arg(long)]
         by_model: bool,
+
+        /// Group stats by task type (research, implementation, fix, design, test, docs, refactor)
+        #[arg(long)]
+        by_task_type: bool,
     },
 
     /// Scan filesystem for agency stores

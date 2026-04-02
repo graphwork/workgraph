@@ -1080,7 +1080,8 @@ fn main() -> Result<()> {
             AgencyCommands::Stats {
                 min_evals,
                 by_model,
-            } => commands::agency_stats::run(&workgraph_dir, cli.json, min_evals, by_model),
+                by_task_type,
+            } => commands::agency_stats::run(&workgraph_dir, cli.json, min_evals, by_model, by_task_type),
             AgencyCommands::Scan { root, max_depth } => {
                 let root_path = std::path::PathBuf::from(&root);
                 commands::agency_scan::run(&root_path, cli.json, max_depth)

@@ -8,6 +8,18 @@ use workgraph::parser::load_graph;
 /// A (role_id, tradeoff_id) pair used as a key in the synergy matrix.
 type Pair = (String, String);
 
+/// Canonical task types for performance breakdown.
+const TASK_TYPES: &[&str] = &[
+    "research",
+    "implementation",
+    "fix",
+    "design",
+    "test",
+    "docs",
+    "refactor",
+    "other",
+];
+
 /// Per-entity aggregated stats.
 struct EntityStats {
     id: String,
@@ -42,6 +54,14 @@ struct ModelStats {
     scores: Vec<f64>,
 }
 
+/// Stats for a (task_type, entity) pair.
+struct TaskTypeCell {
+    task_type: String,
+    entity_id: String,
+    count: u32,
+    avg_score: f64,
+}
+
 /// Compute a simple trend indicator from recent scores.
 /// Returns "up", "down", "flat", or "-" if insufficient data.
 fn trend(scores: &[f64]) -> &'static str {
@@ -61,8 +81,79 @@ fn trend(scores: &[f64]) -> &'static str {
     }
 }
 
-/// Run `wg agency stats [--json] [--min-evals N] [--by-model]`.
-pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()> {
+/// Classify a task into a canonical type based on its title.
+///
+/// Uses title prefix (e.g., "Research: ...", "Fix: ...") or falls back to
+/// keyword matching in the title. System tasks (evaluate, flip, place, assign)
+/// are excluded.
+fn classify_task_type(title: &str) -> Option<&'static str> {
+    let lower = title.to_lowercase();
+
+    // Skip system tasks
+    if lower.starts_with("evaluate:")
+        || lower.starts_with("flip:")
+        || lower.starts_with("place:")
+        || lower.starts_with(".evaluate-")
+        || lower.starts_with(".flip-")
+        || lower.starts_with(".place-")
+        || lower.starts_with(".assign-")
+        || lower.starts_with(".compact-")
+        || lower.starts_with(".quality-pass-")
+    {
+        return None;
+    }
+
+    // Check title prefix first (most reliable)
+    if lower.starts_with("research:")
+        || lower.starts_with("investigate:")
+        || lower.starts_with("audit:")
+        || lower.starts_with("analyze:")
+        || lower.starts_with("explore:")
+    {
+        return Some("research");
+    }
+    if lower.starts_with("implement:")
+        || lower.starts_with("wire:")
+        || lower.starts_with("add:")
+        || lower.starts_with("create:")
+        || lower.starts_with("build:")
+    {
+        return Some("implementation");
+    }
+    if lower.starts_with("fix:")
+        || lower.starts_with("hotfix:")
+        || lower.starts_with("bugfix:")
+    {
+        return Some("fix");
+    }
+    if lower.starts_with("design:")
+        || lower.starts_with("architect:")
+        || lower.starts_with("plan:")
+    {
+        return Some("design");
+    }
+    if lower.starts_with("test:") || lower.starts_with("validate:") {
+        return Some("test");
+    }
+    if lower.starts_with("docs:")
+        || lower.starts_with("document:")
+        || lower.starts_with("doc:")
+    {
+        return Some("docs");
+    }
+    if lower.starts_with("refactor:")
+        || lower.starts_with("restructure:")
+        || lower.starts_with("cleanup:")
+    {
+        return Some("refactor");
+    }
+
+    // Fallback: classify as "other" for user tasks without a clear type prefix
+    Some("other")
+}
+
+/// Run `wg agency stats [--json] [--min-evals N] [--by-model] [--by-task-type]`.
+pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool, by_task_type: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
@@ -74,19 +165,33 @@ pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()>
     let evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
-    // Try to load graph for tag-based breakdown (non-fatal if missing)
+    // Try to load graph for tag-based and task-type-based breakdowns (non-fatal if missing)
     let graph_path = super::graph_path(dir);
-    let task_tags: HashMap<String, Vec<String>> = if graph_path.exists() {
-        match load_graph(&graph_path) {
-            Ok(graph) => graph
-                .tasks()
-                .map(|t| (t.id.clone(), t.tags.clone()))
-                .collect(),
-            Err(_) => HashMap::new(),
-        }
-    } else {
-        HashMap::new()
-    };
+    let (task_tags, task_titles): (HashMap<String, Vec<String>>, HashMap<String, String>) =
+        if graph_path.exists() {
+            match load_graph(&graph_path) {
+                Ok(graph) => {
+                    let tags = graph
+                        .tasks()
+                        .map(|t| (t.id.clone(), t.tags.clone()))
+                        .collect();
+                    let titles = graph
+                        .tasks()
+                        .map(|t| (t.id.clone(), t.title.clone()))
+                        .collect();
+                    (tags, titles)
+                }
+                Err(_) => (HashMap::new(), HashMap::new()),
+            }
+        } else {
+            (HashMap::new(), HashMap::new())
+        };
+
+    // Build task_id -> task_type map
+    let task_types: HashMap<String, &str> = task_titles
+        .iter()
+        .filter_map(|(id, title)| classify_task_type(title).map(|tt| (id.clone(), tt)))
+        .collect();
 
     if json {
         output_json(
@@ -94,8 +199,10 @@ pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()>
             &tradeoffs,
             &evaluations,
             &task_tags,
+            &task_types,
             min_evals,
             by_model,
+            by_task_type,
         )
     } else {
         output_text(
@@ -103,8 +210,10 @@ pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()>
             &tradeoffs,
             &evaluations,
             &task_tags,
+            &task_types,
             min_evals,
             by_model,
+            by_task_type,
         );
         Ok(())
     }
@@ -234,6 +343,77 @@ fn build_model_stats(evaluations: &[Evaluation]) -> Vec<ModelStats> {
     stats
 }
 
+/// Build a breakdown of scores by (task_type, role_id).
+fn build_task_type_role_breakdown(
+    evaluations: &[Evaluation],
+    task_types: &HashMap<String, &str>,
+) -> Vec<TaskTypeCell> {
+    let mut map: HashMap<(String, String), Vec<f64>> = HashMap::new();
+    for eval in evaluations {
+        if let Some(&task_type) = task_types.get(&eval.task_id) {
+            map.entry((task_type.to_string(), eval.role_id.clone()))
+                .or_default()
+                .push(eval.score);
+        }
+    }
+    let mut cells: Vec<TaskTypeCell> = map
+        .into_iter()
+        .map(|((task_type, entity_id), scores)| {
+            let avg = scores.iter().sum::<f64>() / scores.len() as f64;
+            TaskTypeCell {
+                task_type,
+                entity_id,
+                count: scores.len() as u32,
+                avg_score: avg,
+            }
+        })
+        .collect();
+    cells.sort_by(|a, b| {
+        a.task_type.cmp(&b.task_type).then(
+            b.avg_score
+                .partial_cmp(&a.avg_score)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    cells
+}
+
+/// Build a breakdown of scores by (task_type, model).
+fn build_task_type_model_breakdown(
+    evaluations: &[Evaluation],
+    task_types: &HashMap<String, &str>,
+) -> Vec<TaskTypeCell> {
+    let mut map: HashMap<(String, String), Vec<f64>> = HashMap::new();
+    for eval in evaluations {
+        if let Some(&task_type) = task_types.get(&eval.task_id) {
+            let model_key = eval.model.as_deref().unwrap_or("(unknown)").to_string();
+            map.entry((task_type.to_string(), model_key))
+                .or_default()
+                .push(eval.score);
+        }
+    }
+    let mut cells: Vec<TaskTypeCell> = map
+        .into_iter()
+        .map(|((task_type, entity_id), scores)| {
+            let avg = scores.iter().sum::<f64>() / scores.len() as f64;
+            TaskTypeCell {
+                task_type,
+                entity_id,
+                count: scores.len() as u32,
+                avg_score: avg,
+            }
+        })
+        .collect();
+    cells.sort_by(|a, b| {
+        a.task_type.cmp(&b.task_type).then(
+            b.avg_score
+                .partial_cmp(&a.avg_score)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    cells
+}
+
 fn find_underexplored(
     roles: &[Role],
     tradeoffs: &[TradeoffConfig],
@@ -273,8 +453,10 @@ fn output_text(
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
+    task_types: &HashMap<String, &str>,
     min_evals: u32,
     by_model: bool,
+    by_task_type: bool,
 ) {
     // 1. Overall stats
     let total_roles = roles.len();
@@ -460,6 +642,96 @@ fn output_text(
             );
         }
     }
+
+    // 8. Task type breakdowns (if --by-task-type)
+    if by_task_type {
+        let role_by_type = build_task_type_role_breakdown(evaluations, task_types);
+        if !role_by_type.is_empty() {
+            println!("\n--- Best Role by Task Type ---\n");
+            println!(
+                "  {:<16} {:<20} {:>8} {:>6}",
+                "Task Type", "Role", "Avg", "Evals"
+            );
+            println!("  {}", "-".repeat(54));
+            let mut last_type = String::new();
+            for cell in &role_by_type {
+                if cell.task_type != last_type {
+                    if !last_type.is_empty() {
+                        println!();
+                    }
+                    last_type.clone_from(&cell.task_type);
+                }
+                println!(
+                    "  {:<16} {:<20} {:>8.2} {:>6}",
+                    cell.task_type,
+                    agency::short_hash(&cell.entity_id),
+                    cell.avg_score,
+                    cell.count,
+                );
+            }
+        }
+
+        let model_by_type = build_task_type_model_breakdown(evaluations, task_types);
+        if !model_by_type.is_empty() {
+            println!("\n--- Best Model by Task Type ---\n");
+            println!(
+                "  {:<16} {:<40} {:>8} {:>6}",
+                "Task Type", "Model", "Avg", "Evals"
+            );
+            println!("  {}", "-".repeat(74));
+            let mut last_type = String::new();
+            for cell in &model_by_type {
+                if cell.task_type != last_type {
+                    if !last_type.is_empty() {
+                        println!();
+                    }
+                    last_type.clone_from(&cell.task_type);
+                }
+                println!(
+                    "  {:<16} {:<40} {:>8.2} {:>6}",
+                    cell.task_type,
+                    cell.entity_id,
+                    cell.avg_score,
+                    cell.count,
+                );
+            }
+        }
+
+        // Summary: best pick per type
+        println!("\n--- Recommendations by Task Type ---\n");
+        println!(
+            "  {:<16} {:<20} {:<40}",
+            "Task Type", "Best Role", "Best Model"
+        );
+        println!("  {}", "-".repeat(78));
+        for &tt in TASK_TYPES {
+            let best_role = role_by_type
+                .iter()
+                .filter(|c| c.task_type == tt && c.count >= 2)
+                .max_by(|a, b| {
+                    a.avg_score
+                        .partial_cmp(&b.avg_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            let best_model = model_by_type
+                .iter()
+                .filter(|c| c.task_type == tt && c.count >= 2)
+                .max_by(|a, b| {
+                    a.avg_score
+                        .partial_cmp(&b.avg_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+            let role_str = best_role
+                .map(|c| format!("{} ({:.2})", agency::short_hash(&c.entity_id), c.avg_score))
+                .unwrap_or_else(|| "(insufficient data)".to_string());
+            let model_str = best_model
+                .map(|c| format!("{} ({:.2})", c.entity_id, c.avg_score))
+                .unwrap_or_else(|| "(insufficient data)".to_string());
+
+            println!("  {:<16} {:<20} {:<40}", tt, role_str, model_str);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,8 +743,10 @@ fn output_json(
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
+    task_types: &HashMap<String, &str>,
     min_evals: u32,
     by_model: bool,
+    by_task_type: bool,
 ) -> Result<()> {
     let total_evaluations = evaluations.len();
     let overall_avg = if evaluations.is_empty() {
@@ -618,6 +892,75 @@ fn output_json(
         output["model_leaderboard"] = serde_json::json!(model_board);
     }
 
+    if by_task_type {
+        let role_by_type = build_task_type_role_breakdown(evaluations, task_types);
+        let role_by_type_json: Vec<serde_json::Value> = role_by_type
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "task_type": c.task_type,
+                    "role_id": c.entity_id,
+                    "avg_score": c.avg_score,
+                    "count": c.count,
+                })
+            })
+            .collect();
+
+        let model_by_type = build_task_type_model_breakdown(evaluations, task_types);
+        let model_by_type_json: Vec<serde_json::Value> = model_by_type
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "task_type": c.task_type,
+                    "model": c.entity_id,
+                    "avg_score": c.avg_score,
+                    "count": c.count,
+                })
+            })
+            .collect();
+
+        // Build recommendations: best role + model per type
+        let mut recommendations: Vec<serde_json::Value> = Vec::new();
+        for &tt in TASK_TYPES {
+            let best_role = role_by_type
+                .iter()
+                .filter(|c| c.task_type == tt && c.count >= 2)
+                .max_by(|a, b| {
+                    a.avg_score
+                        .partial_cmp(&b.avg_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            let best_model = model_by_type
+                .iter()
+                .filter(|c| c.task_type == tt && c.count >= 2)
+                .max_by(|a, b| {
+                    a.avg_score
+                        .partial_cmp(&b.avg_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+            recommendations.push(serde_json::json!({
+                "task_type": tt,
+                "best_role": best_role.map(|c| serde_json::json!({
+                    "role_id": c.entity_id,
+                    "avg_score": c.avg_score,
+                    "count": c.count,
+                })),
+                "best_model": best_model.map(|c| serde_json::json!({
+                    "model": c.entity_id,
+                    "avg_score": c.avg_score,
+                    "count": c.count,
+                })),
+            }));
+        }
+
+        output["task_type_breakdown"] = serde_json::json!({
+            "by_role": role_by_type_json,
+            "by_model": model_by_type_json,
+            "recommendations": recommendations,
+        });
+    }
+
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
@@ -747,5 +1090,131 @@ mod tests {
         assert_eq!(cells[0].entity_id, "r1");
         assert_eq!(cells[0].tag, "cli");
         assert!((cells[0].avg_score - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_classify_task_type_prefixes() {
+        assert_eq!(classify_task_type("Research: JWT libraries"), Some("research"));
+        assert_eq!(classify_task_type("Investigate: auth bug"), Some("research"));
+        assert_eq!(classify_task_type("Implement: JWT auth"), Some("implementation"));
+        assert_eq!(classify_task_type("Add: new endpoint"), Some("implementation"));
+        assert_eq!(classify_task_type("Wire: evaluation feedback"), Some("implementation"));
+        assert_eq!(classify_task_type("Fix: crash on startup"), Some("fix"));
+        assert_eq!(classify_task_type("Hotfix: null pointer"), Some("fix"));
+        assert_eq!(classify_task_type("Design: API schema"), Some("design"));
+        assert_eq!(classify_task_type("Test: auth middleware"), Some("test"));
+        assert_eq!(classify_task_type("Docs: update README"), Some("docs"));
+        assert_eq!(classify_task_type("Refactor: extract helper"), Some("refactor"));
+    }
+
+    #[test]
+    fn test_classify_task_type_system_tasks() {
+        assert_eq!(classify_task_type("Evaluate: task-123"), None);
+        assert_eq!(classify_task_type("FLIP: task-123"), None);
+        assert_eq!(classify_task_type(".evaluate-task-123"), None);
+        assert_eq!(classify_task_type(".flip-task-123"), None);
+        assert_eq!(classify_task_type(".place-task-123"), None);
+        assert_eq!(classify_task_type(".assign-task-123"), None);
+        assert_eq!(classify_task_type(".compact-0"), None);
+        assert_eq!(classify_task_type(".quality-pass-20260402"), None);
+    }
+
+    #[test]
+    fn test_classify_task_type_no_prefix() {
+        assert_eq!(classify_task_type("Some random task"), Some("other"));
+        assert_eq!(classify_task_type("add-jwt-auth"), Some("other"));
+    }
+
+    #[test]
+    fn test_build_task_type_role_breakdown() {
+        let evals = vec![
+            Evaluation {
+                id: "e1".into(),
+                task_id: "t1".into(),
+                agent_id: String::new(),
+                role_id: "r1".into(),
+                tradeoff_id: "m1".into(),
+                score: 0.9,
+                dimensions: HashMap::new(),
+                notes: String::new(),
+                evaluator: "test".into(),
+                timestamp: "2025-01-01T00:00:00Z".into(),
+                model: Some("opus".into()),
+                source: "llm".to_string(),
+            },
+            Evaluation {
+                id: "e2".into(),
+                task_id: "t2".into(),
+                agent_id: String::new(),
+                role_id: "r2".into(),
+                tradeoff_id: "m1".into(),
+                score: 0.7,
+                dimensions: HashMap::new(),
+                notes: String::new(),
+                evaluator: "test".into(),
+                timestamp: "2025-01-02T00:00:00Z".into(),
+                model: Some("sonnet".into()),
+                source: "llm".to_string(),
+            },
+        ];
+
+        let mut task_types = HashMap::new();
+        task_types.insert("t1".to_string(), "fix");
+        task_types.insert("t2".to_string(), "fix");
+
+        let cells = build_task_type_role_breakdown(&evals, &task_types);
+        assert_eq!(cells.len(), 2);
+        // Sorted by task_type then by avg_score descending
+        assert_eq!(cells[0].task_type, "fix");
+        assert_eq!(cells[0].entity_id, "r1");
+        assert!((cells[0].avg_score - 0.9).abs() < f64::EPSILON);
+        assert_eq!(cells[1].entity_id, "r2");
+        assert!((cells[1].avg_score - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_build_task_type_model_breakdown() {
+        let evals = vec![
+            Evaluation {
+                id: "e1".into(),
+                task_id: "t1".into(),
+                agent_id: String::new(),
+                role_id: "r1".into(),
+                tradeoff_id: "m1".into(),
+                score: 0.9,
+                dimensions: HashMap::new(),
+                notes: String::new(),
+                evaluator: "test".into(),
+                timestamp: "2025-01-01T00:00:00Z".into(),
+                model: Some("opus".into()),
+                source: "llm".to_string(),
+            },
+            Evaluation {
+                id: "e2".into(),
+                task_id: "t1".into(),
+                agent_id: String::new(),
+                role_id: "r1".into(),
+                tradeoff_id: "m1".into(),
+                score: 0.8,
+                dimensions: HashMap::new(),
+                notes: String::new(),
+                evaluator: "test".into(),
+                timestamp: "2025-01-02T00:00:00Z".into(),
+                model: Some("sonnet".into()),
+                source: "llm".to_string(),
+            },
+        ];
+
+        let mut task_types = HashMap::new();
+        task_types.insert("t1".to_string(), "research");
+
+        let cells = build_task_type_model_breakdown(&evals, &task_types);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].task_type, "research");
+        // opus (0.9) should be first, then sonnet (0.8)
+        assert_eq!(cells[0].entity_id, "opus");
+        assert!((cells[0].avg_score - 0.9).abs() < f64::EPSILON);
+        assert_eq!(cells[1].entity_id, "sonnet");
+        assert!((cells[1].avg_score - 0.8).abs() < f64::EPSILON);
     }
 }
