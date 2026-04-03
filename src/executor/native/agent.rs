@@ -6,6 +6,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -64,6 +65,8 @@ pub struct AgentLoop {
     session_summary_path: Option<PathBuf>,
     /// Path to the `.streaming` file for TUI live display of streaming text.
     streaming_file_path: Option<PathBuf>,
+    /// Interval between heartbeat events during tool execution.
+    heartbeat_interval: Duration,
 }
 
 /// NDJSON log entry types for the output file.
@@ -163,7 +166,14 @@ impl AgentLoop {
             summary_interval_turns: DEFAULT_SUMMARY_INTERVAL_TURNS,
             session_summary_path: None,
             streaming_file_path,
+            heartbeat_interval: Duration::from_secs(30),
         }
+    }
+
+    /// Set the heartbeat interval for tool execution (default: 30s).
+    pub fn with_heartbeat_interval(mut self, interval: Duration) -> Self {
+        self.heartbeat_interval = interval;
+        self
     }
 
     /// Set the journal path for conversation persistence.
@@ -213,8 +223,33 @@ impl AgentLoop {
 
     /// Run the agent loop to completion.
     pub async fn run(&self, initial_message: &str) -> Result<AgentResult> {
-        // Attempt resume from existing journal
-        let resume_data = if self.resume_enabled {
+        // Try to load a session summary for faster resume (replaces raw history)
+        let session_summary = if self.resume_enabled {
+            if let Some(ref path) = self.session_summary_path {
+                match resume::load_session_summary(path) {
+                    Ok(Some(summary)) => {
+                        eprintln!(
+                            "[native-agent] Loaded session summary ({} words) from {}",
+                            summary.split_whitespace().count(),
+                            path.display()
+                        );
+                        Some(summary)
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("[native-agent] Warning: failed to load session summary: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Attempt resume from existing journal (only if no session summary available)
+        let resume_data = if self.resume_enabled && session_summary.is_none() {
             if let Some(ref path) = self.journal_path {
                 let working_dir = self
                     .working_dir
@@ -285,8 +320,35 @@ impl AgentLoop {
             sw.write_init("native", Some(self.client.model()), None);
         }
 
-        // Build initial messages — either from resume or fresh start
-        let mut messages: Vec<Message> = if let Some(ref data) = resume_data {
+        // Build initial messages — from session summary, journal resume, or fresh start
+        let mut messages: Vec<Message> = if let Some(ref summary) = session_summary {
+            // Resume from session summary (compact representation of prior work)
+            let resume_text = format!(
+                "IMPORTANT: This task is being RESUMED from a prior agent session. \
+                 Below is a summary of what was accomplished:\n\n{}\n\n---\n\n{}\n\n\
+                 [Continue from where the previous agent left off. The summary above \
+                 replaces the full conversation history for efficiency.]",
+                summary, initial_message
+            );
+
+            let content = vec![ContentBlock::Text { text: resume_text }];
+
+            // Journal the summary-based resume message
+            if let Some(ref mut j) = journal {
+                let _ = j.append(JournalEntryKind::Message {
+                    role: Role::User,
+                    content: content.clone(),
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                });
+            }
+
+            vec![Message {
+                role: Role::User,
+                content,
+            }]
+        } else if let Some(ref data) = resume_data {
             // Start with the resumed conversation history
             let mut msgs = data.messages.clone();
 
@@ -411,6 +473,25 @@ impl AgentLoop {
             // Log the assistant turn
             self.log_turn(turns, &response);
 
+            // Session summary extraction: after every N turns, extract and store
+            if self.summary_interval_turns > 0
+                && turns % self.summary_interval_turns == 0
+                && self.session_summary_path.is_some()
+            {
+                let summary = resume::extract_session_summary(&messages);
+                if let Some(ref path) = self.session_summary_path {
+                    if let Err(e) = resume::store_session_summary(path, &summary) {
+                        eprintln!("[native-agent] Warning: failed to store session summary: {}", e);
+                    } else {
+                        eprintln!(
+                            "[native-agent] Session summary extracted at turn {} ({} words)",
+                            turns,
+                            summary.split_whitespace().count()
+                        );
+                    }
+                }
+            }
+
             // Journal the assistant message
             if let Some(ref mut j) = journal {
                 let _ = j.append(JournalEntryKind::Message {
@@ -477,6 +558,7 @@ impl AgentLoop {
                     };
                     self.log_result(&result);
                     self.write_stream_result(true, &result);
+                    self.store_final_summary(&messages);
 
                     // Journal End entry
                     if let Some(ref mut j) = journal {
@@ -500,6 +582,24 @@ impl AgentLoop {
                             }
                             let tool_start = std::time::Instant::now();
 
+                            // Spawn heartbeat ticker during tool execution
+                            let heartbeat_handle =
+                                if let Some(ref sw) = self.stream_writer {
+                                    let sw = sw.clone();
+                                    let interval = self.heartbeat_interval;
+                                    Some(tokio::spawn(async move {
+                                        let mut ticker =
+                                            tokio::time::interval(interval);
+                                        ticker.tick().await; // first tick is immediate
+                                        loop {
+                                            ticker.tick().await;
+                                            sw.write_heartbeat();
+                                        }
+                                    }))
+                                } else {
+                                    None
+                                };
+
                             // Detect parse errors from malformed JSON in tool arguments.
                             let output = if input.get("__parse_error").is_some() {
                                 let error_msg = input
@@ -520,6 +620,11 @@ impl AgentLoop {
                             } else {
                                 self.tools.execute(name, input).await
                             };
+
+                            // Stop heartbeat ticker
+                            if let Some(h) = heartbeat_handle {
+                                h.abort();
+                            }
 
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
 
@@ -616,6 +721,7 @@ impl AgentLoop {
                     };
                     self.log_result(&result);
                     self.write_stream_result(true, &result);
+                    self.store_final_summary(&messages);
 
                     // Journal End entry
                     if let Some(ref mut j) = journal {
@@ -631,7 +737,9 @@ impl AgentLoop {
             }
         }
 
-        // Max turns reached
+        // Max turns reached — store final summary before returning
+        self.store_final_summary(&messages);
+
         let result = AgentResult {
             final_text: "[max turns reached]".to_string(),
             turns,
@@ -651,6 +759,21 @@ impl AgentLoop {
         }
 
         Ok(result)
+    }
+
+    // ── Session summary helper ───────────────────────────────────────────
+
+    /// Extract and store a final session summary (called at end of agent run).
+    fn store_final_summary(&self, messages: &[Message]) {
+        if let Some(ref path) = self.session_summary_path {
+            let summary = resume::extract_session_summary(messages);
+            if let Err(e) = resume::store_session_summary(path, &summary) {
+                eprintln!(
+                    "[native-agent] Warning: failed to store final session summary: {}",
+                    e
+                );
+            }
+        }
     }
 
     // ── Logging helpers ─────────────────────────────────────────────────

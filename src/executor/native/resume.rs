@@ -497,6 +497,195 @@ fn content_differs(journal_output: &str, current_content: &str) -> bool {
     journal_stripped != current_stripped
 }
 
+/// Maximum word count for session summaries.
+const MAX_SUMMARY_WORDS: usize = 500;
+
+/// Extract a structured session summary from messages.
+///
+/// Produces a Markdown summary with sections: Key Findings, Decisions,
+/// Files Modified, Current State. Capped at `MAX_SUMMARY_WORDS` words.
+pub fn extract_session_summary(messages: &[Message]) -> String {
+    let mut findings = Vec::new();
+    let mut decisions = Vec::new();
+    let mut files_modified = std::collections::HashSet::new();
+    let mut last_assistant_text = String::new();
+    let mut tool_calls = Vec::new();
+
+    for msg in messages {
+        for block in &msg.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if msg.role == Role::Assistant {
+                        last_assistant_text = trimmed.to_string();
+                        // Extract decisions (lines that look like decisions/conclusions)
+                        for line in trimmed.lines() {
+                            let l = line.trim();
+                            if l.starts_with("- [x]")
+                                || l.starts_with("Decision:")
+                                || l.starts_with("Decided")
+                                || l.contains("will ")
+                                || l.contains("chose ")
+                                || l.contains("decided ")
+                            {
+                                if l.len() > 10 {
+                                    decisions.push(truncate_str(l, 150));
+                                }
+                            }
+                        }
+                    } else {
+                        // User messages may contain findings/context
+                        for line in trimmed.lines() {
+                            let l = line.trim();
+                            if (l.starts_with("ERROR")
+                                || l.starts_with("Warning")
+                                || l.starts_with("Found")
+                                || l.starts_with("Note:"))
+                                && l.len() > 10
+                            {
+                                findings.push(truncate_str(l, 150));
+                            }
+                        }
+                    }
+                }
+                ContentBlock::ToolUse { name, input, .. } => {
+                    tool_calls.push(name.clone());
+                    // Track file modifications
+                    match name.as_str() {
+                        "write_file" | "edit_file" | "create_file" => {
+                            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                                files_modified.insert(path.to_string());
+                            }
+                        }
+                        "bash" => {
+                            if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                                // Detect file-writing bash commands
+                                if cmd.contains("git add") || cmd.contains("git commit") {
+                                    // Extract file paths from git commands
+                                    for part in cmd.split_whitespace() {
+                                        if part.contains('.') && !part.starts_with('-') && part.len() > 2 {
+                                            files_modified.insert(part.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    if *is_error && content.len() > 10 {
+                        findings.push(format!("Error: {}", truncate_str(content, 120)));
+                    }
+                }
+            }
+        }
+    }
+
+    // Build the summary
+    let mut parts = Vec::new();
+
+    parts.push("# Session Summary\n".to_string());
+
+    if !findings.is_empty() {
+        parts.push("## Key Findings".to_string());
+        for f in findings.iter().take(10) {
+            parts.push(format!("- {}", f));
+        }
+        parts.push(String::new());
+    }
+
+    if !decisions.is_empty() {
+        parts.push("## Decisions".to_string());
+        for d in decisions.iter().take(10) {
+            parts.push(format!("- {}", d));
+        }
+        parts.push(String::new());
+    }
+
+    if !files_modified.is_empty() {
+        parts.push("## Files Modified".to_string());
+        let mut files: Vec<_> = files_modified.into_iter().collect();
+        files.sort();
+        for f in &files {
+            parts.push(format!("- `{}`", f));
+        }
+        parts.push(String::new());
+    }
+
+    if !tool_calls.is_empty() {
+        // Deduplicated count of tool calls
+        let mut counts = std::collections::HashMap::new();
+        for t in &tool_calls {
+            *counts.entry(t.as_str()).or_insert(0u32) += 1;
+        }
+        parts.push("## Tool Usage".to_string());
+        let mut sorted: Vec<_> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, count) in sorted.iter().take(10) {
+            parts.push(format!("- {}: {}x", name, count));
+        }
+        parts.push(String::new());
+    }
+
+    // Current state: last assistant message, truncated
+    if !last_assistant_text.is_empty() {
+        parts.push("## Current State".to_string());
+        parts.push(truncate_str(&last_assistant_text, 300));
+        parts.push(String::new());
+    }
+
+    let summary = parts.join("\n");
+
+    // Enforce word limit
+    let words: Vec<&str> = summary.split_whitespace().collect();
+    if words.len() > MAX_SUMMARY_WORDS {
+        words[..MAX_SUMMARY_WORDS].join(" ") + "\n[...truncated]"
+    } else {
+        summary
+    }
+}
+
+/// Store a session summary to a file, creating parent directories as needed.
+pub fn store_session_summary(path: &Path, summary: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create summary directory: {}", parent.display()))?;
+    }
+    std::fs::write(path, summary)
+        .with_context(|| format!("Failed to write session summary: {}", path.display()))?;
+    Ok(())
+}
+
+/// Load a session summary from a file, if it exists.
+///
+/// Returns `None` if the file does not exist.
+pub fn load_session_summary(path: &Path) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read session summary: {}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(content))
+}
+
+/// Truncate a string to at most `max_len` characters, appending "..." if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..s.floor_char_boundary(max_len)])
+    }
+}
+
 /// The action the agent loop should take based on context pressure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextPressureAction {

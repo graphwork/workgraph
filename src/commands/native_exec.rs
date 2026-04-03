@@ -120,7 +120,16 @@ pub fn run(
 
     // Create and run the agent loop
     let journal_path = journal::journal_path(workgraph_dir, task_id);
-    let agent = AgentLoop::with_tool_support(
+
+    // Resolve session summary path: .workgraph/agents/<agent-id>/session-summary.md
+    let session_summary_path = std::env::var("WG_AGENT_ID").ok().map(|agent_id| {
+        workgraph_dir
+            .join("agents")
+            .join(&agent_id)
+            .join("session-summary.md")
+    });
+
+    let mut agent = AgentLoop::with_tool_support(
         client,
         registry,
         system_prompt,
@@ -131,6 +140,11 @@ pub fn run(
     .with_journal(journal_path, task_id.to_string())
     .with_resume(!no_resume)
     .with_working_dir(working_dir.clone());
+
+    if let Some(path) = session_summary_path {
+        agent = agent.with_session_summary_path(path);
+    }
+    let agent = agent;
 
     // Run the async agent loop
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
