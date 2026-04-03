@@ -644,11 +644,12 @@ impl OpenAiClient {
                 Err(e) => {
                     if retry_count < max_retries {
                         retry_count += 1;
+                        let wait = jittered_backoff(backoff_ms);
                         eprintln!(
                             "[openai-client] Streaming error (attempt {}/{}): {}. Retrying in {}ms",
-                            retry_count, max_retries, e, backoff_ms
+                            retry_count, max_retries, e, wait
                         );
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
@@ -978,11 +979,12 @@ impl OpenAiClient {
                 Err(e) => {
                     if retry_count < max_retries {
                         retry_count += 1;
+                        let wait = jittered_backoff(backoff_ms);
                         eprintln!(
                             "[openai-client] Streaming error (attempt {}/{}): {}. Retrying in {}ms",
-                            retry_count, max_retries, e, backoff_ms
+                            retry_count, max_retries, e, wait
                         );
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
@@ -1030,7 +1032,9 @@ impl OpenAiClient {
                     let allowed_retries = max_retries_for_status(status_code);
                     if is_retryable(status_code) && retry_count < allowed_retries {
                         retry_count += 1;
-                        let wait = parse_retry_after_oai(&body).unwrap_or(backoff_ms);
+                        let wait = parse_retry_after_oai(&body)
+                            .map(|w| jittered_backoff(w))
+                            .unwrap_or_else(|| jittered_backoff(backoff_ms));
                         eprintln!(
                             "[openai-client] Retryable error {} (attempt {}/{}), waiting {}ms",
                             status_code, retry_count, allowed_retries, wait
@@ -1045,11 +1049,12 @@ impl OpenAiClient {
                 Err(e) => {
                     if retry_count < network_max_retries {
                         retry_count += 1;
+                        let wait = jittered_backoff(backoff_ms);
                         eprintln!(
-                            "[openai-client] Network error (attempt {}/{}): {}",
-                            retry_count, network_max_retries, e
+                            "[openai-client] Network error (attempt {}/{}): {}. Retrying in {}ms",
+                            retry_count, network_max_retries, e, wait
                         );
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                         backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
                     }
@@ -1231,6 +1236,28 @@ fn parse_retry_after_oai(body: &str) -> Option<u64> {
         return Some((secs * 1000.0) as u64);
     }
     None
+}
+
+/// Add jitter to a backoff duration to prevent thundering herd.
+///
+/// Returns `base_ms ± 25%` using a cheap pseudo-random source (no `rand` crate needed).
+/// The jitter is deterministic per call-site but varies across retries and threads.
+fn jittered_backoff(base_ms: u64) -> u64 {
+    // Use current time nanos as a cheap entropy source
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    // Mix in thread id for cross-thread variance
+    let tid = std::thread::current().id();
+    let hash = nanos.wrapping_mul(6364136223846793005).wrapping_add(format!("{:?}", tid).len() as u64);
+    // ±25% jitter
+    let jitter_range = base_ms / 4;
+    if jitter_range == 0 {
+        return base_ms;
+    }
+    let offset = hash % (jitter_range * 2);
+    base_ms.saturating_sub(jitter_range).saturating_add(offset)
 }
 
 fn truncate(s: &str, max: usize) -> &str {
@@ -1447,13 +1474,184 @@ fn parse_tool_call_json(json_str: &str, counter: &mut u32) -> Option<ContentBloc
     })
 }
 
+/// Attempt to recover valid JSON from malformed input.
+///
+/// Tries multiple strategies in order:
+/// 1. Strip markdown code fences (```json ... ```)
+/// 2. Extract first JSON object from surrounding text
+/// 3. Complete truncated JSON by closing open braces/brackets
+///
+/// Returns `Ok(value)` if any strategy succeeds, or `Err` if all fail.
+fn try_recover_json(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+
+    // Strategy 1: Strip markdown code fences
+    if let Some(inner) = strip_markdown_json(trimmed) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
+            return Ok(v);
+        }
+    }
+
+    // Strategy 2: Extract first JSON object from surrounding text
+    if let Some(start) = trimmed.find('{') {
+        // Find the matching closing brace
+        let candidate = &trimmed[start..];
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+            return Ok(v);
+        }
+        // Try finding a balanced substring
+        if let Some(balanced) = find_balanced_json(candidate) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(balanced) {
+                return Ok(v);
+            }
+        }
+    }
+
+    // Strategy 3: Complete truncated JSON
+    if let Some(completed) = complete_truncated_json(trimmed) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&completed) {
+            return Ok(v);
+        }
+    }
+
+    Err(format!("all recovery strategies failed for: {}", truncate(raw, 200)))
+}
+
+/// Strip markdown code fences: ```json\n...\n``` or ```\n...\n```
+fn strip_markdown_json(s: &str) -> Option<&str> {
+    let s = s.trim();
+    if s.starts_with("```") {
+        // Find end of first line (skip ```json or ```)
+        let after_fence = s.get(3..)?;
+        let content_start = after_fence.find('\n').map(|i| 3 + i + 1)?;
+        // Find closing fence
+        let content = s.get(content_start..)?;
+        if let Some(end) = content.rfind("```") {
+            return Some(content.get(..end)?.trim());
+        }
+        // No closing fence — treat rest as content
+        return Some(content.trim());
+    }
+    None
+}
+
+/// Find a balanced JSON object starting from the beginning of `s`.
+fn find_balanced_json(s: &str) -> Option<&str> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, ch) in s.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Try to complete truncated JSON by closing open braces/brackets and strings.
+fn complete_truncated_json(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('{') {
+        return None;
+    }
+    // Only attempt if we have at least one key-value pair
+    if !trimmed.contains(':') {
+        return None;
+    }
+
+    let mut result = trimmed.to_string();
+    let mut depth_brace = 0i32;
+    let mut depth_bracket = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for ch in trimmed.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket -= 1,
+            _ => {}
+        }
+    }
+
+    // Close open string if needed
+    if in_string {
+        result.push('"');
+    }
+
+    // Close open brackets then braces
+    for _ in 0..depth_bracket {
+        result.push(']');
+    }
+    for _ in 0..depth_brace {
+        result.push('}');
+    }
+
+    if depth_brace > 0 || depth_bracket > 0 || in_string {
+        Some(result)
+    } else {
+        None
+    }
+}
+
 /// Build a structured error input for when tool arguments fail to parse.
 ///
-/// The agent loop checks for `__parse_error` in tool inputs and returns
-/// an error tool result, allowing the model to self-correct.
-fn make_parse_error_input(raw_arguments: &str, error_message: &str) -> serde_json::Value {
+/// First attempts JSON recovery (markdown stripping, object extraction,
+/// truncation completion). Falls back to a `__parse_error` object that the
+/// agent loop detects and surfaces as a tool error to the model.
+fn make_parse_error_input(raw_arguments: &str, _error_message: &str) -> serde_json::Value {
+    // Try to recover before giving up
+    if let Ok(recovered) = try_recover_json(raw_arguments) {
+        eprintln!(
+            "[openai-client] Recovered malformed JSON tool arguments (len={})",
+            raw_arguments.len()
+        );
+        return recovered;
+    }
+
     serde_json::json!({
-        "__parse_error": error_message,
+        "__parse_error": _error_message,
         "__raw_arguments": raw_arguments,
     })
 }
@@ -2175,13 +2373,16 @@ mod tests {
 
     #[test]
     fn test_make_parse_error_input() {
+        // Truncated JSON should be recovered by completing the braces
         let input =
             make_parse_error_input(r#"{"broken":true"#, "expected `}` at line 1 column 14");
-        assert!(input.get("__parse_error").is_some());
-        assert_eq!(
-            input.get("__parse_error").and_then(|v| v.as_str()),
-            Some("expected `}` at line 1 column 14")
-        );
+        // Recovery should succeed: {"broken":true} is valid
+        assert_eq!(input.get("broken").and_then(|v| v.as_bool()), Some(true));
+        assert!(input.get("__parse_error").is_none(), "should have recovered");
+
+        // Truly unrecoverable input falls back to __parse_error
+        let bad_input = make_parse_error_input("not json at all", "expected value at line 1");
+        assert!(bad_input.get("__parse_error").is_some());
     }
 
     // ── Stream assembly tests ───────────────────────────────────────────
@@ -3432,5 +3633,214 @@ Done."#;
         let api403 = err403.downcast_ref::<ApiError>().expect("ApiError");
         let d403 = format!("{}", api403);
         assert!(d403.contains("Access denied"), "{}", d403);
+    }
+
+    // ── JSON recovery tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_json_recovery_markdown_wrapped() {
+        let raw = "```json\n{\"command\": \"ls -la\"}\n```";
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should recover markdown-wrapped JSON");
+        let val = result.unwrap();
+        assert_eq!(val.get("command").and_then(|v| v.as_str()), Some("ls -la"));
+    }
+
+    #[test]
+    fn test_json_recovery_markdown_no_lang_tag() {
+        let raw = "```\n{\"key\": \"value\"}\n```";
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should recover markdown without lang tag");
+        assert_eq!(result.unwrap().get("key").and_then(|v| v.as_str()), Some("value"));
+    }
+
+    #[test]
+    fn test_json_recovery_markdown_no_closing_fence() {
+        let raw = "```json\n{\"key\": \"value\"}";
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should recover markdown without closing fence");
+    }
+
+    #[test]
+    fn test_json_recovery_embedded_object() {
+        let raw = "Here is the tool call: {\"command\": \"echo hello\"} and some trailing text";
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should extract embedded JSON object");
+        assert_eq!(result.unwrap().get("command").and_then(|v| v.as_str()), Some("echo hello"));
+    }
+
+    #[test]
+    fn test_json_recovery_truncated_simple() {
+        // Truncated JSON missing closing brace
+        let raw = r#"{"command": "ls""#;
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should complete truncated JSON: {:?}", result);
+        assert_eq!(result.unwrap().get("command").and_then(|v| v.as_str()), Some("ls"));
+    }
+
+    #[test]
+    fn test_json_recovery_truncated_nested() {
+        let raw = r#"{"args": ["a", "b""#;
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should complete nested truncated JSON");
+    }
+
+    #[test]
+    fn test_json_recovery_truncated_mid_string() {
+        // Cut off in the middle of a string value
+        let raw = r#"{"path": "/home/user/fi"#;
+        let result = try_recover_json(raw);
+        assert!(result.is_ok(), "should complete truncated string");
+        let val = result.unwrap();
+        assert!(val.get("path").is_some());
+    }
+
+    #[test]
+    fn test_json_recovery_totally_invalid() {
+        let raw = "not json at all";
+        let result = try_recover_json(raw);
+        assert!(result.is_err(), "should fail on non-JSON");
+    }
+
+    #[test]
+    fn test_json_recovery_empty() {
+        assert!(try_recover_json("").is_err());
+        assert!(try_recover_json("   ").is_err());
+    }
+
+    #[test]
+    fn test_json_recovery_valid_json_passthrough() {
+        // Valid JSON should work through the first strategy (strip markdown
+        // won't apply, embedded object extraction will find it)
+        let raw = r#"{"command": "echo test"}"#;
+        let result = try_recover_json(raw);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_find_balanced_json_basic() {
+        assert_eq!(find_balanced_json(r#"{"a":1} extra"#), Some(r#"{"a":1}"#));
+    }
+
+    #[test]
+    fn test_find_balanced_json_nested() {
+        let s = r#"{"a":{"b":1}} tail"#;
+        assert_eq!(find_balanced_json(s), Some(r#"{"a":{"b":1}}"#));
+    }
+
+    #[test]
+    fn test_find_balanced_json_with_string_braces() {
+        let s = r#"{"a":"}"} more"#;
+        assert_eq!(find_balanced_json(s), Some(r#"{"a":"}"}"#));
+    }
+
+    #[test]
+    fn test_find_balanced_json_unbalanced() {
+        assert_eq!(find_balanced_json(r#"{"a":1"#), None);
+    }
+
+    #[test]
+    fn test_strip_markdown_json_variants() {
+        assert_eq!(strip_markdown_json("```json\n{}\n```"), Some("{}"));
+        assert_eq!(strip_markdown_json("```\nfoo\n```"), Some("foo"));
+        assert_eq!(strip_markdown_json("no fences"), None);
+    }
+
+    #[test]
+    fn test_complete_truncated_json_balanced_returns_none() {
+        // Already balanced — returns None
+        assert!(complete_truncated_json(r#"{"a":1}"#).is_none());
+    }
+
+    #[test]
+    fn test_complete_truncated_json_no_colon_returns_none() {
+        // No key-value separator — not worth trying
+        assert!(complete_truncated_json("{abc").is_none());
+    }
+
+    // ── Jitter tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_jittered_backoff_stays_in_range() {
+        for base in [100, 500, 1000, 5000, 30_000, 60_000] {
+            for _ in 0..20 {
+                let result = jittered_backoff(base);
+                let lower = base * 3 / 4; // -25%
+                let upper = base * 5 / 4; // +25%
+                assert!(
+                    result >= lower && result <= upper,
+                    "jittered_backoff({}) = {} not in [{}, {}]",
+                    base, result, lower, upper
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_jittered_backoff_zero_base() {
+        // 0 base should return 0 (jitter_range is 0)
+        assert_eq!(jittered_backoff(0), 0);
+    }
+
+    #[test]
+    fn test_jittered_backoff_small_base() {
+        // Very small base where jitter_range rounds to 0
+        let result = jittered_backoff(3);
+        assert_eq!(result, 3);
+    }
+
+    // ── Context-too-long detection tests ─────────────────────────────────
+
+    #[test]
+    fn test_is_context_too_long_413() {
+        let err = oai_api_error(413, r#"{"error":{"message":"Payload too large"}}"#);
+        assert!(is_context_too_long(&err));
+    }
+
+    #[test]
+    fn test_is_context_too_long_400_with_context_keywords() {
+        for msg in [
+            "This model's maximum context length is 8192 tokens",
+            "Request too long",
+            "Prompt is too large",
+            "Maximum token limit exceeded",
+            "context window exceeded",
+        ] {
+            let body = format!(r#"{{"error":{{"message":"{}"}}}}"#, msg);
+            let err = oai_api_error(400, &body);
+            assert!(is_context_too_long(&err), "should detect context-too-long for: {}", msg);
+        }
+    }
+
+    #[test]
+    fn test_is_context_too_long_400_unrelated() {
+        let err = oai_api_error(400, r#"{"error":{"message":"Invalid parameter"}}"#);
+        assert!(!is_context_too_long(&err), "unrelated 400 should not be context-too-long");
+    }
+
+    #[test]
+    fn test_is_context_too_long_non_api_error() {
+        let err = anyhow::anyhow!("some random error");
+        assert!(!is_context_too_long(&err));
+    }
+
+    // ── Retry-after parsing tests ───────────────────────────────────────
+
+    #[test]
+    fn test_parse_retry_after_oai_variants() {
+        // Standard format
+        let body = r#"{"error":{"message":"rate limited","metadata":{"retry_after":5.0}}}"#;
+        assert_eq!(parse_retry_after_oai(body), Some(5000));
+
+        // Fractional seconds
+        let body = r#"{"error":{"message":"limited","metadata":{"retry_after":0.5}}}"#;
+        assert_eq!(parse_retry_after_oai(body), Some(500));
+
+        // No retry_after
+        let body = r#"{"error":{"message":"rate limited"}}"#;
+        assert_eq!(parse_retry_after_oai(body), None);
+
+        // Invalid body
+        assert_eq!(parse_retry_after_oai("not json"), None);
     }
 }

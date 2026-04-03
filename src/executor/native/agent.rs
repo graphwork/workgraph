@@ -408,6 +408,8 @@ impl AgentLoop {
         let mut total_usage = Usage::default();
         let mut tool_calls = Vec::new();
         let mut turns = 0;
+        let mut consecutive_server_errors: u32 = 0;
+        const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
 
         loop {
             if turns >= self.max_turns {
@@ -520,18 +522,82 @@ impl AgentLoop {
                                 return Err(e);
                             }
                             status if super::openai_client::is_retryable_status(status) => {
-                                eprintln!("[native-agent] API error {} after retries exhausted", status);
-                                return Err(e).context(format!("API error {} — retries exhausted", status));
+                                consecutive_server_errors += 1;
+                                if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                                    eprintln!(
+                                        "[native-agent] API error {} — {} consecutive failures, giving up",
+                                        status, consecutive_server_errors
+                                    );
+                                    return Err(e).context(format!(
+                                        "API error {} — {} consecutive server errors exceeded limit",
+                                        status, consecutive_server_errors
+                                    ));
+                                }
+                                // Gracefully surface to model — it never sees the raw error
+                                eprintln!(
+                                    "[native-agent] API error {} after retries — surfacing gracefully to model (attempt {}/{})",
+                                    status, consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS
+                                );
+                                let recovery_msg = Message {
+                                    role: Role::User,
+                                    content: vec![ContentBlock::Text {
+                                        text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
+                                    }],
+                                };
+                                if let Some(ref mut j) = journal {
+                                    let _ = j.append(JournalEntryKind::Message {
+                                        role: Role::User,
+                                        content: recovery_msg.content.clone(),
+                                        usage: None,
+                                        response_id: None,
+                                        stop_reason: None,
+                                    });
+                                }
+                                messages.push(recovery_msg);
+                                continue;
                             }
                             _ => {
                                 return Err(e).context("API request failed");
                             }
                         }
+                    } else if is_timeout_error(&e) {
+                        consecutive_server_errors += 1;
+                        if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                            eprintln!(
+                                "[native-agent] Request timeout — {} consecutive failures, giving up",
+                                consecutive_server_errors
+                            );
+                            return Err(e).context("Request timeout — consecutive failures exceeded limit");
+                        }
+                        eprintln!(
+                            "[native-agent] Request timed out — surfacing gracefully to model (attempt {}/{})",
+                            consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS
+                        );
+                        let recovery_msg = Message {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text {
+                                text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
+                            }],
+                        };
+                        if let Some(ref mut j) = journal {
+                            let _ = j.append(JournalEntryKind::Message {
+                                role: Role::User,
+                                content: recovery_msg.content.clone(),
+                                usage: None,
+                                response_id: None,
+                                stop_reason: None,
+                            });
+                        }
+                        messages.push(recovery_msg);
+                        continue;
                     } else {
                         return Err(e).context("API request failed");
                     }
                 }
             };
+
+            // Successful response — reset consecutive error counter
+            consecutive_server_errors = 0;
 
             // Clean up .streaming file after each turn
             if let Some(ref path) = self.streaming_file_path {
@@ -984,4 +1050,19 @@ impl AgentLoop {
             println!("{}", json);
         }
     }
+}
+
+/// Check whether an error is a request timeout.
+///
+/// Detects both reqwest timeouts and generic timeout messages from the error chain.
+fn is_timeout_error(err: &anyhow::Error) -> bool {
+    // Check reqwest-specific timeout
+    if let Some(req_err) = err.downcast_ref::<reqwest::Error>() {
+        if req_err.is_timeout() {
+            return true;
+        }
+    }
+    // Check error message chain for timeout indicators
+    let msg = format!("{:#}", err).to_lowercase();
+    msg.contains("timed out") || msg.contains("timeout") || msg.contains("deadline exceeded")
 }
