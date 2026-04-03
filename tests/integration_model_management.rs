@@ -1409,6 +1409,23 @@ mod unified_key_resolution {
     use serial_test::serial;
     use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
 
+    /// Isolate from real global config by pointing HOME at a temp dir.
+    /// Returns saved HOME value for restoration.
+    fn isolate_home(tmp: &TempDir) -> Option<String> {
+        let saved = std::env::var("HOME").ok();
+        let fake_home = tmp.path().join("fakehome");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        saved
+    }
+
+    fn restore_home(saved: Option<String>) {
+        match saved {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
     /// When llm_endpoints has an inline api_key and no env vars are set,
     /// resolve_openai_api_key_from_dir should find the key.
     #[test]
@@ -1416,6 +1433,7 @@ mod unified_key_resolution {
     fn test_endpoint_key_used_when_no_env_vars() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
+        let saved_home = isolate_home(&tmp);
 
         // Add an openrouter endpoint with an inline key
         add_endpoint(
@@ -1450,6 +1468,7 @@ mod unified_key_resolution {
             Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
+        restore_home(saved_home);
     }
 
     /// When llm_endpoints has api_key_file and no env vars are set,
@@ -1459,6 +1478,7 @@ mod unified_key_resolution {
     fn test_endpoint_key_file_used_when_no_env_vars() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
+        let saved_home = isolate_home(&tmp);
 
         // Write key to a file
         let key_file = dir.join("api.key");
@@ -1496,6 +1516,7 @@ mod unified_key_resolution {
             Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
+        restore_home(saved_home);
     }
 
     /// Env var fallback still works when no endpoints are configured.
@@ -1504,6 +1525,7 @@ mod unified_key_resolution {
     fn test_env_var_fallback_still_works() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
+        let saved_home = isolate_home(&tmp);
 
         // No endpoints added — just default config
         let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
@@ -1523,6 +1545,7 @@ mod unified_key_resolution {
             Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
+        restore_home(saved_home);
     }
 
     /// Config::resolve_api_key_for_provider works end-to-end via Config::load_merged.
@@ -1531,6 +1554,7 @@ mod unified_key_resolution {
     fn test_config_resolve_api_key_for_provider_end_to_end() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
+        let saved_home = isolate_home(&tmp);
 
         add_endpoint(
             dir,
@@ -1564,5 +1588,6 @@ mod unified_key_resolution {
             Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
+        restore_home(saved_home);
     }
 }

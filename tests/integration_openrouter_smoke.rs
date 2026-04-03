@@ -35,10 +35,15 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
+    // Use a fake HOME so the user's real ~/.workgraph/config.toml
+    // does not bleed into the test.
+    let fake_home = wg_dir.parent().unwrap_or(wg_dir).join("fakehome");
+    fs::create_dir_all(&fake_home).unwrap_or_default();
     Command::new(wg_binary())
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", &fake_home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

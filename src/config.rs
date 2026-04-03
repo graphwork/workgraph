@@ -55,7 +55,7 @@ pub struct Config {
     pub tui: TuiConfig,
 
     /// LLM endpoints
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "EndpointsConfig::is_empty")]
     pub llm_endpoints: EndpointsConfig,
 
     /// Checkpoint configuration
@@ -77,7 +77,7 @@ pub struct Config {
     pub tiers: TierConfig,
 
     /// Model registry entries
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_registry: Vec<ModelRegistryEntry>,
 
     /// Chat archive rotation settings
@@ -548,11 +548,16 @@ impl EndpointConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EndpointsConfig {
     /// List of configured endpoints
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<EndpointConfig>,
 }
 
 impl EndpointsConfig {
+    /// Returns true when there are no configured endpoints.
+    pub fn is_empty(&self) -> bool {
+        self.endpoints.is_empty()
+    }
+
     /// Find the best endpoint for a given provider name.
     pub fn find_for_provider(&self, provider: &str) -> Option<&EndpointConfig> {
         let mut first_match: Option<&EndpointConfig> = None;
@@ -2328,7 +2333,7 @@ pub struct ProjectConfig {
     pub description: Option<String>,
 
     /// Default skills for new actors
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_skills: Vec<String>,
 }
 
@@ -5406,5 +5411,71 @@ provider = "openrouter"
         // We can't easily test this because env vars might be set in CI,
         // so just test the positive cases above.
         let _ = config.resolve_api_key_for_provider("local", dir.path());
+    }
+
+    #[test]
+    fn test_default_config_does_not_serialize_empty_endpoints() {
+        let config = Config::default();
+        let content = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !content.contains("endpoints = []"),
+            "Default config should not contain 'endpoints = []' — it shadows global config.\nGot:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("[llm_endpoints]"),
+            "Default config should not contain '[llm_endpoints]' section when empty.\nGot:\n{}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_default_config_does_not_serialize_empty_model_registry() {
+        let config = Config::default();
+        let content = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !content.contains("model_registry = []"),
+            "Default config should not contain 'model_registry = []' — it shadows global config.\nGot:\n{}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_default_config_does_not_serialize_empty_default_skills() {
+        let config = Config::default();
+        let content = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !content.contains("default_skills = []"),
+            "Default config should not contain 'default_skills = []' — it shadows global config.\nGot:\n{}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_merge_preserves_global_endpoints_when_local_omits_them() {
+        let global: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-test"
+is_default = true
+"#,
+        )
+        .unwrap();
+        // Local config has no llm_endpoints section at all
+        let local: toml::Value = toml::from_str(
+            r#"
+[agent]
+model = "claude:haiku"
+"#,
+        )
+        .unwrap();
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "openrouter");
     }
 }

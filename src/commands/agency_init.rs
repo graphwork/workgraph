@@ -631,6 +631,35 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     }
 
     #[test]
+    fn test_init_config_does_not_shadow_global_endpoints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        // Create empty graph so load works
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+
+        run(&wg_dir).unwrap();
+
+        let config_content =
+            std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+        assert!(
+            !config_content.contains("endpoints = []"),
+            "wg init should not write 'endpoints = []' — it shadows global config.\nGot:\n{}",
+            config_content
+        );
+        assert!(
+            !config_content.contains("model_registry = []"),
+            "wg init should not write 'model_registry = []' — it shadows global config.\nGot:\n{}",
+            config_content
+        );
+        assert!(
+            !config_content.contains("default_skills = []"),
+            "wg init should not write 'default_skills = []' — it shadows global config.\nGot:\n{}",
+            config_content
+        );
+    }
+
+    #[test]
     fn test_upstream_pull_no_url_is_noop() {
         // When no upstream_url is configured, try_upstream_pull should be a silent no-op
         let tmp = tempfile::tempdir().unwrap();
