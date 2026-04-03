@@ -58,6 +58,37 @@ fn extract_session_id(agent: &AgentEntry) -> Option<String> {
     None
 }
 
+/// Extract token usage from an agent's stream.jsonl file.
+///
+/// Used as a fallback when output.log doesn't contain parseable token data
+/// (e.g., native executor writes usage to stream.jsonl directly).
+fn parse_token_usage_from_stream(
+    agent_id: &str,
+    dir: &Path,
+) -> Option<workgraph::graph::TokenUsage> {
+    let agent_dir = dir.join("agents").join(agent_id);
+    let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
+    if !stream_path.exists() {
+        return None;
+    }
+
+    let (events, _) = stream_event::read_stream_events(&stream_path, 0).ok()?;
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut state = stream_event::AgentStreamState::default();
+    state.ingest(&events, 0);
+
+    let usage = state.to_token_usage();
+    // Only return if there's actual usage data
+    if usage.input_tokens > 0 || usage.output_tokens > 0 {
+        Some(usage)
+    } else {
+        None
+    }
+}
+
 /// Default grace period value, used by tests.
 /// Production code reads from `config.agent.reaper_grace_seconds`.
 #[cfg(test)]
@@ -286,7 +317,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
             tasks_modified = true;
         }
 
-        // Extract token usage from output.log
+        // Extract token usage from output.log or stream.jsonl
         if let Some(task) = graph.get_task_mut(task_id)
             && task.token_usage.is_none()
         {
@@ -300,6 +331,10 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 task.token_usage = Some(usage);
                 tasks_modified = true;
             } else if let Some(usage) = parse_wg_tokens(&abs_path) {
+                task.token_usage = Some(usage);
+                tasks_modified = true;
+            } else if let Some(usage) = parse_token_usage_from_stream(agent_id, dir) {
+                // Fallback: read stream.jsonl (native executor writes usage there directly)
                 task.token_usage = Some(usage);
                 tasks_modified = true;
             }

@@ -529,6 +529,9 @@ impl TokenUsage {
 ///
 /// Reads the file from the end, looking for the last JSON line with `"type":"result"`.
 /// Returns `None` if the file doesn't exist, is empty, or has no result line.
+///
+/// Supports both Claude CLI format (`"usage": {...}`, `"total_cost_usd": X`)
+/// and native executor format (`"total_usage": {...}`).
 pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage> {
     let content = std::fs::read_to_string(output_log_path).ok()?;
 
@@ -547,7 +550,8 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
             .get("total_cost_usd")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        let usage = val.get("usage");
+        // Claude CLI uses "usage", native executor uses "total_usage"
+        let usage = val.get("usage").or_else(|| val.get("total_usage"));
 
         let input_tokens = usage
             .and_then(|u| u.get("input_tokens"))
@@ -584,10 +588,13 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
     None
 }
 
-/// Parse token usage from a Claude CLI output.log, including mid-run data.
+/// Parse token usage from an agent output.log, including mid-run data.
 ///
 /// First tries to find a `type=result` line (completed runs). If none exists,
-/// sums up `message.usage` blocks from `type=assistant` lines (in-progress runs).
+/// sums up per-turn usage from either:
+/// - Claude CLI format: `type=assistant` with `message.usage`
+/// - Native executor format: `type=turn` with top-level `usage`
+///
 /// Returns `None` if the file doesn't exist or has no usable data.
 pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<TokenUsage> {
     // Try the fast path first: completed result line
@@ -595,7 +602,7 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
         return Some(usage);
     }
 
-    // Fall back: sum per-turn usage from assistant messages
+    // Fall back: sum per-turn usage from assistant/turn messages
     let content = std::fs::read_to_string(output_log_path).ok()?;
 
     let mut total_input = 0u64;
@@ -609,19 +616,23 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
-        // Quick check before full parse
-        if !line.contains("\"type\":\"assistant\"") {
+        // Quick check before full parse — match Claude CLI "assistant" or native "turn"
+        if !line.contains("\"type\":\"assistant\"") && !line.contains("\"type\":\"turn\"") {
             continue;
         }
         let val: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if val.get("type").and_then(|v| v.as_str()) != Some("assistant") {
-            continue;
-        }
-        // Usage is nested under message.usage
-        let usage = val.get("message").and_then(|m| m.get("usage"));
+        let event_type = val.get("type").and_then(|v| v.as_str());
+
+        // Claude CLI: usage nested under message.usage
+        // Native executor: usage at top level
+        let usage = match event_type {
+            Some("assistant") => val.get("message").and_then(|m| m.get("usage")),
+            Some("turn") => val.get("usage"),
+            _ => continue,
+        };
         if let Some(usage) = usage {
             found_any = true;
             total_input += usage
@@ -2540,6 +2551,66 @@ mod tests {
     fn test_parse_token_usage_live_missing_file() {
         let result = parse_token_usage_live(std::path::Path::new("/nonexistent/output.log"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_token_usage_native_executor_result() {
+        // Native executor writes "total_usage" instead of "usage" in result lines
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn","turn":1,"role":"assistant","content":[],"usage":{"input_tokens":500,"output_tokens":100}}
+{"type":"result","final_text":"Done.","turns":2,"total_usage":{"input_tokens":1234,"output_tokens":567,"cache_read_input_tokens":800,"cache_creation_input_tokens":50}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 1234);
+        assert_eq!(usage.output_tokens, 567);
+        assert_eq!(usage.cache_read_input_tokens, 800);
+        assert_eq!(usage.cache_creation_input_tokens, 50);
+        assert_eq!(usage.cost_usd, 0.0); // native executor doesn't track cost
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_native_turn_format() {
+        // Native executor writes type=turn with top-level usage (not message.usage)
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn","turn":1,"role":"assistant","content":[],"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":200}}
+{"type":"turn","turn":2,"role":"assistant","content":[],"usage":{"input_tokens":600,"output_tokens":150,"cache_creation_input_tokens":50}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage_live(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 1100);
+        assert_eq!(usage.output_tokens, 250);
+        assert_eq!(usage.cache_read_input_tokens, 200);
+        assert_eq!(usage.cache_creation_input_tokens, 50);
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_native_result_preferred() {
+        // If native executor has both turn and result lines, result should be used
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn","turn":1,"role":"assistant","content":[],"usage":{"input_tokens":500,"output_tokens":100}}
+{"type":"result","final_text":"Done.","turns":1,"total_usage":{"input_tokens":500,"output_tokens":100}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage_live(&log_path).unwrap();
+        // Should use the result line, not sum of turns
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 100);
     }
 
     #[test]

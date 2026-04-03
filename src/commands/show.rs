@@ -179,11 +179,31 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         })
         .unwrap_or_default();
 
-    // Resolve token usage: stored data first, then live data for in-progress tasks
+    // Resolve token usage: stored data first, then live data for in-progress tasks.
+    // Check output.log first (works for both Claude CLI and native executor formats),
+    // then fall back to stream.jsonl (native executor writes usage there directly).
     let token_usage = task.token_usage.clone().or_else(|| {
         let agent_id = task.assigned.as_deref()?;
-        let log_path = dir.join("agents").join(agent_id).join("output.log");
-        parse_token_usage_live(&log_path)
+        let agent_dir = dir.join("agents").join(agent_id);
+        // Try output.log (handles both Claude CLI and native executor formats)
+        let log_path = agent_dir.join("output.log");
+        if let Some(usage) = parse_token_usage_live(&log_path) {
+            return Some(usage);
+        }
+        // Fallback: read stream.jsonl (native executor writes usage there directly)
+        let stream_path = agent_dir.join(workgraph::stream_event::STREAM_FILE_NAME);
+        if stream_path.exists()
+            && let Ok((events, _)) = workgraph::stream_event::read_stream_events(&stream_path, 0)
+            && !events.is_empty()
+        {
+            let mut state = workgraph::stream_event::AgentStreamState::default();
+            state.ingest(&events, 0);
+            let usage = state.to_token_usage();
+            if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                return Some(usage);
+            }
+        }
+        None
     });
 
     let details = TaskDetails {
