@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod file;
+pub mod file_cache;
 pub mod wg;
 
 use std::collections::HashMap;
