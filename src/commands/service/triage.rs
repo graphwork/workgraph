@@ -203,12 +203,23 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
             if let Some(last_event_ms) = check_stream_liveness(agent) {
                 let now_ms = stream_event::now_ms();
                 if now_ms - last_event_ms > STREAM_STALE_THRESHOLD_MS {
-                    eprintln!(
-                        "[triage] WARNING: Agent {} (task {}) PID alive but stream stale for {}s",
-                        agent.id,
-                        agent.task_id,
-                        (now_ms - last_event_ms) / 1000
-                    );
+                    // Suppress warning if agent has active child processes
+                    // (e.g., waiting on cargo build, wg commands, sub-agents)
+                    if workgraph::service::has_active_children(agent.pid) {
+                        eprintln!(
+                            "[triage] Agent {} (task {}) stream stale for {}s but has active child processes — not stuck",
+                            agent.id,
+                            agent.task_id,
+                            (now_ms - last_event_ms) / 1000
+                        );
+                    } else {
+                        eprintln!(
+                            "[triage] WARNING: Agent {} (task {}) PID alive but stream stale for {}s (no child processes)",
+                            agent.id,
+                            agent.task_id,
+                            (now_ms - last_event_ms) / 1000
+                        );
+                    }
                 }
             }
         }

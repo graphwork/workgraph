@@ -1661,14 +1661,24 @@ pub enum DashboardAgentActivity {
 }
 
 impl DashboardAgentActivity {
-    /// Classify an agent based on registry status and seconds since last output modification.
-    pub fn classify(status: AgentStatus, secs_since_output: Option<i64>) -> Self {
+    /// Classify an agent based on registry status, seconds since last output
+    /// modification, and whether the agent has active child processes.
+    ///
+    /// When `has_children` is true and output is stale, the agent is classified
+    /// as `Slow` rather than `Stuck` — it is likely waiting on a subprocess
+    /// (cargo build, wg commands, sub-agent, etc.).
+    pub fn classify(
+        status: AgentStatus,
+        secs_since_output: Option<i64>,
+        has_children: bool,
+    ) -> Self {
         match status {
             AgentStatus::Done | AgentStatus::Failed | AgentStatus::Dead => Self::Exited,
             AgentStatus::Parked | AgentStatus::Frozen | AgentStatus::Stopping => Self::Exited,
             _ => match secs_since_output {
                 Some(s) if s < 30 => Self::Active,
                 Some(s) if s < 300 => Self::Slow,
+                Some(_) if has_children => Self::Slow,
                 Some(_) => Self::Stuck,
                 // No output file yet — treat as active if still starting
                 None => Self::Active,
@@ -8425,7 +8435,11 @@ impl VizApp {
                     agent_id: entry.agent_id.clone(),
                     task_id: entry.task_id.clone().unwrap_or_default(),
                     task_title: entry.task_title.clone(),
-                    activity: DashboardAgentActivity::classify(entry.status, secs_since_output),
+                    activity: DashboardAgentActivity::classify(
+                        entry.status,
+                        secs_since_output,
+                        false, // refined with child-process check below
+                    ),
                     elapsed_secs: entry.runtime_secs,
                     model: None, // populated from registry below if available
                     latest_snippet: snippet,
@@ -8433,11 +8447,18 @@ impl VizApp {
             })
             .collect();
 
-        // Populate model from the registry if available
+        // Populate model and refine activity classification from the registry
         if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
             for row in &mut self.dashboard.agent_rows {
                 if let Some(agent) = registry.agents.get(&row.agent_id) {
                     row.model = agent.model.clone();
+                    // Re-classify stuck agents: if they have active children,
+                    // they're waiting on a subprocess, not stuck
+                    if row.activity == DashboardAgentActivity::Stuck
+                        && workgraph::service::has_active_children(agent.pid)
+                    {
+                        row.activity = DashboardAgentActivity::Slow;
+                    }
                 }
             }
         }
@@ -9321,6 +9342,7 @@ impl VizApp {
                 ));
             }
             // Agent stuck: alive but output file not modified in >5 minutes.
+            // Suppress if the agent has active child processes (waiting on subprocess).
             if agent.is_alive() && crate::commands::is_process_alive(agent.pid) {
                 let output_age_secs = std::fs::metadata(&agent.output_file)
                     .and_then(|m| m.modified())
@@ -9329,6 +9351,7 @@ impl VizApp {
                     .map(|d| d.as_secs());
                 if let Some(secs) = output_age_secs
                     && secs > 300
+                    && !workgraph::service::has_active_children(agent.pid)
                 {
                     agent_toasts.push(AgentToast::Dedup(
                         format!(
@@ -16457,7 +16480,7 @@ mod dashboard_tests {
     #[test]
     fn classify_done_agent_is_exited() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Done, Some(5)),
+            DashboardAgentActivity::classify(AgentStatus::Done, Some(5), false),
             DashboardAgentActivity::Exited,
         );
     }
@@ -16465,7 +16488,7 @@ mod dashboard_tests {
     #[test]
     fn classify_failed_agent_is_exited() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Failed, Some(5)),
+            DashboardAgentActivity::classify(AgentStatus::Failed, Some(5), false),
             DashboardAgentActivity::Exited,
         );
     }
@@ -16473,7 +16496,7 @@ mod dashboard_tests {
     #[test]
     fn classify_dead_agent_is_exited() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Dead, Some(5)),
+            DashboardAgentActivity::classify(AgentStatus::Dead, Some(5), false),
             DashboardAgentActivity::Exited,
         );
     }
@@ -16481,7 +16504,7 @@ mod dashboard_tests {
     #[test]
     fn classify_working_recent_output_is_active() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(10)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(10), false),
             DashboardAgentActivity::Active,
         );
     }
@@ -16489,7 +16512,7 @@ mod dashboard_tests {
     #[test]
     fn classify_working_stale_output_is_slow() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(60)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(60), false),
             DashboardAgentActivity::Slow,
         );
     }
@@ -16497,7 +16520,7 @@ mod dashboard_tests {
     #[test]
     fn classify_working_very_stale_output_is_stuck() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(600)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(600), false),
             DashboardAgentActivity::Stuck,
         );
     }
@@ -16506,7 +16529,7 @@ mod dashboard_tests {
     fn classify_working_no_output_is_active() {
         // New agent that hasn't written output yet — treat as active.
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, None),
+            DashboardAgentActivity::classify(AgentStatus::Working, None, false),
             DashboardAgentActivity::Active,
         );
     }
@@ -16514,7 +16537,7 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_30s_is_slow() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(30)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(30), false),
             DashboardAgentActivity::Slow,
         );
     }
@@ -16522,7 +16545,7 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_300s_is_stuck() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(300)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(300), false),
             DashboardAgentActivity::Stuck,
         );
     }
@@ -16530,7 +16553,43 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_29s_is_active() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Working, Some(29)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(29), false),
+            DashboardAgentActivity::Active,
+        );
+    }
+
+    #[test]
+    fn classify_stale_with_children_is_slow() {
+        // Agent with very stale output but active children should be Slow, not Stuck
+        assert_eq!(
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(600), true),
+            DashboardAgentActivity::Slow,
+        );
+    }
+
+    #[test]
+    fn classify_stale_without_children_is_stuck() {
+        // Agent with very stale output and no children should be Stuck
+        assert_eq!(
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(600), false),
+            DashboardAgentActivity::Stuck,
+        );
+    }
+
+    #[test]
+    fn classify_moderate_stale_with_children_still_slow() {
+        // Children flag doesn't affect Slow range (30-300s) — it's already Slow
+        assert_eq!(
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(100), true),
+            DashboardAgentActivity::Slow,
+        );
+    }
+
+    #[test]
+    fn classify_active_with_children_still_active() {
+        // Children flag doesn't affect Active range (<30s)
+        assert_eq!(
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(10), true),
             DashboardAgentActivity::Active,
         );
     }

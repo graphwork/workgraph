@@ -184,8 +184,9 @@ impl ZeroOutputState {
 
 /// Check whether an agent has zero output (no stream events written).
 ///
-/// Returns `Some(age_secs)` if the agent has zero output and has been alive
-/// longer than the kill threshold. Returns `None` otherwise.
+/// Returns `Some(age_secs)` if the agent has zero output, has been alive
+/// longer than the kill threshold, and has no active child processes.
+/// Returns `None` otherwise.
 fn check_zero_output(agent: &AgentEntry) -> Option<u64> {
     if !agent.is_alive() {
         return None;
@@ -214,6 +215,12 @@ fn check_zero_output(agent: &AgentEntry) -> Option<u64> {
 
     let age_secs = age as u64;
     if age_secs >= ZERO_OUTPUT_KILL_THRESHOLD.as_secs() {
+        // Don't flag as zero-output if agent has active child processes —
+        // it may be waiting on a subprocess (e.g., slow model API startup,
+        // compilation, or sub-agent initialization)
+        if workgraph::service::has_active_children(agent.pid) {
+            return None;
+        }
         Some(age_secs)
     } else {
         None
