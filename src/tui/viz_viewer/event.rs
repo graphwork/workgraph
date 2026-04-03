@@ -1987,6 +1987,31 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             });
         }
 
+        // Detail tab: '[' browses to older iteration
+        KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Detail => {
+            if app.iteration_prev() {
+                app.load_hud_detail();
+                let total = app.iteration_archives.len() + 1;
+                let msg = match app.viewing_iteration {
+                    Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                    None => format!("Viewing current ({}/{})", total, total),
+                };
+                app.push_toast(msg, super::state::ToastSeverity::Info);
+            }
+        }
+        // Detail tab: ']' browses to newer iteration
+        KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Detail => {
+            if app.iteration_next() {
+                app.load_hud_detail();
+                let total = app.iteration_archives.len() + 1;
+                let msg = match app.viewing_iteration {
+                    Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                    None => format!("Viewing current ({}/{})", total, total),
+                };
+                app.push_toast(msg, super::state::ToastSeverity::Info);
+            }
+        }
+
         // Detail tab: 'R' toggles raw JSON display
         KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
             app.detail_raw_json = !app.detail_raw_json;

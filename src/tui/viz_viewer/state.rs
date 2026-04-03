@@ -3464,6 +3464,16 @@ pub struct VizApp {
     // ── Archive browser state ──
     pub archive_browser: ArchiveBrowserState,
 
+    // ── Iteration history browsing ([ / ] in Detail tab) ──
+    /// When `Some(idx)`, the Detail tab shows archived output/prompt from a past iteration.
+    /// `None` means showing the current (live) iteration. Index into `iteration_archives`.
+    pub viewing_iteration: Option<usize>,
+    /// Task ID for which `iteration_archives` was loaded.
+    iteration_archives_task_id: String,
+    /// Cached list of archived iteration directories for the selected task, sorted oldest-first.
+    /// Each entry: (directory name / timestamp string, path to the directory).
+    pub iteration_archives: Vec<(String, PathBuf)>,
+
     // ── History browser state (Ctrl+H) ──
     pub history_browser: HistoryBrowserState,
 
@@ -3785,6 +3795,9 @@ impl VizApp {
             task_message_statuses: HashMap::new(),
             config_panel: ConfigPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
+            viewing_iteration: None,
+            iteration_archives_task_id: String::new(),
+            iteration_archives: Vec::new(),
             history_browser: HistoryBrowserState::default(),
             file_browser: None,
             cmd_rx,
@@ -6057,6 +6070,12 @@ impl VizApp {
         self.hud_scroll = 0;
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
+        // Refresh iteration archives and reset viewing state when switching tasks.
+        if self.iteration_archives_task_id != task_id {
+            self.iteration_archives = find_all_archives(&self.workgraph_dir, &task_id);
+            self.iteration_archives_task_id = task_id.clone();
+            self.viewing_iteration = None;
+        }
 
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match load_graph(&graph_path) {
@@ -6078,7 +6097,12 @@ impl VizApp {
         let mut lines: Vec<String> = Vec::new();
 
         // ── Header ──
-        lines.push(format!("── {} ──", task.id));
+        let iter_label = self.iteration_view_label(&task);
+        lines.push(if let Some(ref label) = iter_label {
+            format!("── {} ── [{}]", task.id, label)
+        } else {
+            format!("── {} ──", task.id)
+        });
         lines.push(format!("Title: {}", task.title));
         lines.push(format!("Status: {:?}", task.status));
         if let Some(ref agent) = task.assigned {
@@ -6096,20 +6120,29 @@ impl VizApp {
         }
 
         // ── Agent prompt (full) ──
-        // Try live agent dir first, then fall back to archived logs
-        let prompt_path = task
-            .assigned
-            .as_ref()
-            .map(|aid| {
-                self.workgraph_dir
-                    .join("agents")
-                    .join(aid)
-                    .join("prompt.txt")
-            })
-            .filter(|p| p.exists())
-            .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "prompt.txt"));
+        // When viewing a past iteration, load from the archived directory instead.
+        let prompt_path = if let Some(iter_idx) = self.viewing_iteration {
+            self.iteration_archives.get(iter_idx)
+                .and_then(|(_, dir)| find_archive_file(dir, "prompt.txt"))
+        } else {
+            task.assigned
+                .as_ref()
+                .map(|aid| {
+                    self.workgraph_dir
+                        .join("agents")
+                        .join(aid)
+                        .join("prompt.txt")
+                })
+                .filter(|p| p.exists())
+                .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "prompt.txt"))
+        };
         if let Some(prompt_path) = prompt_path {
-            lines.push("── Prompt ──".to_string());
+            let prompt_header = if let Some(iter_idx) = self.viewing_iteration {
+                format!("── Prompt (iteration {}) ──", iter_idx + 1)
+            } else {
+                "── Prompt ──".to_string()
+            };
+            lines.push(prompt_header);
             if let Ok(file) = std::fs::File::open(&prompt_path) {
                 let reader = BufReader::new(file);
                 for l in reader.lines().map_while(Result::ok) {
@@ -6120,32 +6153,41 @@ impl VizApp {
         }
 
         // ── Agent output (full) ──
-        // Try live agent dir first, then fall back to archived logs
-        let output_path = task
-            .assigned
-            .as_ref()
-            .map(|aid| {
-                self.workgraph_dir
-                    .join("agents")
-                    .join(aid)
-                    .join("output.log")
-            })
-            .filter(|p| p.exists())
-            .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
+        // When viewing a past iteration, load from the archived directory instead.
+        let output_path = if let Some(iter_idx) = self.viewing_iteration {
+            self.iteration_archives.get(iter_idx)
+                .and_then(|(_, dir)| find_archive_file(dir, "output.txt"))
+        } else {
+            task.assigned
+                .as_ref()
+                .map(|aid| {
+                    self.workgraph_dir
+                        .join("agents")
+                        .join(aid)
+                        .join("output.log")
+                })
+                .filter(|p| p.exists())
+                .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"))
+        };
         // Save the live output.log path (not archives) for mtime-based live refresh.
-        let live_output_path = task
-            .assigned
-            .as_ref()
-            .map(|aid| {
-                self.workgraph_dir
-                    .join("agents")
-                    .join(aid)
-                    .join("output.log")
-            })
-            .filter(|p| p.exists());
+        // Only set when viewing current iteration.
+        let live_output_path = if self.viewing_iteration.is_some() {
+            None
+        } else {
+            task.assigned
+                .as_ref()
+                .map(|aid| {
+                    self.workgraph_dir
+                        .join("agents")
+                        .join(aid)
+                        .join("output.log")
+                })
+                .filter(|p| p.exists())
+        };
         if let Some(output_path) = output_path {
+            let iter_suffix = self.viewing_iteration.map(|idx| format!(" (iteration {})", idx + 1)).unwrap_or_default();
             if self.detail_raw_json {
-                lines.push("── Output (raw) ── [R: human-readable]".to_string());
+                lines.push(format!("── Output{} (raw) ── [R: human-readable]", iter_suffix));
                 // Raw mode: pretty-printed JSON
                 if let Ok(content) = std::fs::read_to_string(&output_path) {
                     for line in content.lines() {
@@ -6166,7 +6208,7 @@ impl VizApp {
                     }
                 }
             } else {
-                lines.push("── Output ── [R: raw JSON]".to_string());
+                lines.push(format!("── Output{} ── [R: raw JSON]", iter_suffix));
                 // Human-readable mode: extract assistant text as markdown
                 if let Ok(content) = std::fs::read_to_string(&output_path) {
                     let extracted = extract_enriched_text_from_log(&content);
@@ -6511,6 +6553,53 @@ impl VizApp {
             lines.push(String::new());
         }
 
+        // ── Iterations ──
+        // Show iteration history for tasks with archives (cycle iterations or retries)
+        {
+            let archives = &self.iteration_archives;
+            let has_iterations = !archives.is_empty()
+                || task.loop_iteration > 0
+                || task.retry_count > 0;
+            if has_iterations {
+                let is_cycle = task.cycle_config.is_some() || task.loop_iteration > 0;
+                let kind = if is_cycle { "Iteration" } else { "Attempt" };
+                lines.push(format!("── {}s ── [use [ ] to browse]", kind));
+
+                // Show "current" entry
+                let current_marker = if self.viewing_iteration.is_none() { "▶ " } else { "  " };
+                let status_str = format!("{:?}", task.status);
+                lines.push(format!(
+                    "  {}{} {} (current)   {}",
+                    current_marker,
+                    kind,
+                    archives.len() + 1,
+                    status_str.to_lowercase(),
+                ));
+
+                // Show archived iterations (most recent first for display)
+                let now = chrono::Utc::now();
+                for (display_idx, (ts_name, _dir)) in archives.iter().enumerate().rev() {
+                    let marker = if self.viewing_iteration == Some(display_idx) { "▶ " } else { "  " };
+                    let age = ts_name
+                        .parse::<chrono::DateTime<chrono::Utc>>()
+                        .ok()
+                        .map(|parsed| {
+                            let ago = now.signed_duration_since(parsed).num_seconds();
+                            format!("  {} ago", workgraph::format_duration(ago.max(0), true))
+                        })
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "  {}{} {}   done{}",
+                        marker,
+                        kind,
+                        display_idx + 1,
+                        age,
+                    ));
+                }
+                lines.push(String::new());
+            }
+        }
+
         // ── Failure reason ──
         if let Some(ref reason) = task.failure_reason {
             lines.push("── Failure ──".to_string());
@@ -6752,6 +6841,77 @@ impl VizApp {
         // If we reached the bottom, re-engage follow mode.
         if self.hud_scroll >= max_scroll {
             self.hud_follow = true;
+        }
+    }
+
+    /// Navigate to the previous (older) iteration in the Detail tab.
+    /// Returns true if the view changed.
+    pub fn iteration_prev(&mut self) -> bool {
+        if self.iteration_archives.is_empty() {
+            return false;
+        }
+        let total = self.iteration_archives.len();
+        match self.viewing_iteration {
+            None => {
+                // Currently viewing "current" — go to the most recent archive
+                if total > 0 {
+                    self.viewing_iteration = Some(total - 1);
+                    self.hud_detail = None; // force reload
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(idx) => {
+                if idx > 0 {
+                    self.viewing_iteration = Some(idx - 1);
+                    self.hud_detail = None;
+                    true
+                } else {
+                    false // already at oldest
+                }
+            }
+        }
+    }
+
+    /// Navigate to the next (newer) iteration in the Detail tab.
+    /// Returns true if the view changed.
+    pub fn iteration_next(&mut self) -> bool {
+        if self.iteration_archives.is_empty() {
+            return false;
+        }
+        let total = self.iteration_archives.len();
+        match self.viewing_iteration {
+            None => false, // already at current
+            Some(idx) => {
+                if idx + 1 < total {
+                    self.viewing_iteration = Some(idx + 1);
+                    self.hud_detail = None;
+                    true
+                } else {
+                    // Go back to "current" (live)
+                    self.viewing_iteration = None;
+                    self.hud_detail = None;
+                    true
+                }
+            }
+        }
+    }
+
+    /// Returns a label describing the current iteration view, if any.
+    /// E.g., "Iteration 2/5" or "Attempt 2/4".
+    pub fn iteration_view_label(&self, task: &workgraph::graph::Task) -> Option<String> {
+        let total = self.iteration_archives.len();
+        if total == 0 {
+            return None;
+        }
+        let is_cycle = task.cycle_config.is_some() || task.loop_iteration > 0;
+        let kind = if is_cycle { "iter" } else { "attempt" };
+        // total archives + 1 for the "current" live iteration
+        let display_total = total + 1;
+        match self.viewing_iteration {
+            Some(idx) => Some(format!("viewing {} {}/{}", kind, idx + 1, display_total)),
+            None => Some(format!("{} {}/{}", kind, display_total, display_total)),
         }
     }
 
@@ -7581,6 +7741,9 @@ impl VizApp {
             last_refresh_display: String::new(),
             refresh_interval: std::time::Duration::from_secs(3600),
             archive_browser: ArchiveBrowserState::default(),
+            viewing_iteration: None,
+            iteration_archives_task_id: String::new(),
+            iteration_archives: Vec::new(),
             history_browser: HistoryBrowserState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
@@ -12642,6 +12805,50 @@ fn find_latest_archive(
     None
 }
 
+/// Returns all archived iteration directories for a task, sorted oldest-first.
+/// Each entry is (directory name / timestamp, directory path).
+fn find_all_archives(
+    workgraph_dir: &std::path::Path,
+    task_id: &str,
+) -> Vec<(String, std::path::PathBuf)> {
+    let archive_base = workgraph_dir.join("log").join("agents").join(task_id);
+    if !archive_base.exists() {
+        return Vec::new();
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&archive_base)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().ok().is_some_and(|ft| ft.is_dir()))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .collect();
+    // Sort by name ascending (oldest first — timestamps sort lexicographically)
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+/// Returns the file at `filename` within the given archive directory, if it exists.
+/// Falls back to common alternative names (e.g. output.log → output.txt).
+fn find_archive_file(archive_dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
+    let candidate = archive_dir.join(filename);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    // Fallback: output.log ↔ output.txt, prompt.txt stays as-is
+    let alt = match filename {
+        "output.txt" => "output.log",
+        "output.log" => "output.txt",
+        _ => return None,
+    };
+    let alt_candidate = archive_dir.join(alt);
+    if alt_candidate.exists() {
+        Some(alt_candidate)
+    } else {
+        None
+    }
+}
+
 /// Extract assistant text content from a JSON stream log (output.log / raw_stream.jsonl).
 ///
 /// Parses each JSON line, finds `"type": "assistant"` events, and extracts text
@@ -13747,6 +13954,250 @@ mod hud_tests {
         // Collapsed state stays even if we reload hud_detail
         app.load_hud_detail();
         assert!(app.detail_collapsed_sections.contains("Description"));
+    }
+
+    // ── Iteration browsing tests ──
+
+    /// Helper: create a cyclic task with archived iterations in a temp dir.
+    fn build_cyclic_task_with_archives(
+        iteration_count: usize,
+    ) -> (VizOutput, WorkGraph, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status("cycle-task", "Cyclic Task", Status::InProgress);
+        task.description = Some("A task in a cycle".to_string());
+        task.loop_iteration = iteration_count as u32;
+        task.cycle_config = Some(workgraph::graph::CycleConfig {
+            max_iterations: 10,
+            guard: None,
+            delay: None,
+            no_converge: false,
+            restart_on_failure: false,
+            max_failure_restarts: None,
+        });
+        task.assigned = Some("agent-cyc".to_string());
+        task.after = vec!["cycle-task".to_string()]; // self-loop
+
+        graph.add_node(Node::Task(task));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Create archived iteration directories with output files
+        let archive_base = tmp.path().join("log").join("agents").join("cycle-task");
+        std::fs::create_dir_all(&archive_base).unwrap();
+        for i in 0..iteration_count {
+            let ts = format!("2026-01-15T10:{:02}:00Z", i);
+            let iter_dir = archive_base.join(&ts);
+            std::fs::create_dir_all(&iter_dir).unwrap();
+            std::fs::write(
+                iter_dir.join("output.txt"),
+                format!("Output from iteration {}", i + 1),
+            )
+            .unwrap();
+            std::fs::write(
+                iter_dir.join("prompt.txt"),
+                format!("Prompt for iteration {}", i + 1),
+            )
+            .unwrap();
+        }
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        (viz, graph, tmp)
+    }
+
+    #[test]
+    fn tui_iteration_no_archives_shows_no_iterations_section() {
+        // Non-cycling task with no archives should not show Iterations section
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let mut app = build_app(&viz, "a", _tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().unwrap();
+        let has_iterations = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("Iterations") || l.contains("Attempts"));
+        assert!(!has_iterations, "Non-cycling task should not show iteration section");
+        assert!(app.iteration_archives.is_empty());
+        assert!(app.viewing_iteration.is_none());
+    }
+
+    #[test]
+    fn tui_iteration_cyclic_task_shows_iterations_section() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(3);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().unwrap();
+        let has_iterations = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("── Iterations ──"));
+        assert!(has_iterations, "Cyclic task should show Iterations section");
+        assert_eq!(app.iteration_archives.len(), 3);
+
+        // Check the header includes iteration info
+        let header = &detail.rendered_lines[0];
+        assert!(
+            header.contains("iter"),
+            "Header should contain iteration label: {}",
+            header
+        );
+    }
+
+    #[test]
+    fn tui_iteration_browse_prev_next() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(3);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        // Initially viewing current (None)
+        assert!(app.viewing_iteration.is_none());
+
+        // Navigate to previous (most recent archive = index 2)
+        assert!(app.iteration_prev());
+        assert_eq!(app.viewing_iteration, Some(2));
+
+        // Navigate to previous again (index 1)
+        assert!(app.iteration_prev());
+        assert_eq!(app.viewing_iteration, Some(1));
+
+        // Navigate to previous again (index 0 = oldest)
+        assert!(app.iteration_prev());
+        assert_eq!(app.viewing_iteration, Some(0));
+
+        // Can't go further back
+        assert!(!app.iteration_prev());
+        assert_eq!(app.viewing_iteration, Some(0));
+
+        // Navigate forward
+        assert!(app.iteration_next());
+        assert_eq!(app.viewing_iteration, Some(1));
+
+        assert!(app.iteration_next());
+        assert_eq!(app.viewing_iteration, Some(2));
+
+        // Next from the last archive goes back to current
+        assert!(app.iteration_next());
+        assert!(app.viewing_iteration.is_none());
+
+        // Can't go further forward when at current
+        assert!(!app.iteration_next());
+    }
+
+    #[test]
+    fn tui_iteration_archived_output_displayed() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(2);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        // Navigate to first archived iteration
+        app.viewing_iteration = Some(0);
+        app.hud_detail = None;
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().unwrap();
+
+        // Check that the Output section header includes "(iteration 1)"
+        let has_iter_header = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("Output (iteration 1)"));
+        assert!(
+            has_iter_header,
+            "Output section header should indicate iteration number. Lines: {:?}",
+            detail.rendered_lines.iter()
+                .filter(|l| l.contains("Output") || l.contains("Prompt"))
+                .collect::<Vec<_>>()
+        );
+
+        // Check that Prompt section header also includes "(iteration 1)"
+        let has_prompt_header = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("Prompt (iteration 1)"));
+        assert!(
+            has_prompt_header,
+            "Prompt section header should indicate iteration number"
+        );
+    }
+
+    #[test]
+    fn tui_iteration_no_change_for_empty_archives() {
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let mut app = build_app(&viz, "a", _tmp.path());
+        app.load_hud_detail();
+
+        // iteration_prev and iteration_next are no-ops
+        assert!(!app.iteration_prev());
+        assert!(!app.iteration_next());
+        assert!(app.viewing_iteration.is_none());
+    }
+
+    #[test]
+    fn tui_iteration_retry_task_shows_attempts() {
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status("retry-task", "Retry Task", Status::InProgress);
+        task.retry_count = 2;
+        task.assigned = Some("agent-retry".to_string());
+
+        graph.add_node(Node::Task(task));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Create archives for retries
+        let archive_base = tmp.path().join("log").join("agents").join("retry-task");
+        std::fs::create_dir_all(&archive_base).unwrap();
+        for i in 0..2 {
+            let ts = format!("2026-01-15T10:{:02}:00Z", i);
+            let iter_dir = archive_base.join(&ts);
+            std::fs::create_dir_all(&iter_dir).unwrap();
+            std::fs::write(iter_dir.join("output.txt"), format!("Attempt {}", i + 1)).unwrap();
+        }
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().unwrap();
+        let has_attempts = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("── Attempts ──"));
+        assert!(has_attempts, "Retry task should show Attempts section, not Iterations");
+        assert_eq!(app.iteration_archives.len(), 2);
     }
 }
 

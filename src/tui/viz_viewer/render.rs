@@ -6916,6 +6916,9 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("↑↓", "scroll"));
                         hints.push(("PgUp/Dn", "page"));
                         hints.push(("Enter", "toggle"));
+                        if !app.iteration_archives.is_empty() {
+                            hints.push(("[/]", "iterations"));
+                        }
                     }
                     RightPanelTab::Log
                     | RightPanelTab::CoordLog
