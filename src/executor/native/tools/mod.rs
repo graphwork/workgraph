@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use serde_json;
+use tokio::sync::Semaphore;
 
 use super::client::ToolDefinition;
 
@@ -50,6 +52,31 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given JSON input.
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput;
+
+    /// Whether this tool is read-only (safe to execute concurrently).
+    /// Read-only tools never modify files, state, or external systems.
+    /// Default: false (conservative — unknown tools are treated as mutating).
+    fn is_read_only(&self) -> bool {
+        false
+    }
+}
+
+/// Default maximum concurrent read-only tool executions.
+pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 10;
+
+/// A tool call request (name + input).
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
+/// Result of a single tool call within a batch.
+#[derive(Debug, Clone)]
+pub struct ToolCallResult {
+    pub name: String,
+    pub output: ToolOutput,
+    pub duration_ms: u64,
 }
 
 /// Registry of available tools.
@@ -103,6 +130,82 @@ impl ToolRegistry {
             }
         }
         filtered
+    }
+
+    /// Check whether a tool is read-only by name.
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.tools.get(name).map_or(false, |t| t.is_read_only())
+    }
+
+    /// Execute a batch of tool calls with parallelism for read-only tools.
+    ///
+    /// Partitions calls into read-only and mutating. Read-only calls execute
+    /// concurrently (up to `max_concurrent`), then mutating calls execute serially.
+    /// Results are returned in the original call order.
+    pub async fn execute_batch(
+        &self,
+        calls: &[ToolCall],
+        max_concurrent: usize,
+    ) -> Vec<ToolCallResult> {
+        // Separate into (index, call) pairs by type
+        let mut read_only: Vec<(usize, &ToolCall)> = Vec::new();
+        let mut mutating: Vec<(usize, &ToolCall)> = Vec::new();
+
+        for (i, call) in calls.iter().enumerate() {
+            if self.is_read_only(&call.name) {
+                read_only.push((i, call));
+            } else {
+                mutating.push((i, call));
+            }
+        }
+
+        let mut results: Vec<(usize, ToolCallResult)> = Vec::with_capacity(calls.len());
+
+        // Execute read-only calls concurrently with semaphore-based cap.
+        // Uses join_all (not tokio::spawn) so we borrow &self without 'static.
+        if !read_only.is_empty() {
+            let semaphore = Semaphore::new(max_concurrent);
+
+            let futures: Vec<_> = read_only
+                .iter()
+                .map(|(idx, call)| {
+                    let sem = &semaphore;
+                    async move {
+                        let _permit = sem.acquire().await.unwrap();
+                        let start = std::time::Instant::now();
+                        let output = match self.tools.get(&call.name) {
+                            Some(tool) => tool.execute(&call.input).await,
+                            None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
+                        };
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        (*idx, ToolCallResult {
+                            name: call.name.clone(),
+                            output,
+                            duration_ms,
+                        })
+                    }
+                })
+                .collect();
+
+            let read_results = join_all(futures).await;
+            results.extend(read_results);
+        }
+
+        // Execute mutating calls serially
+        for (idx, call) in &mutating {
+            let start = std::time::Instant::now();
+            let output = self.execute(&call.name, &call.input).await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+            results.push((*idx, ToolCallResult {
+                name: call.name.clone(),
+                output,
+                duration_ms,
+            }));
+        }
+
+        // Sort by original index to maintain call order
+        results.sort_by_key(|(idx, _)| *idx);
+        results.into_iter().map(|(_, r)| r).collect()
     }
 
     /// Create the full default registry with all tools.
@@ -275,5 +378,90 @@ mod truncation_tests {
         let content = "\u{1f980}".repeat(5000);
         let result = truncate_tool_output(&content, 4_000);
         assert!(result.contains("chars omitted"));
+    }
+}
+
+#[cfg(test)]
+mod parallelism_tests {
+    use super::*;
+
+    /// Minimal test tool for unit tests.
+    struct TestTool {
+        tool_name: String,
+        read_only: bool,
+    }
+
+    #[async_trait]
+    impl Tool for TestTool {
+        fn name(&self) -> &str {
+            &self.tool_name
+        }
+
+        fn definition(&self) -> crate::executor::native::client::ToolDefinition {
+            crate::executor::native::client::ToolDefinition {
+                name: self.tool_name.clone(),
+                description: "test".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        fn is_read_only(&self) -> bool {
+            self.read_only
+        }
+
+        async fn execute(&self, _input: &serde_json::Value) -> ToolOutput {
+            ToolOutput::success(format!("ok-{}", self.tool_name))
+        }
+    }
+
+    #[test]
+    fn test_is_read_only_query() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "reader".to_string(),
+            read_only: true,
+        }));
+        registry.register(Box::new(TestTool {
+            tool_name: "writer".to_string(),
+            read_only: false,
+        }));
+
+        assert!(registry.is_read_only("reader"));
+        assert!(!registry.is_read_only("writer"));
+        assert!(!registry.is_read_only("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_batch_preserves_order() {
+        let mut registry = ToolRegistry::new();
+        for name in &["a", "b", "c"] {
+            registry.register(Box::new(TestTool {
+                tool_name: name.to_string(),
+                read_only: true,
+            }));
+        }
+
+        let calls = vec![
+            ToolCall { name: "c".to_string(), input: serde_json::json!({}) },
+            ToolCall { name: "a".to_string(), input: serde_json::json!({}) },
+            ToolCall { name: "b".to_string(), input: serde_json::json!({}) },
+        ];
+
+        let results = registry.execute_batch(&calls, 10).await;
+        assert_eq!(results[0].name, "c");
+        assert_eq!(results[1].name, "a");
+        assert_eq!(results[2].name, "b");
+    }
+
+    #[tokio::test]
+    async fn test_execute_batch_empty() {
+        let registry = ToolRegistry::new();
+        let results = registry.execute_batch(&[], 10).await;
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_default_max_concurrent() {
+        assert_eq!(DEFAULT_MAX_CONCURRENT_TOOLS, 10);
     }
 }

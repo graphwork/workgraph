@@ -36,6 +36,10 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".to_string(),
@@ -279,6 +283,10 @@ impl Tool for GlobTool {
         "glob"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "glob".to_string(),
@@ -343,6 +351,10 @@ struct GrepTool;
 impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 
     fn definition(&self) -> ToolDefinition {

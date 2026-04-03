@@ -81,6 +81,10 @@ impl Tool for WgShowTool {
         "wg_show"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "wg_show".to_string(),
@@ -164,6 +168,10 @@ struct WgListTool {
 impl Tool for WgListTool {
     fn name(&self) -> &str {
         "wg_list"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 
     fn definition(&self) -> ToolDefinition {

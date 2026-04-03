@@ -765,95 +765,151 @@ impl AgentLoop {
                     return Ok(result);
                 }
                 Some(StopReason::ToolUse) => {
-                    // Execute all tool_use blocks and collect results
-                    let mut results = Vec::new();
-                    for block in &response.content {
-                        if let ContentBlock::ToolUse { id, name, input } = block {
-                            // Stream: tool start
-                            if let Some(ref sw) = self.stream_writer {
-                                sw.write_tool_start(name);
+                    // Collect tool_use blocks from the response
+                    let tool_use_blocks: Vec<_> = response
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                Some((id.clone(), name.clone(), input.clone()))
                             }
-                            let tool_start = std::time::Instant::now();
+                            _ => None,
+                        })
+                        .collect();
 
-                            // Spawn heartbeat ticker during tool execution
-                            let heartbeat_handle =
-                                if let Some(ref sw) = self.stream_writer {
-                                    let sw = sw.clone();
-                                    let interval = self.heartbeat_interval;
-                                    Some(tokio::spawn(async move {
-                                        let mut ticker =
-                                            tokio::time::interval(interval);
-                                        ticker.tick().await; // first tick is immediate
-                                        loop {
-                                            ticker.tick().await;
-                                            sw.write_heartbeat();
-                                        }
-                                    }))
-                                } else {
-                                    None
-                                };
+                    // Separate parse-error calls from real calls
+                    let mut parse_error_results: Vec<(usize, String, String, serde_json::Value, super::tools::ToolOutput)> = Vec::new();
+                    let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
 
-                            // Detect parse errors from malformed JSON in tool arguments.
-                            let output = if input.get("__parse_error").is_some() {
-                                let error_msg = input
-                                    .get("__parse_error")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown parse error");
-                                let raw_args = input
-                                    .get("__raw_arguments")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                crate::executor::native::tools::ToolOutput {
+                    for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
+                        if input.get("__parse_error").is_some() {
+                            let error_msg = input
+                                .get("__parse_error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown parse error");
+                            let raw_args = input
+                                .get("__raw_arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            parse_error_results.push((
+                                i,
+                                id.clone(),
+                                name.clone(),
+                                input.clone(),
+                                super::tools::ToolOutput {
                                     content: format!(
                                         "ERROR: Tool arguments JSON parse failed: {}. Raw arguments: {}",
                                         error_msg, raw_args
                                     ),
                                     is_error: true,
-                                }
-                            } else {
-                                self.tools.execute(name, input).await
-                            };
-
-                            // Stop heartbeat ticker
-                            if let Some(h) = heartbeat_handle {
-                                h.abort();
-                            }
-
-                            let duration_ms = tool_start.elapsed().as_millis() as u64;
-
-                            // Stream: tool end
-                            if let Some(ref sw) = self.stream_writer {
-                                sw.write_tool_end(name, output.is_error, duration_ms);
-                            }
-
-                            // Log the tool call
-                            self.log_tool_call(name, input, &output.content, output.is_error);
-
-                            // Journal the tool execution
-                            if let Some(ref mut j) = journal {
-                                let _ = j.append(JournalEntryKind::ToolExecution {
-                                    tool_use_id: id.clone(),
+                                },
+                            ));
+                        } else {
+                            batch_calls.push((
+                                i,
+                                id.clone(),
+                                super::tools::ToolCall {
                                     name: name.clone(),
                                     input: input.clone(),
-                                    output: output.content.clone(),
-                                    is_error: output.is_error,
-                                    duration_ms,
-                                });
-                            }
+                                },
+                            ));
+                        }
+                    }
 
-                            tool_calls.push(ToolCallRecord {
+                    // Stream: emit tool_start for all tools
+                    if let Some(ref sw) = self.stream_writer {
+                        for (_, name, _) in &tool_use_blocks {
+                            sw.write_tool_start(name);
+                        }
+                    }
+
+                    // Spawn heartbeat ticker during batch execution
+                    let heartbeat_handle = if let Some(ref sw) = self.stream_writer {
+                        let sw = sw.clone();
+                        let interval = self.heartbeat_interval;
+                        Some(tokio::spawn(async move {
+                            let mut ticker = tokio::time::interval(interval);
+                            ticker.tick().await;
+                            loop {
+                                ticker.tick().await;
+                                sw.write_heartbeat();
+                            }
+                        }))
+                    } else {
+                        None
+                    };
+
+                    // Execute batch (read-only in parallel, mutating serially)
+                    let calls_only: Vec<_> = batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
+                    let batch_results = self
+                        .tools
+                        .execute_batch(
+                            &calls_only,
+                            super::tools::DEFAULT_MAX_CONCURRENT_TOOLS,
+                        )
+                        .await;
+
+                    // Stop heartbeat ticker
+                    if let Some(h) = heartbeat_handle {
+                        h.abort();
+                    }
+
+                    // Merge parse-error results and batch results into original order
+                    let mut all_results: Vec<(usize, String, String, serde_json::Value, super::tools::ToolOutput, u64)> =
+                        Vec::with_capacity(tool_use_blocks.len());
+
+                    for (orig_idx, id, name, input, output) in parse_error_results {
+                        all_results.push((orig_idx, id, name, input, output, 0));
+                    }
+                    for (batch_idx, batch_result) in batch_results.into_iter().enumerate() {
+                        let (orig_idx, id, _) = &batch_calls[batch_idx];
+                        let input = tool_use_blocks[*orig_idx].2.clone();
+                        all_results.push((
+                            *orig_idx,
+                            id.clone(),
+                            batch_result.name,
+                            input,
+                            batch_result.output,
+                            batch_result.duration_ms,
+                        ));
+                    }
+                    all_results.sort_by_key(|(idx, _, _, _, _, _)| *idx);
+
+                    // Process results: streaming, logging, journaling
+                    let mut results = Vec::new();
+                    for (_, id, name, input, output, duration_ms) in &all_results {
+                        // Stream: tool end
+                        if let Some(ref sw) = self.stream_writer {
+                            sw.write_tool_end(name, output.is_error, *duration_ms);
+                        }
+
+                        // Log the tool call
+                        self.log_tool_call(name, input, &output.content, output.is_error);
+
+                        // Journal the tool execution
+                        if let Some(ref mut j) = journal {
+                            let _ = j.append(JournalEntryKind::ToolExecution {
+                                tool_use_id: id.clone(),
                                 name: name.clone(),
                                 input: input.clone(),
                                 output: output.content.clone(),
                                 is_error: output.is_error,
-                            });
-
-                            results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: output.content,
-                                is_error: output.is_error,
+                                duration_ms: *duration_ms,
                             });
                         }
+
+                        tool_calls.push(ToolCallRecord {
+                            name: name.clone(),
+                            input: input.clone(),
+                            output: output.content.clone(),
+                            is_error: output.is_error,
+                        });
+
+                        results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: output.content.clone(),
+                            is_error: output.is_error,
+                        });
                     }
 
                     // Journal the tool results user message
