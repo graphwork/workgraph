@@ -9,7 +9,7 @@ description = "Terminal Bench harness for Workgraph: Condition A (bare agent) an
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "harbor-framework>=0.3.0",
+    "harbor>=0.3.0",
     "litellm",
 ]
 
