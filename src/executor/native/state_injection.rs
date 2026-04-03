@@ -431,4 +431,139 @@ mod tests {
         assert!(result.ends_with("</system-reminder>"));
         assert!(result.contains("## Live State Update"));
     }
+
+    #[test]
+    fn test_state_injection_multiple_messages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path();
+        setup_workgraph(wg_dir, "my-task", &[]);
+
+        write_message(wg_dir, "my-task", 1, "alice", "First message");
+        write_message(wg_dir, "my-task", 2, "bob", "Second message");
+        write_message(wg_dir, "my-task", 3, "coordinator", "Third message");
+
+        let mut injector =
+            StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
+
+        let result = injector.collect_injections(None).unwrap();
+        assert!(result.contains("alice"));
+        assert!(result.contains("First message"));
+        assert!(result.contains("bob"));
+        assert!(result.contains("Second message"));
+        assert!(result.contains("coordinator"));
+        assert!(result.contains("Third message"));
+
+        // All consumed — next call returns None
+        let result2 = injector.collect_injections(None);
+        assert!(result2.is_none(), "All messages should be consumed");
+    }
+
+    #[test]
+    fn test_dependency_snapshot_diff_identical() {
+        let snap = DependencySnapshot {
+            deps: vec![
+                ("a".into(), Status::InProgress),
+                ("b".into(), Status::Open),
+            ],
+        };
+        let changes = snap.diff(&snap);
+        assert!(changes.is_empty(), "Identical snapshots should produce no changes");
+    }
+
+    #[test]
+    fn test_dependency_snapshot_diff_both_empty() {
+        let old = DependencySnapshot { deps: vec![] };
+        let new = DependencySnapshot { deps: vec![] };
+        let changes = old.diff(&new);
+        assert!(changes.is_empty(), "Two empty snapshots should produce no changes");
+    }
+
+    #[test]
+    fn test_state_injection_nonexistent_graph() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join("does-not-exist");
+        // Don't create the directory — graph doesn't exist
+
+        let mut injector =
+            StateInjector::new(wg_dir.to_path_buf(), "no-task".into(), "agent-1".into());
+
+        // Should handle missing graph gracefully (no crash, returns None)
+        let result = injector.collect_injections(None);
+        assert!(result.is_none(), "Missing graph should produce no injection");
+    }
+
+    #[test]
+    fn test_state_injection_multiple_dep_changes_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path();
+        setup_workgraph(
+            wg_dir,
+            "my-task",
+            &[("dep-a", "open"), ("dep-b", "open"), ("dep-c", "in-progress")],
+        );
+
+        let mut injector =
+            StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
+
+        // Consume baseline
+        let _ = injector.collect_injections(None);
+
+        // Multiple deps change simultaneously
+        setup_workgraph(
+            wg_dir,
+            "my-task",
+            &[("dep-a", "done"), ("dep-b", "in-progress"), ("dep-c", "done")],
+        );
+
+        let result = injector.collect_injections(None).unwrap();
+        assert!(result.contains("dep-a"), "Should report dep-a change");
+        assert!(result.contains("dep-b"), "Should report dep-b change");
+        assert!(result.contains("dep-c"), "Should report dep-c change");
+    }
+
+    #[test]
+    fn test_state_injection_graph_change_not_re_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path();
+        setup_workgraph(wg_dir, "my-task", &[("dep-a", "open")]);
+
+        let mut injector =
+            StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
+
+        // Baseline
+        let _ = injector.collect_injections(None);
+
+        // dep-a changes to done
+        setup_workgraph(wg_dir, "my-task", &[("dep-a", "done")]);
+
+        let r1 = injector.collect_injections(None);
+        assert!(r1.is_some(), "First change should be reported");
+
+        // Graph unchanged — call again
+        let r2 = injector.collect_injections(None);
+        assert!(r2.is_none(), "Same state should not produce a second report");
+
+        // Call a third time for good measure
+        let r3 = injector.collect_injections(None);
+        assert!(r3.is_none(), "Still no report when nothing changed");
+    }
+
+    #[test]
+    fn test_state_injection_context_pressure_not_sticky() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path();
+        setup_workgraph(wg_dir, "my-task", &[]);
+
+        let mut injector =
+            StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
+
+        // First call with pressure
+        let r1 = injector.collect_injections(Some("At 85% capacity".into()));
+        assert!(r1.is_some());
+        assert!(r1.unwrap().contains("85%"));
+
+        // Second call without pressure → no injection
+        let r2 = injector.collect_injections(None);
+        assert!(r2.is_none(), "No pressure = no injection (not sticky)");
+    }
 }
