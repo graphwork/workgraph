@@ -212,7 +212,13 @@ pub fn create_provider_ext(
                     eprintln!("[native-exec] WARNING: {}", warning);
                 }
                 if !validation.was_valid {
-                    client.model = validation.model;
+                    anyhow::bail!(
+                        "Model '{}' not found in OpenRouter model list. {}",
+                        client.model,
+                        validation.warning.as_deref().unwrap_or(
+                            "Run `wg models search <name>` to find valid alternatives."
+                        )
+                    );
                 }
             }
             eprintln!(

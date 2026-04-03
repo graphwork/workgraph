@@ -1098,7 +1098,7 @@ mod auto_routing_tests {
     }
 
     #[test]
-    fn integration_openrouter_invalid_model_falls_back_to_auto() {
+    fn integration_openrouter_invalid_model_returns_original_no_fallback() {
         let tmp = setup_workgraph_dir();
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
@@ -1113,10 +1113,14 @@ mod auto_routing_tests {
         let result = validate_openrouter_model("nonexistent/model-xyz", tmp.path());
         assert!(!result.was_valid);
         assert_eq!(
-            result.model, OPENROUTER_AUTO_MODEL,
-            "Should fall back to openrouter/auto"
+            result.model, "nonexistent/model-xyz",
+            "Should return original model, not openrouter/auto"
         );
         assert!(result.warning.is_some());
+        assert!(
+            !result.warning.as_ref().unwrap().contains("Falling back"),
+            "Should not mention fallback"
+        );
     }
 
     #[test]
@@ -1158,8 +1162,8 @@ mod auto_routing_tests {
     }
 
     #[test]
-    fn integration_openrouter_fallback_chain_complete() {
-        // Test the full chain: invalid model → suggestions → auto fallback
+    fn integration_openrouter_invalid_model_no_auto_fallback() {
+        // Test that invalid models do NOT fall back to openrouter/auto
         let tmp = setup_workgraph_dir();
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
@@ -1170,14 +1174,34 @@ mod auto_routing_tests {
         });
         fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        // Step 1: Invalid model triggers fallback
         let result = validate_openrouter_model("totally-wrong-model", tmp.path());
         assert!(!result.was_valid);
-        assert_eq!(result.model, OPENROUTER_AUTO_MODEL);
+        assert_eq!(
+            result.model, "totally-wrong-model",
+            "Should return the original model, not openrouter/auto"
+        );
+        assert!(result.warning.is_some());
+        assert!(
+            !result.warning.as_ref().unwrap().contains(OPENROUTER_AUTO_MODEL),
+            "Should not mention openrouter/auto in warning"
+        );
+    }
 
-        // Step 2: The fallback model (openrouter/auto) is itself always valid
-        let result2 = validate_openrouter_model(&result.model, tmp.path());
-        assert!(result2.was_valid);
-        assert_eq!(result2.model, OPENROUTER_AUTO_MODEL);
+    #[test]
+    fn integration_openrouter_provider_prefix_stripped() {
+        let tmp = setup_workgraph_dir();
+        let cache = serde_json::json!({
+            "fetched_at": "2026-03-25T12:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7"},
+                {"id": "anthropic/claude-sonnet-4-6"},
+            ]
+        });
+        fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        // Provider prefix should be stripped before validation
+        let result = validate_openrouter_model("openrouter:minimax/minimax-m2.7", tmp.path());
+        assert!(result.was_valid, "Should find model after stripping prefix");
+        assert_eq!(result.model, "minimax/minimax-m2.7");
     }
 }

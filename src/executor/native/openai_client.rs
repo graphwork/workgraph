@@ -1475,10 +1475,12 @@ pub struct ModelValidationResult {
 /// Validate a model ID against the cached OpenRouter model list.
 ///
 /// If the model is `openrouter/auto`, it is always considered valid.
-/// If a local cache exists and the model is not found, the function:
-/// 1. Finds the 3 closest model IDs by edit distance
-/// 2. Falls back to `openrouter/auto`
-/// 3. Returns the validation result with suggestions
+/// Any `provider:` prefix (e.g., `openrouter:minimax/minimax-m2.7`) is stripped
+/// before validation so the bare model ID is checked against the cache.
+///
+/// If a local cache exists and the model is not found after stripping, the
+/// function returns `was_valid: false` with suggestions but does NOT fall back
+/// to `openrouter/auto` — callers decide how to handle the failure.
 ///
 /// If no cache is available, the model is assumed valid (we can't validate
 /// without data).
@@ -1486,6 +1488,18 @@ pub fn validate_openrouter_model(
     model: &str,
     workgraph_dir: &std::path::Path,
 ) -> ModelValidationResult {
+    // Strip any known provider prefix (e.g., "openrouter:minimax/minimax-m2.7"
+    // → "minimax/minimax-m2.7") so validation checks the bare model ID.
+    let stripped = {
+        let spec = crate::config::parse_model_spec(model);
+        if spec.provider.is_some() {
+            spec.model_id
+        } else {
+            model.to_string()
+        }
+    };
+    let model = stripped.as_str();
+
     // openrouter/auto is always valid
     if model == OPENROUTER_AUTO_MODEL {
         return ModelValidationResult {
@@ -1559,18 +1573,18 @@ pub fn validate_openrouter_model(
         )
     };
 
-    // Fall back to openrouter/auto
+    // Do NOT fall back to openrouter/auto — return the stripped model with
+    // was_valid: false so callers can fail with a clear error.
     let search_hint = model.split('/').next_back().unwrap_or(model);
     let warning = format!(
         "Model '{}' not found in OpenRouter model list.{}\n  \
-         Falling back to '{}'.\n  \
          Hint: run `wg models search {}` to find valid alternatives, \
          or `wg models list` to see the local registry.",
-        model, suggestions_str, OPENROUTER_AUTO_MODEL, search_hint,
+        model, suggestions_str, search_hint,
     );
 
     ModelValidationResult {
-        model: OPENROUTER_AUTO_MODEL.to_string(),
+        model: model.to_string(),
         was_valid: false,
         suggestions,
         warning: Some(warning),
@@ -3017,7 +3031,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_invalid_model_suggests_and_falls_back() {
+    fn test_validate_invalid_model_suggests_without_fallback() {
         let dir = tempfile::TempDir::new().unwrap();
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
@@ -3033,7 +3047,8 @@ mod tests {
 
         let result = validate_openrouter_model("anthropic/claude-sonet-4-6", dir.path());
         assert!(!result.was_valid);
-        assert_eq!(result.model, OPENROUTER_AUTO_MODEL);
+        // Should return the original (invalid) model, NOT openrouter/auto
+        assert_eq!(result.model, "anthropic/claude-sonet-4-6");
         assert!(!result.suggestions.is_empty());
         assert!(
             result
@@ -3044,8 +3059,17 @@ mod tests {
         );
         let warning = result.warning.unwrap();
         assert!(warning.contains("not found"));
-        assert!(warning.contains("Falling back"));
-        assert!(warning.contains(OPENROUTER_AUTO_MODEL));
+        // Should NOT mention falling back to openrouter/auto
+        assert!(
+            !warning.contains("Falling back"),
+            "warning should not mention fallback, got: {}",
+            warning
+        );
+        assert!(
+            !warning.contains(OPENROUTER_AUTO_MODEL),
+            "warning should not mention openrouter/auto, got: {}",
+            warning
+        );
         assert!(
             warning.contains("wg models search"),
             "warning should suggest `wg models search`, got: {}",
@@ -3055,6 +3079,49 @@ mod tests {
             warning.contains("wg models list"),
             "warning should suggest `wg models list`, got: {}",
             warning
+        );
+    }
+
+    #[test]
+    fn test_validate_strips_provider_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = serde_json::json!({
+            "fetched_at": "2026-03-25T12:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
+                {"id": "anthropic/claude-sonnet-4-6", "name": "Sonnet"},
+            ]
+        });
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        // With provider prefix, should strip and find the model
+        let result = validate_openrouter_model("openrouter:minimax/minimax-m2.7", dir.path());
+        assert!(result.was_valid);
+        assert_eq!(result.model, "minimax/minimax-m2.7");
+        assert!(result.warning.is_none());
+    }
+
+    #[test]
+    fn test_validate_strips_prefix_not_found_no_fallback() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = serde_json::json!({
+            "fetched_at": "2026-03-25T12:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
+                {"id": "minimax/minimax-m2.5", "name": "Minimax M2.5"},
+            ]
+        });
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        // With provider prefix but model not in cache — should strip, fail, no fallback
+        let result = validate_openrouter_model("openrouter:minimax/minimax-m9.9", dir.path());
+        assert!(!result.was_valid);
+        // Should return the stripped model, NOT openrouter/auto
+        assert_eq!(result.model, "minimax/minimax-m9.9");
+        assert!(!result.suggestions.is_empty());
+        assert!(
+            !result.warning.as_deref().unwrap_or("").contains(OPENROUTER_AUTO_MODEL),
+            "should not fall back to openrouter/auto"
         );
     }
 

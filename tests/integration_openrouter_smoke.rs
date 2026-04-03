@@ -903,10 +903,8 @@ fn model_discovery_auto_routing_accepted_as_default() {
 }
 
 #[test]
-fn invalid_model_triggers_validation_suggestion_fallback() {
-    use workgraph::executor::native::openai_client::{
-        OPENROUTER_AUTO_MODEL, validate_openrouter_model,
-    };
+fn invalid_model_triggers_validation_suggestion_no_fallback() {
+    use workgraph::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
     let cache = serde_json::json!({
@@ -937,19 +935,17 @@ fn invalid_model_triggers_validation_suggestion_fallback() {
     );
     assert!(result.suggestions.len() <= 3, "Should suggest at most 3");
 
-    // 3. Falls back to openrouter/auto
-    assert_eq!(result.model, OPENROUTER_AUTO_MODEL);
+    // 3. Returns original model, NOT openrouter/auto
+    assert_eq!(result.model, "anthropic/claude-sonet-4-6");
 
-    // 4. Warning message is informative
+    // 4. Warning message is informative but does not mention fallback
     let warning = result.warning.as_ref().unwrap();
     assert!(warning.contains("not found"));
     assert!(warning.contains("Did you mean"));
-    assert!(warning.contains("Falling back"));
-    assert!(warning.contains(OPENROUTER_AUTO_MODEL));
-
-    // 5. The fallback model itself validates cleanly
-    let fallback_result = validate_openrouter_model(&result.model, tmp.path());
-    assert!(fallback_result.was_valid);
+    assert!(
+        !warning.contains("Falling back"),
+        "Should not mention fallback to openrouter/auto"
+    );
 }
 
 #[test]
@@ -1121,7 +1117,7 @@ fn create_provider_ext_validates_openrouter_model() {
     let p = provider.unwrap();
     assert_eq!(p.model(), "anthropic/claude-sonnet-4-6");
 
-    // Invalid model should fall back to openrouter/auto
+    // Invalid model should now fail with a clear error (no fallback to openrouter/auto)
     let provider2 = create_provider_ext(
         &wg_dir,
         "anthropic/claude-sonet-4-6", // typo
@@ -1129,16 +1125,17 @@ fn create_provider_ext_validates_openrouter_model() {
         None,
         Some("sk-or-test-key"),
     );
-    assert!(
-        provider2.is_ok(),
-        "Invalid model should still create provider (with fallback)"
-    );
-    let p2 = provider2.unwrap();
-    assert_eq!(
-        p2.model(),
-        "openrouter/auto",
-        "Invalid model should fall back to openrouter/auto"
-    );
+    match provider2 {
+        Ok(_) => panic!("Invalid model should fail, not fall back to openrouter/auto"),
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("not found in OpenRouter model list"),
+                "Error should mention model not found, got: {}",
+                err_msg
+            );
+        }
+    }
 
     // openrouter/auto should work directly
     let provider3 = create_provider_ext(
