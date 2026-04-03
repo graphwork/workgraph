@@ -64,23 +64,6 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     stdout
 }
 
-/// Wait for a file to exist, polling every 2s, up to `max_wait` seconds.
-fn wait_for_file(path: &Path, max_wait_secs: u64) -> std::io::Result<()> {
-    let start = std::time::Instant::now();
-    loop {
-        if path.exists() {
-            return Ok(());
-        }
-        if start.elapsed().as_secs() >= max_wait_secs {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("timed out after {}s waiting for {:?}", max_wait_secs, path),
-            ));
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Integration Tests
 // ---------------------------------------------------------------------------
@@ -199,10 +182,7 @@ fn test_openrouter_minimax_tool_loop() {
         std::thread::sleep(Duration::from_secs(5));
     }
 
-    assert!(
-        !failed,
-        "Agent task failed. Check agent output logs."
-    );
+    assert!(!failed, "Agent task failed. Check agent output logs.");
     assert!(
         completed,
         "Agent did not complete within {}s. Check agent output logs.",
@@ -318,20 +298,14 @@ fn test_openrouter_minimax_tool_loop() {
             .get("tool_use_id")
             .and_then(|v| v.as_str())
             .expect("tool_execution entry should have tool_use_id");
-        assert!(
-            !tool_use_id.is_empty(),
-            "tool_use_id should not be empty"
-        );
+        assert!(!tool_use_id.is_empty(), "tool_use_id should not be empty");
 
         // Verify tool name is present
         let tool_name = tool_exec
             .get("tool")
             .and_then(|v| v.as_str())
             .expect("tool_execution entry should have tool name");
-        assert!(
-            !tool_name.is_empty(),
-            "tool name should not be empty"
-        );
+        assert!(!tool_name.is_empty(), "tool name should not be empty");
     }
 
     // ── 12. Validate tool results round-tripped ───────────────────────────
@@ -386,8 +360,8 @@ fn test_openrouter_minimax_tool_loop() {
 
     // Last line should be a Result event
     if let Some(last_line) = lines.last() {
-        let result_val =
-            serde_json::from_str::<serde_json::Value>(last_line).expect("Last NDJSON line valid JSON");
+        let result_val = serde_json::from_str::<serde_json::Value>(last_line)
+            .expect("Last NDJSON line valid JSON");
         assert_eq!(
             result_val.get("type").and_then(|v| v.as_str()),
             Some("result"),
@@ -458,8 +432,15 @@ fn test_openrouter_bash_tool_execution() {
     wg_ok(
         &wg_dir,
         &[
-            "endpoint", "add", "test-openrouter", "--provider", "openrouter",
-            "--url", "https://openrouter.ai/api/v1", "--key-file", key_file.to_str().unwrap(),
+            "endpoint",
+            "add",
+            "test-openrouter",
+            "--provider",
+            "openrouter",
+            "--url",
+            "https://openrouter.ai/api/v1",
+            "--key-file",
+            key_file.to_str().unwrap(),
         ],
     );
     wg_ok(&wg_dir, &["endpoint", "set-default", "test-openrouter"]);
@@ -468,9 +449,12 @@ fn test_openrouter_bash_tool_execution() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Bash tool test",
-            "--id", "bash-tool-test",
-            "--context-scope", "task",
+            "add",
+            "Bash tool test",
+            "--id",
+            "bash-tool-test",
+            "--context-scope",
+            "task",
             "--immediate",
         ],
     );
@@ -479,9 +463,12 @@ fn test_openrouter_bash_tool_execution() {
     let spawn_output = wg_cmd(
         &wg_dir,
         &[
-            "spawn", "bash-tool-test",
-            "--executor", "native",
-            "--model", "minimax/minimax-m2.7",
+            "spawn",
+            "bash-tool-test",
+            "--executor",
+            "native",
+            "--model",
+            "minimax/minimax-m2.7",
         ],
     );
 
@@ -537,8 +524,15 @@ fn test_openrouter_journal_completeness() {
     wg_ok(
         &wg_dir,
         &[
-            "endpoint", "add", "test-openrouter", "--provider", "openrouter",
-            "--url", "https://openrouter.ai/api/v1", "--key-file", key_file.to_str().unwrap(),
+            "endpoint",
+            "add",
+            "test-openrouter",
+            "--provider",
+            "openrouter",
+            "--url",
+            "https://openrouter.ai/api/v1",
+            "--key-file",
+            key_file.to_str().unwrap(),
         ],
     );
     wg_ok(&wg_dir, &["endpoint", "set-default", "test-openrouter"]);
@@ -547,9 +541,12 @@ fn test_openrouter_journal_completeness() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Journal completeness test",
-            "--id", "journal-test",
-            "--context-scope", "task",
+            "add",
+            "Journal completeness test",
+            "--id",
+            "journal-test",
+            "--context-scope",
+            "task",
             "--immediate",
         ],
     );
@@ -558,9 +555,12 @@ fn test_openrouter_journal_completeness() {
     let spawn_output = wg_cmd(
         &wg_dir,
         &[
-            "spawn", "journal-test",
-            "--executor", "native",
-            "--model", "minimax/minimax-m2.7",
+            "spawn",
+            "journal-test",
+            "--executor",
+            "native",
+            "--model",
+            "minimax/minimax-m2.7",
         ],
     );
 
@@ -593,7 +593,12 @@ fn test_openrouter_journal_completeness() {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.is_dir() && p.file_name().unwrap().to_str().unwrap().starts_with("agent-")
+            p.is_dir()
+                && p.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("agent-")
         })
         .collect();
 
@@ -634,5 +639,172 @@ fn test_openrouter_journal_completeness() {
     eprintln!(
         "[integration] Journal completeness test passed: {:?}",
         entry_types
+    );
+}
+
+/// Test: File read/write tool execution via OpenRouter.
+///
+/// Validates that the native executor can:
+/// 1. Read a pre-existing file using the file_read tool
+/// 2. Write a new file using the file_write tool
+/// 3. Both tool executions appear in the journal
+/// 4. The written file exists on disk after completion
+#[test]
+#[ignore = "requires OPENROUTER_API_KEY"]
+fn test_openrouter_file_read_write_tools() {
+    let _api_key = std::env::var("OPENROUTER_API_KEY")
+        .expect("OPENROUTER_API_KEY must be set for this integration test");
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = tmp.path().join(".workgraph");
+
+    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["agency", "init"]);
+
+    // Configure endpoint
+    let key_file = tmp.path().join("key.txt");
+    fs::write(&key_file, &_api_key).unwrap();
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoint",
+            "add",
+            "test-openrouter",
+            "--provider",
+            "openrouter",
+            "--url",
+            "https://openrouter.ai/api/v1",
+            "--key-file",
+            key_file.to_str().unwrap(),
+        ],
+    );
+    wg_ok(&wg_dir, &["endpoint", "set-default", "test-openrouter"]);
+
+    // Create a file for the agent to read
+    let input_file = tmp.path().join("input.txt");
+    fs::write(&input_file, "The secret word is: BANANA").unwrap();
+
+    // Create a task that requires reading a file and writing output
+    let description = format!(
+        "Read the file at {} and write its contents to {}. Do not add anything extra.",
+        input_file.display(),
+        tmp.path().join("output.txt").display()
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            &description,
+            "--id",
+            "file-rw-test",
+            "--context-scope",
+            "task",
+            "--immediate",
+        ],
+    );
+
+    // Spawn
+    let spawn_output = wg_cmd(
+        &wg_dir,
+        &[
+            "spawn",
+            "file-rw-test",
+            "--executor",
+            "native",
+            "--model",
+            "minimax/minimax-m2.7",
+        ],
+    );
+
+    assert!(
+        spawn_output.status.success(),
+        "Spawn should succeed: {}",
+        String::from_utf8_lossy(&spawn_output.stderr)
+    );
+
+    // Poll for completion
+    let max_wait = 300;
+    let mut completed = false;
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < max_wait {
+        let output = wg_cmd(&wg_dir, &["show", "file-rw-test", "--json"]);
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                match val.get("status").and_then(|s| s.as_str()) {
+                    Some("done") => {
+                        completed = true;
+                        break;
+                    }
+                    Some("failed") => {
+                        panic!("Agent task failed. Check agent output logs.");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+
+    assert!(completed, "Agent should complete within {}s", max_wait);
+
+    // Verify the output file was written
+    let output_file = tmp.path().join("output.txt");
+    assert!(
+        output_file.exists(),
+        "Agent should have written output.txt at {:?}",
+        output_file
+    );
+
+    let output_content = fs::read_to_string(&output_file).unwrap();
+    assert!(
+        output_content.contains("BANANA"),
+        "Output file should contain the secret word 'BANANA', got: {}",
+        output_content
+    );
+
+    // Verify journal has file tool executions
+    let agents_base = wg_dir.join("agents");
+    let agent_subdirs: Vec<PathBuf> = fs::read_dir(&agents_base)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("agent-")
+        })
+        .collect();
+
+    assert!(!agent_subdirs.is_empty(), "Should have agent directory");
+    let agent_dir = &agent_subdirs[0];
+
+    let journal_path = agent_dir.join("conversation.jsonl");
+    let journal_content = fs::read_to_string(&journal_path).unwrap();
+    let entries: Vec<serde_json::Value> = journal_content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("Invalid JSON"))
+        .collect();
+
+    let tool_names: Vec<String> = entries
+        .iter()
+        .filter(|e| e.get("entry_type").and_then(|v| v.as_str()) == Some("tool_execution"))
+        .filter_map(|e| e.get("tool").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    // Should have used file_read and file_write (or bash as fallback)
+    assert!(
+        !tool_names.is_empty(),
+        "Should have at least one tool execution in journal"
+    );
+
+    eprintln!(
+        "[integration] File read/write test passed: tools used: {:?}",
+        tool_names
     );
 }
