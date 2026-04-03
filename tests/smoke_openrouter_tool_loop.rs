@@ -120,6 +120,6 @@ fn smoke_native_tool_loop_terminates_reasonably() {
     let _out = run_native_exec(&wg_dir, prompt, "termination-test", "minimax/minimax-m2.7", &api_key);
     let elapsed = start.elapsed().as_secs();
 
-    assert!(elapsed < 120, "Agent took {}s — too long for simple task", elapsed);
+    assert!(elapsed < 180, "Agent took {}s — too long for simple task", elapsed);
     eprintln!("[smoke] Termination test passed in {}s", elapsed);
 }

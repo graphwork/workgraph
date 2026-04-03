@@ -462,7 +462,7 @@ fn openrouter_provider_headers_included() {
 /// invoked with `cargo test --test smoke_openrouter_routing -- --ignored`.
 #[test]
 #[ignore] // Run with: cargo test --test smoke_openrouter_routing -- --ignored
-fn live_openrouter_routing_smoke() {
+fn smoke_live_openrouter_routing() {
     let api_key = std::env::var("OPENROUTER_API_KEY")
         .expect("OPENROUTER_API_KEY must be set for live smoke test");
 

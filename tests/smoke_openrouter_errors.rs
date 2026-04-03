@@ -301,7 +301,7 @@ fn openrouter_auto_is_always_valid() {
 /// invoked with `cargo test --test smoke_openrouter_errors -- --ignored`.
 #[test]
 #[ignore] // Run with: cargo test --test smoke_openrouter_errors -- --ignored
-fn live_openrouter_error_handling_smoke() {
+fn smoke_live_openrouter_error_handling() {
     let api_key = std::env::var("OPENROUTER_API_KEY")
         .expect("OPENROUTER_API_KEY must be set for live smoke test");
 
