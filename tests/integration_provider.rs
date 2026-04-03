@@ -307,6 +307,7 @@ fn test_endpoint_api_key_resolution() {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             },
             EndpointConfig {
                 name: "openai-prod".to_string(),
@@ -317,6 +318,7 @@ fn test_endpoint_api_key_resolution() {
                 api_key_env: None,
                 model: None,
                 is_default: false,
+                context_window: None,
             },
             EndpointConfig {
                 name: "openrouter".to_string(),
@@ -327,6 +329,7 @@ fn test_endpoint_api_key_resolution() {
                 api_key_env: None,
                 model: None,
                 is_default: false,
+                context_window: None,
             },
         ],
     };
@@ -358,6 +361,7 @@ fn test_endpoint_default_selection() {
                 api_key_env: None,
                 model: None,
                 is_default: false,
+                context_window: None,
             },
             EndpointConfig {
                 name: "anthropic-prod".to_string(),
@@ -368,6 +372,7 @@ fn test_endpoint_default_selection() {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             },
         ],
     };

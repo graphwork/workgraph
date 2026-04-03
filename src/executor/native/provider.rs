@@ -141,7 +141,15 @@ pub fn create_provider_ext(
     let endpoint_key =
         endpoint.and_then(|ep| ep.resolve_api_key(Some(workgraph_dir)).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
-    let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);    let registry_context_window = config        .effective_registry()        .into_iter()        .find(|e| e.model == spec.model_id || e.id == spec.model_id)        .and_then(|e| if e.context_window > 0 { Some(e.context_window) } else { None });    let resolved_context_window = endpoint_context_window.or(registry_context_window);
+    let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);
+
+    // Resolve context window: endpoint config > model registry > provider default
+    let registry_context_window = config
+        .effective_registry()
+        .into_iter()
+        .find(|e| e.model == spec.model_id || e.id == spec.model_id)
+        .and_then(|e| if e.context_window > 0 { Some(e.context_window) } else { None });
+    let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
     let api_base: Option<String> = endpoint_url
         .or_else(|| std::env::var("WG_ENDPOINT_URL").ok())
@@ -210,7 +218,9 @@ pub fn create_provider_ext(
             if let Some(mt) = max_tokens {
                 client = client.with_max_tokens(mt);
             }
-            if let Some(cw) = resolved_context_window {                client = client.with_context_window(cw as usize);            }
+            if let Some(cw) = resolved_context_window {
+                client = client.with_context_window(cw as usize);
+            }
             // Validate model against cached OpenRouter model list (openrouter only)
             if provider_name == "openrouter" {
                 let validation =

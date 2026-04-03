@@ -558,6 +558,7 @@ fn from_endpoint_sets_streaming_for_openrouter() {
         api_key_file: None,
         api_key_env: None,
         is_default: true,
+        context_window: None,
     };
 
     let client =

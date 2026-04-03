@@ -312,7 +312,11 @@ impl OpenAiClient {
         self
     }
 
-    pub fn with_context_window(mut self, tokens: usize) -> Self {        self.context_window_tokens = tokens;        self    }
+    /// Override context window size in tokens.
+    pub fn with_context_window(mut self, tokens: usize) -> Self {
+        self.context_window_tokens = tokens;
+        self
+    }
 
     /// Set a provider hint for provider-specific behavior.
     ///
@@ -1104,7 +1108,9 @@ impl super::provider::Provider for OpenAiClient {
         self.max_tokens
     }
 
-    fn context_window(&self) -> usize {        self.context_window_tokens    }
+    fn context_window(&self) -> usize {
+        self.context_window_tokens
+    }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
         if self.use_streaming {

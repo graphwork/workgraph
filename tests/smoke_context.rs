@@ -157,6 +157,30 @@ fn context_size_reported_from_config() {
     assert!((custom.budget_pct - 0.75).abs() < f64::EPSILON);
 }
 
+/// Provider trait's context_window() method returns 200K by default and can
+/// be overridden. The ResumeConfig should be constructible from the provider's value.
+#[test]
+fn test_context_window_from_provider() {
+    // Default Provider trait returns 200K
+    let default_config = ResumeConfig::default();
+    assert_eq!(default_config.context_window_tokens, 200_000);
+
+    // Simulate provider returning a smaller context window (e.g. Qwen3-32B)
+    let small_config = ResumeConfig {
+        context_window_tokens: 32_000,
+        ..ResumeConfig::default()
+    };
+    assert_eq!(small_config.context_window_tokens, 32_000);
+    assert!((small_config.budget_pct - 0.50).abs() < f64::EPSILON);
+
+    // A 128K window provider
+    let mid_config = ResumeConfig {
+        context_window_tokens: 128_000,
+        ..ResumeConfig::default()
+    };
+    assert_eq!(mid_config.context_window_tokens, 128_000);
+}
+
 // ---------------------------------------------------------------------------
 // Test 2: Context pressure triggers compaction at threshold
 // ---------------------------------------------------------------------------

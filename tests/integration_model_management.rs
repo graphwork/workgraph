@@ -94,6 +94,7 @@ mod model_management_new_user_setup {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -207,6 +208,7 @@ mod model_management_new_user_setup {
                 api_key_file: Some(key_dir.join("or.key").to_string_lossy().to_string()),
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -450,6 +452,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         };
         let key = ep.resolve_api_key(None).unwrap();
         assert_eq!(key, Some("sk-test-key-abc".to_string()));
@@ -470,6 +473,7 @@ mod model_management_key_validation {
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         let key = ep.resolve_api_key(None).unwrap();
         assert_eq!(key, Some("sk-from-file-test".to_string()));
@@ -486,6 +490,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: Some("OPENROUTER_API_KEY".to_string()),
             is_default: false,
+            context_window: None,
         };
         // We can't control env vars in parallel tests, but key_source should reflect the config
         assert_eq!(ep.key_source(), "env: OPENROUTER_API_KEY");
@@ -503,6 +508,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_inline.key_source(), "inline");
 
@@ -516,6 +522,7 @@ mod model_management_key_validation {
             api_key_file: Some("/path/to/key".into()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_file.key_source(), "file: /path/to/key");
 
@@ -529,6 +536,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: Some("MY_KEY".into()),
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_env.key_source(), "env: MY_KEY");
 
@@ -542,6 +550,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_none.key_source(), "(not configured)");
     }
@@ -558,6 +567,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         let masked = ep_long.masked_key();
         assert!(masked.contains("****"));
@@ -573,6 +583,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_short.masked_key(), "****");
 
@@ -586,6 +597,7 @@ mod model_management_key_validation {
             api_key_file: Some("/path".into()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_file.masked_key(), "(from file)");
 
@@ -599,6 +611,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep_none.masked_key(), "(not set)");
     }
@@ -618,6 +631,7 @@ mod model_management_key_validation {
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         let key = ep.resolve_api_key(None).unwrap();
         assert_eq!(key, Some("inline-wins".to_string()));
@@ -634,6 +648,7 @@ mod model_management_key_validation {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         // With provider "local" there are no env var fallbacks
         let key = ep.resolve_api_key(None).unwrap();
@@ -653,6 +668,7 @@ mod model_management_key_validation {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: false,
+                    context_window: None,
                 },
                 EndpointConfig {
                     name: "prod".to_string(),
@@ -663,6 +679,7 @@ mod model_management_key_validation {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: true,
+                    context_window: None,
                 },
             ],
         };
@@ -690,6 +707,7 @@ mod model_management_error_paths {
             api_key_file: Some("/nonexistent/path/key.txt".to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
 
         let result = ep.resolve_api_key(None);
@@ -717,6 +735,7 @@ mod model_management_error_paths {
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
 
         let result = ep.resolve_api_key(None);
@@ -760,6 +779,7 @@ mod model_management_error_paths {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -1066,6 +1086,7 @@ mod model_management_config_persistence {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1149,6 +1170,7 @@ mod model_management_config_persistence {
                 api_key_file: None,
                 api_key_env: Some("MY_CUSTOM_KEY".to_string()),
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1181,6 +1203,7 @@ mod model_management_config_persistence {
                 api_key_file: Some(key_path.to_string_lossy().to_string()),
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1213,6 +1236,7 @@ mod model_management_config_persistence {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1347,6 +1371,7 @@ mod model_management_config_persistence {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1447,6 +1472,7 @@ mod unified_key_resolution {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1495,6 +1521,7 @@ mod unified_key_resolution {
                 api_key_file: Some(key_file.to_string_lossy().into_owned()),
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 
@@ -1567,6 +1594,7 @@ mod unified_key_resolution {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
         );
 

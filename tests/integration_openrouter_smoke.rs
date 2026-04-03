@@ -120,6 +120,7 @@ fn openrouter_endpoint_config_roundtrip() {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         }],
     };
 
@@ -155,6 +156,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         }],
     };
 
@@ -206,6 +208,7 @@ fn openrouter_client_creation_from_resolved_config() {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         }],
     };
 
@@ -270,6 +273,7 @@ fn mixed_endpoints_different_roles_different_providers() {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
             EndpointConfig {
                 name: "openrouter-eval".to_string(),
@@ -280,6 +284,7 @@ fn mixed_endpoints_different_roles_different_providers() {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: false,
+                context_window: None,
             },
         ],
     };
@@ -354,6 +359,7 @@ fn endpoint_cascades_from_default_role() {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         }],
     };
 
@@ -398,6 +404,7 @@ fn api_key_file_loading_end_to_end() {
         api_key_file: Some(key_file.to_string_lossy().to_string()),
         api_key_env: None,
         is_default: true,
+        context_window: None,
     };
 
     // resolve_api_key should read and trim the file
@@ -426,6 +433,7 @@ fn api_key_file_relative_to_workgraph_dir() {
         api_key_file: Some("secrets/or.key".to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     // With workgraph_dir, relative path resolves correctly
@@ -444,6 +452,7 @@ fn api_key_file_missing_returns_error() {
         api_key_file: Some("/nonexistent/path/key.txt".to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     let result = ep.resolve_api_key(None);
@@ -465,6 +474,7 @@ fn api_key_file_empty_returns_error() {
         api_key_file: Some(key_file.to_string_lossy().to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     let result = ep.resolve_api_key(None);
@@ -486,6 +496,7 @@ fn api_key_takes_priority_over_key_file() {
         api_key_file: Some(key_file.to_string_lossy().to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     // api_key should win over api_key_file
@@ -757,6 +768,7 @@ fn config_toml_roundtrip_with_endpoints() {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             },
             EndpointConfig {
                 name: "anthropic-direct".to_string(),
@@ -767,6 +779,7 @@ fn config_toml_roundtrip_with_endpoints() {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: false,
+                context_window: None,
             },
         ],
     };

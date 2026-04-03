@@ -128,6 +128,8 @@ pub fn run_add(
         api_key_file: api_key_file.map(|s| s.to_string()),
         api_key_env: key_env.map(|s| s.to_string()),
         is_default,
+        context_window: None,
+        context_window: None,
     });
 
     if global {

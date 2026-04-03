@@ -40,6 +40,7 @@ fn integration_openrouter_resolve_inline_key() {
         api_key_file: None,
         api_key_env: None,
         is_default: true,
+        context_window: None,
     };
 
     let key = ep.resolve_api_key(None).unwrap();
@@ -61,6 +62,7 @@ fn integration_openrouter_resolve_key_file() {
         api_key_file: Some(key_path.to_string_lossy().to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     let key = ep.resolve_api_key(None).unwrap();
@@ -85,6 +87,7 @@ fn integration_openrouter_resolve_key_file_relative() {
         api_key_file: Some("secrets/or.key".to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     let key = ep.resolve_api_key(Some(&wg_dir)).unwrap();
@@ -106,6 +109,7 @@ fn integration_openrouter_inline_key_beats_key_file() {
         api_key_file: Some(key_path.to_string_lossy().to_string()),
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     let key = ep.resolve_api_key(None).unwrap();
@@ -123,6 +127,7 @@ fn integration_openrouter_no_key_returns_none() {
         api_key_file: None,
         api_key_env: None,
         is_default: false,
+        context_window: None,
     };
 
     // Without any env vars set for this test, should return None
@@ -147,6 +152,7 @@ fn integration_openrouter_find_for_provider() {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             },
             EndpointConfig {
                 name: "openrouter-prod".to_string(),
@@ -157,6 +163,7 @@ fn integration_openrouter_find_for_provider() {
                 api_key_env: None,
                 model: None,
                 is_default: false,
+                context_window: None,
             },
         ],
     };
@@ -184,6 +191,7 @@ fn integration_openrouter_find_for_provider_prefers_default() {
                 api_key_env: None,
                 model: None,
                 is_default: false,
+                context_window: None,
             },
             EndpointConfig {
                 name: "or-prod".to_string(),
@@ -194,6 +202,7 @@ fn integration_openrouter_find_for_provider_prefers_default() {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             },
         ],
     };
@@ -261,6 +270,7 @@ mod provider_env_var_tests {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -285,6 +295,7 @@ mod provider_env_var_tests {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -487,6 +498,7 @@ mod agent_model_preference_tests {
                     api_key_env: None,
                     model: None,
                     is_default: true,
+                    context_window: None,
                 },
                 EndpointConfig {
                     name: "my-anthropic".to_string(),
@@ -497,6 +509,7 @@ mod agent_model_preference_tests {
                     api_key_env: None,
                     model: None,
                     is_default: false,
+                    context_window: None,
                 },
             ],
         };
@@ -545,6 +558,7 @@ mod agent_model_preference_tests {
                     api_key_env: None,
                     model: None,
                     is_default: true,
+                    context_window: None,
                 },
                 EndpointConfig {
                     name: "ant-ep".to_string(),
@@ -555,6 +569,7 @@ mod agent_model_preference_tests {
                     api_key_env: None,
                     model: None,
                     is_default: false,
+                    context_window: None,
                 },
             ],
         };
@@ -602,6 +617,7 @@ mod agent_model_preference_tests {
                 api_key_env: None,
                 model: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -657,6 +673,7 @@ mod config_roundtrip_tests {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: true,
+                    context_window: None,
                 },
                 EndpointConfig {
                     name: "ant-direct".to_string(),
@@ -667,6 +684,7 @@ mod config_roundtrip_tests {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: false,
+                    context_window: None,
                 },
             ],
         };
@@ -727,6 +745,7 @@ mod config_roundtrip_tests {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -784,6 +803,7 @@ mod config_roundtrip_tests {
                 api_key_file: Some("secrets/or.key".to_string()),
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -816,6 +836,7 @@ mod config_roundtrip_tests {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: true,
+                    context_window: None,
                 },
                 EndpointConfig {
                     name: "ep-b".to_string(),
@@ -826,6 +847,7 @@ mod config_roundtrip_tests {
                     api_key_file: None,
                     api_key_env: None,
                     is_default: false,
+                    context_window: None,
                 },
             ],
         };
@@ -879,6 +901,7 @@ mod error_case_tests {
             api_key_file: Some("/nonexistent/path/or.key".to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
 
         let result = ep.resolve_api_key(None);
@@ -906,6 +929,7 @@ mod error_case_tests {
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
 
         let result = ep.resolve_api_key(None);
@@ -936,6 +960,7 @@ mod error_case_tests {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+                context_window: None,
             }],
         };
 
@@ -967,6 +992,7 @@ mod error_case_tests {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         let masked = ep1.masked_key();
         assert!(masked.starts_with("sk-"));
@@ -983,6 +1009,7 @@ mod error_case_tests {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep2.masked_key(), "****");
 
@@ -996,6 +1023,7 @@ mod error_case_tests {
             api_key_file: Some("/some/path".to_string()),
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep3.masked_key(), "(from file)");
 
@@ -1009,6 +1037,7 @@ mod error_case_tests {
             api_key_file: None,
             api_key_env: None,
             is_default: false,
+            context_window: None,
         };
         assert_eq!(ep4.masked_key(), "(not set)");
     }
