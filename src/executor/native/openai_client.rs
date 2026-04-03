@@ -1163,6 +1163,28 @@ pub fn is_retryable_status(status: u16) -> bool {
     is_retryable(status)
 }
 
+/// Check whether an API error indicates the context/prompt is too long.
+///
+/// Returns true for HTTP 413 (payload too large) or HTTP 400 when the error
+/// message mentions context length, token limits, or prompt size.
+pub fn is_context_too_long(error: &anyhow::Error) -> bool {
+    if let Some(api_err) = error.downcast_ref::<ApiError>() {
+        if api_err.status == 413 {
+            return true;
+        }
+        if api_err.status == 400 {
+            let msg = api_err.message.to_lowercase();
+            return msg.contains("context")
+                || msg.contains("too long")
+                || msg.contains("too large")
+                || msg.contains("token")
+                || msg.contains("maximum")
+                || msg.contains("prompt");
+        }
+    }
+    false
+}
+
 pub fn max_retries_for_status(status: u16) -> usize {
     match status {
         429 => 5,

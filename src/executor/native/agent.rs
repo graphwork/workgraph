@@ -16,7 +16,7 @@ use super::client::{
 };
 use super::journal::{EndReason, Journal, JournalEntryKind};
 use super::provider::Provider;
-use super::resume::{self, ResumeConfig};
+use super::resume::{self, ContextBudget, ContextPressureAction, ResumeConfig};
 use super::tools::ToolRegistry;
 use crate::stream_event::{self, StreamWriter, TotalUsage, TurnUsage};
 
@@ -67,6 +67,8 @@ pub struct AgentLoop {
     streaming_file_path: Option<PathBuf>,
     /// Interval between heartbeat events during tool execution.
     heartbeat_interval: Duration,
+    /// Context pressure budget derived from the provider's context window.
+    context_budget: ContextBudget,
 }
 
 /// NDJSON log entry types for the output file.
@@ -151,6 +153,9 @@ impl AgentLoop {
         // Derive .streaming path from output_log directory
         let streaming_file_path = output_log.parent().map(|p| p.join(".streaming"));
 
+        // Build context budget from the provider's context window
+        let context_budget = ContextBudget::with_window_size(client.context_window());
+
         Self {
             client,
             tools,
@@ -167,6 +172,7 @@ impl AgentLoop {
             session_summary_path: None,
             streaming_file_path,
             heartbeat_interval: Duration::from_secs(30),
+            context_budget,
         }
     }
 
@@ -445,7 +451,69 @@ impl AgentLoop {
             let response = match self.client.send_streaming(&request, &on_text).await {
                 Ok(resp) => resp,
                 Err(e) => {
-                    if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
+                    // Check for context-too-long errors (400/413) — attempt emergency
+                    // compaction and retry once before giving up.
+                    if super::openai_client::is_context_too_long(&e) {
+                        eprintln!(
+                            "[native-agent] Context too long error — attempting emergency compaction and retry"
+                        );
+                        let pre_compact_len = messages.len();
+                        messages = ContextBudget::emergency_compact(messages, 5);
+                        eprintln!(
+                            "[native-agent] Emergency compacted: {} → {} messages",
+                            pre_compact_len,
+                            messages.len()
+                        );
+
+                        // Rebuild request with compacted messages and retry once
+                        let retry_request = MessagesRequest {
+                            model: self.client.model().to_string(),
+                            max_tokens: self.client.max_tokens(),
+                            system: Some(self.system_prompt.clone()),
+                            messages: messages.clone(),
+                            tools: if self.supports_tools {
+                                self.tools.definitions()
+                            } else {
+                                vec![]
+                            },
+                            stream: false,
+                        };
+
+                        let retry_streaming_file = self.streaming_file_path.clone();
+                        let retry_sw = self.stream_writer.clone();
+                        let retry_on_text = move |text: String| {
+                            if let Some(ref sw) = retry_sw {
+                                sw.write_text_chunk(&text);
+                            }
+                            if let Some(ref path) = retry_streaming_file {
+                                let mut acc =
+                                    std::fs::read_to_string(path).unwrap_or_default();
+                                acc.push_str(&text);
+                                let _ = std::fs::write(path, &acc);
+                            }
+                        };
+
+                        match self.client.send_streaming(&retry_request, &retry_on_text).await {
+                            Ok(resp) => resp,
+                            Err(retry_err) => {
+                                eprintln!(
+                                    "[native-agent] Retry after compaction also failed — clean exit"
+                                );
+                                // Log progress and return gracefully
+                                self.store_final_summary(&messages);
+                                if let Some(ref mut j) = journal {
+                                    let _ = j.append(JournalEntryKind::End {
+                                        reason: EndReason::MaxTurns,
+                                        total_usage: total_usage.clone(),
+                                        turns: turns as u32,
+                                    });
+                                }
+                                return Err(retry_err).context(
+                                    "Context too long — emergency compaction + retry failed",
+                                );
+                            }
+                        }
+                    } else if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
                         match api_err.status {
                             401 | 403 => {
                                 eprintln!("[native-agent] Fatal auth error: {}", api_err);
@@ -455,10 +523,13 @@ impl AgentLoop {
                                 eprintln!("[native-agent] API error {} after retries exhausted", status);
                                 return Err(e).context(format!("API error {} — retries exhausted", status));
                             }
-                            _ => {}
+                            _ => {
+                                return Err(e).context("API request failed");
+                            }
                         }
+                    } else {
+                        return Err(e).context("API request failed");
                     }
-                    return Err(e).context("API request failed");
                 }
             };
 
@@ -727,6 +798,75 @@ impl AgentLoop {
                     if let Some(ref mut j) = journal {
                         let _ = j.append(JournalEntryKind::End {
                             reason: EndReason::Complete,
+                            total_usage,
+                            turns: result.turns as u32,
+                        });
+                    }
+
+                    return Ok(result);
+                }
+            }
+
+            // ── Context pressure check ──────────────────────────────────
+            // After processing the turn, check if we're approaching context limits.
+            match self.context_budget.check_pressure(&messages) {
+                ContextPressureAction::Ok => {}
+                ContextPressureAction::Warning => {
+                    // 80%+ capacity: inject an ephemeral warning into the next turn.
+                    // Appended to the last user message to preserve alternation.
+                    // This is NOT persisted to the journal — it's rebuilt each turn.
+                    let warning = self.context_budget.warning_message(&messages);
+                    eprintln!("[native-agent] {}", warning);
+
+                    if let Some(last) = messages.last_mut() {
+                        if last.role == Role::User {
+                            last.content.push(ContentBlock::Text { text: warning });
+                        }
+                    }
+                }
+                ContextPressureAction::EmergencyCompaction => {
+                    // 90%+ capacity: emergency compaction — strip old tool results
+                    let pre_compact = messages.len();
+                    messages = ContextBudget::emergency_compact(messages, 5);
+                    eprintln!(
+                        "[native-agent] Emergency compaction at 90%: {} → {} messages",
+                        pre_compact,
+                        messages.len()
+                    );
+
+                    // Journal the compaction event
+                    if let Some(ref mut j) = journal {
+                        let _ = j.append(JournalEntryKind::Compaction {
+                            compacted_through_seq: 0,
+                            summary: format!(
+                                "Emergency compaction triggered at ~90% context capacity. {} messages compacted.",
+                                pre_compact
+                            ),
+                            original_message_count: pre_compact as u32,
+                            original_token_count: 0,
+                        });
+                    }
+                }
+                ContextPressureAction::CleanExit => {
+                    // 95%+ capacity: clean exit — log progress and stop gracefully
+                    eprintln!(
+                        "[native-agent] Context at 95%+ capacity — performing clean exit"
+                    );
+                    self.store_final_summary(&messages);
+
+                    let final_text = "[context limit reached — clean exit]".to_string();
+                    let result = AgentResult {
+                        final_text,
+                        turns,
+                        total_usage: total_usage.clone(),
+                        tool_calls,
+                    };
+                    self.log_result(&result);
+                    self.write_stream_result(false, &result);
+
+                    if let Some(ref mut j) = journal {
+                        let _ = j.append(JournalEntryKind::End {
+                            reason: EndReason::MaxTurns,
                             total_usage,
                             turns: result.turns as u32,
                         });
