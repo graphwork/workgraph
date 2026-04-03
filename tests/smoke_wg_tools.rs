@@ -21,6 +21,8 @@ use workgraph::parser::{load_graph, save_graph};
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Setup workgraph directory and graph file.
+/// Returns the path to the graph.jsonl file.
 fn setup_workgraph(dir: &Path) -> PathBuf {
     let wg_dir = dir.join(".workgraph");
     fs::create_dir_all(&wg_dir).unwrap();
@@ -43,7 +45,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 // Smoke Tests
 // ---------------------------------------------------------------------------
 
-/// End-to-end smoke test: exercise all wg tools through the native executor.
+/// End-to-end smoke test: exercise wg_show and wg_done through the native executor.
 #[test]
 #[ignore = "requires OPENROUTER_API_KEY"]
 fn smoke_wg_tools_live() {
@@ -51,8 +53,9 @@ fn smoke_wg_tools_live() {
         .expect("OPENROUTER_API_KEY must be set");
 
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let graph_path = setup_workgraph(dir);
+    let wg_dir = tmp.path();
+    // setup_workgraph creates .workgraph/graph.jsonl
+    let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
     let mut parent = make_task("smoke-parent", "Parent smoke test task", Status::InProgress);
@@ -66,8 +69,8 @@ fn smoke_wg_tools_live() {
     graph.add_node(Node::Task(child));
     save_graph(&graph, &graph_path).unwrap();
 
-    let working_dir = dir.to_path_buf();
-    let registry = ToolRegistry::default_all(dir, &working_dir);
+    // wg_dir is the workgraph directory, wg_dir is also working_dir
+    let registry = ToolRegistry::default_all(wg_dir, wg_dir);
 
     // Verify wg tools are registered
     let definitions = registry.definitions();
@@ -85,7 +88,7 @@ fn smoke_wg_tools_live() {
 
     let system_prompt = "Call wg_show with task_id=\"smoke-parent\". Then call wg_done with task_id=\"smoke-parent\". Report what happened.".to_string();
 
-    let output_log = dir.join("agent.ndjson");
+    let output_log = wg_dir.join("agent.ndjson");
     let agent = AgentLoop::new(Box::new(client), registry, system_prompt, 15, output_log);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -97,7 +100,7 @@ fn smoke_wg_tools_live() {
 
     let graph = load_graph(&graph_path).unwrap();
     let parent_task = graph.get_task("smoke-parent").expect("smoke-parent should exist");
-    assert_eq!(parent_task.status, Status::Done, "Task should be Done");
+    assert_eq!(parent_task.status, Status::Done, "Task should be Done. Output: {}", result.final_text);
     eprintln!("[smoke_wg_tools] All assertions passed!");
 }
 
@@ -108,21 +111,21 @@ fn smoke_wg_list_works() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
 
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let graph_path = setup_workgraph(dir);
+    let wg_dir = tmp.path();
+    let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("task-a", "Task A", Status::Open)));
     graph.add_node(Node::Task(make_task("task-b", "Task B", Status::InProgress)));
     save_graph(&graph, &graph_path).unwrap();
 
-    let registry = ToolRegistry::default_all(dir, &dir.to_path_buf());
+    let registry = ToolRegistry::default_all(wg_dir, wg_dir);
 
     let client = OpenAiClient::new(api_key, "minimax/minimax-m2.7", None)
         .expect("Failed to create client")
         .with_provider_hint("openrouter");
 
-    let output_log = dir.join("agent_list.ndjson");
+    let output_log = wg_dir.join("agent_list.ndjson");
     let agent = AgentLoop::new(
         Box::new(client),
         registry,
@@ -145,20 +148,20 @@ fn smoke_wg_add_creates_task() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
 
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let graph_path = setup_workgraph(dir);
+    let wg_dir = tmp.path();
+    let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("existing", "Existing Task", Status::Open)));
     save_graph(&graph, &graph_path).unwrap();
 
-    let registry = ToolRegistry::default_all(dir, &dir.to_path_buf());
+    let registry = ToolRegistry::default_all(wg_dir, wg_dir);
 
     let client = OpenAiClient::new(api_key, "minimax/minimax-m2.7", None)
         .expect("Failed to create client")
         .with_provider_hint("openrouter");
 
-    let output_log = dir.join("agent_add.ndjson");
+    let output_log = wg_dir.join("agent_add.ndjson");
     let agent = AgentLoop::new(
         Box::new(client),
         registry,
@@ -183,20 +186,20 @@ fn smoke_wg_done_simple() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
 
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let graph_path = setup_workgraph(dir);
+    let wg_dir = tmp.path();
+    let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("done-test", "Done Test", Status::InProgress)));
     save_graph(&graph, &graph_path).unwrap();
 
-    let registry = ToolRegistry::default_all(dir, &dir.to_path_buf());
+    let registry = ToolRegistry::default_all(wg_dir, wg_dir);
 
     let client = OpenAiClient::new(api_key, "minimax/minimax-m2.7", None)
         .expect("Failed to create client")
         .with_provider_hint("openrouter");
 
-    let output_log = dir.join("agent_done.ndjson");
+    let output_log = wg_dir.join("agent_done.ndjson");
     let agent = AgentLoop::new(
         Box::new(client),
         registry,
