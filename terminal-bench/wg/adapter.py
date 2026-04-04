@@ -2,12 +2,13 @@
 Terminal Bench Agent Adapter for Harbor Framework.
 
 Bridges Harbor's agent protocol to the workgraph native executor concept.
-Supports five conditions:
+Supports six conditions:
   Condition A (control): bash + file tools only, no graph, no resume
   Condition B (treatment): full wg tool access, graph awareness, journal/resume
   Condition C (treatment): wg tools + skill injection + planning phase
   Condition D (treatment): wg tools + autopoietic verification + agency identity
   Condition E (treatment): wg tools + organization generation + independent verification
+  Condition F (treatment): wg tools + distilled context injection + empirical verification
 """
 
 import asyncio
@@ -361,6 +362,63 @@ CONDITION_D_TOOLS = CONDITION_B_TOOLS
 # Condition E uses the same tools as B — the variable is the prompt, tracking, and org generation
 CONDITION_E_TOOLS = CONDITION_B_TOOLS
 
+# Condition F: enhanced wg_add with verify + id parameters
+WG_ADD_TOOL_F = {
+    "type": "function",
+    "function": {
+        "name": "wg_add",
+        "description": "Create a new task in the workgraph.",
+        "parameters": {
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": {"type": "string", "description": "Task title."},
+                "after": {
+                    "type": "string",
+                    "description": "Comma-separated dependency task IDs.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Detailed description.",
+                },
+                "verify": {
+                    "type": "string",
+                    "description": (
+                        "Machine-checkable verification command. "
+                        "Task cannot be marked done until this command exits 0. "
+                        'Example: "python -m pytest /tests/test_outputs.py -v"'
+                    ),
+                },
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "Explicit task ID (kebab-case). If omitted, auto-generated from title. "
+                        "Use this to create predictable IDs for after references."
+                    ),
+                },
+            },
+        },
+    },
+}
+
+CONDITION_F_TOOLS = [
+    BASH_TOOL,
+    READ_FILE_TOOL,
+    WRITE_FILE_TOOL,
+    EDIT_FILE_TOOL,
+    GLOB_TOOL,
+    GREP_TOOL,
+    WG_SHOW_TOOL,
+    WG_LIST_TOOL,
+    WG_ADD_TOOL_F,
+    WG_DONE_TOOL,
+    WG_FAIL_TOOL,
+    WG_LOG_TOOL,
+    WG_ARTIFACT_TOOL,
+    WG_MSG_SEND_TOOL,
+    WG_MSG_READ_TOOL,
+]
+
 
 # ---------------------------------------------------------------------------
 # Tool execution helpers
@@ -526,10 +584,14 @@ async def execute_tool(
         return await _exec_wg_cmd_host(wg_dir, wg_bin, cmd)
     elif tool_name == "wg_add":
         cmd = ["add", args["title"]]
+        if args.get("id"):
+            cmd += ["--id", args["id"]]
         if args.get("after"):
             cmd += ["--after", args["after"]]
         if args.get("description"):
             cmd += ["-d", args["description"]]
+        if args.get("verify"):
+            cmd += ["--verify", args["verify"]]
         return await _exec_wg_cmd_host(wg_dir, wg_bin, cmd)
     elif tool_name == "wg_done":
         cmd = ["done", args["task_id"]]
@@ -767,6 +829,138 @@ def build_condition_e_prompt(instruction: str, root_task_id: str, agent_identity
     )
 
 
+def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
+    """Condition F: wg-native agent with full context parity.
+
+    Design principles:
+    - Keep wg tools (proves wg adds value over bare agents)
+    - Inject distilled wg knowledge (closes context gap with Claude agents)
+    - Empirical verification first (test discovery before implementation)
+    - Adaptive decomposition (no forced orchestrator framing)
+    - Enhanced wg_add with --verify and --id parameters
+    - Time-aware termination
+    - Compliant turn limit (1M, not 300)
+    """
+    return (
+        "You are a coding agent completing a Terminal Bench task.\n"
+        f"Your root task ID is: **{root_task_id}**\n\n"
+
+        # --- WG Context Injection (distilled from CLAUDE.md + MEMORY.md) ---
+        "## Workgraph Quick Guide\n\n"
+        "Workgraph (wg) is a persistent task coordination graph. Tasks have "
+        "dependencies, statuses, and verification gates. It acts as your external "
+        "memory — if your context fills up, your wg_log entries survive.\n\n"
+
+        "### Task Lifecycle\n"
+        "open → in-progress → done/failed\n\n"
+
+        "### Creating Tasks with Dependencies\n"
+        "Use `after` to express dependency order:\n"
+        '  `wg_add("Build library", after="clone-repo")`\n'
+        '  `wg_add("Run tests", after="build-library")`\n\n'
+        "CRITICAL: Always use `after` for dependent steps. NEVER create flat task "
+        "lists — every step that depends on a previous step MUST declare the edge.\n\n"
+
+        "### Verification Gates\n"
+        "Use `verify` to attach a machine-checkable pass/fail gate:\n"
+        '  `wg_add("Compile ext", verify="python -c \'import myext\'")`\n'
+        "Tasks with verify must pass the check before they can be marked done.\n\n"
+
+        "### When to Decompose\n"
+        "- 3+ genuinely independent phases → create subtasks with wg_add + after edges\n"
+        "- Single file, single function, single config → solve directly, no decomposition\n"
+        "- Golden rule: same files = sequential edges (NEVER parallelize tasks on same files)\n"
+        "- If in doubt, don't decompose — overhead on atomic tasks hurts more than it helps\n\n"
+
+        "### Progress & Termination\n"
+        f'- `wg_log("{root_task_id}", "message")` — journal entry (external memory, persists across restarts)\n'
+        f'- `wg_done("{root_task_id}")` — task complete (ONLY after verification passes)\n'
+        f'- `wg_fail("{root_task_id}", "reason")` — cannot complete (include what you tried and what failed)\n'
+        f'- `wg_artifact("{root_task_id}", "/path")` — record output files\n\n'
+
+        "### Dependency Patterns\n"
+        "- Pipeline: A → B → C (each wg_add uses after= pointing to previous)\n"
+        "- Fan-out/in: A → [B, C] → D (B and C have after=A; D has after=B,C)\n\n"
+
+        "### Example: Multi-Step Build Task\n"
+        '  wg_add("Clone and patch source")                         → auto-ID: clone-and-patch-source\n'
+        '  wg_add("Compile extension", after="clone-and-patch-source",\n'
+        '         verify="python -c \'import ext\' exits 0")          → auto-ID: compile-extension\n'
+        '  wg_add("Run test suite", after="compile-extension",\n'
+        '         verify="pytest /tests/ -v exits 0")                → auto-ID: run-test-suite\n'
+        "Then implement each step in order, wg_done each, wg_done root task last.\n\n"
+
+        "### Example: Atomic Task (single function/config)\n"
+        "Don't decompose. Implement directly, verify empirically, then wg_done.\n\n"
+
+        # --- Core Protocol ---
+        "## Strategy: Discover → Plan → Implement → Verify → Iterate\n\n"
+
+        "### Step 1: Discover Tests\n"
+        "Before writing ANY code, find the task's existing test suite:\n"
+        "```\n"
+        "bash(\"find /tests -name 'test_*.py' -o -name '*_test.py' 2>/dev/null\")\n"
+        "bash(\"ls /tests/ 2>/dev/null\")\n"
+        "```\n"
+        "Read any test files you find. They define what 'correct' means.\n"
+        "The external verifier runs exactly these tests to score you.\n"
+        "Understanding them FIRST tells you exactly what to build.\n\n"
+
+        "### Step 2: Classify & Plan\n"
+        "- **ATOMIC** (single file, single function, single config): "
+        "Implement directly. Do NOT decompose.\n"
+        "- **MULTI-STEP** (multiple files, build pipeline, system setup): "
+        "Create subtasks with `wg_add` and `after` dependency edges.\n"
+        f'Log your plan: `wg_log("{root_task_id}", "Plan: <classification> — <steps>")`\n\n'
+
+        "### Step 3: Implement\n"
+        "Write your solution. For multi-step tasks, implement each subtask "
+        "in dependency order, marking each done with `wg_done`.\n\n"
+
+        "### Step 4: Verify Empirically\n"
+        "Run the discovered test files:\n"
+        "```\n"
+        "bash(\"cd /tests && python -m pytest test_outputs.py -v 2>&1 | tail -80\")\n"
+        "```\n"
+        "If no test files were found, verify by running the code and checking outputs.\n\n"
+        "**CRITICAL**: Existing test results are AUTHORITATIVE.\n"
+        "If an existing test FAILS, that is ground truth — do NOT declare success.\n"
+        "Your own ad-hoc tests supplement existing tests, never override them.\n"
+        f'Log the result: `wg_log("{root_task_id}", "VERIFY: <PASS|FAIL> — <evidence>")`\n\n'
+
+        "### Step 5: Iterate on Failures\n"
+        "If tests fail:\n"
+        "1. Read the failure output — it tells you exactly what's wrong.\n"
+        "2. Diagnose the root cause (not just the symptom).\n"
+        "3. Fix it.\n"
+        "4. Re-run the tests.\n"
+        "5. Repeat up to 5 times. If trying the same fix twice, "
+        "step back and reconsider entirely.\n\n"
+
+        "### Step 6: Declare\n"
+        f'- Verification passes: `wg_done("{root_task_id}")`\n'
+        f'- Stuck after 5 iterations: '
+        f'`wg_fail("{root_task_id}", "reason: <what failed and what was tried>")`\n\n'
+
+        "## Time Management\n"
+        "You have 30 minutes maximum. Budget roughly:\n"
+        "- Test discovery + planning: 2 minutes\n"
+        "- Implementation: 15 minutes\n"
+        "- Verification + iteration: 10 minutes\n"
+        "- If stuck for 20+ minutes with no progress, call `wg_fail` immediately.\n\n"
+
+        "## Tools\n"
+        "- `bash` — Run commands, install packages, compile, test\n"
+        "- `read_file`, `write_file`, `edit_file` — File operations\n"
+        "- `glob`, `grep` — Search the codebase\n"
+        "- `wg_log`, `wg_add`, `wg_done`, `wg_fail` — Task coordination (see Quick Guide)\n"
+        "- `wg_show`, `wg_list` — Inspect task graph\n"
+        "- `wg_artifact`, `wg_msg_send`, `wg_msg_read` — Record artifacts, communicate\n\n"
+
+        "Begin by discovering tests, then plan your approach.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # WorkgraphAgent — the Harbor BaseAgent implementation
 # ---------------------------------------------------------------------------
@@ -775,12 +969,13 @@ class WorkgraphAgent(BaseAgent):
     """
     Harbor agent adapter for Terminal Bench evaluation.
 
-    Supports five experimental conditions:
+    Supports six experimental conditions:
       condition="A" — bare agent (bash + file tools, no graph)
       condition="B" — agent + workgraph (full tools, journal/resume)
       condition="C" — agent + workgraph + skill injection + planning phase
       condition="D" — agent + workgraph + autopoietic verification + agency identity
       condition="E" — agent + workgraph + organization generation + independent verification
+      condition="F" — agent + workgraph + distilled context injection + empirical verification
 
     Usage:
         harbor run \\
@@ -831,8 +1026,8 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Set up host-side workgraph for Condition B/C/D/E (no container injection)."""
-        if self.condition in ("B", "C", "D", "E"):
+        """Set up host-side workgraph for Condition B/C/D/E/F (no container injection)."""
+        if self.condition in ("B", "C", "D", "E", "F"):
             import tempfile
             self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
             self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
@@ -881,6 +1076,10 @@ class WorkgraphAgent(BaseAgent):
                 }
                 logger.info("Condition E: agency bootstrapped, orchestrator agent created")
 
+            elif self.condition == "F":
+                # No agency bootstrap — F is a plain coding agent with wg tools
+                logger.info("Condition F: workgraph initialized, no agency bootstrap")
+
     async def run(
         self,
         instruction: str,
@@ -892,8 +1091,17 @@ class WorkgraphAgent(BaseAgent):
         # Determine tools and prompt based on condition
         root_task_id = None
         wg_dir = getattr(self, "_wg_graph_dir", None)
-        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D", "E") else None
-        if self.condition == "E":
+        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D", "E", "F") else None
+        if self.condition == "F":
+            tools = CONDITION_F_TOOLS
+            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
+            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
+            await _exec_wg_cmd_host(
+                wg_dir, wg_bin,
+                ["add", title, "--id", root_task_id],
+            )
+            system_prompt = build_condition_f_prompt(instruction, root_task_id)
+        elif self.condition == "E":
             tools = CONDITION_E_TOOLS
             # Create root task in host-side workgraph
             root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
@@ -966,8 +1174,8 @@ class WorkgraphAgent(BaseAgent):
             model=model,
         )
 
-        # Snapshot wg state after init (for B/C/D/E)
-        if self.condition in ("B", "C", "D", "E") and wg_dir and wg_bin:
+        # Snapshot wg state after init (for B/C/D/E/F)
+        if self.condition in ("B", "C", "D", "E", "F") and wg_dir and wg_bin:
             snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
             trial_log.record_wg_snapshot("after_init", snapshot)
 
@@ -1048,7 +1256,7 @@ class WorkgraphAgent(BaseAgent):
             trial_log.end_turn(had_tool_calls=True)
 
             # Snapshot wg state after decomposition (wg_add calls)
-            if self.condition in ("D", "E") and wg_dir and wg_bin:
+            if self.condition in ("D", "E", "F") and wg_dir and wg_bin:
                 if any(
                     tc.function.name == "wg_add"
                     for tc in (message.tool_calls or [])
@@ -1056,8 +1264,8 @@ class WorkgraphAgent(BaseAgent):
                     snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
                     trial_log.record_wg_snapshot("after_decomposition", snapshot)
 
-            # Condition D/E: stop loop after agent declares done/failed on root task
-            if self.condition in ("D", "E") and done_or_failed:
+            # Condition D/E/F: stop loop after agent declares done/failed on root task
+            if self.condition in ("D", "E", "F") and done_or_failed:
                 # Snapshot wg state before termination
                 if wg_dir and wg_bin:
                     snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
@@ -1072,7 +1280,7 @@ class WorkgraphAgent(BaseAgent):
             "model": model,
             "termination_type": trial_log.termination_type,
         }
-        if self.condition in ("D", "E"):
+        if self.condition in ("D", "E", "F"):
             metadata.update({
                 "agent_identity": getattr(self, "_agent_identity", None),
                 "verification_iterations": trial_log.verification_count,
@@ -1094,6 +1302,12 @@ class WorkgraphAgent(BaseAgent):
                     "triage_on_fail": trial_log.triage_count > 0,
                 },
             })
+        if self.condition == "F":
+            metadata.update({
+                "decomposition_task_count": len(trial_log.decomposition_tasks),
+                "decomposition_tasks": trial_log.decomposition_tasks[:20],
+                "test_discovery": True,
+            })
 
         # Populate Harbor's AgentContext
         context.n_input_tokens = trial_log.total_input_tokens
@@ -1107,8 +1321,8 @@ class WorkgraphAgent(BaseAgent):
             if k not in ("condition", "model", "root_task_id")
         })
 
-        # Save workgraph state for analysis (Condition B, C, D, and E)
-        if self.condition in ("B", "C", "D", "E") and wg_dir:
+        # Save workgraph state for analysis (Condition B, C, D, E, and F)
+        if self.condition in ("B", "C", "D", "E", "F") and wg_dir:
             wg_state_dst = self.logs_dir / "workgraph_state"
             try:
                 shutil.copytree(wg_dir, str(wg_state_dst))
@@ -1221,4 +1435,27 @@ class ConditionEAgent(WorkgraphAgent):
         kwargs["condition"] = "E"
         kwargs["model_name"] = BENCHMARK_MODEL
         kwargs.setdefault("max_turns", 300)
+        super().__init__(*args, **kwargs)
+
+
+class ConditionFAgent(WorkgraphAgent):
+    """Condition F (treatment): wg-native agent with full context parity.
+
+    Key differences from E:
+    - Distilled wg context injection (from CLAUDE.md + MEMORY.md)
+    - Empirical verification first (test discovery before implementation)
+    - Adaptive decomposition (no forced orchestrator framing)
+    - Enhanced wg_add with --verify and --id parameters
+    - Time-aware termination
+    - Compliant turn limit (1M, not 300)
+    """
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-condition-f"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["condition"] = "F"
+        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("max_turns", 1000000)  # TB2 compliance: no turn cap
         super().__init__(*args, **kwargs)
