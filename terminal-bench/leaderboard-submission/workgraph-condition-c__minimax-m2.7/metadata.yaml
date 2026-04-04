@@ -1,0 +1,9 @@
+agent_url: https://github.com/graphwork/workgraph
+agent_display_name: "Workgraph Condition C (enhanced planning)"
+agent_org_display_name: "Workgraph"
+
+models:
+  - model_name: minimax-m2.7
+    model_provider: openrouter
+    model_display_name: "Minimax M2.7"
+    model_org_display_name: "Minimax"

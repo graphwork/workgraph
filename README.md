@@ -1014,6 +1014,34 @@ Agency data lives in `.workgraph/agency/`, with federation config and functions 
     creator_state.json     # Creator agent state
 ```
 
+## Terminal-Bench evaluation
+
+We evaluated workgraph's impact on agent performance using [Terminal-Bench 2.0](https://terminal-bench.org), a benchmark of 89 real-world terminal tasks with binary pass/fail verification.
+
+**Model:** Minimax M2.7 via OpenRouter | **Tasks:** 89 | **Trials:** 3 per condition
+
+| Condition | Description | Pass Rate | 95% CI |
+|-----------|-------------|-----------|--------|
+| **A** (control) | Bare agent: bash + file tools | 52.3% | [43.4, 61.6] |
+| **B** (stigmergic) | A + workgraph tools + graph context | 51.4% | [42.0, 60.4] |
+| **C** (enhanced) | B + skill injection + planning | 49.0% | [39.4, 58.2] |
+
+**Result:** No statistically significant difference between conditions (all pairwise p > 0.3). Workgraph showed modest gains on medium-difficulty tasks (+9pp) offset by losses on easy tasks (-16pp) where bookkeeping overhead introduced friction. Hard tasks remained beyond the model's reach regardless of scaffolding.
+
+Full analysis: [`terminal-bench/results/analysis.md`](terminal-bench/results/analysis.md) | Blog post: [`terminal-bench/BLOG.md`](terminal-bench/BLOG.md)
+
+To reproduce:
+```bash
+# Install the adapter
+pip install -e terminal-bench/
+
+# Run all conditions (requires OPENROUTER_API_KEY)
+bash terminal-bench/reproduce.sh
+
+# Analyze results
+python3 terminal-bench/results/analyze.py
+```
+
 ## More docs
 
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Complete command reference
