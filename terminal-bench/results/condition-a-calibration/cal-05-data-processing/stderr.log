@@ -1,7 +1,0 @@
-[native-exec] Starting agent loop for task 'cal-05-data-processing' with model 'qwen/qwen3-32b', exec_mode 'condition-a', max_turns 30
-[native-exec] Using OpenAI-compatible provider (qwen/qwen3-32b)
-[openai-client] Stream complete: 3307 chunks, 0 text chars, 1 tool calls
-[openai-client] Stream complete: 1426 chunks, 0 text chars, 1 tool calls
-[openai-client] Stream complete: 540 chunks, 0 text chars, 1 tool calls
-[openai-client] Stream complete: 668 chunks, 1232 text chars, 0 tool calls
-[native-exec] Agent completed: 4 turns, 7246+6675 tokens

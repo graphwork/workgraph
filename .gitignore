@@ -11,3 +11,6 @@ agency_session_id.txt
 *.pdf
 .claude/worktrees/
 .wg-worktrees/
+
+# Terminal Bench trial results (large, per-run artifacts)
+terminal-bench/results/

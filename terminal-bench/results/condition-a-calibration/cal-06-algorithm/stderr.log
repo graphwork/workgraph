@@ -1,9 +1,0 @@
-[native-exec] Starting agent loop for task 'cal-06-algorithm' with model 'qwen/qwen3-32b', exec_mode 'condition-a', max_turns 40
-[native-exec] Using OpenAI-compatible provider (qwen/qwen3-32b)
-[openai-client] Stream interrupted after 10776 chunks: error decoding response body
-[openai-client] Streaming error (attempt 1/3): Stream interrupted after 10776 chunks: error decoding response body. Retrying in 1243ms
-[openai-client] Stream interrupted after 9586 chunks: error decoding response body
-[openai-client] Streaming error (attempt 2/3): Stream interrupted after 9586 chunks: error decoding response body. Retrying in 1704ms
-[openai-client] Stream complete: 8197 chunks, 0 text chars, 3 tool calls
-[openai-client] Stream complete: 1012 chunks, 712 text chars, 0 tool calls
-[native-exec] Agent completed: 2 turns, 2971+9261 tokens

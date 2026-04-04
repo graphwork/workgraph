@@ -1,8 +1,0 @@
-source: agency/starter.csv (embedded)
-version: v0.1.0
-imported_at: 2026-04-03T18:08:32.518821385+00:00
-counts:
-  role_components: 338
-  desired_outcomes: 98
-  trade_off_configs: 201
-content_hash: d42b88035bf9a95030589c56c7259950cbdb439e1baf1ef39c89c2cf32daed15
