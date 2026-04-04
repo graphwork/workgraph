@@ -58,7 +58,19 @@ else
     echo "✓ Harbor installed"
 fi
 
-# 4. Summary
+# 4. Pre-pull TB images (avoids Docker Hub rate limiting during runs)
+echo ""
+echo "--- Step 4: Pre-pull Terminal Bench images ---"
+echo "Docker Hub rate-limits anonymous pulls (~100/6h). A full TB run"
+echo "(89 tasks x 3 trials) will exceed this. Pre-pulling caches images locally."
+echo ""
+echo "To pre-pull (run after 'harbor download terminal-bench@2.0'):"
+echo "  bash terminal-bench/pre-pull-images.sh"
+echo ""
+echo "To check which images are cached:"
+echo "  bash terminal-bench/pre-pull-images.sh --check"
+
+# 5. Summary
 echo ""
 echo "=== Setup Complete ==="
 echo "Docker: $(docker --version 2>/dev/null || echo 'NOT AVAILABLE')"
@@ -69,3 +81,6 @@ echo "  docker info && python3 -c 'import harbor'"
 echo ""
 echo "If docker group isn't active in your session, use:"
 echo "  sg docker -c 'docker info' && python3 -c 'import harbor'"
+echo ""
+echo "IMPORTANT: Pre-pull Docker images before full runs:"
+echo "  bash terminal-bench/pre-pull-images.sh"

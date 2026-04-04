@@ -97,9 +97,35 @@ context_scope = "clean"
 | External memory | ❌ | ✅ |
 | Coordinator spawning | ❌ | ✅ |
 
+## Docker Image Pre-caching
+
+Docker Hub rate-limits anonymous pulls (~100 pulls per 6 hours). A full TB
+run (89 tasks x 3 trials = 267 container starts) exceeds this, causing
+`RuntimeError: toomanyrequests` failures.
+
+**Before running a full experiment**, pre-pull all images:
+
+```bash
+# Check which images are missing
+bash terminal-bench/pre-pull-images.sh --check
+
+# Pull all missing images (sequential, safe for rate limits)
+bash terminal-bench/pre-pull-images.sh
+
+# Pull with parallelism (faster but watch rate limits)
+bash terminal-bench/pre-pull-images.sh --parallel 4
+```
+
+Once pulled, images stay in Docker's local cache and won't be pulled again.
+Harbor's `docker compose up` uses `pull_policy: missing` for prebuilt images,
+so cached images are used directly.
+
 ## Files
 
 - `wg/adapter.py` - Main adapter implementation
 - `wg/__init__.py` - Package init
+- `pre-pull-images.sh` - Pre-cache Docker images to avoid rate limiting
+- `setup-docker.sh` - Docker + Harbor setup script
+- `tb-harness.sh` - Native executor harness for all conditions
 - `pyproject.toml` - Python package config
 - `README.md` - This file
