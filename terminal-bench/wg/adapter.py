@@ -2,10 +2,12 @@
 Terminal Bench Agent Adapter for Harbor Framework.
 
 Bridges Harbor's agent protocol to the workgraph native executor concept.
-Supports three conditions:
+Supports five conditions:
   Condition A (control): bash + file tools only, no graph, no resume
   Condition B (treatment): full wg tool access, graph awareness, journal/resume
   Condition C (treatment): wg tools + skill injection + planning phase
+  Condition D (treatment): wg tools + autopoietic verification + agency identity
+  Condition E (treatment): wg tools + organization generation + independent verification
 """
 
 import asyncio
@@ -345,6 +347,12 @@ CONDITION_B_TOOLS = CONDITION_A_TOOLS + [
 # Condition C uses the same tools as B — the variable is the prompt, not the tools
 CONDITION_C_TOOLS = CONDITION_B_TOOLS
 
+# Condition D uses the same tools as B — the variable is the prompt, setup, and tracking
+CONDITION_D_TOOLS = CONDITION_B_TOOLS
+
+# Condition E uses the same tools as B — the variable is the prompt, tracking, and org generation
+CONDITION_E_TOOLS = CONDITION_B_TOOLS
+
 
 # ---------------------------------------------------------------------------
 # Tool execution helpers
@@ -622,6 +630,135 @@ def build_condition_c_prompt(instruction: str, root_task_id: str) -> str:
     )
 
 
+def build_condition_d_prompt(instruction: str, root_task_id: str, agent_identity: dict) -> str:
+    """Condition D: autopoietic verification loop + agency identity + wg tools."""
+    return (
+        "# Task Assignment\n\n"
+        "You are an AI agent completing a Terminal Bench task.\n"
+        f"Your root task ID is: **{root_task_id}**\n\n"
+        "## Your Identity\n\n"
+        f"You are **{agent_identity['name']}** (role: {agent_identity['role']}, "
+        f"approach: {agent_identity['tradeoff']}). "
+        "This means you prioritize correctness over speed. "
+        "Verify your work before declaring it done.\n\n"
+        "## Core Loop: Attempt → Verify → Iterate → Declare\n\n"
+        "You MUST follow this loop for every task:\n\n"
+        "1. **Understand**: Read the task. Identify what success looks like. "
+        "Find any existing tests or verification criteria.\n"
+        "2. **Attempt**: Implement your solution.\n"
+        "3. **Verify**: Run the task's tests, check command, or verify output independently. "
+        "Do NOT rely on your own reading of the code — execute something that proves correctness.\n"
+        "4. **Iterate**: If verification fails, diagnose the failure, fix it, and go back to step 3. "
+        "You may iterate as many times as needed.\n"
+        "5. **Declare**:\n"
+        f'   - If verification passes: `wg_done("{root_task_id}")`\n'
+        f'   - If you are stuck after 3+ failed iterations and cannot make progress: '
+        f'`wg_fail("{root_task_id}", "reason: what failed and what you tried")`\n\n'
+        "**CRITICAL**: Never call `wg_done` without first running a verification step "
+        "that succeeded. Never spin indefinitely — if 3 consecutive fix attempts fail "
+        "on the same issue, call `wg_fail` with diagnostics.\n\n"
+        "## Workgraph Tools\n\n"
+        f'- `wg_log("{root_task_id}", "message")` — Record progress (do this at each step)\n'
+        f'- `wg_done("{root_task_id}")` — Task complete (ONLY after verification passes)\n'
+        f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with diagnostics)\n'
+        f'- `wg_add("title")` — Decompose into subtasks if needed\n'
+        f'- `wg_artifact("{root_task_id}", "/path")` — Record output files\n\n'
+        "Use `wg_log` at every major step. This is your external memory — "
+        "if your context fills up, a resumed agent can read your log.\n\n"
+        "## When to Decompose\n\n"
+        "If the task has 3+ independent phases that could fail independently, "
+        "decompose with `wg_add`. Otherwise, solve directly. "
+        "Most tasks are single-phase — just use the core loop.\n\n"
+        "## Tools Available\n"
+        "- `bash` — Run commands (compile, test, install packages)\n"
+        "- `read_file`, `write_file`, `edit_file` — File operations\n"
+        "- `glob`, `grep` — Search the codebase\n"
+        "- `wg_*` tools — Task coordination (see above)\n\n"
+        "Begin by reading the task, identifying verification criteria, then implementing.\n"
+    )
+
+
+def build_condition_e_prompt(instruction: str, root_task_id: str, agent_identity: dict) -> str:
+    """Condition E: autopoietic organization generation."""
+    return (
+        "# Task Assignment: Organization Generation Mode\n\n"
+        "You are an AI agent completing a Terminal Bench task.\n"
+        f"Your root task ID is: **{root_task_id}**\n\n"
+        "## Your Identity\n\n"
+        f"You are **{agent_identity['name']}** (role: {agent_identity['role']}, "
+        f"approach: {agent_identity['tradeoff']}). "
+        "You are an ORCHESTRATOR, not a direct implementer. "
+        "Your job is to create and manage an organization of tasks "
+        "that solves the problem.\n\n"
+        "## Core Protocol: Organize → Implement → Verify → Triage\n\n"
+        "You MUST follow this protocol:\n\n"
+        "### Phase 1: Analyze & Decompose\n"
+        "1. Read the task instruction carefully.\n"
+        "2. Identify what success looks like (test criteria, expected outputs).\n"
+        "3. Break the task into implementation steps.\n"
+        "4. Create tasks for each step using `wg_add`.\n\n"
+        "### Phase 2: Implement\n"
+        "For each implementation task you created:\n"
+        "1. Log that you're starting: "
+        f'`wg_log("{root_task_id}", "Implementing: <task-name>")`\n'
+        "2. Do the implementation work (write code, run commands, etc.)\n"
+        "3. Log the result: "
+        f'`wg_log("{root_task_id}", "Completed: <task-name>")`\n'
+        "4. Mark the subtask done: `wg_done(\"<subtask-id>\")`\n\n"
+        "### Phase 3: Independent Verification\n"
+        "After ALL implementation tasks are done:\n"
+        "1. **STOP and shift perspective.** You are now a REVIEWER, not the implementer.\n"
+        "2. **Do NOT rely on your memory of writing the code.** "
+        "Instead, read the files fresh as if seeing them for the first time.\n"
+        "3. Run the task's test suite or verification command.\n"
+        "4. Independently check that outputs match the task specification.\n"
+        "5. Record a structured verdict:\n"
+        f'   - PASS: `wg_log("{root_task_id}", "VERIFY: PASS — <evidence>")`\n'
+        f'   - FAIL: `wg_log("{root_task_id}", "VERIFY: FAIL — <specific issue>")`\n\n'
+        "### Phase 4: Triage (on FAIL only)\n"
+        "If verification fails:\n"
+        "1. Diagnose the root cause from the verification evidence.\n"
+        "2. Create a new fix task: "
+        '`wg_add("Fix: <diagnosis>", description="Previous attempt failed because: '
+        '<reason>. Fix: <specific fix>")`\n'
+        "3. Implement the fix (Phase 2 again).\n"
+        "4. Re-verify (Phase 3 again).\n"
+        "5. Repeat until verification passes OR you've done "
+        "6 iterations without progress.\n\n"
+        "### Phase 5: Declare\n"
+        f'- Verification passed: `wg_done("{root_task_id}")`\n'
+        "- Stuck after 6 iterations: "
+        f'`wg_fail("{root_task_id}", "reason: <what failed across N iterations>")`\n\n'
+        "## CRITICAL Rules\n\n"
+        f"1. **NEVER call `wg_done(\"{root_task_id}\")` without a PASS verdict.** "
+        "The root task represents the TB benchmark task — it can only be done "
+        "when verification confirms success.\n"
+        "2. **Verification must be INDEPENDENT.** When verifying, read files from disk. "
+        "Do not trust your memory of what you wrote. Run tests. Check outputs.\n"
+        "3. **Triage creates NEW tasks.** Don't just edit the same code in place — "
+        "create a `wg_add(\"Fix: ...\")` task so the fix is tracked. Then implement it.\n"
+        "4. **Log everything.** Every phase transition, every verification result, "
+        "every triage decision. Your log is the organization's memory.\n"
+        "5. **Iterate, don't spin.** Each fix attempt must be DIFFERENT from the last. "
+        "If you're trying the same thing twice, step back and reconsider.\n\n"
+        "## Workgraph Tools\n\n"
+        f'- `wg_log("{root_task_id}", "message")` — Record progress (every phase)\n'
+        f'- `wg_done("{root_task_id}")` — Root task complete (ONLY after PASS verdict)\n'
+        f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with full diagnostics)\n'
+        '- `wg_add("title", description="details")` — Create subtasks\n'
+        '- `wg_done("<subtask-id>")` — Mark a subtask complete\n'
+        f'- `wg_artifact("{root_task_id}", "/path")` — Record output files\n'
+        '- `wg_list()` — See all tasks and their status\n'
+        '- `wg_show("<task-id>")` — Inspect a task\'s details\n\n'
+        "## File Tools\n"
+        "- `bash` — Run commands (compile, test, install packages)\n"
+        "- `read_file`, `write_file`, `edit_file` — File operations\n"
+        "- `glob`, `grep` — Search the codebase\n\n"
+        "Begin by reading the task, analyzing what needs to be done, "
+        "then creating your implementation plan as wg tasks.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # WorkgraphAgent — the Harbor BaseAgent implementation
 # ---------------------------------------------------------------------------
@@ -630,10 +767,12 @@ class WorkgraphAgent(BaseAgent):
     """
     Harbor agent adapter for Terminal Bench evaluation.
 
-    Supports three experimental conditions:
+    Supports five experimental conditions:
       condition="A" — bare agent (bash + file tools, no graph)
       condition="B" — agent + workgraph (full tools, journal/resume)
       condition="C" — agent + workgraph + skill injection + planning phase
+      condition="D" — agent + workgraph + autopoietic verification + agency identity
+      condition="E" — agent + workgraph + organization generation + independent verification
 
     Usage:
         harbor run \\
@@ -684,8 +823,8 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Set up host-side workgraph for Condition B/C (no container injection)."""
-        if self.condition in ("B", "C"):
+        """Set up host-side workgraph for Condition B/C/D (no container injection)."""
+        if self.condition in ("B", "C", "D"):
             import tempfile
             self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
             self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
@@ -700,6 +839,23 @@ class WorkgraphAgent(BaseAgent):
             await proc.communicate()
             logger.info(f"Initialized host-side workgraph at {self._wg_graph_dir}")
 
+            if self.condition == "D":
+                wg_dir = self._wg_graph_dir
+                # Bootstrap agency (seed starter roles/tradeoffs)
+                await _exec_wg_cmd_host(wg_dir, wg_bin, ["agency", "init"])
+                # Create agent identity
+                await _exec_wg_cmd_host(wg_dir, wg_bin, [
+                    "agent", "create", "solver",
+                    "--role", "programmer",
+                    "--tradeoff", "careful",
+                ])
+                self._agent_identity = {
+                    "name": "solver",
+                    "role": "programmer",
+                    "tradeoff": "careful",
+                }
+                logger.info("Condition D: agency bootstrapped, solver agent created")
+
     async def run(
         self,
         instruction: str,
@@ -711,8 +867,23 @@ class WorkgraphAgent(BaseAgent):
         # Determine tools and prompt based on condition
         root_task_id = None
         wg_dir = getattr(self, "_wg_graph_dir", None)
-        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C") else None
-        if self.condition == "C":
+        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D") else None
+        if self.condition == "D":
+            tools = CONDITION_D_TOOLS
+            # Create root task in host-side workgraph
+            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
+            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
+            await _exec_wg_cmd_host(
+                wg_dir, wg_bin,
+                ["add", title, "--id", root_task_id],
+            )
+            # Assign agent identity to root task
+            await _exec_wg_cmd_host(wg_dir, wg_bin, ["assign", root_task_id, "solver"])
+            agent_identity = getattr(self, "_agent_identity", {
+                "name": "solver", "role": "programmer", "tradeoff": "careful",
+            })
+            system_prompt = build_condition_d_prompt(instruction, root_task_id, agent_identity)
+        elif self.condition == "C":
             tools = CONDITION_C_TOOLS
             # Create root task in host-side workgraph
             root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
@@ -748,6 +919,12 @@ class WorkgraphAgent(BaseAgent):
         total_cost = 0.0
 
         log_path = self.logs_dir / "agent_loop.ndjson"
+
+        # Condition D: verification and termination tracking
+        verification_count = 0
+        wg_tool_call_count = 0
+        termination_type = "max_turns"
+        verification_commands: list[str] = []
 
         for turn in range(self.max_turns):
             try:
@@ -800,9 +977,12 @@ class WorkgraphAgent(BaseAgent):
 
             # If no tool calls, the agent is done
             if not message.tool_calls:
+                if termination_type == "max_turns":
+                    termination_type = "no_tool_calls"
                 break
 
             # Execute each tool call
+            done_or_failed = False
             for tc in message.tool_calls:
                 fn_name = tc.function.name
                 try:
@@ -812,6 +992,24 @@ class WorkgraphAgent(BaseAgent):
                     logger.warning(
                         f"Failed to parse tool args for {fn_name}: {tc.function.arguments}"
                     )
+
+                # Condition D: track wg tool calls and verification commands
+                if fn_name.startswith("wg_"):
+                    wg_tool_call_count += 1
+                if fn_name == "bash":
+                    cmd = fn_args.get("command", "")
+                    if any(kw in cmd.lower() for kw in [
+                        "test", "pytest", "make test", "cargo test",
+                        "npm test", "check", "verify", "./verify",
+                    ]):
+                        verification_count += 1
+                        verification_commands.append(cmd[:200])
+                if fn_name == "wg_done" and fn_args.get("task_id") == root_task_id:
+                    termination_type = "wg_done"
+                    done_or_failed = True
+                elif fn_name == "wg_fail" and fn_args.get("task_id") == root_task_id:
+                    termination_type = "wg_fail"
+                    done_or_failed = True
 
                 try:
                     result = await execute_tool(
@@ -840,16 +1038,29 @@ class WorkgraphAgent(BaseAgent):
                     "result_length": len(result),
                 })
 
+            # Condition D: stop loop after agent declares done/failed on root task
+            if self.condition == "D" and done_or_failed:
+                break
+
         # Populate Harbor's AgentContext with results
         context.n_input_tokens = total_input_tokens
         context.n_output_tokens = total_output_tokens
         context.cost_usd = total_cost
-        context.metadata = {
+        metadata = {
             "condition": self.condition,
             "turns": turn + 1 if turn < self.max_turns else self.max_turns,
             "root_task_id": root_task_id,
             "model": model,
         }
+        if self.condition == "D":
+            metadata.update({
+                "agent_identity": getattr(self, "_agent_identity", None),
+                "verification_iterations": verification_count,
+                "self_termination_type": termination_type,
+                "wg_tool_calls": wg_tool_call_count,
+                "verification_commands": verification_commands,
+            })
+        context.metadata = metadata
 
         self._log_event(log_path, {
             "type": "result",
@@ -860,8 +1071,8 @@ class WorkgraphAgent(BaseAgent):
             "condition": self.condition,
         })
 
-        # Save workgraph state for analysis (Condition B and C)
-        if self.condition in ("B", "C") and wg_dir:
+        # Save workgraph state for analysis (Condition B, C, and D)
+        if self.condition in ("B", "C", "D") and wg_dir:
             wg_state_dst = self.logs_dir / "workgraph_state"
             try:
                 shutil.copytree(wg_dir, str(wg_state_dst))
@@ -943,4 +1154,17 @@ class ConditionCAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "C"
+        super().__init__(*args, **kwargs)
+
+
+class ConditionDAgent(WorkgraphAgent):
+    """Condition D (treatment): wg tools + autopoietic verification + agency + no turn cap."""
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-condition-d"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["condition"] = "D"
+        kwargs.setdefault("max_turns", 200)
         super().__init__(*args, **kwargs)
