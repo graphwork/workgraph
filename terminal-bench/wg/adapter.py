@@ -177,6 +177,54 @@ GREP_TOOL = {
     },
 }
 
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for information. Returns titles, URLs, and snippets "
+            "for the top results. Use for documentation, API references, error messages, "
+            "library versions, and any information not available locally."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum results to return (default: 5, max: 10).",
+                },
+            },
+        },
+    },
+}
+
+WEB_FETCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_fetch",
+        "description": (
+            "Fetch a web page and return its content as clean, readable text. "
+            "Use for reading documentation, API references, tutorials, Stack Overflow "
+            "answers, GitHub READMEs, PyPI pages, etc."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch.",
+                },
+            },
+        },
+    },
+}
+
 # Condition A: bash + file tools
 CONDITION_A_TOOLS = [
     BASH_TOOL,
@@ -185,6 +233,8 @@ CONDITION_A_TOOLS = [
     EDIT_FILE_TOOL,
     GLOB_TOOL,
     GREP_TOOL,
+    WEB_SEARCH_TOOL,
+    WEB_FETCH_TOOL,
 ]
 
 # Condition B adds workgraph tools
@@ -351,7 +401,7 @@ CONDITION_B_TOOLS = CONDITION_A_TOOLS + [
     WG_ARTIFACT_TOOL,
     WG_MSG_SEND_TOOL,
     WG_MSG_READ_TOOL,
-]
+]  # web_search + web_fetch inherited from CONDITION_A_TOOLS
 
 # Condition C uses the same tools as B — the variable is the prompt, not the tools
 CONDITION_C_TOOLS = CONDITION_B_TOOLS
@@ -408,6 +458,8 @@ CONDITION_F_TOOLS = [
     EDIT_FILE_TOOL,
     GLOB_TOOL,
     GREP_TOOL,
+    WEB_SEARCH_TOOL,
+    WEB_FETCH_TOOL,
     WG_SHOW_TOOL,
     WG_LIST_TOOL,
     WG_ADD_TOOL_F,
@@ -526,6 +578,128 @@ async def _exec_grep(env: BaseEnvironment, args: dict) -> str:
     return result.stdout or "(no matches)"
 
 
+async def _exec_web_search(args: dict) -> str:
+    """Search the web using DuckDuckGo (runs on host, not in container)."""
+    query = args.get("query", "")
+    max_results = min(args.get("max_results", 5), 10)
+    if not query:
+        return "Error: query is required"
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(
+            None,
+            lambda: DDGS().text(query, max_results=max_results),
+        )
+        if not results:
+            return f"No results found for: {query}"
+        lines = []
+        for i, r in enumerate(results, 1):
+            lines.append(f"## Result {i}")
+            lines.append(f"**{r.get('title', '(no title)')}**")
+            lines.append(r.get("href", "(no url)"))
+            lines.append(r.get("body", "(no snippet)"))
+            lines.append("")
+        return "\n".join(lines)
+    except ImportError:
+        return (
+            "Error: ddgs (or duckduckgo-search) is not installed. "
+            "Run: pip install ddgs"
+        )
+    except Exception as e:
+        return f"Web search error: {e}"
+
+
+async def _exec_web_fetch(args: dict) -> str:
+    """Fetch a web page and return clean readable text (runs on host).
+
+    Strategy:
+    1. Jina Reader API (r.jina.ai) — handles JS, returns markdown
+    2. trafilatura — best-in-class HTML→text extraction
+    3. Raw httpx — last resort
+    """
+    url = args.get("url", "")
+    if not url:
+        return "Error: url is required"
+
+    max_content = 10000  # ~10K chars as specified in task requirements
+    timeout_sec = 10
+
+    # --- Strategy 1: Jina Reader API ---
+    try:
+        import httpx
+
+        jina_url = f"https://r.jina.ai/{url}"
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=timeout_sec
+        ) as client:
+            resp = await client.get(
+                jina_url,
+                headers={"Accept": "text/markdown"},
+            )
+            if resp.status_code == 200 and len(resp.text.strip()) > 100:
+                content = resp.text
+                if len(content) > max_content:
+                    content = content[:max_content] + "\n\n[... truncated]"
+                return content
+    except Exception as e:
+        logger.debug(f"Jina Reader failed for {url}: {e}")
+
+    # --- Strategy 2: trafilatura ---
+    try:
+        import trafilatura
+
+        loop = asyncio.get_running_loop()
+
+        def _fetch_and_extract():
+            downloaded = trafilatura.fetch_url(url)
+            if downloaded:
+                return trafilatura.extract(downloaded)
+            return None
+
+        text = await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_and_extract),
+            timeout=timeout_sec,
+        )
+        if text and len(text.strip()) > 50:
+            if len(text) > max_content:
+                text = text[:max_content] + "\n\n[... truncated]"
+            return text
+    except ImportError:
+        logger.debug("trafilatura not installed, skipping fallback")
+    except Exception as e:
+        logger.debug(f"trafilatura failed for {url}: {e}")
+
+    # --- Strategy 3: Raw HTTP ---
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=timeout_sec
+        ) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                text = resp.text
+                # Crude HTML stripping: remove tags, collapse whitespace
+                import re
+
+                text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
+                text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = re.sub(r"\s+", " ", text).strip()
+                if len(text) > max_content:
+                    text = text[:max_content] + "\n\n[... truncated]"
+                return text if text else f"(empty page at {url})"
+    except Exception as e:
+        logger.debug(f"Raw HTTP fetch failed for {url}: {e}")
+
+    return f"Failed to fetch {url} — all strategies exhausted"
+
+
 async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
     """Execute a wg command on the HOST (not in the container).
 
@@ -575,6 +749,10 @@ async def execute_tool(
         return await _exec_glob(env, args)
     elif tool_name == "grep":
         return await _exec_grep(env, args)
+    elif tool_name == "web_search":
+        return await _exec_web_search(args)
+    elif tool_name == "web_fetch":
+        return await _exec_web_fetch(args)
     elif tool_name == "wg_show":
         return await _exec_wg_cmd_host(wg_dir, wg_bin, ["show", args["task_id"]])
     elif tool_name == "wg_list":
@@ -628,6 +806,8 @@ def build_condition_a_prompt(instruction: str) -> str:
         "- Use bash to run commands, install packages, compile code, etc.\n"
         "- Use read_file, write_file, edit_file for file operations.\n"
         "- Use glob and grep to explore the codebase.\n"
+        "- Use web_search to find documentation, API references, error messages, library versions.\n"
+        "- Use web_fetch to read web pages (docs, tutorials, Stack Overflow, etc.).\n"
         "- Always prefer precise edits over full file rewrites.\n"
         "- Keep output concise.\n"
     )
@@ -953,6 +1133,8 @@ def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
         "- `bash` — Run commands, install packages, compile, test\n"
         "- `read_file`, `write_file`, `edit_file` — File operations\n"
         "- `glob`, `grep` — Search the codebase\n"
+        "- `web_search` — Search the web for docs, API references, error messages, library versions\n"
+        "- `web_fetch` — Fetch a web page and return clean readable text (docs, tutorials, etc.)\n"
         "- `wg_log`, `wg_add`, `wg_done`, `wg_fail` — Task coordination (see Quick Guide)\n"
         "- `wg_show`, `wg_list` — Inspect task graph\n"
         "- `wg_artifact`, `wg_msg_send`, `wg_msg_read` — Record artifacts, communicate\n\n"

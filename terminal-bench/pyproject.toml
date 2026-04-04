@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 dependencies = [
     "harbor>=0.3.0",
     "litellm",
+    "ddgs>=9.0",
+    "httpx>=0.24",
+    "trafilatura>=1.0",
 ]
 
 [project.scripts]
