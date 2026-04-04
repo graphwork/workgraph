@@ -6148,6 +6148,52 @@ impl VizApp {
                 (None, None) => {}
             }
         }
+
+        // ── Agency identity ──
+        // Show agent entity (role + tradeoff) if task has an agency agent assigned.
+        if let Some(ref agent_hash) = task.agent {
+            let agency_dir = self.workgraph_dir.join("agency");
+            let agents_cache = agency_dir.join("cache").join("agents");
+            let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
+            if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
+                let short_hash = &agent_hash[..agent_hash.len().min(8)];
+                lines.push(format!(
+                    "Identity: {} ({})",
+                    agent_entity.name, short_hash
+                ));
+                // Look up role name
+                let roles_dir = agency_dir.join("cache").join("roles");
+                let role_file = roles_dir.join(format!("{}.yaml", agent_entity.role_id));
+                let role_label = if let Ok(content) = std::fs::read_to_string(&role_file)
+                    && let Ok(role) = serde_yaml::from_str::<serde_json::Value>(&content)
+                    && let Some(name) = role.get("name").and_then(|v| v.as_str())
+                {
+                    let short = &agent_entity.role_id[..agent_entity.role_id.len().min(8)];
+                    format!("{} ({})", name, short)
+                } else {
+                    let short = &agent_entity.role_id[..agent_entity.role_id.len().min(8)];
+                    short.to_string()
+                };
+                lines.push(format!("Role: {}", role_label));
+                // Look up tradeoff name
+                let tradeoffs_dir = agency_dir.join("cache").join("tradeoffs");
+                let tradeoff_file =
+                    tradeoffs_dir.join(format!("{}.yaml", agent_entity.tradeoff_id));
+                let tradeoff_label = if let Ok(content) = std::fs::read_to_string(&tradeoff_file)
+                    && let Ok(tc) = serde_yaml::from_str::<serde_json::Value>(&content)
+                    && let Some(name) = tc.get("name").and_then(|v| v.as_str())
+                {
+                    let short =
+                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    format!("{} ({})", name, short)
+                } else {
+                    let short =
+                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    short.to_string()
+                };
+                lines.push(format!("Tradeoff: {}", tradeoff_label));
+            }
+        }
         lines.push(String::new());
 
         // ── Description ──
@@ -6727,6 +6773,49 @@ impl VizApp {
                     lines.push(format!("Model: {} (configured)", cfg));
                 }
                 (None, None) => {}
+            }
+        }
+
+        // ── Agency identity ──
+        if let Some(ref agent_hash) = task.agent {
+            let agency_dir = self.workgraph_dir.join("agency");
+            let agents_cache = agency_dir.join("cache").join("agents");
+            let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
+            if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
+                let short_hash = &agent_hash[..agent_hash.len().min(8)];
+                lines.push(format!(
+                    "Identity: {} ({})",
+                    agent_entity.name, short_hash
+                ));
+                let roles_dir = agency_dir.join("cache").join("roles");
+                let role_file = roles_dir.join(format!("{}.yaml", agent_entity.role_id));
+                let role_label = if let Ok(content) = std::fs::read_to_string(&role_file)
+                    && let Ok(role) = serde_yaml::from_str::<serde_json::Value>(&content)
+                    && let Some(name) = role.get("name").and_then(|v| v.as_str())
+                {
+                    let short = &agent_entity.role_id[..agent_entity.role_id.len().min(8)];
+                    format!("{} ({})", name, short)
+                } else {
+                    let short = &agent_entity.role_id[..agent_entity.role_id.len().min(8)];
+                    short.to_string()
+                };
+                lines.push(format!("Role: {}", role_label));
+                let tradeoffs_dir = agency_dir.join("cache").join("tradeoffs");
+                let tradeoff_file =
+                    tradeoffs_dir.join(format!("{}.yaml", agent_entity.tradeoff_id));
+                let tradeoff_label = if let Ok(content) = std::fs::read_to_string(&tradeoff_file)
+                    && let Ok(tc) = serde_yaml::from_str::<serde_json::Value>(&content)
+                    && let Some(name) = tc.get("name").and_then(|v| v.as_str())
+                {
+                    let short =
+                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    format!("{} ({})", name, short)
+                } else {
+                    let short =
+                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    short.to_string()
+                };
+                lines.push(format!("Tradeoff: {}", tradeoff_label));
             }
         }
         lines.push(String::new());
