@@ -2,9 +2,10 @@
 Terminal Bench Agent Adapter for Harbor Framework.
 
 Bridges Harbor's agent protocol to the workgraph native executor concept.
-Supports two conditions:
+Supports three conditions:
   Condition A (control): bash + file tools only, no graph, no resume
   Condition B (treatment): full wg tool access, graph awareness, journal/resume
+  Condition C (treatment): wg tools + skill injection + planning phase
 """
 
 import asyncio
@@ -341,6 +342,9 @@ CONDITION_B_TOOLS = CONDITION_A_TOOLS + [
     WG_MSG_READ_TOOL,
 ]
 
+# Condition C uses the same tools as B — the variable is the prompt, not the tools
+CONDITION_C_TOOLS = CONDITION_B_TOOLS
+
 
 # ---------------------------------------------------------------------------
 # Tool execution helpers
@@ -577,6 +581,47 @@ def build_condition_b_prompt(instruction: str, root_task_id: str) -> str:
     )
 
 
+def build_condition_c_prompt(instruction: str, root_task_id: str) -> str:
+    """Condition C: wg tools + skill injection + planning phase.
+
+    Same tools as B but with a skill prompt that teaches WHEN and HOW to use
+    workgraph for decomposition, plus a mandatory planning phase instruction.
+    """
+    return (
+        "# Task Assignment\n\n"
+        "You are an AI agent completing a Terminal Bench task.\n"
+        f"Your root task ID is: **{root_task_id}**\n\n"
+        "## Workgraph: Your External Memory\n\n"
+        "You have a workgraph — a persistent task graph that acts as external memory.\n"
+        "It survives even if your context fills up. Use it.\n\n"
+        "### Always do this\n"
+        f'- `wg_log("{root_task_id}", "Starting: <plan>")` before your first action\n'
+        f'- `wg_log("{root_task_id}", "Done: <result>")` after completing a step\n'
+        f'- `wg_done("{root_task_id}")` when the task is complete\n'
+        f'- `wg_fail("{root_task_id}", "reason")` if you cannot complete the task\n\n'
+        "### Decompose when needed\n"
+        "If the task has 3+ distinct phases or might exhaust your context:\n"
+        '- `wg_add("Step 1: <title>")` to create subtasks\n'
+        "- Solve each subtask, then `wg_done` each one\n"
+        f'- Finally `wg_done("{root_task_id}")`\n\n'
+        "If the task is simple (< 10 steps), skip decomposition and solve directly.\n\n"
+        "### Record outputs\n"
+        f'- `wg_artifact("{root_task_id}", "/path/to/file")` for files you create\n\n'
+        "## Planning Phase\n\n"
+        "Before writing code or running commands, analyze the task in ONE response:\n"
+        "1. What does the task require?\n"
+        "2. How many steps? Simple (< 10) or complex (10+)?\n"
+        "3. Plan: decompose or solve directly?\n"
+        "4. First action?\n\n"
+        "Then execute your plan.\n\n"
+        "## Tools\n"
+        "- bash, read_file, write_file, edit_file, glob, grep — for working in the environment\n"
+        "- wg_log, wg_add, wg_done, wg_fail, wg_show, wg_list, wg_artifact, "
+        "wg_msg_send, wg_msg_read — for task coordination\n\n"
+        "Begin by analyzing the task below, then execute.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # WorkgraphAgent — the Harbor BaseAgent implementation
 # ---------------------------------------------------------------------------
@@ -585,9 +630,10 @@ class WorkgraphAgent(BaseAgent):
     """
     Harbor agent adapter for Terminal Bench evaluation.
 
-    Supports two experimental conditions:
+    Supports three experimental conditions:
       condition="A" — bare agent (bash + file tools, no graph)
       condition="B" — agent + workgraph (full tools, journal/resume)
+      condition="C" — agent + workgraph + skill injection + planning phase
 
     Usage:
         harbor run \\
@@ -638,8 +684,8 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Set up host-side workgraph for Condition B (no container injection)."""
-        if self.condition == "B":
+        """Set up host-side workgraph for Condition B/C (no container injection)."""
+        if self.condition in ("B", "C"):
             import tempfile
             self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
             self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
@@ -665,8 +711,18 @@ class WorkgraphAgent(BaseAgent):
         # Determine tools and prompt based on condition
         root_task_id = None
         wg_dir = getattr(self, "_wg_graph_dir", None)
-        wg_bin = self._wg_binary_host_path if self.condition == "B" else None
-        if self.condition == "B":
+        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C") else None
+        if self.condition == "C":
+            tools = CONDITION_C_TOOLS
+            # Create root task in host-side workgraph
+            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
+            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
+            await _exec_wg_cmd_host(
+                wg_dir, wg_bin,
+                ["add", title, "--id", root_task_id],
+            )
+            system_prompt = build_condition_c_prompt(instruction, root_task_id)
+        elif self.condition == "B":
             tools = CONDITION_B_TOOLS
             # Create root task in host-side workgraph
             root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
@@ -804,8 +860,8 @@ class WorkgraphAgent(BaseAgent):
             "condition": self.condition,
         })
 
-        # Save workgraph state for analysis (Condition B)
-        if self.condition == "B" and wg_dir:
+        # Save workgraph state for analysis (Condition B and C)
+        if self.condition in ("B", "C") and wg_dir:
             wg_state_dst = self.logs_dir / "workgraph_state"
             try:
                 shutil.copytree(wg_dir, str(wg_state_dst))
@@ -817,6 +873,10 @@ class WorkgraphAgent(BaseAgent):
             if wg_temp:
                 shutil.rmtree(wg_temp, ignore_errors=True)
 
+        # Extract planning turn for Condition C analysis
+        if self.condition == "C":
+            self._extract_planning_turn(log_path)
+
     def _log_event(self, path: Path, event: dict) -> None:
         """Append an NDJSON event to the log file."""
         try:
@@ -824,6 +884,26 @@ class WorkgraphAgent(BaseAgent):
                 f.write(json.dumps(event, default=str) + "\n")
         except Exception as e:
             logger.warning(f"Failed to write log event: {e}")
+
+    def _extract_planning_turn(self, log_path: Path) -> None:
+        """Extract the first assistant turn and save as planning_turn.json.
+
+        This enables analysis of whether the agent planned before acting,
+        correctly classified task complexity, and followed the planning phase.
+        """
+        planning_path = self.logs_dir / "planning_turn.json"
+        try:
+            with open(log_path, "r") as f:
+                for line in f:
+                    event = json.loads(line.strip())
+                    if event.get("type") == "turn" and event.get("turn") == 0:
+                        with open(planning_path, "w") as pf:
+                            json.dump(event, pf, indent=2, default=str)
+                        logger.info(f"Extracted planning turn to {planning_path}")
+                        return
+            logger.warning("No turn-0 event found in agent loop log")
+        except Exception as e:
+            logger.warning(f"Failed to extract planning turn: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -851,4 +931,16 @@ class ConditionBAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "B"
+        super().__init__(*args, **kwargs)
+
+
+class ConditionCAgent(WorkgraphAgent):
+    """Condition C (treatment): wg tools + skill injection + planning phase."""
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-condition-c"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["condition"] = "C"
         super().__init__(*args, **kwargs)

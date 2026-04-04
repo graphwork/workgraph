@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Terminal Bench Harness — drives native executor for Condition A and B
+# Terminal Bench Harness — drives native executor for Condition A, B, and C
 #
 # Usage:
 #   ./tb-harness.sh --condition A --model "minimax/minimax-m2.7" --task "Create hello.txt with 'hello world', verify it contains the text"
@@ -39,10 +39,10 @@ while [[ $# -gt 0 ]]; do
         --results-dir) RESULTS_DIR="$2"; shift 2 ;;
         --quiet)      QUIET=true; shift ;;
         -h|--help)
-            echo "Usage: $0 --condition A|B --model MODEL --task INSTRUCTION [options]"
+            echo "Usage: $0 --condition A|B|C --model MODEL --task INSTRUCTION [options]"
             echo ""
             echo "Options:"
-            echo "  --condition A|B      A=bare agent, B=agent+workgraph (default: A)"
+            echo "  --condition A|B|C    A=bare, B=agent+wg, C=agent+wg+skill injection (default: A)"
             echo "  --model MODEL        OpenRouter model name (default: minimax/minimax-m2.7)"
             echo "  --task TEXT           Task instruction (inline)"
             echo "  --task-file FILE     Task instruction from file"
@@ -176,8 +176,67 @@ When finished, call wg_done.
 ${TASK_TEXT}
 PROMPT
 
+elif [[ "$CONDITION" == "C" ]]; then
+    # Condition C: agent + workgraph + skill injection + planning phase
+    # Same wg tools as B, but with a skill prompt that teaches decomposition heuristics
+    EXEC_MODE="full"
+    RESUME_FLAG=""
+
+    # Create the root task in workgraph
+    HOME="$FAKE_HOME" "$WG_BIN" --dir "$WG_DIR" add "$TASK_TEXT" --id "$TASK_ID" --context-scope task 2>/dev/null
+
+    # Build the Condition C system prompt (skill injection + planning phase)
+    cat > "$WORK_DIR/prompt.txt" <<PROMPT
+# Task Assignment
+
+You are an AI agent completing a Terminal Bench task.
+Your root task ID is: **${TASK_ID}**
+
+## Workgraph: Your External Memory
+
+You have a workgraph — a persistent task graph that acts as external memory.
+It survives even if your context fills up. Use it.
+
+### Always do this
+- \`wg_log("${TASK_ID}", "Starting: <plan>")\` before your first action
+- \`wg_log("${TASK_ID}", "Done: <result>")\` after completing a step
+- \`wg_done("${TASK_ID}")\` when the task is complete
+- \`wg_fail("${TASK_ID}", "reason")\` if you cannot complete the task
+
+### Decompose when needed
+If the task has 3+ distinct phases or might exhaust your context:
+- \`wg_add("Step 1: <title>")\` to create subtasks
+- Solve each subtask, then \`wg_done\` each one
+- Finally \`wg_done("${TASK_ID}")\`
+
+If the task is simple (< 10 steps), skip decomposition and solve directly.
+
+### Record outputs
+- \`wg_artifact("${TASK_ID}", "/path/to/file")\` for files you create
+
+## Planning Phase
+
+Before writing code or running commands, analyze the task in ONE response:
+1. What does the task require?
+2. How many steps? Simple (< 10) or complex (10+)?
+3. Plan: decompose or solve directly?
+4. First action?
+
+Then execute your plan.
+
+## Tools
+- bash, read_file, write_file, edit_file, glob, grep — for working in the environment
+- wg_log, wg_add, wg_done, wg_fail, wg_show, wg_list, wg_artifact, wg_msg_send, wg_msg_read — for task coordination
+
+Begin by analyzing the task below, then execute.
+
+## Task
+
+${TASK_TEXT}
+PROMPT
+
 else
-    echo "ERROR: Condition must be A or B"
+    echo "ERROR: Condition must be A, B, or C"
     exit 1
 fi
 
@@ -246,8 +305,8 @@ INPUT_TOKENS="${INPUT_TOKENS:-0}"
 OUTPUT_TOKENS=$(grep -oP '(?<=\+)\d+(?= tokens)' "$RESULTS_DIR/stderr.log" 2>/dev/null | head -1 || true)
 OUTPUT_TOKENS="${OUTPUT_TOKENS:-0}"
 
-# Copy workgraph state if Condition B
-if [[ "$CONDITION" == "B" ]]; then
+# Copy workgraph state if Condition B or C
+if [[ "$CONDITION" == "B" || "$CONDITION" == "C" ]]; then
     cp -r "$WG_DIR" "$RESULTS_DIR/workgraph_state" 2>/dev/null || true
 fi
 
