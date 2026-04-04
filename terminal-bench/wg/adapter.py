@@ -823,8 +823,8 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Set up host-side workgraph for Condition B/C/D (no container injection)."""
-        if self.condition in ("B", "C", "D"):
+        """Set up host-side workgraph for Condition B/C/D/E (no container injection)."""
+        if self.condition in ("B", "C", "D", "E"):
             import tempfile
             self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
             self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
@@ -856,6 +856,23 @@ class WorkgraphAgent(BaseAgent):
                 }
                 logger.info("Condition D: agency bootstrapped, solver agent created")
 
+            elif self.condition == "E":
+                wg_dir = self._wg_graph_dir
+                # Bootstrap agency (seed starter roles/tradeoffs)
+                await _exec_wg_cmd_host(wg_dir, wg_bin, ["agency", "init"])
+                # Create orchestrator agent (architect role, thorough tradeoff)
+                await _exec_wg_cmd_host(wg_dir, wg_bin, [
+                    "agent", "create", "orchestrator",
+                    "--role", "architect",
+                    "--tradeoff", "thorough",
+                ])
+                self._agent_identity = {
+                    "name": "orchestrator",
+                    "role": "architect",
+                    "tradeoff": "thorough",
+                }
+                logger.info("Condition E: agency bootstrapped, orchestrator agent created")
+
     async def run(
         self,
         instruction: str,
@@ -867,8 +884,23 @@ class WorkgraphAgent(BaseAgent):
         # Determine tools and prompt based on condition
         root_task_id = None
         wg_dir = getattr(self, "_wg_graph_dir", None)
-        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D") else None
-        if self.condition == "D":
+        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D", "E") else None
+        if self.condition == "E":
+            tools = CONDITION_E_TOOLS
+            # Create root task in host-side workgraph
+            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
+            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
+            await _exec_wg_cmd_host(
+                wg_dir, wg_bin,
+                ["add", title, "--id", root_task_id],
+            )
+            # Assign orchestrator agent to root task
+            await _exec_wg_cmd_host(wg_dir, wg_bin, ["assign", root_task_id, "orchestrator"])
+            agent_identity = getattr(self, "_agent_identity", {
+                "name": "orchestrator", "role": "architect", "tradeoff": "thorough",
+            })
+            system_prompt = build_condition_e_prompt(instruction, root_task_id, agent_identity)
+        elif self.condition == "D":
             tools = CONDITION_D_TOOLS
             # Create root task in host-side workgraph
             root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
@@ -920,11 +952,16 @@ class WorkgraphAgent(BaseAgent):
 
         log_path = self.logs_dir / "agent_loop.ndjson"
 
-        # Condition D: verification and termination tracking
+        # Condition D/E: verification and termination tracking
         verification_count = 0
         wg_tool_call_count = 0
         termination_type = "max_turns"
         verification_commands: list[str] = []
+
+        # Condition E: organization-specific tracking
+        decomposition_tasks: list[str] = []
+        verification_verdicts: list[tuple[int, str, str]] = []
+        triage_count = 0
 
         for turn in range(self.max_turns):
             try:
@@ -1011,6 +1048,21 @@ class WorkgraphAgent(BaseAgent):
                     termination_type = "wg_fail"
                     done_or_failed = True
 
+                # Condition E: track decomposition, verification verdicts, triage
+                if self.condition == "E":
+                    if fn_name == "wg_add":
+                        task_title = fn_args.get("title", "")
+                        decomposition_tasks.append(task_title)
+                        if task_title.startswith("Fix:"):
+                            triage_count += 1
+                    if fn_name == "wg_log":
+                        msg = fn_args.get("message", "")
+                        if "VERIFY:" in msg:
+                            if "PASS" in msg:
+                                verification_verdicts.append((turn, "PASS", msg))
+                            elif "FAIL" in msg:
+                                verification_verdicts.append((turn, "FAIL", msg))
+
                 try:
                     result = await execute_tool(
                         environment, fn_name, fn_args,
@@ -1038,8 +1090,8 @@ class WorkgraphAgent(BaseAgent):
                     "result_length": len(result),
                 })
 
-            # Condition D: stop loop after agent declares done/failed on root task
-            if self.condition == "D" and done_or_failed:
+            # Condition D/E: stop loop after agent declares done/failed on root task
+            if self.condition in ("D", "E") and done_or_failed:
                 break
 
         # Populate Harbor's AgentContext with results
@@ -1060,6 +1112,28 @@ class WorkgraphAgent(BaseAgent):
                 "wg_tool_calls": wg_tool_call_count,
                 "verification_commands": verification_commands,
             })
+        elif self.condition == "E":
+            metadata.update({
+                "agent_identity": getattr(self, "_agent_identity", None),
+                # D-compatible metrics
+                "verification_iterations": verification_count,
+                "self_termination_type": termination_type,
+                "wg_tool_calls": wg_tool_call_count,
+                "verification_commands": verification_commands,
+                # E-specific metrics
+                "decomposition_task_count": len(decomposition_tasks),
+                "decomposition_tasks": decomposition_tasks[:20],
+                "verification_verdicts": [
+                    {"turn": v[0], "verdict": v[1], "message": v[2]}
+                    for v in verification_verdicts
+                ],
+                "triage_count": triage_count,
+                "organization_phases": {
+                    "decompose": bool(decomposition_tasks),
+                    "verify_independent": any(v[1] for v in verification_verdicts),
+                    "triage_on_fail": triage_count > 0,
+                },
+            })
         context.metadata = metadata
 
         self._log_event(log_path, {
@@ -1071,8 +1145,8 @@ class WorkgraphAgent(BaseAgent):
             "condition": self.condition,
         })
 
-        # Save workgraph state for analysis (Condition B, C, and D)
-        if self.condition in ("B", "C", "D") and wg_dir:
+        # Save workgraph state for analysis (Condition B, C, D, and E)
+        if self.condition in ("B", "C", "D", "E") and wg_dir:
             wg_state_dst = self.logs_dir / "workgraph_state"
             try:
                 shutil.copytree(wg_dir, str(wg_state_dst))
@@ -1167,4 +1241,17 @@ class ConditionDAgent(WorkgraphAgent):
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"
         kwargs.setdefault("max_turns", 200)
+        super().__init__(*args, **kwargs)
+
+
+class ConditionEAgent(WorkgraphAgent):
+    """Condition E (treatment): organization generation + independent verification + triage."""
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-condition-e"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["condition"] = "E"
+        kwargs.setdefault("max_turns", 300)
         super().__init__(*args, **kwargs)
