@@ -17,11 +17,10 @@ use anyhow::{Context, Result};
 use workgraph::executor::native::agent::AgentLoop;
 use workgraph::executor::native::bundle::resolve_bundle;
 use workgraph::executor::native::journal;
+use workgraph::config::{Config, DispatchRole};
 use workgraph::executor::native::provider::create_provider_ext;
 use workgraph::executor::native::tools::ToolRegistry;
 use workgraph::models::ModelRegistry;
-
-const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250514";
 
 /// Run the native executor agent loop.
 #[allow(clippy::too_many_arguments)]
@@ -44,7 +43,12 @@ pub fn run(
     let effective_model = model
         .map(String::from)
         .or_else(|| std::env::var("WG_MODEL").ok())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        .unwrap_or_else(|| {
+            Config::load(workgraph_dir)
+                .ok()
+                .map(|c| c.resolve_model_for_role(DispatchRole::TaskAgent).model)
+                .unwrap_or_else(|| "sonnet".to_string())
+        });
 
     // Resolve the working directory (parent of .workgraph/)
     let working_dir = workgraph_dir
