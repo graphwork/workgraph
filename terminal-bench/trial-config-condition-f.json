@@ -1,0 +1,19 @@
+{
+  "description": "Condition F full trial sweep: 1 condition x 7 tasks x 3 replicas = 21 trials + 1 fan-in. Model routing matches full-sweep-01: Sonnet 4.6 default, Gemini Flash for easy tasks.",
+  "run_id": "condition-f",
+  "conditions": ["F"],
+  "tasks": ["file-ops", "text-processing", "debugging", "shell-scripting", "data-processing", "algorithm", "ml"],
+  "replicas": 3,
+  "model": "claude:claude-sonnet-4-6",
+  "model_overrides": {
+    "file-ops": "gemini:gemini-2.5-flash",
+    "text-processing": "gemini:gemini-2.5-flash"
+  },
+  "condition_f_design": "terminal-bench/analysis/condition-f-final-design.md",
+  "prerequisite_findings": {
+    "wg_availability": "wg IS available, 0% error rate across 1166 calls. No fix needed.",
+    "flip_model": "FLIP uses hardcoded Sonnet+Haiku evaluators (not task model). Known confound for cross-model comparison but all trials here use same model as A/C/D/E so not an issue."
+  },
+  "fan_in_task": "tb-collect-condition-f",
+  "downstream": "tb-cross-condition-synthesis"
+}
