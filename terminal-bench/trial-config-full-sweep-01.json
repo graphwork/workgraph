@@ -1,0 +1,12 @@
+{
+  "description": "Full condition sweep: 4 conditions × 7 tasks × 3 replicas = 84 trials + 1 fan-in. Model routing: Gemini for easy tasks, Claude for medium/hard.",
+  "run_id": "full-sweep-01",
+  "conditions": ["A", "C", "D", "E"],
+  "tasks": ["file-ops", "text-processing", "debugging", "shell-scripting", "data-processing", "algorithm", "ml"],
+  "replicas": 3,
+  "model": "claude:claude-sonnet-4-6",
+  "model_overrides": {
+    "file-ops": "gemini:gemini-2.5-flash",
+    "text-processing": "gemini:gemini-2.5-flash"
+  }
+}

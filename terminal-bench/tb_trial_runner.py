@@ -82,6 +82,42 @@ TB_TASKS = {
         ),
         "difficulty": "hard",
     },
+    "shell-scripting": {
+        "id": "shell-scripting",
+        "title": "Shell Scripting: log file analyzer",
+        "instruction_file": "tasks/condition-a-calibration/04-shell-scripting-medium.txt",
+        "verify_cmd": (
+            "test -f /tmp/log_analyzer.sh && "
+            "test -f /tmp/access.log && "
+            "bash /tmp/log_analyzer.sh /tmp/access.log 2>&1 | grep -qE '[0-9]'"
+        ),
+        "difficulty": "medium",
+    },
+    "data-processing": {
+        "id": "data-processing",
+        "title": "Data Processing: JSON to CSV department summary",
+        "instruction_file": "tasks/condition-a-calibration/05-data-processing-medium.txt",
+        "verify_cmd": (
+            "test -f /tmp/json_to_csv.py && "
+            "test -f /tmp/employees.json && "
+            "test -f /tmp/dept_summary.csv && "
+            "python3 -c \"import csv; r=list(csv.DictReader(open('/tmp/dept_summary.csv'))); "
+            "assert len(r)>=1\""
+        ),
+        "difficulty": "medium",
+    },
+    "ml": {
+        "id": "ml",
+        "title": "ML: k-means clustering from scratch",
+        "instruction_file": "tasks/condition-a-calibration/07-ml-hard.txt",
+        "verify_cmd": (
+            "test -f /tmp/kmeans.py && "
+            "python3 /tmp/kmeans.py 2>&1 | "
+            "python3 -c \"import sys; o=sys.stdin.read().lower(); "
+            "sys.exit(0 if 'centroid' in o or 'cluster' in o else 1)\""
+        ),
+        "difficulty": "hard",
+    },
 }
 
 
@@ -268,12 +304,15 @@ def cmd_create(args):
     task_ids_list = config.get("tasks", ["file-ops", "debugging"])
     replicas = config.get("replicas", 3)
     model = config.get("model")
+    model_overrides = config.get("model_overrides", {})
 
     print(f"Creating TB trial tasks:")
     print(f"  Conditions: {conditions}")
     print(f"  Tasks: {task_ids_list}")
     print(f"  Replicas: {replicas}")
     print(f"  Model: {model or '(default)'}")
+    if model_overrides:
+        print(f"  Model overrides: {model_overrides}")
     print()
 
     all_trial_ids = []
@@ -293,9 +332,11 @@ def cmd_create(args):
             instruction = load_instruction(task_def, tb_root)
 
             for replica in range(replicas):
+                # Per-task model override: use model_overrides[task_name] if set
+                task_model = model_overrides.get(task_name, model)
                 task_id = create_trial_task(
                     task_def, condition, replica,
-                    instruction, model, wg_dir,
+                    instruction, task_model, wg_dir,
                 )
                 all_trial_ids.append(task_id)
         print()
