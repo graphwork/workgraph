@@ -1,7 +1,10 @@
 """
 Terminal Bench Agent Adapter for Harbor Framework.
 
-Bridges Harbor's agent protocol to the workgraph native executor concept.
+Delegates execution to workgraph's native executor via `wg service start`.
+The adapter is a thin orchestrator: it creates a per-trial graph, starts
+the native service, polls for task completion, and collects metrics.
+
 Supports six conditions:
   Condition A (control): bash + file tools only, no graph, no resume
   Condition B (treatment): full wg tool access, graph awareness, journal/resume
@@ -15,14 +18,12 @@ import asyncio
 import json
 import logging
 import os
-import shlex
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-import litellm
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -32,765 +33,80 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Benchmark model — ALL conditions MUST use this for reproducibility
-# Format: workgraph-style "provider:model"; converted to litellm "provider/model" at call site
+# Format: workgraph-style "provider:model"
 # ---------------------------------------------------------------------------
 BENCHMARK_MODEL = "openrouter:minimax/minimax-m2.7"
 
+# Default poll interval for task completion checks (seconds)
+DEFAULT_POLL_INTERVAL = 2.0
 
-# ---------------------------------------------------------------------------
-# Tool definitions (OpenAI function-calling schema)
-# ---------------------------------------------------------------------------
-
-BASH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "bash",
-        "description": (
-            "Execute a shell command and return stdout + stderr. "
-            "Use this for running programs, installing packages, and system operations."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["command"],
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The shell command to execute.",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default: 120).",
-                },
-            },
-        },
-    },
-}
-
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": "Read the contents of a file.",
-        "parameters": {
-            "type": "object",
-            "required": ["path"],
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file."},
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (0-indexed).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to read.",
-                },
-            },
-        },
-    },
-}
-
-WRITE_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "write_file",
-        "description": "Write content to a file (creates or overwrites).",
-        "parameters": {
-            "type": "object",
-            "required": ["path", "content"],
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file."},
-                "content": {
-                    "type": "string",
-                    "description": "Content to write.",
-                },
-            },
-        },
-    },
-}
-
-EDIT_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "edit_file",
-        "description": (
-            "Make a targeted edit to an existing file by replacing an exact string match."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["path", "old_string", "new_string"],
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file."},
-                "old_string": {
-                    "type": "string",
-                    "description": "Exact text to find.",
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Replacement text.",
-                },
-            },
-        },
-    },
-}
-
-GLOB_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "glob",
-        "description": "Find files matching a glob pattern.",
-        "parameters": {
-            "type": "object",
-            "required": ["pattern"],
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Glob pattern (e.g., **/*.py).",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Base directory (default: working directory).",
-                },
-            },
-        },
-    },
-}
-
-GREP_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "grep",
-        "description": (
-            "Search file contents using regex. Supports context lines, "
-            "file type filtering, and multiple output modes."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["pattern"],
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regex pattern to search for.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "File or directory to search in.",
-                },
-                "before_context": {
-                    "type": "integer",
-                    "description": "Lines of context before each match (-B).",
-                },
-                "after_context": {
-                    "type": "integer",
-                    "description": "Lines of context after each match (-A).",
-                },
-                "context": {
-                    "type": "integer",
-                    "description": "Lines of context before and after each match (-C).",
-                },
-                "type": {
-                    "type": "string",
-                    "description": (
-                        "File extension filter (e.g., 'py', 'js', 'rs'). "
-                        "Only searches files with this extension."
-                    ),
-                },
-                "output_mode": {
-                    "type": "string",
-                    "enum": ["content", "files_with_matches", "count"],
-                    "description": (
-                        "Output mode: 'content' (default) shows matching lines, "
-                        "'files_with_matches' shows only file paths, "
-                        "'count' shows match counts per file."
-                    ),
-                },
-            },
-        },
-    },
-}
-
-WEB_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": (
-            "Search the web for information. Returns titles, URLs, and snippets "
-            "for the top results. Use for documentation, API references, error messages, "
-            "library versions, and any information not available locally."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["query"],
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string.",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum results to return (default: 5, max: 10).",
-                },
-            },
-        },
-    },
-}
-
-WEB_FETCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_fetch",
-        "description": (
-            "Fetch a web page and return its content as clean, readable text. "
-            "Use for reading documentation, API references, tutorials, Stack Overflow "
-            "answers, GitHub READMEs, PyPI pages, etc."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["url"],
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to fetch.",
-                },
-            },
-        },
-    },
-}
-
-# Condition A: bash + file tools
-CONDITION_A_TOOLS = [
-    BASH_TOOL,
-    READ_FILE_TOOL,
-    WRITE_FILE_TOOL,
-    EDIT_FILE_TOOL,
-    GLOB_TOOL,
-    GREP_TOOL,
-    WEB_SEARCH_TOOL,
-    WEB_FETCH_TOOL,
-]
-
-# Condition B adds workgraph tools
-WG_SHOW_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_show",
-        "description": "Show details of a workgraph task.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-            },
-        },
-    },
-}
-
-WG_LIST_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_list",
-        "description": "List tasks in the workgraph, optionally filtered by status.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter: open, done, failed, in-progress, blocked.",
-                },
-            },
-        },
-    },
-}
-
-WG_ADD_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_add",
-        "description": "Create a new task in the workgraph.",
-        "parameters": {
-            "type": "object",
-            "required": ["title"],
-            "properties": {
-                "title": {"type": "string", "description": "Task title."},
-                "after": {
-                    "type": "string",
-                    "description": "Comma-separated dependency task IDs.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Detailed description.",
-                },
-            },
-        },
-    },
-}
-
-WG_DONE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_done",
-        "description": "Mark a task as done.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-                "converged": {
-                    "type": "boolean",
-                    "description": "True if cycle has converged.",
-                },
-            },
-        },
-    },
-}
-
-WG_FAIL_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_fail",
-        "description": "Mark a task as failed.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id", "reason"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-                "reason": {"type": "string", "description": "Failure reason."},
-            },
-        },
-    },
-}
-
-WG_LOG_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_log",
-        "description": "Append a log entry to a task.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id", "message"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-                "message": {"type": "string", "description": "Log message."},
-            },
-        },
-    },
-}
-
-WG_ARTIFACT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_artifact",
-        "description": "Record an artifact (file path) for a task.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id", "path"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-                "path": {"type": "string", "description": "Artifact path."},
-            },
-        },
-    },
-}
-
-WG_MSG_SEND_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_msg_send",
-        "description": "Send a message to a task's message queue.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id", "message"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-                "message": {"type": "string", "description": "Message content."},
-            },
-        },
-    },
-}
-
-WG_MSG_READ_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wg_msg_read",
-        "description": "Read messages for a task.",
-        "parameters": {
-            "type": "object",
-            "required": ["task_id"],
-            "properties": {
-                "task_id": {"type": "string", "description": "The task ID."},
-            },
-        },
-    },
-}
-
-CONDITION_B_TOOLS = CONDITION_A_TOOLS + [
-    WG_SHOW_TOOL,
-    WG_LIST_TOOL,
-    WG_ADD_TOOL,
-    WG_DONE_TOOL,
-    WG_FAIL_TOOL,
-    WG_LOG_TOOL,
-    WG_ARTIFACT_TOOL,
-    WG_MSG_SEND_TOOL,
-    WG_MSG_READ_TOOL,
-]  # web_search + web_fetch inherited from CONDITION_A_TOOLS
-
-# Condition C uses the same tools as B — the variable is the prompt, not the tools
-CONDITION_C_TOOLS = CONDITION_B_TOOLS
-
-# Condition D uses the same tools as B — the variable is the prompt, setup, and tracking
-CONDITION_D_TOOLS = CONDITION_B_TOOLS
-
-# Condition E uses the same tools as B — the variable is the prompt, tracking, and org generation
-CONDITION_E_TOOLS = CONDITION_B_TOOLS
-
-# Condition F: enhanced wg_add with verify + id parameters
-WG_ADD_TOOL_F = {
-    "type": "function",
-    "function": {
-        "name": "wg_add",
-        "description": "Create a new task in the workgraph.",
-        "parameters": {
-            "type": "object",
-            "required": ["title"],
-            "properties": {
-                "title": {"type": "string", "description": "Task title."},
-                "after": {
-                    "type": "string",
-                    "description": "Comma-separated dependency task IDs.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Detailed description.",
-                },
-                "verify": {
-                    "type": "string",
-                    "description": (
-                        "Machine-checkable verification command. "
-                        "Task cannot be marked done until this command exits 0. "
-                        'Example: "python -m pytest /tests/test_outputs.py -v"'
-                    ),
-                },
-                "id": {
-                    "type": "string",
-                    "description": (
-                        "Explicit task ID (kebab-case). If omitted, auto-generated from title. "
-                        "Use this to create predictable IDs for after references."
-                    ),
-                },
-            },
-        },
-    },
-}
-
-CONDITION_F_TOOLS = [
-    BASH_TOOL,
-    READ_FILE_TOOL,
-    WRITE_FILE_TOOL,
-    EDIT_FILE_TOOL,
-    GLOB_TOOL,
-    GREP_TOOL,
-    WEB_SEARCH_TOOL,
-    WEB_FETCH_TOOL,
-    WG_SHOW_TOOL,
-    WG_LIST_TOOL,
-    WG_ADD_TOOL_F,
-    WG_DONE_TOOL,
-    WG_FAIL_TOOL,
-    WG_LOG_TOOL,
-    WG_ARTIFACT_TOOL,
-    WG_MSG_SEND_TOOL,
-    WG_MSG_READ_TOOL,
-]
+# Default timeout for a single trial (seconds)
+DEFAULT_TRIAL_TIMEOUT = 1800  # 30 minutes
 
 
 # ---------------------------------------------------------------------------
-# Tool execution helpers
+# Condition → native wg config mapping
 # ---------------------------------------------------------------------------
 
-async def _exec_bash(
-    env: BaseEnvironment, args: dict, timeout: int = 120
-) -> str:
-    """Execute a bash command inside the Harbor environment."""
-    command = args.get("command", "")
-    timeout_sec = args.get("timeout", timeout)
-    result = await env.exec(command=command, timeout_sec=timeout_sec)
-    output_parts = []
-    if result.stdout:
-        output_parts.append(result.stdout)
-    if result.stderr:
-        output_parts.append(f"[stderr]\n{result.stderr}")
-    if result.return_code != 0:
-        output_parts.append(f"[exit code: {result.return_code}]")
-    return "\n".join(output_parts) if output_parts else "(no output)"
+# Maps each condition to its native executor configuration.
+# exec_mode: bare/light/full — controls tool bundle
+# context_scope: clean/task/graph/full — controls prompt context assembly
+# agency: None, or (role, tradeoff) for D/E
+# max_agents: number of parallel agents allowed
+CONDITION_CONFIG = {
+    "A": {
+        "exec_mode": "full",
+        "context_scope": "clean",
+        "agency": None,
+        "exclude_wg_tools": True,
+        "max_agents": 1,
+    },
+    "B": {
+        "exec_mode": "full",
+        "context_scope": "task",
+        "agency": None,
+        "exclude_wg_tools": False,
+        "max_agents": 1,
+    },
+    "C": {
+        "exec_mode": "full",
+        "context_scope": "task",
+        "agency": None,
+        "exclude_wg_tools": False,
+        "max_agents": 1,
+    },
+    "D": {
+        "exec_mode": "full",
+        "context_scope": "task",
+        "agency": ("programmer", "careful"),
+        "exclude_wg_tools": False,
+        "max_agents": 1,
+    },
+    "E": {
+        "exec_mode": "full",
+        "context_scope": "graph",
+        "agency": ("architect", "thorough"),
+        "exclude_wg_tools": False,
+        "max_agents": 1,
+    },
+    "F": {
+        "exec_mode": "full",
+        "context_scope": "graph",
+        "agency": None,
+        "exclude_wg_tools": False,
+        "max_agents": 1,
+    },
+}
 
 
-async def _exec_read_file(env: BaseEnvironment, args: dict) -> str:
-    """Read a file inside the Harbor environment."""
-    path = shlex.quote(args["path"])
-    offset = args.get("offset")
-    limit = args.get("limit")
-    if offset is not None and limit is not None:
-        cmd = f"sed -n '{offset + 1},{offset + limit}p' {path}"
-    elif offset is not None:
-        cmd = f"tail -n +{offset + 1} {path}"
-    elif limit is not None:
-        cmd = f"head -n {limit} {path}"
-    else:
-        cmd = f"cat {path}"
-    result = await env.exec(command=cmd, timeout_sec=30)
-    if result.return_code != 0:
-        return f"Error reading {args['path']}: {result.stderr or 'file not found'}"
-    return result.stdout or "(empty file)"
-
-
-async def _exec_write_file(env: BaseEnvironment, args: dict) -> str:
-    """Write a file inside the Harbor environment using base64 to avoid escaping."""
-    import base64
-
-    path = args["path"]
-    content = args["content"]
-    b64 = base64.b64encode(content.encode()).decode()
-    cmd = (
-        f"mkdir -p $(dirname {shlex.quote(path)}) && "
-        f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(path)}"
-    )
-    result = await env.exec(command=cmd, timeout_sec=30)
-    if result.return_code != 0:
-        return f"Error writing {path}: {result.stderr}"
-    return f"Wrote {path}"
-
-
-async def _exec_edit_file(env: BaseEnvironment, args: dict) -> str:
-    """Edit a file inside the Harbor environment using python + base64."""
-    import base64
-
-    path = args["path"]
-    b64_old = base64.b64encode(args["old_string"].encode()).decode()
-    b64_new = base64.b64encode(args["new_string"].encode()).decode()
-    # Use python3 inside the container with base64-encoded strings to avoid escaping
-    cmd = (
-        f"python3 -c \""
-        f"import base64;"
-        f"p={shlex.quote(path)};"
-        f"old=base64.b64decode('{b64_old}').decode();"
-        f"new=base64.b64decode('{b64_new}').decode();"
-        f"t=open(p).read();"
-        f"c=t.count(old);"
-        f"exit('old_string not found') if c==0 else None;"
-        f"exit(f'old_string matches {{c}} times, must be unique') if c>1 else None;"
-        f"open(p,'w').write(t.replace(old,new,1));"
-        f"print('Edited '+p)\""
-    )
-    result = await env.exec(command=cmd, timeout_sec=30)
-    if result.return_code != 0:
-        return f"Error editing {path}: {result.stderr or result.stdout}"
-    return result.stdout or f"Edited {path}"
-
-
-async def _exec_glob(env: BaseEnvironment, args: dict) -> str:
-    """Find files matching a glob pattern, sorted by modification time."""
-    pattern = args["pattern"]
-    base = args.get("path", ".")
-    base_q = shlex.quote(base)
-    pattern_q = shlex.quote(pattern)
-
-    # Strategy 1: python3 glob (handles ** patterns correctly, sorts by mtime)
-    cmd = (
-        f"python3 -c \""
-        f"import glob, os;"
-        f"files = glob.glob({repr(pattern)}, root_dir={repr(base)}, recursive=True);"
-        f"paths = [os.path.join({repr(base)}, f) for f in files if os.path.isfile(os.path.join({repr(base)}, f))];"
-        f"paths.sort(key=lambda p: os.path.getmtime(p), reverse=True);"
-        f"print('\\n'.join(paths[:200]))"
-        f"\""
-    )
-    result = await env.exec(command=cmd, timeout_sec=30)
-    if result.return_code == 0 and result.stdout and result.stdout.strip():
-        return result.stdout
-
-    # Strategy 2: find fallback (for environments without python3 glob)
-    cmd2 = f"find {base_q} -path {pattern_q} -type f 2>/dev/null | head -200"
-    result = await env.exec(command=cmd2, timeout_sec=30)
-    if result.stdout and result.stdout.strip():
-        return result.stdout
-
-    # Strategy 3: shell glob via bash
-    cmd3 = f"ls -1t {base_q}/{pattern} 2>/dev/null | head -200"
-    result = await env.exec(command=cmd3, timeout_sec=30)
-    return result.stdout or "(no matches)"
-
-
-async def _exec_grep(env: BaseEnvironment, args: dict) -> str:
-    """Search file contents using regex with context, type filter, and output modes."""
-    pattern = shlex.quote(args["pattern"])
-    path = shlex.quote(args.get("path", "."))
-
-    # Build grep flags
-    flags = ["-rn"]
-
-    # Context lines
-    ctx = args.get("context")
-    before = args.get("before_context")
-    after = args.get("after_context")
-    if ctx is not None:
-        flags.append(f"-C {int(ctx)}")
-    else:
-        if before is not None:
-            flags.append(f"-B {int(before)}")
-        if after is not None:
-            flags.append(f"-A {int(after)}")
-
-    # Output mode
-    mode = args.get("output_mode", "content")
-    if mode == "files_with_matches":
-        flags = ["-rl"]  # override: just file paths
-    elif mode == "count":
-        flags = ["-rc"]  # override: counts per file
-
-    # File type filter
-    file_type = args.get("type")
-    include = ""
-    if file_type:
-        include = f"--include='*.{file_type}'"
-
-    flag_str = " ".join(flags)
-    cmd = f"grep {flag_str} {include} {pattern} {path} 2>/dev/null | head -200"
-    result = await env.exec(command=cmd, timeout_sec=30)
-    if mode == "count" and result.stdout:
-        # Filter out zero-count lines for cleaner output
-        lines = [l for l in result.stdout.strip().split("\n") if not l.endswith(":0")]
-        return "\n".join(lines) if lines else "(no matches)"
-    return result.stdout or "(no matches)"
-
-
-async def _exec_web_search(args: dict) -> str:
-    """Search the web using DuckDuckGo (runs on host, not in container)."""
-    query = args.get("query", "")
-    max_results = min(args.get("max_results", 5), 10)
-    if not query:
-        return "Error: query is required"
-    try:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: DDGS().text(query, max_results=max_results),
-        )
-        if not results:
-            return f"No results found for: {query}"
-        lines = []
-        for i, r in enumerate(results, 1):
-            lines.append(f"## Result {i}")
-            lines.append(f"**{r.get('title', '(no title)')}**")
-            lines.append(r.get("href", "(no url)"))
-            lines.append(r.get("body", "(no snippet)"))
-            lines.append("")
-        return "\n".join(lines)
-    except ImportError:
-        return (
-            "Error: ddgs (or duckduckgo-search) is not installed. "
-            "Run: pip install ddgs"
-        )
-    except Exception as e:
-        return f"Web search error: {e}"
-
-
-async def _exec_web_fetch(args: dict) -> str:
-    """Fetch a web page and return clean readable text (runs on host).
-
-    Strategy:
-    1. Jina Reader API (r.jina.ai) — handles JS, returns markdown
-    2. trafilatura — best-in-class HTML→text extraction
-    3. Raw httpx — last resort
-    """
-    url = args.get("url", "")
-    if not url:
-        return "Error: url is required"
-
-    max_content = 10000  # ~10K chars as specified in task requirements
-    timeout_sec = 10
-
-    # --- Strategy 1: Jina Reader API ---
-    try:
-        import httpx
-
-        jina_url = f"https://r.jina.ai/{url}"
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout_sec
-        ) as client:
-            resp = await client.get(
-                jina_url,
-                headers={"Accept": "text/markdown"},
-            )
-            if resp.status_code == 200 and len(resp.text.strip()) > 100:
-                content = resp.text
-                if len(content) > max_content:
-                    content = content[:max_content] + "\n\n[... truncated]"
-                return content
-    except Exception as e:
-        logger.debug(f"Jina Reader failed for {url}: {e}")
-
-    # --- Strategy 2: trafilatura ---
-    try:
-        import trafilatura
-
-        loop = asyncio.get_running_loop()
-
-        def _fetch_and_extract():
-            downloaded = trafilatura.fetch_url(url)
-            if downloaded:
-                return trafilatura.extract(downloaded)
-            return None
-
-        text = await asyncio.wait_for(
-            loop.run_in_executor(None, _fetch_and_extract),
-            timeout=timeout_sec,
-        )
-        if text and len(text.strip()) > 50:
-            if len(text) > max_content:
-                text = text[:max_content] + "\n\n[... truncated]"
-            return text
-    except ImportError:
-        logger.debug("trafilatura not installed, skipping fallback")
-    except Exception as e:
-        logger.debug(f"trafilatura failed for {url}: {e}")
-
-    # --- Strategy 3: Raw HTTP ---
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout_sec
-        ) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                text = resp.text
-                # Crude HTML stripping: remove tags, collapse whitespace
-                import re
-
-                text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
-                text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-                text = re.sub(r"<[^>]+>", " ", text)
-                text = re.sub(r"\s+", " ", text).strip()
-                if len(text) > max_content:
-                    text = text[:max_content] + "\n\n[... truncated]"
-                return text if text else f"(empty page at {url})"
-    except Exception as e:
-        logger.debug(f"Raw HTTP fetch failed for {url}: {e}")
-
-    return f"Failed to fetch {url} — all strategies exhausted"
-
+# ---------------------------------------------------------------------------
+# Host-side wg CLI execution helper
+# ---------------------------------------------------------------------------
 
 async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
-    """Execute a wg command on the HOST (not in the container).
+    """Execute a wg command on the HOST (not in a container).
 
-    This avoids injecting the wg binary into Docker containers, which
-    can break Harbor's verifier. The workgraph state lives on the host
-    in a temp directory.
+    The workgraph state lives on the host in a temp directory per trial.
     """
     cmd = [wg_bin, "--dir", wg_dir] + subcmd
     try:
@@ -814,419 +130,167 @@ async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
         return f"[wg command error: {e}]"
 
 
-async def execute_tool(
-    env: BaseEnvironment,
-    tool_name: str,
-    args: dict,
-    wg_dir: str | None = None,
-    wg_bin: str | None = None,
-) -> str:
-    """Dispatch a tool call to the appropriate handler."""
-    if tool_name == "bash":
-        return await _exec_bash(env, args)
-    elif tool_name == "read_file":
-        return await _exec_read_file(env, args)
-    elif tool_name == "write_file":
-        return await _exec_write_file(env, args)
-    elif tool_name == "edit_file":
-        return await _exec_edit_file(env, args)
-    elif tool_name == "glob":
-        return await _exec_glob(env, args)
-    elif tool_name == "grep":
-        return await _exec_grep(env, args)
-    elif tool_name == "web_search":
-        return await _exec_web_search(args)
-    elif tool_name == "web_fetch":
-        return await _exec_web_fetch(args)
-    elif tool_name == "wg_show":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["show", args["task_id"]])
-    elif tool_name == "wg_list":
-        cmd = ["list"]
-        if args.get("status"):
-            cmd += ["--status", args["status"]]
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, cmd)
-    elif tool_name == "wg_add":
-        cmd = ["add", args["title"]]
-        if args.get("id"):
-            cmd += ["--id", args["id"]]
-        if args.get("after"):
-            cmd += ["--after", args["after"]]
-        if args.get("description"):
-            cmd += ["-d", args["description"]]
-        if args.get("verify"):
-            cmd += ["--verify", args["verify"]]
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, cmd)
-    elif tool_name == "wg_done":
-        cmd = ["done", args["task_id"]]
-        if args.get("converged"):
-            cmd.append("--converged")
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, cmd)
-    elif tool_name == "wg_fail":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["fail", args["task_id"], "--reason", args["reason"]])
-    elif tool_name == "wg_log":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["log", args["task_id"], args["message"]])
-    elif tool_name == "wg_artifact":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["artifact", args["task_id"], args["path"]])
-    elif tool_name == "wg_msg_send":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["msg", "send", args["task_id"], args["message"]])
-    elif tool_name == "wg_msg_read":
-        return await _exec_wg_cmd_host(wg_dir, wg_bin, ["msg", "read", args["task_id"]])
-    else:
-        return f"Unknown tool: {tool_name}"
+# ---------------------------------------------------------------------------
+# Trial configuration writers
+# ---------------------------------------------------------------------------
+
+async def _write_trial_wg_config(
+    trial_dir: str,
+    wg_dir: str,
+    condition: str,
+    model: str,
+) -> None:
+    """Write .workgraph/config.toml for this trial.
+
+    Configures the coordinator, executor, context scope, and model
+    based on the condition.
+    """
+    cfg = CONDITION_CONFIG[condition]
+    config_path = os.path.join(wg_dir, "config.toml")
+
+    lines = [
+        "[coordinator]",
+        f'max_agents = {cfg["max_agents"]}',
+        f'executor = "native"',
+        f'model = "{model}"',
+        f'worktree_isolation = false',
+        "",
+        "[agent]",
+        f'context_scope = "{cfg["context_scope"]}"',
+        f'exec_mode = "{cfg["exec_mode"]}"',
+        "",
+    ]
+
+    with open(config_path, "w") as f:
+        f.write("\n".join(lines))
+
+
+async def _write_trial_bundle(
+    wg_dir: str,
+    condition: str,
+) -> None:
+    """Write a custom bundle TOML for conditions that need tool filtering.
+
+    For Condition A, creates a bundle that excludes wg tools entirely.
+    """
+    cfg = CONDITION_CONFIG[condition]
+    if not cfg.get("exclude_wg_tools"):
+        return
+
+    bundles_dir = os.path.join(wg_dir, "bundles")
+    os.makedirs(bundles_dir, exist_ok=True)
+
+    # Override the implementer bundle (used by exec_mode=full) to exclude wg tools
+    bundle_path = os.path.join(bundles_dir, "implementer.toml")
+    content = (
+        'name = "implementer"\n'
+        'description = "Full implementation agent without wg tools (Condition A baseline)."\n'
+        'tools = ["bash", "read_file", "write_file", "edit_file", "glob", "grep"]\n'
+        'context_scope = "clean"\n'
+        'system_prompt_suffix = ""\n'
+    )
+    with open(bundle_path, "w") as f:
+        f.write(content)
 
 
 # ---------------------------------------------------------------------------
-# System prompt builders
+# Task completion polling
 # ---------------------------------------------------------------------------
 
-def build_condition_a_prompt(instruction: str) -> str:
-    """Condition A: bare agent, minimal scaffolding."""
-    return (
-        "You are a coding agent completing a Terminal Bench task.\n"
-        "You have access to bash and file tools.\n"
-        "Focus on completing the task efficiently and correctly.\n"
-        "Do not ask for clarification - proceed with your best judgment.\n"
-        "\n"
-        "## Guidelines\n"
-        "- Use bash to run commands, install packages, compile code, etc.\n"
-        "- Use read_file, write_file, edit_file for file operations.\n"
-        "- Use glob and grep to explore the codebase.\n"
-        "- Use web_search to find documentation, API references, error messages, library versions.\n"
-        "- Use web_fetch to read web pages (docs, tutorials, Stack Overflow, etc.).\n"
-        "- Always prefer precise edits over full file rewrites.\n"
-        "- Keep output concise.\n"
-    )
+async def _poll_task_completion(
+    wg_dir: str,
+    wg_bin: str,
+    task_id: str,
+    timeout_secs: float = DEFAULT_TRIAL_TIMEOUT,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+) -> tuple[str, float]:
+    """Poll `wg show` until the root task reaches a terminal status.
 
-
-def build_condition_b_prompt(instruction: str, root_task_id: str) -> str:
-    """Condition B: full workgraph integration."""
-    return (
-        "# Task Assignment\n\n"
-        "You are an AI agent working on a task in a workgraph project.\n"
-        f"Your root task ID is: **{root_task_id}**\n\n"
-        "## Guidelines\n"
-        "- Use bash, file tools, and wg tools to complete the task.\n"
-        "- Use `wg_log` to record progress (enables crash recovery).\n"
-        "- Use `wg_add` to decompose complex work into subtasks.\n"
-        "- Use `wg_done` when finished, `wg_fail` if blocked.\n"
-        "- Always prefer precise edits over full file rewrites.\n"
-        "- Keep output concise.\n\n"
-        "## Workgraph Patterns\n"
-        "- **Pipeline**: A -> B -> C (sequential steps)\n"
-        "- **Diamond**: A -> [B,C,D] -> E (fan-out/fan-in)\n"
-        "- **Loop**: A -> B -> C -> A with --max-iterations\n"
-        "- **Golden rule**: same files = sequential edges (never parallelize)\n\n"
-        "## Journal/Resume\n"
-        "Your progress is persisted via wg_log. If the session is interrupted,\n"
-        "a resumed agent will see your log entries and continue from there.\n"
-        "Log frequently so progress is not lost.\n\n"
-        "Begin working on the task now.\n"
-    )
-
-
-def build_condition_c_prompt(instruction: str, root_task_id: str) -> str:
-    """Condition C: wg tools + skill injection + planning phase.
-
-    Same tools as B but with a skill prompt that teaches WHEN and HOW to use
-    workgraph for decomposition, plus a mandatory planning phase instruction.
+    Returns (status, elapsed_seconds).
     """
-    return (
-        "# Task Assignment\n\n"
-        "You are an AI agent completing a Terminal Bench task.\n"
-        f"Your root task ID is: **{root_task_id}**\n\n"
-        "## Workgraph: Your External Memory\n\n"
-        "You have a workgraph — a persistent task graph that acts as external memory.\n"
-        "It survives even if your context fills up. Use it.\n\n"
-        "### Always do this\n"
-        f'- `wg_log("{root_task_id}", "Starting: <plan>")` before your first action\n'
-        f'- `wg_log("{root_task_id}", "Done: <result>")` after completing a step\n'
-        f'- `wg_done("{root_task_id}")` when the task is complete\n'
-        f'- `wg_fail("{root_task_id}", "reason")` if you cannot complete the task\n\n'
-        "### Decompose when needed\n"
-        "If the task has 3+ distinct phases or might exhaust your context:\n"
-        '- `wg_add("Step 1: <title>")` to create subtasks\n'
-        "- Solve each subtask, then `wg_done` each one\n"
-        f'- Finally `wg_done("{root_task_id}")`\n\n'
-        "If the task is simple (< 10 steps), skip decomposition and solve directly.\n\n"
-        "### Record outputs\n"
-        f'- `wg_artifact("{root_task_id}", "/path/to/file")` for files you create\n\n'
-        "## Planning Phase\n\n"
-        "Before writing code or running commands, analyze the task in ONE response:\n"
-        "1. What does the task require?\n"
-        "2. How many steps? Simple (< 10) or complex (10+)?\n"
-        "3. Plan: decompose or solve directly?\n"
-        "4. First action?\n\n"
-        "Then execute your plan.\n\n"
-        "## Tools\n"
-        "- bash, read_file, write_file, edit_file, glob, grep — for working in the environment\n"
-        "- wg_log, wg_add, wg_done, wg_fail, wg_show, wg_list, wg_artifact, "
-        "wg_msg_send, wg_msg_read — for task coordination\n\n"
-        "Begin by analyzing the task below, then execute.\n"
-    )
+    start = time.monotonic()
+    terminal_statuses = {"done", "failed", "abandoned"}
+
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed > timeout_secs:
+            return "timeout", elapsed
+
+        result = await _exec_wg_cmd_host(wg_dir, wg_bin, ["show", task_id])
+
+        # Parse status from `wg show` output (format: "Status: <status>")
+        status = None
+        for line in result.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Status:"):
+                status = stripped.split(":", 1)[1].strip().lower()
+                break
+
+        if status and status in terminal_statuses:
+            return status, elapsed
+
+        await asyncio.sleep(poll_interval)
 
 
-def build_condition_d_prompt(instruction: str, root_task_id: str, agent_identity: dict) -> str:
-    """Condition D: autopoietic verification loop + agency identity + wg tools."""
-    return (
-        "# Task Assignment\n\n"
-        "You are an AI agent completing a Terminal Bench task.\n"
-        f"Your root task ID is: **{root_task_id}**\n\n"
-        "## Your Identity\n\n"
-        f"You are **{agent_identity['name']}** (role: {agent_identity['role']}, "
-        f"approach: {agent_identity['tradeoff']}). "
-        "This means you prioritize correctness over speed. "
-        "Verify your work before declaring it done.\n\n"
-        "## Core Loop: Attempt → Verify → Iterate → Declare\n\n"
-        "You MUST follow this loop for every task:\n\n"
-        "1. **Understand**: Read the task. Identify what success looks like. "
-        "Find any existing tests or verification criteria.\n"
-        "2. **Attempt**: Implement your solution.\n"
-        "3. **Verify**: Run the task's tests, check command, or verify output independently. "
-        "Do NOT rely on your own reading of the code — execute something that proves correctness.\n"
-        "4. **Iterate**: If verification fails, diagnose the failure, fix it, and go back to step 3. "
-        "You may iterate as many times as needed.\n"
-        "5. **Declare**:\n"
-        f'   - If verification passes: `wg_done("{root_task_id}")`\n'
-        f'   - If you are stuck after 3+ failed iterations and cannot make progress: '
-        f'`wg_fail("{root_task_id}", "reason: what failed and what you tried")`\n\n'
-        "**CRITICAL**: Never call `wg_done` without first running a verification step "
-        "that succeeded. Never spin indefinitely — if 3 consecutive fix attempts fail "
-        "on the same issue, call `wg_fail` with diagnostics.\n\n"
-        "## Workgraph Tools\n\n"
-        f'- `wg_log("{root_task_id}", "message")` — Record progress (do this at each step)\n'
-        f'- `wg_done("{root_task_id}")` — Task complete (ONLY after verification passes)\n'
-        f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with diagnostics)\n'
-        f'- `wg_add("title")` — Decompose into subtasks if needed\n'
-        f'- `wg_artifact("{root_task_id}", "/path")` — Record output files\n\n'
-        "Use `wg_log` at every major step. This is your external memory — "
-        "if your context fills up, a resumed agent can read your log.\n\n"
-        "## When to Decompose\n\n"
-        "If the task has 3+ independent phases that could fail independently, "
-        "decompose with `wg_add`. Otherwise, solve directly. "
-        "Most tasks are single-phase — just use the core loop.\n\n"
-        "## Tools Available\n"
-        "- `bash` — Run commands (compile, test, install packages)\n"
-        "- `read_file`, `write_file`, `edit_file` — File operations\n"
-        "- `glob`, `grep` — Search the codebase\n"
-        "- `wg_*` tools — Task coordination (see above)\n\n"
-        "Begin by reading the task, identifying verification criteria, then implementing.\n"
-    )
+# ---------------------------------------------------------------------------
+# Metric collection from native executor stream.jsonl
+# ---------------------------------------------------------------------------
 
+async def _collect_agent_metrics(wg_dir: str) -> dict[str, Any]:
+    """Read agent stream.jsonl files to extract token counts and cost.
 
-def build_condition_e_prompt(instruction: str, root_task_id: str, agent_identity: dict) -> str:
-    """Condition E: autopoietic organization generation."""
-    return (
-        "# Task Assignment: Organization Generation Mode\n\n"
-        "You are an AI agent completing a Terminal Bench task.\n"
-        f"Your root task ID is: **{root_task_id}**\n\n"
-        "## Your Identity\n\n"
-        f"You are **{agent_identity['name']}** (role: {agent_identity['role']}, "
-        f"approach: {agent_identity['tradeoff']}). "
-        "You are an ORCHESTRATOR, not a direct implementer. "
-        "Your job is to create and manage an organization of tasks "
-        "that solves the problem.\n\n"
-        "## Core Protocol: Organize → Implement → Verify → Triage\n\n"
-        "You MUST follow this protocol:\n\n"
-        "### Phase 1: Analyze & Decompose\n"
-        "1. Read the task instruction carefully.\n"
-        "2. Identify what success looks like (test criteria, expected outputs).\n"
-        "3. Break the task into implementation steps.\n"
-        "4. Create tasks for each step using `wg_add`.\n\n"
-        "### Phase 2: Implement\n"
-        "For each implementation task you created:\n"
-        "1. Log that you're starting: "
-        f'`wg_log("{root_task_id}", "Implementing: <task-name>")`\n'
-        "2. Do the implementation work (write code, run commands, etc.)\n"
-        "3. Log the result: "
-        f'`wg_log("{root_task_id}", "Completed: <task-name>")`\n'
-        "4. Mark the subtask done: `wg_done(\"<subtask-id>\")`\n\n"
-        "### Phase 3: Independent Verification\n"
-        "After ALL implementation tasks are done:\n"
-        "1. **STOP and shift perspective.** You are now a REVIEWER, not the implementer.\n"
-        "2. **Do NOT rely on your memory of writing the code.** "
-        "Instead, read the files fresh as if seeing them for the first time.\n"
-        "3. Run the task's test suite or verification command.\n"
-        "4. Independently check that outputs match the task specification.\n"
-        "5. Record a structured verdict:\n"
-        f'   - PASS: `wg_log("{root_task_id}", "VERIFY: PASS — <evidence>")`\n'
-        f'   - FAIL: `wg_log("{root_task_id}", "VERIFY: FAIL — <specific issue>")`\n\n'
-        "### Phase 4: Triage (on FAIL only)\n"
-        "If verification fails:\n"
-        "1. Diagnose the root cause from the verification evidence.\n"
-        "2. Create a new fix task: "
-        '`wg_add("Fix: <diagnosis>", description="Previous attempt failed because: '
-        '<reason>. Fix: <specific fix>")`\n'
-        "3. Implement the fix (Phase 2 again).\n"
-        "4. Re-verify (Phase 3 again).\n"
-        "5. Repeat until verification passes OR you've done "
-        "6 iterations without progress.\n\n"
-        "### Phase 5: Declare\n"
-        f'- Verification passed: `wg_done("{root_task_id}")`\n'
-        "- Stuck after 6 iterations: "
-        f'`wg_fail("{root_task_id}", "reason: <what failed across N iterations>")`\n\n'
-        "## CRITICAL Rules\n\n"
-        f"1. **NEVER call `wg_done(\"{root_task_id}\")` without a PASS verdict.** "
-        "The root task represents the TB benchmark task — it can only be done "
-        "when verification confirms success.\n"
-        "2. **Verification must be INDEPENDENT.** When verifying, read files from disk. "
-        "Do not trust your memory of what you wrote. Run tests. Check outputs.\n"
-        "3. **Triage creates NEW tasks.** Don't just edit the same code in place — "
-        "create a `wg_add(\"Fix: ...\")` task so the fix is tracked. Then implement it.\n"
-        "4. **Log everything.** Every phase transition, every verification result, "
-        "every triage decision. Your log is the organization's memory.\n"
-        "5. **Iterate, don't spin.** Each fix attempt must be DIFFERENT from the last. "
-        "If you're trying the same thing twice, step back and reconsider.\n\n"
-        "## Workgraph Tools\n\n"
-        f'- `wg_log("{root_task_id}", "message")` — Record progress (every phase)\n'
-        f'- `wg_done("{root_task_id}")` — Root task complete (ONLY after PASS verdict)\n'
-        f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with full diagnostics)\n'
-        '- `wg_add("title", description="details")` — Create subtasks\n'
-        '- `wg_done("<subtask-id>")` — Mark a subtask complete\n'
-        f'- `wg_artifact("{root_task_id}", "/path")` — Record output files\n'
-        '- `wg_list()` — See all tasks and their status\n'
-        '- `wg_show("<task-id>")` — Inspect a task\'s details\n\n'
-        "## File Tools\n"
-        "- `bash` — Run commands (compile, test, install packages)\n"
-        "- `read_file`, `write_file`, `edit_file` — File operations\n"
-        "- `glob`, `grep` — Search the codebase\n\n"
-        "Begin by reading the task, analyzing what needs to be done, "
-        "then creating your implementation plan as wg tasks.\n"
-    )
-
-
-def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
-    """Condition F: wg-native agent with full context parity.
-
-    Design principles:
-    - Keep wg tools (proves wg adds value over bare agents)
-    - Inject distilled wg knowledge (closes context gap with Claude agents)
-    - Empirical verification first (test discovery before implementation)
-    - Adaptive decomposition (no forced orchestrator framing)
-    - Enhanced wg_add with --verify and --id parameters
-    - Time-aware termination
-    - Compliant turn limit (1M, not 300)
+    Scans .workgraph/agents/*/stream.jsonl for Result events and
+    aggregates usage data.
     """
-    return (
-        "You are a coding agent completing a Terminal Bench task.\n"
-        f"Your root task ID is: **{root_task_id}**\n\n"
+    agents_dir = os.path.join(wg_dir, "agents")
+    metrics: dict[str, Any] = {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "tool_calls": [],
+    }
 
-        # --- WG Context Injection (distilled from CLAUDE.md + MEMORY.md) ---
-        "## Workgraph Quick Guide\n\n"
-        "Workgraph (wg) is a persistent task coordination graph. Tasks have "
-        "dependencies, statuses, and verification gates. It acts as your external "
-        "memory — if your context fills up, your wg_log entries survive.\n\n"
+    if not os.path.isdir(agents_dir):
+        return metrics
 
-        "### Task Lifecycle\n"
-        "open → in-progress → done/failed\n\n"
+    for agent_id in os.listdir(agents_dir):
+        stream_path = os.path.join(agents_dir, agent_id, "stream.jsonl")
+        if not os.path.isfile(stream_path):
+            continue
 
-        "### Creating Tasks with Dependencies\n"
-        "Use `after` to express dependency order:\n"
-        '  `wg_add("Build library", after="clone-repo")`\n'
-        '  `wg_add("Run tests", after="build-library")`\n\n'
-        "CRITICAL: Always use `after` for dependent steps. NEVER create flat task "
-        "lists — every step that depends on a previous step MUST declare the edge.\n\n"
+        try:
+            with open(stream_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-        "### Verification Gates\n"
-        "Use `verify` to attach a machine-checkable pass/fail gate:\n"
-        '  `wg_add("Compile ext", verify="python -c \'import myext\'")`\n'
-        "Tasks with verify must pass the check before they can be marked done.\n\n"
+                    event_type = event.get("type")
 
-        "### When to Decompose\n"
-        "- 3+ genuinely independent phases → create subtasks with wg_add + after edges\n"
-        "- Single file, single function, single config → solve directly, no decomposition\n"
-        "- Golden rule: same files = sequential edges (NEVER parallelize tasks on same files)\n"
-        "- If in doubt, don't decompose — overhead on atomic tasks hurts more than it helps\n\n"
+                    if event_type == "turn":
+                        metrics["total_turns"] += 1
+                        usage = event.get("usage")
+                        if usage:
+                            metrics["total_input_tokens"] += usage.get("input_tokens", 0)
+                            metrics["total_output_tokens"] += usage.get("output_tokens", 0)
+                        tools = event.get("tools_used", [])
+                        metrics["tool_calls"].extend(tools)
 
-        "### Progress & Termination\n"
-        f'- `wg_log("{root_task_id}", "message")` — journal entry (external memory, persists across restarts)\n'
-        f'- `wg_done("{root_task_id}")` — task complete (ONLY after verification passes)\n'
-        f'- `wg_fail("{root_task_id}", "reason")` — cannot complete (include what you tried and what failed)\n'
-        f'- `wg_artifact("{root_task_id}", "/path")` — record output files\n\n'
+                    elif event_type == "result":
+                        usage = event.get("usage", {})
+                        cost = usage.get("cost_usd")
+                        if cost:
+                            metrics["total_cost_usd"] += cost
 
-        "### Dependency Patterns\n"
-        "- Pipeline: A → B → C (each wg_add uses after= pointing to previous)\n"
-        "- Fan-out/in: A → [B, C] → D (B and C have after=A; D has after=B,C)\n\n"
+        except Exception as e:
+            logger.warning(f"Failed to read stream.jsonl for {agent_id}: {e}")
 
-        "### Example: Multi-Step Build Task\n"
-        '  wg_add("Clone and patch source")                         → auto-ID: clone-and-patch-source\n'
-        '  wg_add("Compile extension", after="clone-and-patch-source",\n'
-        '         verify="python -c \'import ext\' exits 0")          → auto-ID: compile-extension\n'
-        '  wg_add("Run test suite", after="compile-extension",\n'
-        '         verify="pytest /tests/ -v exits 0")                → auto-ID: run-test-suite\n'
-        "Then implement each step in order, wg_done each, wg_done root task last.\n\n"
-
-        "### Example: Atomic Task (single function/config)\n"
-        "Don't decompose. Implement directly, verify empirically, then wg_done.\n\n"
-
-        # --- Core Protocol ---
-        "## Strategy: Discover → Plan → Implement → Verify → Iterate\n\n"
-
-        "### Step 1: Read the Test File\n"
-        "Before writing ANY code, read the test suite directly:\n"
-        "```\n"
-        "bash(\"cat /tests/test_outputs.py 2>/dev/null || echo 'No test file found'\")\n"
-        "bash(\"ls -la /tests/ 2>/dev/null\")\n"
-        "```\n"
-        "If `/tests/test_outputs.py` exists, READ IT — do not just list files. "
-        "It defines exactly what the verifier will check.\n"
-        "The external verifier runs exactly these tests to score you.\n"
-        "Understanding the test assertions FIRST tells you exactly what to build.\n\n"
-
-        "### Step 2: Classify & Plan\n"
-        "- **ATOMIC** (single file, single function, single config): "
-        "Implement directly. Do NOT decompose.\n"
-        "- **MULTI-STEP** (multiple files, build pipeline, system setup): "
-        "Create subtasks with `wg_add` and `after` dependency edges.\n"
-        f'Log your plan: `wg_log("{root_task_id}", "Plan: <classification> — <steps>")`\n\n'
-
-        "### Step 3: Implement\n"
-        "Write your solution. For multi-step tasks, implement each subtask "
-        "in dependency order, marking each done with `wg_done`.\n\n"
-
-        "### Step 4: Verify Empirically\n"
-        "After implementing, run the tests:\n"
-        "```\n"
-        "bash(\"cd /tests && python -m pytest test_outputs.py -v 2>&1 | tail -80\")\n"
-        "```\n"
-        "If no test files were found, verify by running the code and checking outputs.\n\n"
-        "**CRITICAL**: If ANY test in `test_outputs.py` fails, that is your ground truth. "
-        "Fix your implementation, NOT the test. Do NOT declare success while tests fail.\n"
-        "Your own ad-hoc tests supplement existing tests, never override them.\n"
-        f'Log the result: `wg_log("{root_task_id}", "VERIFY: <PASS|FAIL> — <evidence>")`\n\n'
-
-        "### Step 5: Iterate on Failures\n"
-        "If tests fail:\n"
-        "1. Read the failure output — it tells you exactly what's wrong.\n"
-        "2. Diagnose the root cause (not just the symptom).\n"
-        "3. Fix it.\n"
-        "4. Re-run the tests.\n"
-        "5. Repeat up to 5 times. If trying the same fix twice, "
-        "step back and reconsider entirely.\n\n"
-
-        "### Step 6: Declare\n"
-        f'- Verification passes: `wg_done("{root_task_id}")`\n'
-        f'- Stuck after 5 iterations: '
-        f'`wg_fail("{root_task_id}", "reason: <what failed and what was tried>")`\n\n'
-
-        "## Time Management\n"
-        "You have 30 minutes maximum. Budget roughly:\n"
-        "- Test discovery + planning: 2 minutes\n"
-        "- Implementation: 15 minutes\n"
-        "- Verification + iteration: 10 minutes\n"
-        "- If stuck for 20+ minutes with no progress, call `wg_fail` immediately.\n\n"
-
-        "## Tools\n"
-        "- `bash` — Run commands, install packages, compile, test\n"
-        "- `read_file`, `write_file`, `edit_file` — File operations\n"
-        "- `glob`, `grep` — Search the codebase\n"
-        "- `web_search` — Search the web for docs, API references, error messages, library versions\n"
-        "- `web_fetch` — Fetch a web page and return clean readable text (docs, tutorials, etc.)\n"
-        "- `wg_log`, `wg_add`, `wg_done`, `wg_fail` — Task coordination (see Quick Guide)\n"
-        "- `wg_show`, `wg_list` — Inspect task graph\n"
-        "- `wg_artifact`, `wg_msg_send`, `wg_msg_read` — Record artifacts, communicate\n\n"
-
-        "Begin by discovering tests, then plan your approach.\n"
-    )
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -1236,6 +300,8 @@ def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
 class WorkgraphAgent(BaseAgent):
     """
     Harbor agent adapter for Terminal Bench evaluation.
+
+    Delegates execution to workgraph's native executor via `wg service start`.
 
     Supports six experimental conditions:
       condition="A" — bare agent (bash + file tools, no graph)
@@ -1257,15 +323,15 @@ class WorkgraphAgent(BaseAgent):
         return "workgraph"
 
     def version(self) -> str | None:
-        return "0.1.0"
+        return "0.2.0"
 
     def __init__(
         self,
         logs_dir: Path | None = None,
         model_name: str | None = None,
         condition: str = "B",
-        max_turns: int = 100,
-        temperature: float = 0.0,
+        timeout: float = DEFAULT_TRIAL_TIMEOUT,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         wg_binary_host_path: str | None = None,
         *args,
         **kwargs,
@@ -1275,15 +341,13 @@ class WorkgraphAgent(BaseAgent):
             logs_dir.mkdir(parents=True, exist_ok=True)
         super().__init__(logs_dir=logs_dir, model_name=model_name, *args, **kwargs)
         self.condition = condition.upper()
-        self.max_turns = max_turns
-        self.temperature = temperature
+        self.timeout = timeout
+        self.poll_interval = poll_interval
         self._wg_binary_host_path = wg_binary_host_path or self._find_wg_binary()
 
     def _find_wg_binary(self) -> str:
-        """Locate the wg binary on the host for injection into containers."""
+        """Locate the wg binary on the host."""
         candidates = [
-            # Prefer statically-linked binary for Docker container compatibility
-            "/home/erik/workgraph/target/x86_64-unknown-linux-gnu/release/wg",
             os.path.expanduser("~/.cargo/bin/wg"),
             "/home/erik/workgraph/target/release/wg",
             "/home/erik/workgraph/target/debug/wg",
@@ -1294,59 +358,47 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Set up host-side workgraph for Condition B/C/D/E/F (no container injection)."""
-        if self.condition in ("B", "C", "D", "E", "F"):
-            import tempfile
-            self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
-            self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
-            wg_bin = self._wg_binary_host_path
-            # Initialize workgraph on host
-            proc = await asyncio.create_subprocess_exec(
-                wg_bin, "--dir", self._wg_graph_dir, "init",
-                env={"HOME": self._wg_temp_dir, **os.environ},
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-            logger.info(f"Initialized host-side workgraph at {self._wg_graph_dir}")
+        """Create per-trial graph directory and configure the native executor."""
+        import tempfile
 
-            if self.condition == "D":
-                wg_dir = self._wg_graph_dir
-                # Bootstrap agency (seed starter roles/tradeoffs)
-                await _exec_wg_cmd_host(wg_dir, wg_bin, ["agency", "init"])
-                # Create agent identity
-                await _exec_wg_cmd_host(wg_dir, wg_bin, [
-                    "agent", "create", "solver",
-                    "--role", "programmer",
-                    "--tradeoff", "careful",
-                ])
-                self._agent_identity = {
-                    "name": "solver",
-                    "role": "programmer",
-                    "tradeoff": "careful",
-                }
-                logger.info("Condition D: agency bootstrapped, solver agent created")
+        self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
+        self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
+        wg_bin = self._wg_binary_host_path
 
-            elif self.condition == "E":
-                wg_dir = self._wg_graph_dir
-                # Bootstrap agency (seed starter roles/tradeoffs)
-                await _exec_wg_cmd_host(wg_dir, wg_bin, ["agency", "init"])
-                # Create orchestrator agent (architect role, thorough tradeoff)
-                await _exec_wg_cmd_host(wg_dir, wg_bin, [
-                    "agent", "create", "orchestrator",
-                    "--role", "architect",
-                    "--tradeoff", "thorough",
-                ])
-                self._agent_identity = {
-                    "name": "orchestrator",
-                    "role": "architect",
-                    "tradeoff": "thorough",
-                }
-                logger.info("Condition E: agency bootstrapped, orchestrator agent created")
+        # Initialize workgraph
+        await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["init"])
+        logger.info(f"Initialized trial workgraph at {self._wg_graph_dir}")
 
-            elif self.condition == "F":
-                # No agency bootstrap — F is a plain coding agent with wg tools
-                logger.info("Condition F: workgraph initialized, no agency bootstrap")
+        # Determine model
+        model_raw = self.model_name or BENCHMARK_MODEL
+        self._model = model_raw
+
+        # Write wg config for the trial
+        await _write_trial_wg_config(
+            self._wg_temp_dir, self._wg_graph_dir,
+            self.condition, self._model,
+        )
+
+        # Write custom bundle if needed (e.g. Condition A: no wg tools)
+        await _write_trial_bundle(self._wg_graph_dir, self.condition)
+
+        # Bootstrap agency for conditions D and E
+        cfg = CONDITION_CONFIG[self.condition]
+        if cfg["agency"]:
+            role, tradeoff = cfg["agency"]
+            await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["agency", "init"])
+            agent_name = "solver" if self.condition == "D" else "orchestrator"
+            await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, [
+                "agent", "create", agent_name,
+                "--role", role,
+                "--tradeoff", tradeoff,
+            ])
+            self._agent_identity = {
+                "name": agent_name,
+                "role": role,
+                "tradeoff": tradeoff,
+            }
+            logger.info(f"Condition {self.condition}: agency bootstrapped, {agent_name} created")
 
     async def run(
         self,
@@ -1354,285 +406,127 @@ class WorkgraphAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """Execute the agent loop: LLM calls + tool execution via Harbor environment."""
+        """Start the native wg service, poll for completion, and collect metrics."""
+        wg_dir = self._wg_graph_dir
+        wg_bin = self._wg_binary_host_path
 
-        # Determine tools and prompt based on condition
-        root_task_id = None
-        wg_dir = getattr(self, "_wg_graph_dir", None)
-        wg_bin = self._wg_binary_host_path if self.condition in ("B", "C", "D", "E", "F") else None
-        if self.condition == "F":
-            tools = CONDITION_F_TOOLS
-            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
-            await _exec_wg_cmd_host(
-                wg_dir, wg_bin,
-                ["add", title, "--id", root_task_id],
-            )
-            system_prompt = build_condition_f_prompt(instruction, root_task_id)
-        elif self.condition == "E":
-            tools = CONDITION_E_TOOLS
-            # Create root task in host-side workgraph
-            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
-            await _exec_wg_cmd_host(
-                wg_dir, wg_bin,
-                ["add", title, "--id", root_task_id],
-            )
-            # Assign orchestrator agent to root task
-            await _exec_wg_cmd_host(wg_dir, wg_bin, ["assign", root_task_id, "orchestrator"])
-            agent_identity = getattr(self, "_agent_identity", {
-                "name": "orchestrator", "role": "architect", "tradeoff": "thorough",
-            })
-            system_prompt = build_condition_e_prompt(instruction, root_task_id, agent_identity)
-        elif self.condition == "D":
-            tools = CONDITION_D_TOOLS
-            # Create root task in host-side workgraph
-            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
-            await _exec_wg_cmd_host(
-                wg_dir, wg_bin,
-                ["add", title, "--id", root_task_id],
-            )
-            # Assign agent identity to root task
-            await _exec_wg_cmd_host(wg_dir, wg_bin, ["assign", root_task_id, "solver"])
-            agent_identity = getattr(self, "_agent_identity", {
-                "name": "solver", "role": "programmer", "tradeoff": "careful",
-            })
-            system_prompt = build_condition_d_prompt(instruction, root_task_id, agent_identity)
-        elif self.condition == "C":
-            tools = CONDITION_C_TOOLS
-            # Create root task in host-side workgraph
-            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
-            await _exec_wg_cmd_host(
-                wg_dir, wg_bin,
-                ["add", title, "--id", root_task_id],
-            )
-            system_prompt = build_condition_c_prompt(instruction, root_task_id)
-        elif self.condition == "B":
-            tools = CONDITION_B_TOOLS
-            # Create root task in host-side workgraph
-            root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-            title = instruction[:100] + ("..." if len(instruction) > 100 else "")
-            await _exec_wg_cmd_host(
-                wg_dir, wg_bin,
-                ["add", title, "--id", root_task_id],
-            )
-            system_prompt = build_condition_b_prompt(instruction, root_task_id)
-        else:
-            tools = CONDITION_A_TOOLS
-            system_prompt = build_condition_a_prompt(instruction)
+        # Create root task
+        root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
+        title = instruction[:100] + ("..." if len(instruction) > 100 else "")
+        add_cmd = ["add", title, "--id", root_task_id, "-d", instruction]
 
-        # Build initial messages
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"## Task\n\n{instruction}"},
-        ]
+        # Condition F: add --verify if task has verification criteria
+        if self.condition == "F" and "test" in instruction.lower():
+            add_cmd += ["--verify", "true"]
 
-        # Use the benchmark model (from BENCHMARK_MODEL constant or CLI override).
-        # Convert workgraph "provider:model" format to litellm "provider/model" format.
-        model_raw = self.model_name or BENCHMARK_MODEL
-        model = model_raw.replace(":", "/", 1) if ":" in model_raw else model_raw
+        await _exec_wg_cmd_host(wg_dir, wg_bin, add_cmd)
 
-        # Initialize structured trial logger
+        # Assign agent identity for D/E
+        cfg = CONDITION_CONFIG[self.condition]
+        if cfg["agency"]:
+            agent_name = "solver" if self.condition == "D" else "orchestrator"
+            await _exec_wg_cmd_host(wg_dir, wg_bin, ["assign", root_task_id, agent_name])
+
+        # Initialize trial logger
         trial_log = TrialLogger(
             logs_dir=self.logs_dir,
             condition=self.condition,
             root_task_id=root_task_id,
-            model=model,
+            model=self._model,
         )
 
-        # Snapshot wg state after init (for B/C/D/E/F)
-        if self.condition in ("B", "C", "D", "E", "F") and wg_dir and wg_bin:
-            snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
-            trial_log.record_wg_snapshot("after_init", snapshot)
+        # Snapshot initial graph state
+        snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
+        trial_log.record_wg_snapshot("after_init", snapshot)
 
-        for turn in range(self.max_turns):
-            trial_log.begin_turn(turn)
+        # Start the native wg service
+        service_cmd = [
+            "service", "start",
+            "--max-agents", str(cfg["max_agents"]),
+            "--executor", "native",
+            "--model", self._model,
+            "--no-coordinator-agent",
+            "--force",
+        ]
+        service_result = await _exec_wg_cmd_host(wg_dir, wg_bin, service_cmd)
+        logger.info(f"Service started: {service_result.strip()}")
 
-            try:
-                response = await litellm.acompletion(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=self.temperature,
-                    max_tokens=16384,
-                )
-            except Exception as e:
-                logger.error(f"LLM call failed on turn {turn}: {e}")
-                trial_log.record_error(str(e))
-                break
+        trial_log.begin_turn(0)
 
-            # Record LLM response (tokens, content, tool calls) via TrialLogger
-            trial_log.record_llm_response(response)
+        try:
+            # Poll for task completion
+            status, elapsed = await _poll_task_completion(
+                wg_dir, wg_bin, root_task_id,
+                timeout_secs=self.timeout,
+                poll_interval=self.poll_interval,
+            )
+            logger.info(f"Root task {root_task_id} reached status: {status} in {elapsed:.1f}s")
 
-            choice = response.choices[0]
-            message = choice.message
+            if status == "done":
+                trial_log.termination_type = "wg_done"
+            elif status == "failed":
+                trial_log.termination_type = "wg_fail"
+            elif status == "timeout":
+                trial_log.termination_type = "timeout"
+            else:
+                trial_log.termination_type = status
 
-            # Add assistant message to history
-            messages.append(message.model_dump())
+        finally:
+            # Stop the service
+            stop_result = await _exec_wg_cmd_host(wg_dir, wg_bin, ["service", "stop", "--kill-agents"])
+            logger.info(f"Service stopped: {stop_result.strip()}")
 
-            # If no tool calls, the agent is done
-            if not message.tool_calls:
-                trial_log.end_turn(had_tool_calls=False)
-                break
+        trial_log.end_turn(had_tool_calls=True)
 
-            # Execute each tool call
-            done_or_failed = False
-            for tc in message.tool_calls:
-                fn_name = tc.function.name
-                try:
-                    fn_args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    fn_args = {}
-                    logger.warning(
-                        f"Failed to parse tool args for {fn_name}: {tc.function.arguments}"
-                    )
+        # Snapshot final graph state
+        final_snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
+        trial_log.record_wg_snapshot("before_done", final_snapshot)
 
-                # Check for termination signals before execution
-                if fn_name == "wg_done" and fn_args.get("task_id") == root_task_id:
-                    done_or_failed = True
-                elif fn_name == "wg_fail" and fn_args.get("task_id") == root_task_id:
-                    done_or_failed = True
+        # Collect metrics from native executor stream.jsonl files
+        metrics = await _collect_agent_metrics(wg_dir)
 
-                tool_start = time.monotonic()
-                try:
-                    result = await execute_tool(
-                        environment, fn_name, fn_args,
-                        wg_dir=wg_dir, wg_bin=wg_bin,
-                    )
-                except Exception as e:
-                    result = f"Tool execution error: {e}"
-                    logger.error(f"Tool {fn_name} failed: {e}")
-                tool_elapsed = time.monotonic() - tool_start
+        trial_log.total_input_tokens = metrics["total_input_tokens"]
+        trial_log.total_output_tokens = metrics["total_output_tokens"]
+        trial_log.total_cost = metrics["total_cost_usd"]
+        trial_log.total_turns = metrics["total_turns"]
 
-                # Truncate very long outputs
-                if len(result) > 50000:
-                    truncated = len(result) - 50000
-                    result = result[:50000] + f"\n\n[truncated {truncated} characters]"
-
-                # Record tool call with structured logging
-                trial_log.record_tool_call(fn_name, fn_args, result, tool_elapsed)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
-
-            trial_log.end_turn(had_tool_calls=True)
-
-            # Snapshot wg state after decomposition (wg_add calls)
-            if self.condition in ("D", "E", "F") and wg_dir and wg_bin:
-                if any(
-                    tc.function.name == "wg_add"
-                    for tc in (message.tool_calls or [])
-                ):
-                    snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
-                    trial_log.record_wg_snapshot("after_decomposition", snapshot)
-
-            # Condition D/E/F: stop loop after agent declares done/failed on root task
-            if self.condition in ("D", "E", "F") and done_or_failed:
-                # Snapshot wg state before termination
-                if wg_dir and wg_bin:
-                    snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
-                    trial_log.record_wg_snapshot("before_done", snapshot)
-                break
-
-        # Build metadata from TrialLogger's accumulators
+        # Build metadata
         metadata: dict[str, Any] = {
             "condition": self.condition,
-            "turns": trial_log.total_turns,
+            "turns": metrics["total_turns"],
             "root_task_id": root_task_id,
-            "model": model,
+            "model": self._model,
             "termination_type": trial_log.termination_type,
+            "elapsed_s": elapsed,
+            "native_executor": True,
         }
-        if self.condition in ("D", "E", "F"):
-            metadata.update({
-                "agent_identity": getattr(self, "_agent_identity", None),
-                "verification_iterations": trial_log.verification_count,
-                "self_termination_type": trial_log.termination_type,
-                "wg_tool_calls": sum(trial_log.wg_command_counts.values()),
-                "verification_commands": trial_log.verification_commands,
-            })
-        if self.condition == "E":
-            metadata.update({
-                "decomposition_task_count": len(trial_log.decomposition_tasks),
-                "decomposition_tasks": trial_log.decomposition_tasks[:20],
-                "verification_verdicts": trial_log.verification_verdicts,
-                "triage_count": trial_log.triage_count,
-                "organization_phases": {
-                    "decompose": bool(trial_log.decomposition_tasks),
-                    "verify_independent": any(
-                        v.get("verdict") for v in trial_log.verification_verdicts
-                    ),
-                    "triage_on_fail": trial_log.triage_count > 0,
-                },
-            })
-        if self.condition == "F":
-            metadata.update({
-                "decomposition_task_count": len(trial_log.decomposition_tasks),
-                "decomposition_tasks": trial_log.decomposition_tasks[:20],
-                "test_discovery": True,
-            })
+
+        if cfg["agency"]:
+            metadata["agent_identity"] = getattr(self, "_agent_identity", None)
 
         # Populate Harbor's AgentContext
-        context.n_input_tokens = trial_log.total_input_tokens
-        context.n_output_tokens = trial_log.total_output_tokens
-        context.cost_usd = trial_log.total_cost
+        context.n_input_tokens = metrics["total_input_tokens"]
+        context.n_output_tokens = metrics["total_output_tokens"]
+        context.cost_usd = metrics["total_cost_usd"]
         context.metadata = metadata
 
-        # Write per-trial summary (JSON + final NDJSON event)
+        # Write trial summary
         trial_log.write_summary(extra_metadata={
             k: v for k, v in metadata.items()
             if k not in ("condition", "model", "root_task_id")
         })
 
-        # Save workgraph state for analysis (Condition B, C, D, E, and F)
-        if self.condition in ("B", "C", "D", "E", "F") and wg_dir:
-            wg_state_dst = self.logs_dir / "workgraph_state"
-            try:
-                shutil.copytree(wg_dir, str(wg_state_dst))
-                logger.info(f"Saved workgraph state to {wg_state_dst}")
-            except Exception as e:
-                logger.warning(f"Failed to save workgraph state: {e}")
-            # Cleanup temp dir
-            wg_temp = getattr(self, "_wg_temp_dir", None)
-            if wg_temp:
-                shutil.rmtree(wg_temp, ignore_errors=True)
-
-        # Extract planning turn for Condition C analysis
-        if self.condition == "C":
-            self._extract_planning_turn(trial_log._log_path)
-
-    def _log_event(self, path: Path, event: dict) -> None:
-        """Append an NDJSON event to the log file."""
+        # Save workgraph state for analysis
+        wg_state_dst = self.logs_dir / "workgraph_state"
         try:
-            with open(path, "a") as f:
-                f.write(json.dumps(event, default=str) + "\n")
+            shutil.copytree(wg_dir, str(wg_state_dst))
+            logger.info(f"Saved workgraph state to {wg_state_dst}")
         except Exception as e:
-            logger.warning(f"Failed to write log event: {e}")
+            logger.warning(f"Failed to save workgraph state: {e}")
 
-    def _extract_planning_turn(self, log_path: Path) -> None:
-        """Extract the first assistant turn and save as planning_turn.json.
-
-        This enables analysis of whether the agent planned before acting,
-        correctly classified task complexity, and followed the planning phase.
-        """
-        planning_path = self.logs_dir / "planning_turn.json"
-        try:
-            with open(log_path, "r") as f:
-                for line in f:
-                    event = json.loads(line.strip())
-                    if event.get("type") == "turn" and event.get("turn") == 0:
-                        with open(planning_path, "w") as pf:
-                            json.dump(event, pf, indent=2, default=str)
-                        logger.info(f"Extracted planning turn to {planning_path}")
-                        return
-            logger.warning("No turn-0 event found in agent loop log")
-        except Exception as e:
-            logger.warning(f"Failed to extract planning turn: {e}")
+        # Cleanup temp dir
+        if hasattr(self, "_wg_temp_dir"):
+            shutil.rmtree(self._wg_temp_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1679,7 +573,7 @@ class ConditionCAgent(WorkgraphAgent):
 
 
 class ConditionDAgent(WorkgraphAgent):
-    """Condition D (treatment): wg tools + autopoietic verification + agency + no turn cap."""
+    """Condition D (treatment): wg tools + autopoietic verification + agency."""
 
     @staticmethod
     def name() -> str:
@@ -1688,12 +582,11 @@ class ConditionDAgent(WorkgraphAgent):
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"
         kwargs["model_name"] = BENCHMARK_MODEL
-        kwargs.setdefault("max_turns", 200)
         super().__init__(*args, **kwargs)
 
 
 class ConditionEAgent(WorkgraphAgent):
-    """Condition E (treatment): organization generation + independent verification + triage."""
+    """Condition E (treatment): organization generation + independent verification."""
 
     @staticmethod
     def name() -> str:
@@ -1702,21 +595,11 @@ class ConditionEAgent(WorkgraphAgent):
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "E"
         kwargs["model_name"] = BENCHMARK_MODEL
-        kwargs.setdefault("max_turns", 300)
         super().__init__(*args, **kwargs)
 
 
 class ConditionFAgent(WorkgraphAgent):
-    """Condition F (treatment): wg-native agent with full context parity.
-
-    Key differences from E:
-    - Distilled wg context injection (from CLAUDE.md + MEMORY.md)
-    - Empirical verification first (test discovery before implementation)
-    - Adaptive decomposition (no forced orchestrator framing)
-    - Enhanced wg_add with --verify and --id parameters
-    - Time-aware termination
-    - Compliant turn limit (1M, not 300)
-    """
+    """Condition F (treatment): wg-native agent with full context parity."""
 
     @staticmethod
     def name() -> str:
@@ -1725,5 +608,4 @@ class ConditionFAgent(WorkgraphAgent):
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "F"
         kwargs["model_name"] = BENCHMARK_MODEL
-        kwargs.setdefault("max_turns", 1000000)  # TB2 compliance: no turn cap
         super().__init__(*args, **kwargs)
