@@ -1269,6 +1269,18 @@ pub enum Commands {
         flip_enabled: Option<bool>,
 
 
+        /// Set FLIP inference model (Phase 1: prompt reconstruction). Shorthand for --set-model flip_inference <model>
+        #[arg(long, name = "flip-inference-model")]
+        flip_inference_model: Option<String>,
+
+        /// Set FLIP comparison model (Phase 2: similarity scoring). Shorthand for --set-model flip_comparison <model>
+        #[arg(long, name = "flip-comparison-model")]
+        flip_comparison_model: Option<String>,
+
+        /// Set both FLIP inference and comparison models to the same value
+        #[arg(long, name = "flip-model")]
+        flip_model: Option<String>,
+
         /// FLIP score threshold for triggering Opus verification (default: 0.7)
         #[arg(long, name = "flip-verification-threshold")]
         flip_verification_threshold: Option<f64>,

@@ -930,6 +930,64 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Update FLIP model configuration (--flip-model / --flip-inference-model / --flip-comparison-model).
+pub fn update_flip_models(
+    dir: &Path,
+    scope: ConfigScope,
+    inference_model: Option<&str>,
+    comparison_model: Option<&str>,
+) -> Result<()> {
+    use workgraph::config::DispatchRole;
+
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(dir)?,
+    };
+
+    let mut changed = false;
+
+    if let Some(model) = inference_model {
+        if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+            anyhow::bail!(
+                "Invalid model format for --flip-inference-model: {}. Use provider:model format (e.g., 'claude:opus').",
+                e
+            );
+        }
+        config.models.set_model(DispatchRole::FlipInference, model);
+        println!("Set models.flip_inference.model = \"{}\"", model);
+        let spec = workgraph::config::parse_model_spec(model);
+        if let Some(ref provider) = spec.provider {
+            config.models.set_provider(DispatchRole::FlipInference, provider);
+        }
+        changed = true;
+    }
+
+    if let Some(model) = comparison_model {
+        if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+            anyhow::bail!(
+                "Invalid model format for --flip-comparison-model: {}. Use provider:model format (e.g., 'claude:haiku').",
+                e
+            );
+        }
+        config.models.set_model(DispatchRole::FlipComparison, model);
+        println!("Set models.flip_comparison.model = \"{}\"", model);
+        let spec = workgraph::config::parse_model_spec(model);
+        if let Some(ref provider) = spec.provider {
+            config.models.set_provider(DispatchRole::FlipComparison, provider);
+        }
+        changed = true;
+    }
+
+    if changed {
+        match scope {
+            ConfigScope::Global => config.save_global()?,
+            ConfigScope::Local => config.save(dir)?,
+        }
+    }
+
+    Ok(())
+}
+
 /// Update model routing configuration (--set-model / --set-provider / --set-endpoint).
 pub fn update_model_routing(
     dir: &Path,

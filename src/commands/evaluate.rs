@@ -670,18 +670,41 @@ pub fn run_flip(
     let log_entries = &task.log;
     let artifact_diff = compute_artifact_diff(artifacts, task.started_at.as_deref());
 
-    // Determine models for each phase via model routing
-    let inference_model = evaluator_model
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| {
+    // Determine models for each phase.
+    // Priority: CLI --evaluator-model > per-task model > config (DispatchRole) > tier default
+    let task_model = extract_spawn_model(&task.log).or_else(|| task.model.clone());
+
+    let (inference_model, inference_source) = if let Some(m) = evaluator_model {
+        (m.to_string(), "cli-override")
+    } else if let Some(ref m) = task_model {
+        // Per-task model: FLIP should probe the same 'mind' that did the work
+        (m.clone(), "task-model")
+    } else {
+        (
             config
                 .resolve_model_for_role(workgraph::config::DispatchRole::FlipInference)
-                .model
-        });
+                .model,
+            "config",
+        )
+    };
 
-    let comparison_model = config
-        .resolve_model_for_role(workgraph::config::DispatchRole::FlipComparison)
-        .model;
+    let (comparison_model, comparison_source) = if let Some(m) = evaluator_model {
+        (m.to_string(), "cli-override")
+    } else if let Some(ref m) = task_model {
+        (m.clone(), "task-model")
+    } else {
+        (
+            config
+                .resolve_model_for_role(workgraph::config::DispatchRole::FlipComparison)
+                .model,
+            "config",
+        )
+    };
+
+    eprintln!(
+        "FLIP models: inference='{}' ({}), comparison='{}' ({})",
+        inference_model, inference_source, comparison_model, comparison_source
+    );
 
     // --- Phase 1: Inference ---
     let inference_input = FlipInferenceInput {
@@ -820,8 +843,6 @@ pub fn run_flip(
         .map(|a| a.id.clone())
         .unwrap_or_default();
 
-    let task_model = extract_spawn_model(&task.log).or_else(|| task.model.clone());
-
     let timestamp = chrono::Utc::now().to_rfc3339();
     let eval_id = format!("flip-{}-{}", task_id, timestamp.replace(':', "-"));
 
@@ -829,7 +850,9 @@ pub fn run_flip(
     let flip_metadata = serde_json::json!({
         "inferred_prompt": parsed_inference.inferred_prompt,
         "inference_model": inference_model,
+        "inference_source": inference_source,
         "comparison_model": comparison_model,
+        "comparison_source": comparison_source,
     });
 
     let notes = format!(

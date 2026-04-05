@@ -1581,6 +1581,9 @@ fn main() -> Result<()> {
             eval_gate_threshold,
             eval_gate_all,
             flip_enabled,
+            flip_inference_model,
+            flip_comparison_model,
+            flip_model,
             flip_verification_threshold,
             chat_history,
             chat_history_max,
@@ -1729,6 +1732,9 @@ fn main() -> Result<()> {
                 || set_endpoint.is_some()
                 || role_model.is_some()
                 || role_provider.is_some()
+                || flip_inference_model.is_some()
+                || flip_comparison_model.is_some()
+                || flip_model.is_some()
             {
                 // Merge --role-model/--role-provider (key=value) into set_model/set_provider format
                 let effective_model = if let Some(ref kv) = role_model {
@@ -1757,13 +1763,35 @@ fn main() -> Result<()> {
                 };
                 // Default scope for writes = Local
                 let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-                commands::config_cmd::update_model_routing(
-                    &workgraph_dir,
-                    write_scope,
-                    effective_model.as_deref(),
-                    effective_provider.as_deref(),
-                    set_endpoint.as_deref(),
-                )
+
+                // Handle --flip-model / --flip-inference-model / --flip-comparison-model
+                // These are shorthand for --set-model flip_inference/flip_comparison <model>
+                let flip_inf = flip_inference_model.or_else(|| flip_model.clone());
+                let flip_cmp = flip_comparison_model.or(flip_model);
+                if flip_inf.is_some() || flip_cmp.is_some() {
+                    commands::config_cmd::update_flip_models(
+                        &workgraph_dir,
+                        write_scope,
+                        flip_inf.as_deref(),
+                        flip_cmp.as_deref(),
+                    )?;
+                }
+
+                // Handle standard model routing if present
+                if effective_model.is_some()
+                    || effective_provider.is_some()
+                    || set_endpoint.is_some()
+                {
+                    commands::config_cmd::update_model_routing(
+                        &workgraph_dir,
+                        write_scope,
+                        effective_model.as_deref(),
+                        effective_provider.as_deref(),
+                        set_endpoint.as_deref(),
+                    )?;
+                }
+
+                Ok(())
             } else if list {
                 commands::config_cmd::list(&workgraph_dir, cli.json)
             } else if init {
