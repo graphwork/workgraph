@@ -1,0 +1,8 @@
+{
+  "description": "Pilot TB trial run: 2 tasks × 2 conditions × 3 replicas = 12 trials + 1 fan-in",
+  "run_id": "pilot-01",
+  "conditions": ["A", "D"],
+  "tasks": ["file-ops", "debugging"],
+  "replicas": 3,
+  "model": null
+}
