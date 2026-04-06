@@ -169,6 +169,89 @@ pub fn run_add(
     Ok(())
 }
 
+/// Update an existing endpoint in place, patching only the specified fields.
+#[allow(clippy::too_many_arguments)]
+pub fn run_update(
+    workgraph_dir: &Path,
+    name: &str,
+    provider: Option<&str>,
+    url: Option<&str>,
+    model: Option<&str>,
+    api_key: Option<&str>,
+    api_key_file: Option<&str>,
+    key_env: Option<&str>,
+    set_default: bool,
+    global: bool,
+) -> Result<()> {
+    let mut config = if global {
+        Config::load_global()?.unwrap_or_default()
+    } else {
+        Config::load(workgraph_dir)?
+    };
+
+    let ep = config
+        .llm_endpoints
+        .endpoints
+        .iter_mut()
+        .find(|ep| ep.name == name)
+        .ok_or_else(|| anyhow::anyhow!("Endpoint '{}' not found.", name))?;
+
+    let mut changed = Vec::new();
+
+    if let Some(p) = provider {
+        ep.provider = p.to_string();
+        changed.push("provider");
+    }
+    if let Some(u) = url {
+        ep.url = Some(u.to_string());
+        changed.push("url");
+    }
+    if let Some(m) = model {
+        ep.model = Some(m.to_string());
+        changed.push("model");
+    }
+    if let Some(k) = api_key {
+        ep.api_key = Some(k.to_string());
+        ep.api_key_file = None; // clear file-based key when inline key is set
+        changed.push("api_key");
+    }
+    if let Some(f) = api_key_file {
+        ep.api_key_file = Some(f.to_string());
+        ep.api_key = None; // clear inline key when file-based key is set
+        changed.push("api_key_file");
+    }
+    if let Some(e) = key_env {
+        ep.api_key_env = Some(e.to_string());
+        changed.push("key_env");
+    }
+
+    if set_default {
+        // Need to drop mutable borrow on `ep` before iterating again
+        let target_name = name.to_string();
+        for ep in &mut config.llm_endpoints.endpoints {
+            ep.is_default = ep.name == target_name;
+        }
+        changed.push("default");
+    }
+
+    if changed.is_empty() {
+        bail!("No fields specified to update. Use --provider, --url, --model, --api-key, --api-key-file, --key-env, or --default.");
+    }
+
+    if global {
+        config.save_global()?;
+    } else {
+        config.save(workgraph_dir)?;
+    }
+
+    println!(
+        "Updated endpoint '{}': {}",
+        name,
+        changed.join(", ")
+    );
+    Ok(())
+}
+
 /// Remove an endpoint by name.
 pub fn run_remove(workgraph_dir: &Path, name: &str, global: bool) -> Result<()> {
     let mut config = if global {
@@ -638,6 +721,115 @@ mod tests {
         let config = Config::load(tmp.path()).unwrap();
         assert!(!config.llm_endpoints.endpoints[0].is_default);
         assert!(config.llm_endpoints.endpoints[1].is_default);
+    }
+
+    // ── update ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_update_patches_api_key_file() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(), "ep1", Some("openai"), Some("https://api.openai.com/v1"),
+            Some("gpt-4o"), Some("sk-old"), None, None, false, false,
+        ).unwrap();
+
+        let kf = tmp.path().join("newkey.txt");
+        std::fs::write(&kf, "sk-new-from-file\n").unwrap();
+
+        run_update(
+            tmp.path(), "ep1", None, None, None, None,
+            Some(kf.to_str().unwrap()), None, false, false,
+        ).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.provider, "openai", "provider unchanged");
+        assert_eq!(ep.url.as_deref(), Some("https://api.openai.com/v1"), "url unchanged");
+        assert_eq!(ep.model.as_deref(), Some("gpt-4o"), "model unchanged");
+        assert!(ep.api_key.is_none(), "inline key cleared when api_key_file set");
+        assert!(ep.api_key_file.is_some(), "api_key_file set");
+        let key = ep.resolve_api_key(Some(tmp.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-new-from-file"));
+    }
+
+    #[test]
+    fn cli_endpoint_update_patches_provider() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(), "ep1", Some("openai"), None, None, None, None, None, false, false,
+        ).unwrap();
+
+        run_update(
+            tmp.path(), "ep1", Some("anthropic"), None, None, None, None, None, false, false,
+        ).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.llm_endpoints.endpoints[0].provider, "anthropic");
+    }
+
+    #[test]
+    fn cli_endpoint_update_nonexistent_errors() {
+        let tmp = setup_dir();
+        let err = run_update(
+            tmp.path(), "nope", Some("openai"), None, None, None, None, None, false, false,
+        ).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cli_endpoint_update_no_fields_errors() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(), "ep1", Some("openai"), None, None, None, None, None, false, false,
+        ).unwrap();
+
+        let err = run_update(
+            tmp.path(), "ep1", None, None, None, None, None, None, false, false,
+        ).unwrap_err();
+        assert!(err.to_string().contains("No fields specified"));
+    }
+
+    #[test]
+    fn cli_endpoint_update_set_default() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(), "a", Some("openai"), None, None, None, None, None, true, false,
+        ).unwrap();
+        run_add(
+            tmp.path(), "b", Some("anthropic"), None, None, None, None, None, false, false,
+        ).unwrap();
+
+        // "b" is not default
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(!config.llm_endpoints.endpoints[1].is_default);
+
+        run_update(
+            tmp.path(), "b", None, None, None, None, None, None, true, false,
+        ).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(!config.llm_endpoints.endpoints[0].is_default, "a no longer default");
+        assert!(config.llm_endpoints.endpoints[1].is_default, "b is now default");
+    }
+
+    #[test]
+    fn cli_endpoint_update_multiple_fields() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(), "ep1", Some("openai"), None, None, None, None, None, false, false,
+        ).unwrap();
+
+        run_update(
+            tmp.path(), "ep1", Some("anthropic"), Some("https://custom.url/v1"),
+            Some("claude-4"), None, None, Some("MY_KEY_ENV"), false, false,
+        ).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.provider, "anthropic");
+        assert_eq!(ep.url.as_deref(), Some("https://custom.url/v1"));
+        assert_eq!(ep.model.as_deref(), Some("claude-4"));
+        assert_eq!(ep.api_key_env.as_deref(), Some("MY_KEY_ENV"));
     }
 
     // ── list ───────────────────────────────────────────────────────────

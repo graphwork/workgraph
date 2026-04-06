@@ -563,3 +563,115 @@ fn cli_endpoints_full_lifecycle() {
     let list = wg_ok(&wg_dir, &["endpoints", "list"]);
     assert!(list.contains("No endpoints configured"));
 }
+
+// ===========================================================================
+// 7. wg endpoints update — patches existing endpoint in place
+// ===========================================================================
+
+#[test]
+fn cli_endpoints_update_patches_api_key_file() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints", "add", "upd-ep",
+            "--provider", "openai",
+            "--api-key", "sk-old",
+            "--model", "gpt-4o",
+        ],
+    );
+
+    let key_file = tmp.path().join("newkey.txt");
+    fs::write(&key_file, "sk-new-from-file\n").unwrap();
+
+    let output = wg_ok(
+        &wg_dir,
+        &[
+            "endpoints", "update", "upd-ep",
+            "--api-key-file", &key_file.to_string_lossy(),
+        ],
+    );
+    assert!(output.contains("Updated endpoint 'upd-ep'"));
+    assert!(output.contains("api_key_file"));
+
+    // Verify provider and model unchanged, key source changed
+    let json_list = wg_ok(&wg_dir, &["--json", "endpoints", "list"]);
+    let parsed: serde_json::Value = serde_json::from_str(&json_list).unwrap();
+    let ep = &parsed[0];
+    assert_eq!(ep["provider"], "openai");
+    assert_eq!(ep["model"], "gpt-4o");
+    let key_source = ep["key_source"].as_str().unwrap();
+    assert!(
+        key_source.starts_with("file"),
+        "Expected key_source to start with 'file', got: {}",
+        key_source
+    );
+}
+
+#[test]
+fn cli_endpoints_update_patches_provider() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints", "add", "upd-ep2",
+            "--provider", "openai",
+            "--api-key", "sk-test",
+        ],
+    );
+
+    let output = wg_ok(
+        &wg_dir,
+        &["endpoints", "update", "upd-ep2", "--provider", "anthropic"],
+    );
+    assert!(output.contains("Updated endpoint 'upd-ep2'"));
+    assert!(output.contains("provider"));
+
+    let json_list = wg_ok(&wg_dir, &["--json", "endpoints", "list"]);
+    let parsed: serde_json::Value = serde_json::from_str(&json_list).unwrap();
+    assert_eq!(parsed[0]["provider"], "anthropic");
+}
+
+#[test]
+fn cli_endpoints_update_nonexistent_errors() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    let (stdout, stderr) = wg_fail(
+        &wg_dir,
+        &["endpoints", "update", "ghost-ep", "--provider", "openai"],
+    );
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("not found"),
+        "Expected 'not found' error, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn cli_endpoints_update_no_fields_errors() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints", "add", "upd-ep3",
+            "--provider", "openai",
+            "--api-key", "sk-test",
+        ],
+    );
+
+    let (stdout, stderr) = wg_fail(&wg_dir, &["endpoints", "update", "upd-ep3"]);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("No fields specified"),
+        "Expected 'No fields specified' error, got: {}",
+        combined
+    );
+}

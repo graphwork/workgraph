@@ -1733,6 +1733,44 @@ pub enum EndpointsCommands {
         global: bool,
     },
 
+    /// Update an existing endpoint (only specified fields are changed)
+    Update {
+        /// Endpoint name to update
+        name: String,
+
+        /// Provider type: anthropic, openai, openrouter, local
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// API endpoint URL (defaults based on provider)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Default model for this endpoint
+        #[arg(long)]
+        model: Option<String>,
+
+        /// API key (prefer --api-key-file for security)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Path to a file containing the API key
+        #[arg(long)]
+        api_key_file: Option<String>,
+
+        /// Environment variable name to read the API key from
+        #[arg(long)]
+        key_env: Option<String>,
+
+        /// Set as the default endpoint
+        #[arg(long)]
+        default: bool,
+
+        /// Target global config (~/.workgraph/config.toml)
+        #[arg(long)]
+        global: bool,
+    },
+
     /// Remove an endpoint by name
     Remove {
         /// Endpoint name to remove

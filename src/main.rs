@@ -2196,6 +2196,28 @@ fn main() -> Result<()> {
                 set_default,
                 global,
             ),
+            EndpointsCommands::Update {
+                name,
+                provider,
+                url,
+                model,
+                api_key,
+                api_key_file,
+                key_env,
+                default: set_default,
+                global,
+            } => commands::endpoints::run_update(
+                &workgraph_dir,
+                &name,
+                provider.as_deref(),
+                url.as_deref(),
+                model.as_deref(),
+                api_key.as_deref(),
+                api_key_file.as_deref(),
+                key_env.as_deref(),
+                set_default,
+                global,
+            ),
             EndpointsCommands::Remove { name, global } => {
                 commands::endpoints::run_remove(&workgraph_dir, &name, global)
             }
