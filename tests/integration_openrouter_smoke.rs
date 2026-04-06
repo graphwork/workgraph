@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use tempfile::TempDir;
 use workgraph::config::{
-    Config, DispatchRole, EndpointConfig, EndpointsConfig, CLAUDE_SONNET_MODEL_ID,
+    Config, DispatchRole, EndpointConfig, EndpointsConfig, CLAUDE_OPUS_MODEL_ID,
+    CLAUDE_SONNET_MODEL_ID,
 };
 use workgraph::graph::WorkGraph;
 use workgraph::parser::save_graph;
