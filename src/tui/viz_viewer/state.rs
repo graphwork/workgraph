@@ -619,7 +619,7 @@ impl HudSize {
     }
 }
 
-/// Layout mode for the five-state cycle (i/I/=/Shift+Tab key).
+/// Layout mode for the five-state cycle (i/v/=/Shift+Tab key).
 /// Cycle: ThirdInspector → HalfInspector → TwoThirdsInspector → FullInspector → Off → ...
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LayoutMode {

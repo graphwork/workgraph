@@ -6882,7 +6882,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         ("/", "search"),
                         ("a", "add"),
                         ("D", "done"),
-                        ("i/I", "resize pane"),
+                        ("i/v", "resize pane"),
                         ("?", "help"),
                         ("Alt←→", "cycle views"),
                     ],
@@ -6961,7 +6961,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 } else {
                     hints.push(("Tab", "graph"));
                 }
-                hints.push(("i/I", "resize pane"));
+                hints.push(("i/v", "resize pane"));
                 hints.push(("?", "help"));
                 hints.push(("Alt←→", "cycle views"));
                 // In compact mode, prefix the tab label with a breadcrumb indicator.
