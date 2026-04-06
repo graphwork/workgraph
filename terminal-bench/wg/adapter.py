@@ -385,6 +385,51 @@ You are working inside a task environment. Complete the task described below.
 - Focus on correctness and completeness
 """
 
+# ---------------------------------------------------------------------------
+# Canonical memory for Condition F — distilled from MEMORY.md
+# Gives open models equivalent project knowledge to what Claude gets natively.
+# ---------------------------------------------------------------------------
+
+CONDITION_F_MEMORY = """## Workgraph Project Memory (Distilled)
+
+### Architecture
+- **Graph storage**: `.workgraph/graph.jsonl` — one JSON object per line, append-only
+- **Task lifecycle**: open → in-progress → done | failed | abandoned | blocked | waiting
+  - Tasks with `--verify` gates pass through `pending-validation` before `done`
+- **Dependencies**: Directed graph. Use `--after <task-id>` to declare edges
+- **Service model**: `wg service start` spawns agents on ready tasks
+- **Agent isolation**: Each concurrent agent gets its own git worktree
+
+### Key Conventions
+- **Task IDs**: kebab-case, auto-generated from title
+- **TDD pattern**: Write failing test first, implement until it passes
+- **Dependency edges are mandatory**: Use `--after` for every dependent step
+- **Verification gates**: `--verify "command"` — must exit 0 for task to complete
+- **Same files = sequential edges**: NEVER parallelize tasks modifying the same files
+
+### Project Structure
+.workgraph/graph.jsonl — task graph (source of truth)
+.workgraph/config.toml — coordinator/agent/model config
+.workgraph/agency/ — roles, tradeoffs, agents, evaluations
+
+### Build & Test
+- Build: `cargo build`
+- Test: `cargo test`
+- Install after changes: `cargo install --path .`
+
+### Essential Commands
+- `wg add "title" --after dep --verify "cmd"` — create task
+- `wg done <id>` / `wg fail <id> --reason "why"` — complete or fail
+- `wg log <id> "msg"` — journal progress
+- `wg show <id>` / `wg list` / `wg ready` — inspect state
+
+### Common Pitfalls
+1. Forgetting `--after` creates race conditions
+2. Not running `cargo install --path .` after code changes
+3. Flat task lists without dependency edges fail unpredictably
+4. Always run `cargo build && cargo test` before marking done
+"""
+
 
 # ---------------------------------------------------------------------------
 # Docker-aware LLM agent loop
@@ -478,7 +523,9 @@ async def _run_docker_agent_loop(
     # Build system prompt
     cfg = CONDITION_CONFIG[condition]
     system_parts = ["You are a skilled software engineer. Complete the task below."]
-    if not cfg.get("exclude_wg_tools"):
+    if condition == "F":
+        system_parts.append(CONDITION_F_MEMORY)
+    elif not cfg.get("exclude_wg_tools"):
         system_parts.append(WG_QUICK_GUIDE)
     system_prompt = "\n\n".join(system_parts)
 
@@ -913,3 +960,10 @@ class ConditionFAgent(WorkgraphAgent):
         kwargs["condition"] = "F"
         kwargs["model_name"] = BENCHMARK_MODEL
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _build_prompt() -> str:
+        """Return the assembled system prompt for condition F (for testing)."""
+        parts = ["You are a skilled software engineer. Complete the task below."]
+        parts.append(CONDITION_F_MEMORY)
+        return "\n\n".join(parts)
