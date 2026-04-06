@@ -6,6 +6,30 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::path::Path;
 use workgraph::config::{Config, EndpointConfig};
 
+/// Known provider names for inference from endpoint name.
+const KNOWN_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "openrouter",
+    "gemini",
+    "ollama",
+    "llamacpp",
+    "vllm",
+    "local",
+];
+
+/// Infer provider from endpoint name if it matches a known provider.
+/// Falls back to "anthropic" for unrecognized names (backwards compat).
+fn infer_provider_from_name(name: &str) -> &'static str {
+    let lower = name.to_lowercase();
+    for &provider in KNOWN_PROVIDERS {
+        if lower == provider {
+            return provider;
+        }
+    }
+    "anthropic"
+}
+
 /// List all configured endpoints.
 pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     let config = Config::load_merged(workgraph_dir)?;
@@ -117,7 +141,7 @@ pub fn run_add(
         }
     }
 
-    let provider_str = provider.unwrap_or("anthropic");
+    let provider_str = provider.unwrap_or_else(|| infer_provider_from_name(name));
 
     config.llm_endpoints.endpoints.push(EndpointConfig {
         name: name.to_string(),
@@ -394,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_endpoint_add_defaults_to_anthropic() {
+    fn cli_endpoint_add_unknown_name_defaults_to_anthropic() {
         let tmp = setup_dir();
         run_add(
             tmp.path(),
@@ -411,6 +435,89 @@ mod tests {
         .unwrap();
         let config = Config::load(tmp.path()).unwrap();
         assert_eq!(config.llm_endpoints.endpoints[0].provider, "anthropic");
+    }
+
+    #[test]
+    fn cli_endpoint_add_infers_openrouter_from_name() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(),
+            "openrouter",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.provider, "openrouter");
+    }
+
+    #[test]
+    fn cli_endpoint_add_infers_anthropic_from_name() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(),
+            "anthropic",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.provider, "anthropic");
+    }
+
+    #[test]
+    fn cli_endpoint_add_explicit_provider_overrides_name_inference() {
+        let tmp = setup_dir();
+        run_add(
+            tmp.path(),
+            "openrouter",
+            Some("openai"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.provider, "openai");
+    }
+
+    #[test]
+    fn infer_provider_known_names() {
+        assert_eq!(infer_provider_from_name("openrouter"), "openrouter");
+        assert_eq!(infer_provider_from_name("OpenRouter"), "openrouter");
+        assert_eq!(infer_provider_from_name("OPENROUTER"), "openrouter");
+        assert_eq!(infer_provider_from_name("anthropic"), "anthropic");
+        assert_eq!(infer_provider_from_name("openai"), "openai");
+        assert_eq!(infer_provider_from_name("gemini"), "gemini");
+        assert_eq!(infer_provider_from_name("ollama"), "ollama");
+        assert_eq!(infer_provider_from_name("llamacpp"), "llamacpp");
+        assert_eq!(infer_provider_from_name("vllm"), "vllm");
+        assert_eq!(infer_provider_from_name("local"), "local");
+    }
+
+    #[test]
+    fn infer_provider_unknown_defaults_to_anthropic() {
+        assert_eq!(infer_provider_from_name("my-custom-ep"), "anthropic");
+        assert_eq!(infer_provider_from_name("production"), "anthropic");
     }
 
     #[test]
