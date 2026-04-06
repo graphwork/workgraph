@@ -6,6 +6,75 @@ use workgraph::parser::modify_graph;
 
 use super::graph_path;
 
+/// Resolve a model input string to a fully-qualified `provider:model` format.
+///
+/// Handles three forms:
+/// 1. Already valid `provider:model` → pass through
+/// 2. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
+/// 3. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
+fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
+    // If it already passes strict validation, it's fine
+    if workgraph::config::parse_model_spec_strict(model).is_ok() {
+        return Ok(model.to_string());
+    }
+
+    // Check if it has a `/` but no recognized provider prefix → assume OpenRouter format
+    let spec = workgraph::config::parse_model_spec(model);
+    if spec.provider.is_none() && model.contains('/') {
+        // Looks like "provider/model" format (e.g., "minimax/minimax-m2.7")
+        let candidate = format!("openrouter:{}", model);
+        // Validate that this parses correctly
+        if workgraph::config::parse_model_spec_strict(&candidate).is_ok() {
+            eprintln!(
+                "Resolved model '{}' → '{}'",
+                model, candidate
+            );
+            return Ok(candidate);
+        }
+    }
+
+    // Bare short name — try to resolve against the model cache
+    let resolution =
+        workgraph::executor::native::openai_client::resolve_short_model_name(model, workgraph_dir);
+
+    if let Some(resolved_id) = resolution.resolved {
+        let full_spec = format!("openrouter:{}", resolved_id);
+        eprintln!(
+            "Resolved model '{}' → '{}'",
+            model, full_spec
+        );
+        return Ok(full_spec);
+    }
+
+    // Resolution failed — provide helpful error
+    if !resolution.suggestions.is_empty() {
+        let suggestions_str = resolution
+            .suggestions
+            .iter()
+            .map(|s| format!("    - openrouter:{}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "Could not resolve model '{}'. Did you mean one of:\n{}\n  \
+             Hint: run `wg models search {}` to find valid alternatives.",
+            model,
+            suggestions_str,
+            model,
+        );
+    }
+
+    // No cache or no suggestions — fall back to strict validation error message
+    if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+        anyhow::bail!(
+            "Invalid --model format: {}\n  \
+             Hint: run `wg models fetch` to populate the model cache for short-name resolution.",
+            e,
+        );
+    }
+
+    Ok(model.to_string())
+}
+
 /// Parse a guard expression string into a LoopGuard.
 /// Formats: 'task:<id>=<status>' or 'always'
 pub fn parse_guard_expr(expr: &str) -> Result<workgraph::graph::LoopGuard> {
@@ -111,12 +180,15 @@ pub fn run(
         );
     }
 
-    // Validate model uses provider:model format
+    // Resolve and validate model: short names are resolved against the model cache,
+    // then the result must be in provider:model format.
+    let resolved_model_str: Option<String>;
     if let Some(m) = model {
-        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
-            anyhow::bail!("Invalid --model format: {}", e);
-        }
+        resolved_model_str = Some(resolve_model_input(m, dir)?);
+    } else {
+        resolved_model_str = None;
     }
+    let model = resolved_model_str.as_deref();
 
     let path = graph_path(dir);
     if !path.exists() {
@@ -468,12 +540,15 @@ pub fn run_remote(
         );
     }
 
-    // Validate model uses provider:model format
+    // Resolve and validate model: short names are resolved against the model cache,
+    // then the result must be in provider:model format.
+    let resolved_model_str: Option<String>;
     if let Some(m) = model {
-        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
-            anyhow::bail!("Invalid --model format: {}", e);
-        }
+        resolved_model_str = Some(resolve_model_input(m, local_workgraph_dir)?);
+    } else {
+        resolved_model_str = None;
     }
+    let model = resolved_model_str.as_deref();
 
     // Validate verify command (warn about descriptive text)
     if let Some(v) = verify {
@@ -1321,5 +1396,54 @@ mod tests {
             "blocker-b.before should contain dep-task, got: {:?}",
             b.before
         );
+    }
+
+    // ── resolve_model_input tests ──────────────────────────────────────
+
+    #[test]
+    fn resolve_model_input_valid_provider_model() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = resolve_model_input("openrouter:minimax/minimax-m2.7", dir.path()).unwrap();
+        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn resolve_model_input_slash_format() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = resolve_model_input("minimax/minimax-m2.7", dir.path()).unwrap();
+        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn resolve_model_input_short_name_with_cache() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = serde_json::json!({
+            "fetched_at": "2026-04-01T00:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
+                {"id": "anthropic/claude-sonnet-4-6", "name": "Sonnet"},
+            ]
+        });
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        let result = resolve_model_input("minimax-m2.7", dir.path()).unwrap();
+        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn resolve_model_input_short_name_no_cache() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No cache — should fail with helpful error
+        let result = resolve_model_input("minimax-m2.7", dir.path());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("wg models fetch"), "Error should suggest fetching: {}", err_msg);
+    }
+
+    #[test]
+    fn resolve_model_input_claude_provider() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = resolve_model_input("claude:opus", dir.path()).unwrap();
+        assert_eq!(result, "claude:opus");
     }
 }

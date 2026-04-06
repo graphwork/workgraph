@@ -2106,6 +2106,146 @@ pub fn validate_openrouter_model(
     }
 }
 
+/// Result of resolving a short model name against the cached model list.
+#[derive(Debug, Clone)]
+pub struct ModelResolutionResult {
+    /// The resolved full model ID (e.g., "minimax/minimax-m2.7"), or None if no match.
+    pub resolved: Option<String>,
+    /// Suggested alternatives if the short name was ambiguous or had no exact match.
+    pub suggestions: Vec<String>,
+}
+
+/// Resolve a short model name to a full OpenRouter model ID using the cached model list.
+///
+/// Resolution strategy (in order):
+/// 1. Exact match on full ID (e.g., "minimax/minimax-m2.7" matches directly)
+/// 2. Suffix match: bare name matches the part after `/` (e.g., "minimax-m2.7" → "minimax/minimax-m2.7")
+/// 3. Substring match: bare name appears in the model ID (e.g., "m2.7" → "minimax/minimax-m2.7")
+///
+/// If multiple candidates match in step 2 or 3, returns `None` with suggestions
+/// (ambiguous resolution is not auto-resolved).
+///
+/// Returns `ModelResolutionResult` with the resolved ID or suggestions.
+pub fn resolve_short_model_name(
+    model: &str,
+    workgraph_dir: &std::path::Path,
+) -> ModelResolutionResult {
+    // Strip any provider prefix first
+    let spec = crate::config::parse_model_spec(model);
+    let bare = if spec.provider.is_some() {
+        &spec.model_id
+    } else {
+        model
+    };
+
+    // Try to load cache
+    let cache_path = workgraph_dir.join("model_cache.json");
+    let cache_content = match std::fs::read_to_string(&cache_path) {
+        Ok(c) => c,
+        Err(_) => {
+            return ModelResolutionResult {
+                resolved: None,
+                suggestions: vec![],
+            };
+        }
+    };
+
+    #[derive(Deserialize)]
+    struct CacheFile {
+        models: Vec<CacheModel>,
+    }
+    #[derive(Deserialize)]
+    struct CacheModel {
+        id: String,
+    }
+
+    let cache: CacheFile = match serde_json::from_str(&cache_content) {
+        Ok(c) => c,
+        Err(_) => {
+            return ModelResolutionResult {
+                resolved: None,
+                suggestions: vec![],
+            };
+        }
+    };
+
+    let model_ids: Vec<&str> = cache.models.iter().map(|m| m.id.as_str()).collect();
+    let bare_lower = bare.to_lowercase();
+
+    // 1. Exact match on full ID
+    if model_ids.contains(&bare) {
+        return ModelResolutionResult {
+            resolved: Some(bare.to_string()),
+            suggestions: vec![],
+        };
+    }
+
+    // 2. If bare contains `/`, try provider/model format match
+    if bare.contains('/') {
+        // Already a full ID but not found — no resolution possible
+        return ModelResolutionResult {
+            resolved: None,
+            suggestions: find_closest_models(bare, &model_ids, 3),
+        };
+    }
+
+    // 3. Suffix match: bare name matches the part after `/`
+    let suffix_matches: Vec<&str> = model_ids
+        .iter()
+        .filter(|id| {
+            id.split('/')
+                .last()
+                .map(|name| name.to_lowercase() == bare_lower)
+                .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+
+    if suffix_matches.len() == 1 {
+        return ModelResolutionResult {
+            resolved: Some(suffix_matches[0].to_string()),
+            suggestions: vec![],
+        };
+    }
+    if suffix_matches.len() > 1 {
+        return ModelResolutionResult {
+            resolved: None,
+            suggestions: suffix_matches.iter().map(|s| s.to_string()).collect(),
+        };
+    }
+
+    // 4. Substring match: bare name appears as a substring in the model name part
+    let substring_matches: Vec<&str> = model_ids
+        .iter()
+        .filter(|id| {
+            id.split('/')
+                .last()
+                .map(|name| name.to_lowercase().contains(&bare_lower))
+                .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+
+    if substring_matches.len() == 1 {
+        return ModelResolutionResult {
+            resolved: Some(substring_matches[0].to_string()),
+            suggestions: vec![],
+        };
+    }
+    if !substring_matches.is_empty() {
+        return ModelResolutionResult {
+            resolved: None,
+            suggestions: substring_matches.iter().map(|s| s.to_string()).collect(),
+        };
+    }
+
+    // 5. No match — fall back to Levenshtein suggestions
+    ModelResolutionResult {
+        resolved: None,
+        suggestions: find_closest_models(bare, &model_ids, 3),
+    }
+}
+
 /// Find the N closest model IDs to the query by edit distance.
 fn find_closest_models(query: &str, candidates: &[&str], n: usize) -> Vec<String> {
     let query_lower = query.to_lowercase();
@@ -4178,5 +4318,90 @@ Done."#;
 
         // Invalid body
         assert_eq!(parse_retry_after_oai("not json"), None);
+    }
+
+    // ── Short model name resolution tests ──────────────────────────────
+
+    fn write_test_cache(dir: &std::path::Path) {
+        let cache = serde_json::json!({
+            "fetched_at": "2026-04-01T00:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
+                {"id": "anthropic/claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
+                {"id": "openai/gpt-4o", "name": "GPT-4o"},
+                {"id": "deepseek/deepseek-r1", "name": "DeepSeek R1"},
+                {"id": "meta-llama/llama-4-maverick", "name": "Llama 4 Maverick"},
+            ]
+        });
+        std::fs::write(dir.join("model_cache.json"), cache.to_string()).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_short_name_exact_suffix_match() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("minimax-m2.7", dir.path());
+        assert_eq!(result.resolved, Some("minimax/minimax-m2.7".to_string()));
+        assert!(result.suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_short_name_full_id_passthrough() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("minimax/minimax-m2.7", dir.path());
+        assert_eq!(result.resolved, Some("minimax/minimax-m2.7".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_short_name_with_provider_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("openrouter:minimax/minimax-m2.7", dir.path());
+        assert_eq!(result.resolved, Some("minimax/minimax-m2.7".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_short_name_no_cache() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No cache file
+
+        let result = resolve_short_model_name("minimax-m2.7", dir.path());
+        assert!(result.resolved.is_none());
+        assert!(result.suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_short_name_no_match() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("nonexistent-model", dir.path());
+        assert!(result.resolved.is_none());
+        // Should have Levenshtein suggestions
+        assert!(!result.suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_short_name_case_insensitive() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("GPT-4o", dir.path());
+        assert_eq!(result.resolved, Some("openai/gpt-4o".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_short_name_full_id_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_test_cache(dir.path());
+
+        let result = resolve_short_model_name("minimax/minimax-m9.9", dir.path());
+        assert!(result.resolved.is_none());
+        // Should have suggestions
+        assert!(!result.suggestions.is_empty());
     }
 }

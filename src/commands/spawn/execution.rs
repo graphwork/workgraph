@@ -1357,17 +1357,63 @@ fn resolve_model_via_registry(
             // from the slash in the model name.
             Ok((effective_model, None, None))
         } else {
-            // Short alias that's not registered — error so the user knows to register it.
-            anyhow::bail!(
-                "Model '{}' not found in config.\n  \
-                 Try: `wg models search {}` to find valid alternatives\n  \
-                 Or:  `wg models list` to see the local registry\n  \
-                 Add: `wg model add {} --provider <provider> --model-id <model-id>` to register it\n  \
-                 Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
-                model_str,
-                model_str,
-                model_str,
-            );
+            // Short alias that's not registered — try resolving against model cache.
+            let resolution =
+                workgraph::executor::native::openai_client::resolve_short_model_name(
+                    &model_str, dir,
+                );
+            if let Some(resolved_id) = resolution.resolved {
+                eprintln!(
+                    "[spawn] Resolved short model name '{}' → 'openrouter:{}'",
+                    model_str, resolved_id
+                );
+                // Re-resolve with the full provider:model format
+                let full_spec = format!("openrouter:{}", resolved_id);
+                let spec = workgraph::config::parse_model_spec(&full_spec);
+                let native_provider = Some(
+                    workgraph::config::provider_to_native_provider(
+                        spec.provider.as_deref().unwrap_or("openrouter"),
+                    )
+                    .to_string(),
+                );
+                let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
+                let endpoint = merged
+                    .registry_lookup(&spec.model_id)
+                    .or_else(|| {
+                        merged
+                            .effective_registry()
+                            .into_iter()
+                            .find(|e| e.model == spec.model_id)
+                    })
+                    .and_then(|e| e.endpoint.clone());
+                Ok((Some(full_spec), native_provider, endpoint))
+            } else {
+                // No resolution possible — error with suggestions.
+                let suggestions = if resolution.suggestions.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n  Did you mean one of:\n{}",
+                        resolution
+                            .suggestions
+                            .iter()
+                            .map(|s| format!("    - openrouter:{}", s))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                anyhow::bail!(
+                    "Model '{}' not found in config or model cache.{}\n  \
+                     Try: `wg models search {}` to find valid alternatives\n  \
+                     Or:  `wg models list` to see the local registry\n  \
+                     Add: `wg model add {} --provider <provider> --model-id <model-id>` to register it\n  \
+                     Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
+                    model_str,
+                    suggestions,
+                    model_str,
+                    model_str,
+                );
+            }
         }
     } else {
         // Model came from executor/coordinator defaults — pass through unchanged.
