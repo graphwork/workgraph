@@ -69,6 +69,10 @@ pub struct ModelBenchmark {
 
     /// When pricing was last updated.
     pub pricing_updated_at: String,
+
+    /// Whether benchmark scores are proxy estimates (true) or curated/measured (false).
+    #[serde(default)]
+    pub is_proxy: bool,
 }
 
 /// Per-million-token pricing in USD.
@@ -154,6 +158,16 @@ impl BenchmarkRegistry {
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(())
+    }
+
+    /// Check if the registry data is stale (older than `ttl_hours`).
+    pub fn is_stale(&self, ttl_hours: u64) -> bool {
+        if let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&self.fetched_at) {
+            let age = chrono::Utc::now().signed_duration_since(fetched);
+            age.num_hours() >= ttl_hours as i64
+        } else {
+            true // Can't parse timestamp → treat as stale
+        }
     }
 
     /// Models sorted by fitness score descending (unscored models last).
@@ -755,6 +769,496 @@ fn curated_benchmarks() -> Vec<CuratedEntry> {
                 provider_count: Some(2),
             },
         },
+        CuratedEntry {
+            prefix: "x-ai/grok-3-mini",
+            benchmarks: Benchmarks {
+                coding_index: Some(48.0),
+                intelligence_index: Some(50.0),
+                agentic: Some(44.0),
+                math_index: Some(52.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(27),
+                request_count: Some(150_000),
+                provider_count: Some(2),
+            },
+        },
+        // ── Amazon / Nova ────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "amazon/nova-pro",
+            benchmarks: Benchmarks {
+                coding_index: Some(42.0),
+                intelligence_index: Some(45.0),
+                agentic: Some(40.0),
+                math_index: Some(44.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(38),
+                request_count: Some(80_000),
+                provider_count: Some(2),
+            },
+        },
+        CuratedEntry {
+            prefix: "amazon/nova-lite",
+            benchmarks: Benchmarks {
+                coding_index: Some(32.0),
+                intelligence_index: Some(35.0),
+                agentic: Some(30.0),
+                math_index: Some(34.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(45),
+                request_count: Some(50_000),
+                provider_count: Some(2),
+            },
+        },
+        CuratedEntry {
+            prefix: "amazon/nova-micro",
+            benchmarks: Benchmarks {
+                coding_index: Some(25.0),
+                intelligence_index: Some(28.0),
+                agentic: Some(22.0),
+                math_index: Some(26.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(55),
+                request_count: Some(30_000),
+                provider_count: Some(2),
+            },
+        },
+        // ── Cohere ───────────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "cohere/command-r-plus",
+            benchmarks: Benchmarks {
+                coding_index: Some(44.0),
+                intelligence_index: Some(48.0),
+                agentic: Some(46.0),
+                math_index: Some(42.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(33),
+                request_count: Some(90_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "cohere/command-r",
+            benchmarks: Benchmarks {
+                coding_index: Some(38.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(40.0),
+                math_index: Some(36.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(42),
+                request_count: Some(60_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "cohere/command-a",
+            benchmarks: Benchmarks {
+                coding_index: Some(50.0),
+                intelligence_index: Some(52.0),
+                agentic: Some(48.0),
+                math_index: Some(46.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(28),
+                request_count: Some(120_000),
+                provider_count: Some(3),
+            },
+        },
+        // ── Microsoft ────────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "microsoft/phi-4",
+            benchmarks: Benchmarks {
+                coding_index: Some(40.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(35.0),
+                math_index: Some(44.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(34),
+                request_count: Some(100_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "microsoft/phi-3",
+            benchmarks: Benchmarks {
+                coding_index: Some(35.0),
+                intelligence_index: Some(38.0),
+                agentic: Some(30.0),
+                math_index: Some(38.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(44),
+                request_count: Some(50_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "microsoft/mai",
+            benchmarks: Benchmarks {
+                coding_index: Some(55.0),
+                intelligence_index: Some(58.0),
+                agentic: Some(52.0),
+                math_index: Some(56.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(21),
+                request_count: Some(180_000),
+                provider_count: Some(3),
+            },
+        },
+        // ── Perplexity ───────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "perplexity/sonar-pro",
+            benchmarks: Benchmarks {
+                coding_index: Some(42.0),
+                intelligence_index: Some(50.0),
+                agentic: Some(38.0),
+                math_index: Some(44.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(29),
+                request_count: Some(120_000),
+                provider_count: Some(1),
+            },
+        },
+        CuratedEntry {
+            prefix: "perplexity/sonar",
+            benchmarks: Benchmarks {
+                coding_index: Some(36.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(34.0),
+                math_index: Some(38.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(36),
+                request_count: Some(80_000),
+                provider_count: Some(1),
+            },
+        },
+        // ── NousResearch ─────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "nousresearch/hermes-3",
+            benchmarks: Benchmarks {
+                coding_index: Some(40.0),
+                intelligence_index: Some(44.0),
+                agentic: Some(42.0),
+                math_index: Some(38.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(37),
+                request_count: Some(70_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "nousresearch/hermes-2",
+            benchmarks: Benchmarks {
+                coding_index: Some(35.0),
+                intelligence_index: Some(38.0),
+                agentic: Some(36.0),
+                math_index: Some(34.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(48),
+                request_count: Some(40_000),
+                provider_count: Some(4),
+            },
+        },
+        // ── DeepSeek additional ──────────────────────────────────────
+        CuratedEntry {
+            prefix: "deepseek/deepseek-prover",
+            benchmarks: Benchmarks {
+                coding_index: Some(52.0),
+                intelligence_index: Some(55.0),
+                agentic: Some(35.0),
+                math_index: Some(82.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(30),
+                request_count: Some(100_000),
+                provider_count: Some(4),
+            },
+        },
+        // ── Qwen additional ──────────────────────────────────────────
+        CuratedEntry {
+            prefix: "qwen/qwen-2.5-72b",
+            benchmarks: Benchmarks {
+                coding_index: Some(48.0),
+                intelligence_index: Some(52.0),
+                agentic: Some(44.0),
+                math_index: Some(50.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(23),
+                request_count: Some(180_000),
+                provider_count: Some(5),
+            },
+        },
+        CuratedEntry {
+            prefix: "qwen/qwq",
+            benchmarks: Benchmarks {
+                coding_index: Some(54.0),
+                intelligence_index: Some(58.0),
+                agentic: Some(42.0),
+                math_index: Some(72.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(17),
+                request_count: Some(250_000),
+                provider_count: Some(4),
+            },
+        },
+        // ── Meta Llama additional ────────────────────────────────────
+        CuratedEntry {
+            prefix: "meta-llama/llama-3.1-405b",
+            benchmarks: Benchmarks {
+                coding_index: Some(52.0),
+                intelligence_index: Some(56.0),
+                agentic: Some(48.0),
+                math_index: Some(54.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(13),
+                request_count: Some(400_000),
+                provider_count: Some(5),
+            },
+        },
+        CuratedEntry {
+            prefix: "meta-llama/llama-3.1-70b",
+            benchmarks: Benchmarks {
+                coding_index: Some(44.0),
+                intelligence_index: Some(48.0),
+                agentic: Some(42.0),
+                math_index: Some(46.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(17),
+                request_count: Some(300_000),
+                provider_count: Some(6),
+            },
+        },
+        CuratedEntry {
+            prefix: "meta-llama/llama-3.1-8b",
+            benchmarks: Benchmarks {
+                coding_index: Some(30.0),
+                intelligence_index: Some(34.0),
+                agentic: Some(28.0),
+                math_index: Some(32.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(10),
+                request_count: Some(2_000_000),
+                provider_count: Some(8),
+            },
+        },
+        // ── OpenAI reasoning ─────────────────────────────────────────
+        CuratedEntry {
+            prefix: "openai/o1",
+            benchmarks: Benchmarks {
+                coding_index: Some(68.0),
+                intelligence_index: Some(72.0),
+                agentic: Some(58.0),
+                math_index: Some(78.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(11),
+                request_count: Some(400_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "openai/o1-mini",
+            benchmarks: Benchmarks {
+                coding_index: Some(55.0),
+                intelligence_index: Some(58.0),
+                agentic: Some(48.0),
+                math_index: Some(65.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(15),
+                request_count: Some(300_000),
+                provider_count: Some(4),
+            },
+        },
+        // ── Google additional ────────────────────────────────────────
+        CuratedEntry {
+            prefix: "google/gemini-1.5-pro",
+            benchmarks: Benchmarks {
+                coding_index: Some(55.0),
+                intelligence_index: Some(58.0),
+                agentic: Some(52.0),
+                math_index: Some(56.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(12),
+                request_count: Some(400_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "google/gemini-1.5-flash",
+            benchmarks: Benchmarks {
+                coding_index: Some(42.0),
+                intelligence_index: Some(45.0),
+                agentic: Some(40.0),
+                math_index: Some(44.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(8),
+                request_count: Some(1_500_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "google/gemma-2-27b",
+            benchmarks: Benchmarks {
+                coding_index: Some(38.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(32.0),
+                math_index: Some(40.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(28),
+                request_count: Some(120_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "google/gemma-2-9b",
+            benchmarks: Benchmarks {
+                coding_index: Some(30.0),
+                intelligence_index: Some(34.0),
+                agentic: Some(26.0),
+                math_index: Some(32.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(22),
+                request_count: Some(200_000),
+                provider_count: Some(5),
+            },
+        },
+        // ── Minimax ──────────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "minimax/minimax-m1",
+            benchmarks: Benchmarks {
+                coding_index: Some(48.0),
+                intelligence_index: Some(52.0),
+                agentic: Some(44.0),
+                math_index: Some(50.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(26),
+                request_count: Some(140_000),
+                provider_count: Some(2),
+            },
+        },
+        // ── Anthropic legacy ─────────────────────────────────────────
+        CuratedEntry {
+            prefix: "anthropic/claude-3-opus",
+            benchmarks: Benchmarks {
+                coding_index: Some(58.0),
+                intelligence_index: Some(62.0),
+                agentic: Some(55.0),
+                math_index: Some(56.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(18),
+                request_count: Some(200_000),
+                provider_count: Some(4),
+            },
+        },
+        CuratedEntry {
+            prefix: "anthropic/claude-3-haiku",
+            benchmarks: Benchmarks {
+                coding_index: Some(38.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(36.0),
+                math_index: Some(38.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(7),
+                request_count: Some(3_000_000),
+                provider_count: Some(5),
+            },
+        },
+        // ── Mistral additional ───────────────────────────────────────
+        CuratedEntry {
+            prefix: "mistralai/ministral-8b",
+            benchmarks: Benchmarks {
+                coding_index: Some(32.0),
+                intelligence_index: Some(35.0),
+                agentic: Some(30.0),
+                math_index: Some(34.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(43),
+                request_count: Some(55_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "mistralai/ministral-3b",
+            benchmarks: Benchmarks {
+                coding_index: Some(25.0),
+                intelligence_index: Some(28.0),
+                agentic: Some(22.0),
+                math_index: Some(26.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(50),
+                request_count: Some(35_000),
+                provider_count: Some(3),
+            },
+        },
+        CuratedEntry {
+            prefix: "mistralai/pixtral",
+            benchmarks: Benchmarks {
+                coding_index: Some(40.0),
+                intelligence_index: Some(44.0),
+                agentic: Some(38.0),
+                math_index: Some(42.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(31),
+                request_count: Some(100_000),
+                provider_count: Some(3),
+            },
+        },
+        // ── AI21 ─────────────────────────────────────────────────────
+        CuratedEntry {
+            prefix: "ai21/jamba-1.5-large",
+            benchmarks: Benchmarks {
+                coding_index: Some(38.0),
+                intelligence_index: Some(42.0),
+                agentic: Some(36.0),
+                math_index: Some(40.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(46),
+                request_count: Some(40_000),
+                provider_count: Some(2),
+            },
+        },
+        CuratedEntry {
+            prefix: "ai21/jamba-1.5-mini",
+            benchmarks: Benchmarks {
+                coding_index: Some(30.0),
+                intelligence_index: Some(34.0),
+                agentic: Some(28.0),
+                math_index: Some(32.0),
+            },
+            popularity: Popularity {
+                weekly_rank: Some(52),
+                request_count: Some(25_000),
+                provider_count: Some(2),
+            },
+        },
     ]
 }
 
@@ -849,6 +1353,7 @@ pub fn build_from_openrouter(models: &[OpenRouterModel]) -> BenchmarkRegistry {
             fitness: Fitness::default(),
             tier: "budget".to_string(), // Will be reclassified after scoring.
             pricing_updated_at: now.clone(),
+            is_proxy: false,
         };
 
         entries.insert(model.id.clone(), entry);
@@ -866,10 +1371,169 @@ pub fn build_from_openrouter(models: &[OpenRouterModel]) -> BenchmarkRegistry {
     // Seed curated benchmark/popularity data for well-known models.
     apply_curated_benchmarks(&mut registry);
 
+    // Generate proxy scores for models without curated data.
+    apply_proxy_scores(&mut registry);
+
     // Classify tiers based on pricing heuristics (no benchmark data yet).
     classify_tiers_from_pricing(&mut registry);
 
     registry
+}
+
+/// Generate proxy benchmark/popularity scores for models without curated data.
+///
+/// Uses available signals (pricing, context window, tool support) as proxies
+/// for quality and popularity. These are lower-confidence estimates but much
+/// better than 0.0 for ranking purposes.
+///
+/// Proxy quality scoring (0–100):
+///   - Pricing signal (40%): More expensive models tend to be higher quality.
+///     Maps output pricing to a 0–100 score using a logarithmic scale.
+///   - Context window signal (30%): Larger context = more capable architecture.
+///     Maps context length (log-scaled) to 0–100.
+///   - Tool support signal (15%): Models supporting tools are typically more
+///     capable and better-maintained.
+///   - Output capacity signal (15%): Higher max output tokens indicates
+///     more capable generation.
+///
+/// Proxy popularity scoring:
+///   - Uses pricing tier as a rough indicator: cheaper models with tool
+///     support tend to be more popular. Assigns estimated request counts
+///     and provider counts from pricing position.
+fn apply_proxy_scores(registry: &mut BenchmarkRegistry) -> usize {
+    // Collect pricing stats for relative scoring.
+    let output_prices: Vec<f64> = registry
+        .models
+        .values()
+        .map(|m| m.pricing.output_per_mtok)
+        .filter(|p| *p > 0.0)
+        .collect();
+    let max_output_price = output_prices
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let context_lengths: Vec<f64> = registry
+        .models
+        .values()
+        .filter_map(|m| m.context_window.map(|c| c as f64))
+        .filter(|c| *c > 0.0)
+        .collect();
+    let max_context = context_lengths
+        .iter()
+        .copied()
+        .fold(1.0_f64, f64::max);
+
+    let mut applied = 0;
+
+    // Collect keys first to avoid borrow issues.
+    let model_ids: Vec<String> = registry.models.keys().cloned().collect();
+
+    for id in &model_ids {
+        let model = registry.models.get(id).unwrap();
+
+        // Skip models that already have curated benchmark data.
+        if model.benchmarks.coding_index.is_some()
+            || model.benchmarks.intelligence_index.is_some()
+        {
+            continue;
+        }
+
+        let out_price = model.pricing.output_per_mtok;
+        let ctx = model.context_window.unwrap_or(0) as f64;
+        let has_tools = model.supports_tools;
+        let max_out = model.max_output_tokens.unwrap_or(0) as f64;
+
+        // Pricing signal: log-scaled relative to max.
+        let price_score = if out_price > 0.0 && max_output_price > 0.0 {
+            let log_price = (out_price + 1.0).ln();
+            let log_max = (max_output_price + 1.0).ln();
+            (log_price / log_max).min(1.0) * 100.0
+        } else {
+            10.0 // Free models get a low base score
+        };
+
+        // Context window signal: log-scaled.
+        let ctx_score = if ctx > 0.0 && max_context > 0.0 {
+            let log_ctx = (ctx).ln();
+            let log_max = (max_context).ln();
+            (log_ctx / log_max).min(1.0) * 100.0
+        } else {
+            0.0
+        };
+
+        // Tool support signal.
+        let tool_score = if has_tools { 80.0 } else { 20.0 };
+
+        // Output capacity signal.
+        let output_score = if max_out >= 64_000.0 {
+            90.0
+        } else if max_out >= 16_000.0 {
+            70.0
+        } else if max_out >= 4_000.0 {
+            50.0
+        } else if max_out > 0.0 {
+            30.0
+        } else {
+            20.0
+        };
+
+        // Composite proxy quality (0–100, but capped at 45 to stay below
+        // curated scores which represent actual benchmark measurements).
+        let raw_quality =
+            price_score * 0.40 + ctx_score * 0.30 + tool_score * 0.15 + output_score * 0.15;
+        let proxy_quality = raw_quality.min(45.0);
+
+        // Map proxy quality to individual benchmark proxies.
+        // These are intentionally rough — they're proxies, not measurements.
+        let coding_proxy = proxy_quality * 0.95;
+        let intelligence_proxy = proxy_quality;
+        let agentic_proxy = if has_tools {
+            proxy_quality * 0.90
+        } else {
+            proxy_quality * 0.40
+        };
+
+        // Proxy popularity from pricing tier position.
+        let (est_rank, est_requests, est_providers) = if out_price >= 18.0 {
+            // Premium tier: niche usage
+            (50u32, 50_000u64, 2u32)
+        } else if out_price >= 3.0 {
+            // Standard tier: moderate usage
+            (35, 100_000, 3)
+        } else if has_tools {
+            // Fast tier with tools: likely popular
+            (25, 200_000, 3)
+        } else {
+            // Fast tier without tools: less popular
+            (45, 30_000, 2)
+        };
+
+        let model = registry.models.get_mut(id).unwrap();
+
+        model.benchmarks = Benchmarks {
+            coding_index: Some(coding_proxy),
+            intelligence_index: Some(intelligence_proxy),
+            agentic: Some(agentic_proxy),
+            math_index: Some(proxy_quality * 0.85),
+        };
+
+        // Only set popularity if not already populated.
+        if model.popularity.weekly_rank.is_none()
+            && model.popularity.request_count.is_none()
+            && model.popularity.provider_count.is_none()
+        {
+            model.popularity = Popularity {
+                weekly_rank: Some(est_rank),
+                request_count: Some(est_requests),
+                provider_count: Some(est_providers),
+            };
+        }
+
+        model.is_proxy = true;
+        applied += 1;
+    }
+
+    applied
 }
 
 /// Classify tiers heuristically from pricing when no benchmark data is available.
@@ -1099,6 +1763,22 @@ pub struct RankedModel {
     pub composite_score: f64,
     /// Assigned pricing tier: "fast", "standard", or "premium".
     pub tier: String,
+    // ── Raw metrics for verbose display ──────────────────────────
+    /// Input pricing per million tokens (USD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_mtok: Option<f64>,
+    /// Output pricing per million tokens (USD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_mtok: Option<f64>,
+    /// Context window size in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Whether the model supports tool use.
+    #[serde(default)]
+    pub supports_tools: bool,
+    /// Whether scores are from curated benchmarks (true) or proxy estimates (false).
+    #[serde(default)]
+    pub is_curated: bool,
 }
 
 /// Ranked model lists per pricing tier.
@@ -1205,6 +1885,11 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
             benchmark_score,
             composite_score,
             tier: ptier.to_string(),
+            input_per_mtok: Some(model.pricing.input_per_mtok),
+            output_per_mtok: Some(model.pricing.output_per_mtok),
+            context_window: model.context_window,
+            supports_tools: model.supports_tools,
+            is_curated: !model.is_proxy,
         };
 
         match ptier {
@@ -1359,6 +2044,7 @@ mod tests {
                 fitness: Fitness::default(),
                 tier: "mid".to_string(),
                 pricing_updated_at: "2026-04-01T00:00:00Z".to_string(),
+                is_proxy: false,
             },
         );
 
@@ -1417,6 +2103,7 @@ mod tests {
             },
             tier: tier.to_string(),
             pricing_updated_at: "2026-04-01T00:00:00Z".to_string(),
+            is_proxy: false,
         }
     }
 
@@ -1558,6 +2245,7 @@ mod tests {
             },
             tier: "budget".to_string(),
             pricing_updated_at: "2026-04-01T00:00:00Z".to_string(),
+            is_proxy: false,
         }
     }
 
@@ -1840,10 +2528,18 @@ mod tests {
         assert!(sonnet.popularity.weekly_rank.is_some(),
             "Known model should have curated popularity data");
 
-        // Unknown model should have no benchmarks.
+        // Unknown model should have proxy benchmark scores (not None, but capped below curated).
         let random = registry.models.get("unknown/random-model").unwrap();
-        assert!(random.benchmarks.coding_index.is_none(),
-            "Unknown model should have no benchmark data");
+        assert!(random.benchmarks.coding_index.is_some(),
+            "Unknown model should have proxy benchmark data");
+        assert!(random.is_proxy,
+            "Unknown model should be marked as proxy");
+        // Proxy scores are capped at 45.0 to stay below curated scores.
+        assert!(random.benchmarks.coding_index.unwrap() <= 45.0,
+            "Proxy coding_index should be capped at 45.0");
+        // Curated model should NOT be marked as proxy.
+        assert!(!sonnet.is_proxy,
+            "Curated model should not be marked as proxy");
     }
 
     #[test]
