@@ -1,0 +1,105 @@
+Build a financial document processing pipeline that classifies, extracts, and summarizes financial data from multiple document types.
+
+Setup: Create the input documents first.
+
+/tmp/finproc/input/invoice_001.txt:
+```
+INVOICE #INV-2024-001
+Date: 2024-01-15
+From: Acme Corp
+To: Widget Inc
+Items:
+  - Widget A x10 @ $25.00 = $250.00
+  - Widget B x5 @ $40.00 = $200.00
+  - Shipping: $15.00
+Subtotal: $450.00
+Tax (8%): $36.00
+Total: $486.00
+Payment Terms: Net 30
+```
+
+/tmp/finproc/input/invoice_002.txt:
+```
+INVOICE #INV-2024-002
+Date: 2024-02-01
+From: TechSupply Ltd
+To: Widget Inc
+Items:
+  - Server Rack x1 @ $1200.00 = $1200.00
+  - Cable Kit x3 @ $45.00 = $135.00
+Subtotal: $1335.00
+Tax (8%): $106.80
+Total: $1441.80
+Payment Terms: Net 60
+```
+
+/tmp/finproc/input/receipt_001.txt:
+```
+RECEIPT
+Store: Office Depot
+Date: 2024-01-20
+  Paper (5 reams)     $45.99
+  Ink Cartridge        $32.50
+  Stapler              $12.99
+Total: $91.48
+Payment: Visa ending 4242
+```
+
+/tmp/finproc/input/receipt_002.txt:
+```
+RECEIPT
+Store: Amazon Business
+Date: 2024-02-10
+  USB Hub              $24.99
+  Mouse                $19.99
+  Keyboard             $49.99
+Total: $94.97
+Payment: Corporate Card ending 8888
+```
+
+/tmp/finproc/input/expense_report.txt:
+```
+EXPENSE REPORT - Q1 2024
+Employee: John Doe
+Department: Engineering
+
+Travel:
+  - Flight SFO->NYC Jan 10: $450.00
+  - Hotel NYC 3 nights: $675.00
+  - Meals (5 days): $250.00
+
+Software:
+  - GitHub Enterprise (annual): $2100.00
+  - AWS credits: $500.00
+
+Total Expenses: $3975.00
+Approved by: Jane Manager
+```
+
+Requirements:
+
+1. Create /tmp/finproc/processor.py that:
+   a. Scans /tmp/finproc/input/ for all documents
+   b. Classifies each as: invoice, receipt, or expense_report
+   c. Extracts structured data:
+      - Invoices: invoice_number, date, from, to, items[], subtotal, tax, total, payment_terms
+      - Receipts: store, date, items[], total, payment_method
+      - Expense reports: employee, department, categories{}, total, approver
+   d. Writes extracted data per-document to /tmp/finproc/extracted/<filename>.json
+
+2. Create /tmp/finproc/summarizer.py that:
+   a. Reads all extracted JSON files
+   b. Produces /tmp/finproc/output/summary.csv with columns:
+      doc_type, source_file, date, total_amount, vendor_or_store
+   c. Produces /tmp/finproc/output/totals.json with:
+      - total_invoices_amount, total_receipts_amount, total_expenses_amount, grand_total
+      - count by document type
+
+3. Run the full pipeline:
+   python3 /tmp/finproc/processor.py && python3 /tmp/finproc/summarizer.py
+
+After completing, verify:
+- /tmp/finproc/extracted/ has 5 JSON files
+- /tmp/finproc/output/summary.csv has 5 data rows
+- /tmp/finproc/output/totals.json has correct grand_total ($6089.25)
+- python3 -c "import json; d=json.load(open('/tmp/finproc/output/totals.json')); assert abs(d['grand_total']-6089.25)<0.01, f'Expected 6089.25, got {d[\"grand_total\"]}'"

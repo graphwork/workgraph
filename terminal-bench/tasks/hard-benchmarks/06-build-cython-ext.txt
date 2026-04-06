@@ -1,0 +1,44 @@
+Build and test a Cython extension module with numpy integration.
+
+Requirements:
+
+1. Create a Python project at /tmp/cython-ext/ with the following structure:
+   /tmp/cython-ext/
+   ├── setup.py
+   ├── fastmath/
+   │   ├── __init__.py
+   │   ├── core.pyx          # Cython source
+   │   └── _fallback.py      # Pure Python fallback
+   └── tests/
+       └── test_fastmath.py
+
+2. The Cython extension (fastmath/core.pyx) must implement:
+   a. `def dot_product(double[:] a, double[:] b) -> double` - typed memoryview dot product
+   b. `def matrix_multiply(double[:,:] a, double[:,:] b)` - returns numpy array
+   c. `def moving_average(double[:] data, int window)` - returns numpy array
+   d. `cpdef double euclidean_distance(double[:] a, double[:] b)` - typed cpdef
+
+3. The pure Python fallback (fastmath/_fallback.py) must implement the same functions using only numpy.
+
+4. The __init__.py must try to import from .core, falling back to ._fallback.
+
+5. setup.py must:
+   - Use setuptools and Cython.Build.cythonize
+   - Include numpy headers (numpy.get_include())
+   - Handle the case where Cython is not installed (fall back gracefully)
+
+6. Install required packages: pip install cython numpy setuptools
+   Build the extension: cd /tmp/cython-ext && pip install -e . (or python setup.py build_ext --inplace)
+
+7. tests/test_fastmath.py must test:
+   - dot_product with known vectors (e.g., [1,2,3] . [4,5,6] = 32)
+   - matrix_multiply with 2x2 matrices
+   - moving_average with window=3 on a 10-element array
+   - euclidean_distance (e.g., [0,0] to [3,4] = 5.0)
+   - All results within 1e-10 tolerance
+
+After completing:
+- The Cython extension compiles without errors
+- python3 -c "from fastmath import dot_product, matrix_multiply, moving_average, euclidean_distance; print('OK')" succeeds
+- python3 -c "from fastmath.core import dot_product; print('Cython native')" succeeds (proves Cython compiled)
+- cd /tmp/cython-ext && python3 -m pytest tests/ -v passes all tests

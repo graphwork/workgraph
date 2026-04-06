@@ -1,0 +1,25 @@
+Set up a git server with automatic web deployment using post-receive hooks.
+
+Requirements:
+
+1. Create a bare git repository at /tmp/git-server/repo.git
+2. Create a working directory at /tmp/web/html that will serve as the web root
+3. Set up a post-receive hook in the bare repository that:
+   - Checks out the latest code from the main branch to /tmp/web/html
+   - Runs any build script if present (build.sh)
+   - Logs the deployment timestamp to /tmp/web/deploy.log
+4. Start a simple HTTP server (python3 -m http.server 8080) serving /tmp/web/html
+5. Create a test workflow:
+   a. Clone the bare repo to /tmp/git-client
+   b. Create an index.html with content: "<h1>Deployed via Git</h1><p>Version 1</p>"
+   c. Commit and push to the bare repo
+   d. Verify the post-receive hook deployed it (check /tmp/web/html/index.html exists)
+   e. Verify the web server serves the file (curl http://localhost:8080/index.html)
+   f. Push an update (Version 2) and verify it deploys
+
+After completing all steps, ensure:
+- The git bare repo at /tmp/git-server/repo.git exists and has at least 2 commits
+- The post-receive hook is executable and functional
+- The web server responds to HTTP requests on port 8080
+- /tmp/web/deploy.log has at least 2 entries
+- curl http://localhost:8080/index.html contains "Version 2"

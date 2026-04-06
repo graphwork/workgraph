@@ -1,0 +1,308 @@
+Fix a buggy task scheduler with 6 interrelated bugs. 15 tests, 9 currently fail.
+
+Setup: Create the project files.
+
+/tmp/iterative_fix/scheduler.py:
+```python
+"""Task Scheduler with priority queue, dependencies, and deadlines."""
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Optional
+import heapq
+
+@dataclass
+class Task:
+    id: str
+    name: str
+    priority: int  # lower = higher priority (1 is highest)
+    duration: timedelta
+    deadline: Optional[datetime] = None
+    dependencies: list[str] = field(default_factory=list)
+    status: str = "pending"  # pending, ready, running, done, failed
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    def __lt__(self, other):
+        # BUG 1: Priority comparison is inverted
+        return self.priority > other.priority
+
+class TaskScheduler:
+    def __init__(self, current_time: Optional[datetime] = None):
+        self.tasks: dict[str, Task] = {}
+        self.ready_queue: list[Task] = []
+        self.current_time = current_time or datetime.now()
+        self.running: list[Task] = []
+        self.completed: list[Task] = []
+        self.max_concurrent = 3
+
+    def add_task(self, task: Task) -> None:
+        self.tasks[task.id] = task
+        # BUG 2: Doesn't check if dependencies exist, silently ignores bad deps
+        self._update_ready_state(task)
+
+    def _update_ready_state(self, task: Task) -> None:
+        if task.status != "pending":
+            return
+        # BUG 3: Checks if deps are in tasks dict, but not if they're completed
+        all_deps_met = all(dep in self.tasks for dep in task.dependencies)
+        if all_deps_met:
+            task.status = "ready"
+            heapq.heappush(self.ready_queue, task)
+
+    def tick(self) -> list[Task]:
+        """Advance scheduler by one tick. Returns newly started tasks."""
+        started = []
+        # Move completed running tasks
+        still_running = []
+        for task in self.running:
+            elapsed = self.current_time - task.started_at
+            if elapsed >= task.duration:
+                task.status = "done"
+                task.completed_at = self.current_time
+                self.completed.append(task)
+                # BUG 4: Doesn't re-evaluate dependent tasks when a task completes
+            else:
+                still_running.append(task)
+        self.running = still_running
+
+        # Start new tasks
+        while self.running.__len__() < self.max_concurrent and self.ready_queue:
+            task = heapq.heappop(self.ready_queue)
+            if task.status != "ready":
+                continue
+            task.status = "running"
+            task.started_at = self.current_time
+            self.running.append(task)
+            started.append(task)
+
+        # BUG 5: Doesn't check deadlines or mark overdue tasks as failed
+        self.current_time += timedelta(minutes=1)
+        return started
+
+    def get_schedule_order(self) -> list[str]:
+        """Return task IDs in the order they should execute (priority + deps)."""
+        visited = set()
+        order = []
+
+        def visit(task_id):
+            if task_id in visited:
+                return
+            visited.add(task_id)
+            task = self.tasks.get(task_id)
+            if task is None:
+                return
+            for dep in task.dependencies:
+                visit(dep)
+            order.append(task_id)
+
+        # BUG 6: Doesn't sort by priority within same dependency level
+        for task_id in self.tasks:
+            visit(task_id)
+        return order
+
+    def get_status_summary(self) -> dict:
+        return {
+            "pending": len([t for t in self.tasks.values() if t.status == "pending"]),
+            "ready": len([t for t in self.tasks.values() if t.status == "ready"]),
+            "running": len([t for t in self.tasks.values() if t.status == "running"]),
+            "done": len([t for t in self.tasks.values() if t.status == "done"]),
+            "failed": len([t for t in self.tasks.values() if t.status == "failed"]),
+            "total": len(self.tasks),
+        }
+
+    def get_overdue_tasks(self) -> list[Task]:
+        """Return tasks that have missed their deadline."""
+        overdue = []
+        for task in self.tasks.values():
+            if task.deadline and task.status not in ("done", "failed"):
+                if self.current_time > task.deadline:
+                    overdue.append(task)
+        return overdue
+```
+
+/tmp/iterative_fix/tests/test_scheduler.py:
+```python
+import pytest
+from datetime import datetime, timedelta
+import sys
+sys.path.insert(0, '/tmp/iterative_fix')
+from scheduler import Task, TaskScheduler
+
+BASE_TIME = datetime(2024, 1, 15, 9, 0, 0)
+
+# --- Priority Tests ---
+
+def test_priority_ordering():
+    """Higher priority (lower number) tasks should run first."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("low", "Low Priority", priority=10, duration=timedelta(minutes=5)))
+    s.add_task(Task("high", "High Priority", priority=1, duration=timedelta(minutes=5)))
+    s.add_task(Task("med", "Med Priority", priority=5, duration=timedelta(minutes=5)))
+    started = s.tick()
+    assert len(started) == 3
+    assert started[0].id == "high", f"Expected 'high' first, got '{started[0].id}'"
+    assert started[1].id == "med"
+    assert started[2].id == "low"
+
+def test_priority_comparison():
+    """Task.__lt__ must sort lower priority number = higher priority."""
+    t1 = Task("a", "A", priority=1, duration=timedelta(minutes=1))
+    t5 = Task("b", "B", priority=5, duration=timedelta(minutes=1))
+    assert t1 < t5, "Priority 1 should be less than priority 5 (higher priority)"
+
+# --- Dependency Tests ---
+
+def test_dependency_blocks_until_complete():
+    """A task with deps should not run until deps are done."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("dep", "Dependency", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("main", "Main Task", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["dep"]))
+    # First tick: only dep should start
+    started = s.tick()
+    started_ids = [t.id for t in started]
+    assert "dep" in started_ids
+    assert "main" not in started_ids, "main should be blocked by dep"
+
+def test_dependency_chain_completion():
+    """After dep completes, dependent task should become ready."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("a", "A", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("b", "B", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["a"]))
+    # Tick 1: a starts
+    s.tick()
+    # Tick 2: a completes (1 min duration, 1 min tick), b should start
+    started = s.tick()
+    started_ids = [t.id for t in started]
+    assert "b" in started_ids, f"b should start after a completes. Started: {started_ids}"
+
+def test_missing_dependency_raises():
+    """Adding task with nonexistent dependency should raise ValueError."""
+    s = TaskScheduler(BASE_TIME)
+    with pytest.raises(ValueError, match="dependency"):
+        s.add_task(Task("main", "Main", priority=1, duration=timedelta(minutes=1),
+                         dependencies=["nonexistent"]))
+
+# --- Deadline Tests ---
+
+def test_overdue_detection():
+    """Tasks past their deadline should be detected."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("urgent", "Urgent", priority=1, duration=timedelta(minutes=10),
+                     deadline=BASE_TIME + timedelta(minutes=5)))
+    s.tick()  # starts the task
+    # Advance past deadline
+    for _ in range(6):
+        s.tick()
+    overdue = s.get_overdue_tasks()
+    assert len(overdue) == 1
+    assert overdue[0].id == "urgent"
+
+def test_overdue_task_marked_failed():
+    """Tasks that miss their deadline while running should be marked failed."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("urgent", "Urgent", priority=1, duration=timedelta(minutes=10),
+                     deadline=BASE_TIME + timedelta(minutes=3)))
+    s.tick()
+    for _ in range(5):
+        s.tick()
+    assert s.tasks["urgent"].status == "failed", \
+        f"Overdue task should be failed, got {s.tasks['urgent'].status}"
+
+# --- Concurrency Tests ---
+
+def test_max_concurrent_respected():
+    """No more than max_concurrent tasks should run simultaneously."""
+    s = TaskScheduler(BASE_TIME)
+    s.max_concurrent = 2
+    for i in range(5):
+        s.add_task(Task(f"t{i}", f"Task {i}", priority=i+1,
+                        duration=timedelta(minutes=5)))
+    s.tick()
+    running = [t for t in s.tasks.values() if t.status == "running"]
+    assert len(running) == 2, f"Expected 2 running, got {len(running)}"
+
+def test_concurrent_fill_on_completion():
+    """When a running task completes, a new one should start."""
+    s = TaskScheduler(BASE_TIME)
+    s.max_concurrent = 2
+    s.add_task(Task("fast", "Fast", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("slow", "Slow", priority=2, duration=timedelta(minutes=10)))
+    s.add_task(Task("waiting", "Waiting", priority=3, duration=timedelta(minutes=5)))
+    s.tick()  # fast and slow start
+    started = s.tick()  # fast completes, waiting should start
+    started_ids = [t.id for t in started]
+    assert "waiting" in started_ids, f"waiting should start after fast completes. Started: {started_ids}"
+
+# --- Schedule Order Tests ---
+
+def test_schedule_order_respects_deps():
+    """Schedule order must place dependencies before dependents."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("c", "C", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["b"]))
+    s.add_task(Task("a", "A", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("b", "B", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["a"]))
+    order = s.get_schedule_order()
+    assert order.index("a") < order.index("b") < order.index("c")
+
+def test_schedule_order_priority_within_level():
+    """Tasks at same dependency level should be ordered by priority."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("root", "Root", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("low", "Low", priority=10, duration=timedelta(minutes=1),
+                     dependencies=["root"]))
+    s.add_task(Task("high", "High", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["root"]))
+    s.add_task(Task("med", "Med", priority=5, duration=timedelta(minutes=1),
+                     dependencies=["root"]))
+    order = s.get_schedule_order()
+    # root must be first, then high, med, low
+    assert order[0] == "root"
+    dependents = order[1:]
+    assert dependents.index("high") < dependents.index("med") < dependents.index("low")
+
+# --- Status Summary Tests ---
+
+def test_status_summary_initial():
+    """Fresh scheduler with tasks should show correct counts."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("a", "A", priority=1, duration=timedelta(minutes=1)))
+    s.add_task(Task("b", "B", priority=1, duration=timedelta(minutes=1),
+                     dependencies=["a"]))
+    summary = s.get_status_summary()
+    assert summary["ready"] == 1  # a is ready
+    assert summary["pending"] == 1  # b is pending (dep not met)
+    assert summary["total"] == 2
+
+def test_status_summary_after_completion():
+    """After running, status counts should update correctly."""
+    s = TaskScheduler(BASE_TIME)
+    s.add_task(Task("a", "A", priority=1, duration=timedelta(minutes=1)))
+    s.tick()  # a starts
+    s.tick()  # a completes
+    summary = s.get_status_summary()
+    assert summary["done"] == 1
+    assert summary["running"] == 0
+```
+
+Your task: Fix ALL 6 bugs in scheduler.py so that all 15 tests pass.
+
+The bugs are interrelated - fixing one may reveal or affect others. Work iteratively:
+1. Run the tests to see current state
+2. Fix one or two bugs
+3. Re-run tests to check progress
+4. Repeat until all 15 pass
+
+Bugs to fix:
+1. Priority comparison is inverted in Task.__lt__
+2. add_task doesn't validate dependencies exist
+3. _update_ready_state checks if deps exist but not if they're completed
+4. Completing a task doesn't trigger re-evaluation of dependent tasks
+5. Deadline checking / overdue marking is missing from tick()
+6. get_schedule_order doesn't sort by priority within dependency level
+
+After completing:
+- cd /tmp/iterative_fix && python3 -m pytest tests/ -v shows 15 passed, 0 failed

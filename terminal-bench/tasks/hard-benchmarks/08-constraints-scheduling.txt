@@ -1,0 +1,114 @@
+Build a meeting scheduler that finds valid time slots given multiple calendar constraints.
+
+Setup: Create three ICS calendar files.
+
+/tmp/scheduler/calendars/alice.ics:
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+DTSTART:20240115T090000
+DTEND:20240115T100000
+SUMMARY:Team Standup
+RRULE:FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240115T130000
+DTEND:20240115T140000
+SUMMARY:1:1 with Manager
+RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240116T140000
+DTEND:20240116T153000
+SUMMARY:Design Review
+RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20240331T235959
+END:VEVENT
+END:VCALENDAR
+```
+
+/tmp/scheduler/calendars/bob.ics:
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+DTSTART:20240115T100000
+DTEND:20240115T110000
+SUMMARY:Product Sync
+RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240115T150000
+DTEND:20240115T160000
+SUMMARY:Sprint Planning
+RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240117T110000
+DTEND:20240117T120000
+SUMMARY:Customer Call
+RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20240331T235959
+END:VEVENT
+END:VCALENDAR
+```
+
+/tmp/scheduler/calendars/carol.ics:
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+DTSTART:20240115T090000
+DTEND:20240115T093000
+SUMMARY:Morning Sync
+RRULE:FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240116T100000
+DTEND:20240116T113000
+SUMMARY:Architecture Review
+RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20240331T235959
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20240118T140000
+DTEND:20240118T150000
+SUMMARY:Friday Retro
+RRULE:FREQ=WEEKLY;BYDAY=FR;UNTIL=20240331T235959
+END:VEVENT
+END:VCALENDAR
+```
+
+Requirements:
+
+1. Create /tmp/scheduler/find_slots.py that:
+   a. Parses all 3 ICS files (handle RRULE recurring events)
+   b. Accepts: target_date (YYYY-MM-DD), duration_minutes, participants list
+   c. Finds all available slots on the target date where ALL participants are free
+   d. Working hours: 09:00-17:00, slot granularity: 30 minutes
+   e. Outputs available slots as JSON to stdout
+
+2. Create /tmp/scheduler/schedule_meeting.py that:
+   a. Uses find_slots.py logic to find the first available slot
+   b. Generates a new ICS file at /tmp/scheduler/output/meeting.ics for the scheduled meeting
+   c. The ICS must include all participants as ATTENDEEs
+
+3. Test cases:
+   - Find slots for Alice+Bob+Carol on Monday 2024-01-22, 60 min duration
+     Expected: Slots available (e.g., 11:00-12:00, 12:00-13:00, 16:00-17:00)
+   - Find slots for Alice+Bob on Tuesday 2024-01-23, 30 min duration
+     Expected: More slots available (Carol's constraints removed)
+   - Find slots for all three on Wednesday 2024-01-24, 90 min duration
+     Expected: Limited availability (harder to find 90-min block)
+
+4. Create /tmp/scheduler/test_scheduler.py with pytest tests:
+   - Test ICS parsing (correct number of events per person)
+   - Test recurring event expansion for a specific date
+   - Test slot finding with known constraints
+   - Test that scheduled meeting ICS is valid
+
+After completing:
+- python3 /tmp/scheduler/find_slots.py --date 2024-01-22 --duration 60 --participants alice,bob,carol outputs valid JSON with available slots
+- /tmp/scheduler/output/meeting.ics is a valid ICS file
+- cd /tmp/scheduler && python3 -m pytest test_scheduler.py -v passes

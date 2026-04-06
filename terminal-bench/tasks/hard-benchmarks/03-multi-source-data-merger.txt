@@ -1,0 +1,60 @@
+Build a data pipeline that merges records from 3 different data sources with different schemas, detects conflicts, and produces a unified output.
+
+Setup: First create the source data files.
+
+Source 1 - /tmp/merger/source_csv/employees.csv:
+```
+emp_id,full_name,department,salary,start_date
+E001,Alice Johnson,Engineering,95000,2020-03-15
+E002,Bob Smith,Marketing,72000,2019-07-01
+E003,Carol Davis,Engineering,105000,2018-01-20
+E004,David Wilson,Sales,68000,2021-06-10
+E005,Eve Brown,Marketing,78000,2020-11-30
+```
+
+Source 2 - /tmp/merger/source_json/employees.json:
+```json
+[
+  {"id": "E001", "name": "Alice Johnson", "dept": "Engineering", "compensation": 97000, "hire_date": "2020-03-15"},
+  {"id": "E002", "name": "Robert Smith", "dept": "Marketing", "compensation": 72000, "hire_date": "2019-07-01"},
+  {"id": "E003", "name": "Carol Davis", "dept": "Eng", "compensation": 105000, "hire_date": "2018-01-20"},
+  {"id": "E006", "name": "Frank Lee", "dept": "Engineering", "compensation": 88000, "hire_date": "2022-02-14"}
+]
+```
+
+Source 3 - /tmp/merger/source_xml/employees.xml:
+```xml
+<?xml version="1.0"?>
+<employees>
+  <employee id="E001"><name>Alice Johnson</name><department>Engineering</department><pay>95000</pay></employee>
+  <employee id="E004"><name>David Wilson</name><department>Sales</department><pay>70000</pay></employee>
+  <employee id="E005"><name>Eve Brown</name><department>Marketing</department><pay>78000</pay></employee>
+  <employee id="E007"><name>Grace Chen</name><department>Engineering</department><pay>92000</pay></employee>
+</employees>
+```
+
+Requirements:
+
+1. Create a Python merger script at /tmp/merger/merge.py that:
+   a. Reads all 3 data sources
+   b. Normalizes field names (emp_id/id -> employee_id, full_name/name -> name, department/dept -> department, salary/compensation/pay -> salary)
+   c. Normalizes department names (Eng -> Engineering)
+   d. Merges records by employee_id
+   e. Detects conflicts (same employee, different values for same field)
+   f. Uses a "latest source wins" strategy for salary conflicts (JSON > CSV > XML)
+   g. Outputs merged data to /tmp/merger/output/merged.csv
+   h. Outputs a conflict report to /tmp/merger/output/conflicts.json
+
+2. The merged output should contain ALL unique employees (E001-E007)
+
+3. The conflict report must document:
+   - Which employee_ids had conflicts
+   - Which fields conflicted
+   - The values from each source
+   - The resolved value
+
+After completing:
+- /tmp/merger/merge.py exists and runs without errors
+- /tmp/merger/output/merged.csv has exactly 7 rows (plus header)
+- /tmp/merger/output/conflicts.json lists conflicts for at least E001 (salary), E002 (name), E003 (department), E004 (salary)
+- Run: python3 /tmp/merger/merge.py && python3 -c "import csv; rows=list(csv.DictReader(open('/tmp/merger/output/merged.csv'))); assert len(rows)==7, f'Expected 7 rows, got {len(rows)}'"

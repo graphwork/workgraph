@@ -1,0 +1,39 @@
+Set up a local email system with mailing list functionality.
+
+Requirements:
+
+1. Install and configure Postfix as a local-only mail server:
+   - Set myhostname to localhost
+   - Set mydestination to localhost
+   - Disable network listening (inet_interfaces = loopback-only)
+   - Start or restart the Postfix service
+
+2. Create a mailing list system:
+   - Create a Python script at /tmp/mailman/list_manager.py that implements:
+     a. A MailingList class with subscribe(email), unsubscribe(email), list_members(), and send(subject, body) methods
+     b. Member storage in /tmp/mailman/lists/<list_name>/members.json
+     c. Message archive in /tmp/mailman/lists/<list_name>/archive/
+     d. The send() method must write each message to the archive with timestamp
+
+3. Create and populate a test mailing list:
+   - List name: "test-list"
+   - Subscribe: alice@localhost, bob@localhost, charlie@localhost
+   - Send 3 test messages to the list
+   - Verify the archive has 3 messages
+   - Unsubscribe charlie@localhost
+   - Verify 2 members remain
+
+4. Create a command-line interface at /tmp/mailman/cli.py:
+   - `python3 cli.py create <list_name>` - create a list
+   - `python3 cli.py subscribe <list_name> <email>` - add member
+   - `python3 cli.py unsubscribe <list_name> <email>` - remove member
+   - `python3 cli.py members <list_name>` - list members
+   - `python3 cli.py send <list_name> <subject> <body>` - send message
+   - `python3 cli.py archive <list_name>` - show archived messages
+
+After completing all steps, verify:
+- /tmp/mailman/list_manager.py exists and is importable
+- /tmp/mailman/cli.py exists and is executable
+- /tmp/mailman/lists/test-list/members.json has exactly 2 members
+- /tmp/mailman/lists/test-list/archive/ has exactly 3 message files
+- `python3 /tmp/mailman/cli.py members test-list` outputs 2 email addresses

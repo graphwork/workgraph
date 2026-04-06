@@ -1,0 +1,138 @@
+Modernize a COBOL program by re-implementing it in Python, ensuring identical output.
+
+Setup: Create the COBOL source and data files.
+
+/tmp/cobol-modern/legacy/payroll.cob:
+```
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PAYROLL.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT EMPLOYEE-FILE ASSIGN TO 'employees.dat'
+               ORGANIZATION IS LINE SEQUENTIAL.
+           SELECT REPORT-FILE ASSIGN TO 'payroll-report.txt'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD EMPLOYEE-FILE.
+       01 EMP-RECORD.
+           05 EMP-ID        PIC X(5).
+           05 EMP-NAME      PIC X(20).
+           05 EMP-DEPT      PIC X(10).
+           05 EMP-HOURS     PIC 9(3).
+           05 EMP-RATE      PIC 9(3)V99.
+           05 EMP-TYPE      PIC X(1).
+       FD REPORT-FILE.
+       01 REPORT-LINE       PIC X(80).
+       WORKING-STORAGE SECTION.
+       01 WS-GROSS-PAY      PIC 9(7)V99.
+       01 WS-OT-HOURS       PIC 9(3).
+       01 WS-OT-PAY         PIC 9(7)V99.
+       01 WS-TAX            PIC 9(7)V99.
+       01 WS-NET-PAY        PIC 9(7)V99.
+       01 WS-TOTAL-GROSS    PIC 9(9)V99 VALUE 0.
+       01 WS-TOTAL-NET      PIC 9(9)V99 VALUE 0.
+       01 WS-EMP-COUNT      PIC 9(3) VALUE 0.
+       01 WS-EOF            PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           OPEN INPUT EMPLOYEE-FILE
+           OPEN OUTPUT REPORT-FILE
+           PERFORM UNTIL WS-EOF = 'Y'
+               READ EMPLOYEE-FILE
+                   AT END MOVE 'Y' TO WS-EOF
+                   NOT AT END PERFORM PROCESS-EMPLOYEE
+               END-READ
+           END-PERFORM
+           PERFORM WRITE-TOTALS
+           CLOSE EMPLOYEE-FILE
+           CLOSE REPORT-FILE
+           STOP RUN.
+       PROCESS-EMPLOYEE.
+           ADD 1 TO WS-EMP-COUNT
+           IF EMP-HOURS > 40
+               COMPUTE WS-OT-HOURS = EMP-HOURS - 40
+               COMPUTE WS-GROSS-PAY = (40 * EMP-RATE) +
+                   (WS-OT-HOURS * EMP-RATE * 1.5)
+           ELSE
+               COMPUTE WS-GROSS-PAY = EMP-HOURS * EMP-RATE
+           END-IF
+           IF EMP-TYPE = 'F'
+               COMPUTE WS-TAX = WS-GROSS-PAY * 0.22
+           ELSE
+               COMPUTE WS-TAX = WS-GROSS-PAY * 0.15
+           END-IF
+           COMPUTE WS-NET-PAY = WS-GROSS-PAY - WS-TAX
+           ADD WS-GROSS-PAY TO WS-TOTAL-GROSS
+           ADD WS-NET-PAY TO WS-TOTAL-NET
+           STRING EMP-ID DELIMITED SIZE
+               ' ' DELIMITED SIZE
+               EMP-NAME DELIMITED SIZE
+               ' GROSS=' DELIMITED SIZE
+               WS-GROSS-PAY DELIMITED SIZE
+               ' NET=' DELIMITED SIZE
+               WS-NET-PAY DELIMITED SIZE
+               INTO REPORT-LINE
+           WRITE REPORT-LINE.
+       WRITE-TOTALS.
+           STRING 'TOTAL EMPLOYEES: ' DELIMITED SIZE
+               WS-EMP-COUNT DELIMITED SIZE
+               INTO REPORT-LINE
+           WRITE REPORT-LINE
+           STRING 'TOTAL GROSS: ' DELIMITED SIZE
+               WS-TOTAL-GROSS DELIMITED SIZE
+               INTO REPORT-LINE
+           WRITE REPORT-LINE
+           STRING 'TOTAL NET: ' DELIMITED SIZE
+               WS-TOTAL-NET DELIMITED SIZE
+               INTO REPORT-LINE
+           WRITE REPORT-LINE.
+```
+
+/tmp/cobol-modern/legacy/employees.dat:
+```
+E001 Alice Johnson       ENGINEERING045 02500F
+E002 Bob Smith           MARKETING  038 01800P
+E003 Carol Davis         ENGINEERING050 03200F
+E004 David Wilson        SALES      040 02100F
+E005 Eve Brown           MARKETING  042 01900P
+```
+
+Requirements:
+
+1. Analyze the COBOL program and understand its business logic:
+   - Reads fixed-width employee records
+   - Calculates gross pay (overtime at 1.5x for hours > 40)
+   - Applies tax: 22% for full-time (F), 15% for part-time (P)
+   - Computes net pay and running totals
+
+2. Create /tmp/cobol-modern/python/payroll.py that:
+   - Reads the SAME employees.dat file (fixed-width parsing)
+   - Implements IDENTICAL business logic
+   - Produces output to /tmp/cobol-modern/python/payroll-report.txt
+   - Output format must match: "EXXXX Name                 GROSS=XXXXXXX.XX NET=XXXXXXX.XX"
+   - Final lines: TOTAL EMPLOYEES, TOTAL GROSS, TOTAL NET
+
+3. Create /tmp/cobol-modern/python/test_payroll.py with tests:
+   - Test overtime calculation (>40 hours)
+   - Test regular calculation (<=40 hours)
+   - Test full-time tax rate (22%)
+   - Test part-time tax rate (15%)
+   - Test total employees count (5)
+   - Compare Python output against expected values
+
+4. Create expected output at /tmp/cobol-modern/expected/payroll-report.txt by manually computing:
+   - E001: 45h @ $25.00 -> gross = (40*25) + (5*25*1.5) = 1187.50, tax=261.25, net=926.25
+   - E002: 38h @ $18.00 -> gross = 684.00, tax=102.60, net=581.40
+   - E003: 50h @ $32.00 -> gross = (40*32) + (10*32*1.5) = 1760.00, tax=387.20, net=1372.80
+   - E004: 40h @ $21.00 -> gross = 840.00, tax=184.80, net=655.20
+   - E005: 42h @ $19.00 -> gross = (40*19) + (2*19*1.5) = 817.00, tax=122.55, net=694.45
+
+5. Verify Python output matches expected output:
+   python3 /tmp/cobol-modern/python/payroll.py
+   diff /tmp/cobol-modern/python/payroll-report.txt /tmp/cobol-modern/expected/payroll-report.txt
+
+After completing:
+- /tmp/cobol-modern/python/payroll.py produces correct output
+- /tmp/cobol-modern/python/test_payroll.py passes all tests
+- python3 -m pytest /tmp/cobol-modern/python/test_payroll.py -v must pass
