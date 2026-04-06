@@ -11,7 +11,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use tempfile::TempDir;
-use workgraph::config::{Config, DispatchRole, EndpointConfig, EndpointsConfig};
+use workgraph::config::{
+    Config, DispatchRole, EndpointConfig, EndpointsConfig, CLAUDE_SONNET_MODEL_ID,
+};
 use workgraph::graph::WorkGraph;
 use workgraph::parser::save_graph;
 
@@ -115,7 +117,7 @@ fn openrouter_endpoint_config_roundtrip() {
             name: "my-openrouter".to_string(),
             provider: "openrouter".to_string(),
             url: Some("https://openrouter.ai/api/v1".to_string()),
-            model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
             api_key: Some("sk-or-test-key-1234567890".to_string()),
             api_key_file: None,
             api_key_env: None,
@@ -151,7 +153,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
             name: "my-openrouter".to_string(),
             provider: "openrouter".to_string(),
             url: Some("https://openrouter.ai/api/v1".to_string()),
-            model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
             api_key: Some("sk-or-test-key".to_string()),
             api_key_file: None,
             api_key_env: None,
@@ -161,9 +163,10 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
     };
 
     // Bind the endpoint to the evaluator role
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     config.models.set_model(
         DispatchRole::Evaluator,
-        "anthropic/claude-sonnet-4-20250514",
+        &sonnet_model,
     );
     config
         .models
@@ -174,7 +177,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
 
     // Resolve model for evaluator
     let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-    assert_eq!(resolved.model, "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(resolved.model, sonnet_model);
     assert_eq!(resolved.provider, Some("openrouter".to_string()));
     assert_eq!(resolved.endpoint, Some("my-openrouter".to_string()));
 
@@ -212,9 +215,10 @@ fn openrouter_client_creation_from_resolved_config() {
         }],
     };
 
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     config.models.set_model(
         DispatchRole::Evaluator,
-        "anthropic/claude-sonnet-4-20250514",
+        &sonnet_model,
     );
     config
         .models
@@ -248,7 +252,7 @@ fn openrouter_client_creation_from_resolved_config() {
     let client = client.with_base_url(endpoint_url.as_deref().unwrap());
     let client = client.with_provider_hint("openrouter");
 
-    assert_eq!(client.model, "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(client.model, sonnet_model);
     // The client was created — that's the proof the full path works.
     // We can't inspect base_url directly (private), but we verified it was set.
     let _ = client;
@@ -290,9 +294,10 @@ fn mixed_endpoints_different_roles_different_providers() {
     };
 
     // Task agent uses Anthropic direct
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     config
         .models
-        .set_model(DispatchRole::TaskAgent, "claude-sonnet-4-20250514");
+        .set_model(DispatchRole::TaskAgent, CLAUDE_SONNET_MODEL_ID);
     config
         .models
         .set_provider(DispatchRole::TaskAgent, "anthropic");
@@ -303,7 +308,7 @@ fn mixed_endpoints_different_roles_different_providers() {
     // Evaluator uses OpenRouter
     config.models.set_model(
         DispatchRole::Evaluator,
-        "anthropic/claude-sonnet-4-20250514",
+        &sonnet_model,
     );
     config
         .models
@@ -314,13 +319,13 @@ fn mixed_endpoints_different_roles_different_providers() {
 
     // Resolve task_agent
     let task_resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
-    assert_eq!(task_resolved.model, "claude-sonnet-4-20250514");
+    assert_eq!(task_resolved.model, CLAUDE_SONNET_MODEL_ID);
     assert_eq!(task_resolved.provider, Some("anthropic".to_string()));
     assert_eq!(task_resolved.endpoint, Some("anthropic-direct".to_string()));
 
     // Resolve evaluator
     let eval_resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-    assert_eq!(eval_resolved.model, "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(eval_resolved.model, sonnet_model);
     assert_eq!(eval_resolved.provider, Some("openrouter".to_string()));
     assert_eq!(eval_resolved.endpoint, Some("openrouter-eval".to_string()));
 
@@ -763,7 +768,7 @@ fn config_toml_roundtrip_with_endpoints() {
                 name: "openrouter-main".to_string(),
                 provider: "openrouter".to_string(),
                 url: Some("https://openrouter.ai/api/v1".to_string()),
-                model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+                model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
                 api_key: Some("sk-or-roundtrip-key".to_string()),
                 api_key_file: None,
                 api_key_env: None,
@@ -785,9 +790,10 @@ fn config_toml_roundtrip_with_endpoints() {
     };
 
     // Set evaluator to use the OpenRouter endpoint (provider:model format)
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     config.models.set_model(
         DispatchRole::Evaluator,
-        "openrouter:anthropic/claude-sonnet-4-20250514",
+        &format!("openrouter:{sonnet_model}"),
     );
     config
         .models
@@ -812,7 +818,7 @@ fn config_toml_roundtrip_with_endpoints() {
 
     // Verify model routing survived
     let resolved = loaded.resolve_model_for_role(DispatchRole::Evaluator);
-    assert_eq!(resolved.model, "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(resolved.model, sonnet_model);
     assert_eq!(resolved.provider, Some("openrouter".to_string()));
     assert_eq!(resolved.endpoint, Some("openrouter-main".to_string()));
 
@@ -920,11 +926,12 @@ fn invalid_model_triggers_validation_suggestion_no_fallback() {
     use workgraph::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
+    let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
             {"id": "anthropic/claude-sonnet-4-6"},
-            {"id": "anthropic/claude-opus-4-6"},
+            {"id": opus_key},
             {"id": "openai/gpt-4o"},
             {"id": "deepseek/deepseek-r1"},
             {"id": "meta-llama/llama-4-maverick"},
@@ -1008,11 +1015,12 @@ fn concurrent_cache_read_is_safe() {
     use workgraph::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
+    let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
             {"id": "anthropic/claude-sonnet-4-6"},
-            {"id": "anthropic/claude-opus-4-6"},
+            {"id": opus_key},
             {"id": "openai/gpt-4o"},
         ]
     });

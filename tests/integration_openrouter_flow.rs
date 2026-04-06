@@ -11,7 +11,7 @@ use std::fs;
 
 use tempfile::TempDir;
 
-use workgraph::config::{Config, EndpointConfig, EndpointsConfig};
+use workgraph::config::{Config, EndpointConfig, EndpointsConfig, CLAUDE_SONNET_MODEL_ID};
 
 // ===========================================================================
 // Helpers
@@ -35,7 +35,7 @@ fn integration_openrouter_resolve_inline_key() {
         name: "inline-ep".to_string(),
         provider: "openrouter".to_string(),
         url: Some("https://openrouter.ai/api/v1".to_string()),
-        model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+        model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
         api_key: Some("sk-or-inline-key-123".to_string()),
         api_key_file: None,
         api_key_env: None,
@@ -241,7 +241,10 @@ fn integration_openrouter_default_url() {
 /// The actual env var setting happens in spawn_agent_inner; here we test
 /// the resolution functions that drive those env vars.
 mod provider_env_var_tests {
-    use workgraph::config::{Config, DispatchRole, EndpointConfig, EndpointsConfig};
+    use workgraph::config::{
+        Config, DispatchRole, EndpointConfig, EndpointsConfig, CLAUDE_OPUS_MODEL_ID,
+        CLAUDE_SONNET_MODEL_ID,
+    };
 
     #[test]
     fn integration_openrouter_provider_resolution_from_config() {
@@ -325,28 +328,29 @@ mod provider_env_var_tests {
     #[test]
     fn integration_openrouter_provider_isolation_between_roles() {
         let mut config = Config::default();
+        let opus_model = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
 
         config
             .models
-            .set_model(DispatchRole::TaskAgent, "anthropic/claude-opus-4-6");
+            .set_model(DispatchRole::TaskAgent, &opus_model);
         config
             .models
             .set_provider(DispatchRole::TaskAgent, "openrouter");
 
         config
             .models
-            .set_model(DispatchRole::Evaluator, "claude-sonnet-4-20250514");
+            .set_model(DispatchRole::Evaluator, CLAUDE_SONNET_MODEL_ID);
         config
             .models
             .set_provider(DispatchRole::Evaluator, "anthropic");
 
         let task_resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
         assert_eq!(task_resolved.provider, Some("openrouter".to_string()));
-        assert_eq!(task_resolved.model, "anthropic/claude-opus-4-6");
+        assert_eq!(task_resolved.model, opus_model);
 
         let eval_resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(eval_resolved.provider, Some("anthropic".to_string()));
-        assert_eq!(eval_resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(eval_resolved.model, CLAUDE_SONNET_MODEL_ID);
     }
 }
 
@@ -359,7 +363,10 @@ mod provider_env_var_tests {
 /// spawn/execution.rs. Those functions are pub(crate), so we replicate the
 /// logic here to validate the precedence chain end-to-end.
 mod agent_model_preference_tests {
-    use workgraph::config::{Config, DispatchRole, EndpointConfig, EndpointsConfig};
+    use workgraph::config::{
+        Config, DispatchRole, EndpointConfig, EndpointsConfig, CLAUDE_OPUS_MODEL_ID,
+        CLAUDE_SONNET_MODEL_ID,
+    };
 
     /// Replicate resolve_model_and_provider from spawn/execution.rs:
     /// Unified model+provider resolution using parse_model_spec at each tier.
@@ -419,12 +426,12 @@ mod agent_model_preference_tests {
     fn integration_openrouter_agent_preferred_model_used_when_no_task_model() {
         let r = resolve_model_and_provider(
             None, None,
-            Some("anthropic/claude-opus-4-6".to_string()), None,
+            Some(format!("anthropic/{CLAUDE_OPUS_MODEL_ID}")), None,
             Some("executor-default".to_string()),
             None, None,
             Some("coordinator-fallback"), None,
         );
-        assert_eq!(r.model, Some("anthropic/claude-opus-4-6".to_string()));
+        assert_eq!(r.model, Some(format!("anthropic/{CLAUDE_OPUS_MODEL_ID}")));
     }
 
     #[test]
@@ -621,9 +628,10 @@ mod agent_model_preference_tests {
             }],
         };
 
+        let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
         config.models.set_model(
             DispatchRole::Evaluator,
-            "anthropic/claude-sonnet-4-20250514",
+            &sonnet_model,
         );
         config
             .models
@@ -633,7 +641,7 @@ mod agent_model_preference_tests {
             .set_endpoint(DispatchRole::Evaluator, "or-eval");
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, sonnet_model);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
         assert_eq!(resolved.endpoint, Some("or-eval".to_string()));
 
@@ -668,7 +676,7 @@ mod config_roundtrip_tests {
                     name: "or-main".to_string(),
                     provider: "openrouter".to_string(),
                     url: Some("https://openrouter.ai/api/v1".to_string()),
-                    model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+                    model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
                     api_key: Some("sk-or-roundtrip-1".to_string()),
                     api_key_file: None,
                     api_key_env: None,
@@ -696,13 +704,11 @@ mod config_roundtrip_tests {
         let loaded = Config::load(dir).unwrap();
         assert_eq!(loaded.llm_endpoints.endpoints.len(), 2);
 
+        let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
         let or_ep = loaded.llm_endpoints.find_by_name("or-main").unwrap();
         assert_eq!(or_ep.provider, "openrouter");
         assert_eq!(or_ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
-        assert_eq!(
-            or_ep.model.as_deref(),
-            Some("anthropic/claude-sonnet-4-20250514")
-        );
+        assert_eq!(or_ep.model.as_deref(), Some(sonnet_model.as_str()));
         assert_eq!(or_ep.api_key.as_deref(), Some("sk-or-roundtrip-1"));
         assert!(or_ep.is_default);
 
@@ -750,9 +756,10 @@ mod config_roundtrip_tests {
         };
 
         // Set up model routing (provider:model format)
+        let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
         config.models.set_model(
             DispatchRole::Evaluator,
-            "openrouter:anthropic/claude-sonnet-4-20250514",
+            &format!("openrouter:{sonnet_model}"),
         );
         config
             .models
@@ -766,7 +773,7 @@ mod config_roundtrip_tests {
 
         // Verify model routing survived
         let resolved = loaded.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, sonnet_model);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
         assert_eq!(resolved.endpoint, Some("or-prod".to_string()));
 
@@ -1096,6 +1103,7 @@ is_default = true
 
 mod auto_routing_tests {
     use super::*;
+    use workgraph::config::CLAUDE_OPUS_MODEL_ID;
     use workgraph::executor::native::openai_client::{
         OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
@@ -1129,11 +1137,12 @@ mod auto_routing_tests {
     #[test]
     fn integration_openrouter_invalid_model_returns_original_no_fallback() {
         let tmp = setup_workgraph_dir();
+        let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
                 {"id": "anthropic/claude-sonnet-4-6"},
-                {"id": "anthropic/claude-opus-4-6"},
+                {"id": opus_key},
                 {"id": "openai/gpt-4o"},
             ]
         });
@@ -1155,11 +1164,12 @@ mod auto_routing_tests {
     #[test]
     fn integration_openrouter_invalid_model_suggests_alternatives() {
         let tmp = setup_workgraph_dir();
+        let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
                 {"id": "anthropic/claude-sonnet-4-6"},
-                {"id": "anthropic/claude-opus-4-6"},
+                {"id": opus_key},
                 {"id": "openai/gpt-4o"},
                 {"id": "deepseek/deepseek-r1"},
             ]
