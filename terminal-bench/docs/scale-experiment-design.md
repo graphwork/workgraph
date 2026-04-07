@@ -19,7 +19,7 @@ Workgraph context injection (Condition F) improves pass rates on coding tasks vs
 | Question | Pilot answer | What the full run must resolve |
 |----------|-------------|-------------------------------|
 | Does F outperform A on matched tasks? | Yes (4/8 tasks, 50 pp gap) | Replicate across all 89 TB 2.0 tasks |
-| Is surveillance valuable? | No (0 activations in 95 trials) | Test with harder tasks at M2.7's ~50% boundary |
+| Is surveillance valuable? | No (0 activations in 95 trials) | Resolved: surveillance removed from F (see surveillance-audit.md) |
 | What is F's token overhead? | 3.5x per trial, but 3.6x more cost-effective per pass on matched tasks | Measure at full scale with varied difficulty |
 | Is the effect robust across difficulty levels? | Unknown (only 8-task overlap) | Measure per-difficulty treatment effect |
 
@@ -32,15 +32,17 @@ Workgraph context injection (Condition F) improves pass rates on coding tasks vs
 | Condition | Label | Context scope | WG tools | Surveillance | Description |
 |-----------|-------|--------------|----------|-------------|-------------|
 | **A** | Bare agent | `clean` | No | No | Baseline: task description + verify command only |
-| **F** | Full wg-native | `graph` | Yes | Yes (max 3 iter) | Full treatment: graph context + WG Quick Guide + surveillance loop |
+| **F** | Full wg-native | `graph` | Yes | No | Full treatment: graph context + WG Quick Guide + wg CLI |
 
-### Optional condition (recommended by pilot synthesis)
+**Note:** Surveillance loops were removed from Condition F after the pilot showed 0 activations across 95 trials. All benefit came from context injection alone. Condition F is now purely about wg context injection. See `terminal-bench/docs/surveillance-audit.md` for the full analysis.
+
+### Optional condition (historical)
 
 | Condition | Label | Context scope | WG tools | Surveillance | Description |
 |-----------|-------|--------------|----------|-------------|-------------|
-| **G** | Context-only | `graph` | Yes | **No** | Ablation: isolates context injection from surveillance overhead |
+| **G** | Context-only | `graph` | Yes | **No** | Originally an ablation condition; now identical to F. Kept for label compatibility. |
 
-**Recommendation:** Run A and F first. If budget allows, add G in a second pass. G requires minimal code changes (skip the surveillance task creation in the F runner) and would resolve the "which component of F drives the improvement" question from the pilot synthesis.
+**Note:** With surveillance removed from F, Condition G is identical to F. The "which component drives the improvement" question from the pilot synthesis is resolved: it's context injection, not surveillance (0 activations in 95 pilot trials).
 
 ---
 
@@ -141,7 +143,7 @@ Fallback:                     4 concurrent  — if rate-limit errors appear in P
 - If we add Condition G or increase to 16, we risk hitting undocumented OpenRouter limits.
 - 8 concurrent is sufficient to complete 890 trials in a reasonable time (see Section 8).
 
-**Agents per trial:** 1 for both conditions. The 8-agent condition from `run_condition_a.py` is a different experiment (multi-agent coordination). For A vs F comparison, both conditions use 1 agent per task to isolate the context-injection variable.
+**Agents per trial:** 1 for all conditions (A, F, G). The 8-agent condition from `run_condition_a.py` is a different experiment (multi-agent coordination). For A vs F comparison, both conditions use 1 agent per task to isolate the context-injection variable.
 
 ### Ramp-up implementation
 
@@ -186,7 +188,7 @@ Build `run_scale_experiment.py` by composing proven components from existing run
 | Component | Source | Modifications needed |
 |-----------|--------|---------------------|
 | Trial isolation (temp dir + wg init + config) | `run_condition_a.py` | None — reuse as-is |
-| F condition setup (init → work → surveillance cycle) | `run_pilot_f_89.py` | Extract as reusable function |
+| F condition setup (work task with graph context) | `run_pilot_f_89.py` | Extract as reusable function; surveillance removed |
 | Harbor integration (89 TB 2.0 tasks) | `reproduce.sh` + `wg/adapter.py` | Add condition F agent class to Harbor path |
 | Metrics collection (`stream.jsonl` parsing) | `run_condition_a.py` | None — reuse as-is |
 | 3-layer verification | `run_condition_a.py` | None — reuse as-is |
@@ -215,8 +217,7 @@ run_scale_experiment.py
 │   │   ├── Acquire semaphore
 │   │   ├── Dispatch to condition-specific runner
 │   │   │   ├── Condition A: bare agent (clean context)
-│   │   │   ├── Condition F: wg-native + surveillance
-│   │   │   └── Condition G: wg-native, no surveillance
+│   │   │   └── Condition F/G: wg-native (graph context + WG Quick Guide)
 │   │   ├── Poll for completion (with timeout)
 │   │   ├── Collect metrics + verification
 │   │   ├── Write per-trial result to disk (crash-safe)
@@ -443,11 +444,11 @@ def preflight_checks():
 | **Dollar cost (M2.7)** | ~$0 | M2.7 charges nothing on OpenRouter |
 | **Dollar cost (if priced at Sonnet rates, $3/$15 per M tok)** | ~$7.3K | For budget planning if model changes |
 
-### With Condition G (optional, 445 additional trials)
+### With Condition G (optional, identical to F — for historical comparison only)
 
 | Metric | Additional cost |
 |--------|----------------|
-| Tokens | ~316M (similar to F minus surveillance overhead, ~50M tokens saved) |
+| Tokens | ~316M (identical to F — no surveillance overhead in either) |
 | Time (8 concurrent) | ~4.2 hours |
 | Dollar cost (M2.7) | ~$0 |
 
@@ -501,7 +502,7 @@ terminal-bench/results/scale-run-{NNN}/
 1. **Per-task Fisher exact test:** For each task, 2×2 table (pass/fail × A/F), compute p-value. Identify tasks with significant treatment effects.
 2. **Aggregate pass rates with Wilson CIs:** Overall, per-difficulty, per-category.
 3. **Token efficiency:** Tokens per pass (total tokens / passes) by condition.
-4. **Surveillance activation rate:** How often did the surveillance loop iterate in F? (Expect near-zero based on pilots, but harder tasks may trigger it.)
+4. **Context overhead:** Token cost of wg context injection (F tokens vs A tokens per trial).
 5. **Time distribution:** Per-condition, per-difficulty histograms.
 6. **Failure taxonomy:** Categorize failures as model-capability vs. operational.
 
@@ -512,7 +513,7 @@ terminal-bench/results/scale-run-{NNN}/
 | Does F improve pass rates overall? | Aggregate pass rate comparison, Fisher exact on pooled data |
 | On which tasks does F help most? | Per-task Fisher exact, rank by effect size |
 | Does F help on hard tasks more than easy ones? | Stratified analysis by difficulty |
-| Is the surveillance loop worth the token cost? | Surveillance activation rate × pass-rate delta |
+| What is the per-trial token overhead of context injection? | F tokens/trial vs A tokens/trial |
 | What is F's cost per additional pass? | (F_tokens - A_tokens) / (F_passes - A_passes) |
 | Does F ever hurt? | Count tasks where A outperforms F |
 
@@ -547,10 +548,9 @@ terminal-bench/results/scale-run-{NNN}/
 4. Run analysis pipeline
 5. Generate comparison report
 
-### Phase 5: Optional Condition G
-1. Modify F runner to skip surveillance task creation
-2. Run 89 tasks × 5 replicas = 445 trials
-3. Three-way comparison: A vs F vs G
+### Phase 5: Optional Condition G (historical)
+Note: With surveillance removed from F, Condition G is now identical to F.
+Running G is unnecessary unless comparing against historical pilot data that used the G label.
 
 ---
 

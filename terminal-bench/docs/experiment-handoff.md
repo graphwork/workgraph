@@ -12,8 +12,8 @@
 
 Does **workgraph context injection** (Condition F) improve coding task pass rates compared to a **bare agent** (Condition A)?
 
-- **Condition A (Baseline):** An LLM agent receives only the task description and a verify command. No graph context, no `wg` tools, no surveillance loop.
-- **Condition F (Full wg-native):** The same LLM agent receives graph-scoped context, access to `wg` CLI tools, a WG Quick Guide, and a surveillance loop (max 3 iterations) that can retry failed work.
+- **Condition A (Baseline):** An LLM agent receives only the task description and a verify command. No graph context, no `wg` tools.
+- **Condition F (Full wg-native):** The same LLM agent receives graph-scoped context, access to `wg` CLI tools, and a WG Quick Guide. No surveillance loop — pilot data showed 0 activations across 95 trials, so it was removed to simplify the experimental design.
 
 Both conditions use the same model (`minimax/minimax-m2.7` via OpenRouter) and the same verification commands. The only variable is the scaffolding.
 
@@ -50,10 +50,10 @@ See `terminal-bench/docs/pilot-results-synthesis.md` for the complete pilot anal
 | Condition | Context scope | WG tools | Surveillance | Description |
 |-----------|--------------|----------|-------------|-------------|
 | **A** | `clean` | No | No | Bare agent: task description + verify command only |
-| **F** | `graph` | Yes | Yes (max 3 iterations, 1m delay) | Full wg-native: graph context + WG Quick Guide + surveillance loop |
-| **G** (optional) | `graph` | Yes | **No** | Ablation: context-only, no surveillance overhead |
+| **F** | `graph` | Yes | No | Full wg-native: graph context + WG Quick Guide + wg CLI |
+| **G** (optional) | `graph` | Yes | **No** | Historical ablation label — now identical to F |
 
-Run A and F first. Add G in a second pass if budget allows — it isolates context injection from surveillance.
+Run A and F. Condition G is kept for label compatibility but is functionally identical to F (surveillance was removed from F after 0 activations in 95 pilot trials).
 
 ### Task set
 
@@ -123,7 +123,7 @@ On matched tasks, F is **3.6x more cost-effective per pass** despite higher per-
 
 ### Surveillance value
 
-**Zero activations across 95 trials.** The surveillance loop was never triggered. All benefit came from context injection alone. This motivates testing Condition G (context without surveillance) in a follow-up.
+**Zero activations across 95 trials.** The surveillance loop was never triggered. All benefit came from context injection alone. Based on this evidence, surveillance was removed from Condition F for the full-scale experiment (see `terminal-bench/docs/surveillance-audit.md` for the detailed analysis).
 
 ---
 
@@ -308,7 +308,7 @@ The runner uses an **adaptive semaphore**:
 2. After `--ramp-after` (default 20) trials with <10% error rate, ramps to `--max-concurrent` (default 8)
 3. If errors are high, stays at the initial level
 
-Each trial spawns 1 agent (Condition A) or 2 agents (Condition F: work + surveillance). With 8 concurrent trials in F, that's 16 concurrent API calls max.
+Each trial spawns 1 agent (all conditions). With 8 concurrent trials, that's 8 concurrent API calls max.
 
 ### Monitoring progress
 
@@ -618,17 +618,18 @@ The agent receives:
 - Task title, description, and the WG Quick Guide
 - Graph-scoped context (sees the dependency graph)
 - Access to `wg` CLI tools (log, artifact, show, list, done, fail, add)
-- A surveillance agent watches and can trigger retry (max 3 iterations)
 
 Task graph per trial:
 ```
-INIT (completed immediately) → WORK (main task) → SURVEILLANCE → WORK (cycle, max 3 iterations)
+WORK (main task with --verify gate)
 ```
+
+No surveillance loop — pilot data showed 0 activations across 95 trials. All benefit came from context injection alone.
 
 Config written per trial:
 ```toml
 [coordinator]
-max_agents = 2
+max_agents = 1
 executor = "native"
 model = "openrouter:minimax/minimax-m2.7"
 worktree_isolation = false
@@ -643,9 +644,9 @@ auto_assign = false
 auto_evaluate = false
 ```
 
-### Condition G (Context-only, optional)
+### Condition G (Context-only, historical)
 
-Same as F but without the surveillance loop. Only 1 agent, no cycle. Isolates the value of context injection from surveillance overhead.
+Identical to F. Originally planned as an ablation (context without surveillance), but surveillance was removed from F after pilot analysis showed it provided no value. Kept as a label for compatibility with any prior references.
 
 ---
 

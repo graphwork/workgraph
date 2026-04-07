@@ -6,6 +6,10 @@ Runs all 18 custom tasks across conditions A, F, and optionally G with
 configurable replicas and concurrency. Supports resume after interruption,
 adaptive concurrency ramp-up, and automatic retry of operational failures.
 
+Condition A: bare agent (clean context, no wg tools).
+Condition F: full wg context injection (graph context, WG Quick Guide, wg CLI).
+Condition G: identical to F (historical ablation label, kept for compatibility).
+
 Design: terminal-bench/docs/scale-experiment-design.md
 
 Usage:
@@ -55,10 +59,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_RESULTS_BASE = os.path.join(SCRIPT_DIR, "results")
 
 WG_BIN = shutil.which("wg") or os.path.expanduser("~/.cargo/bin/wg")
-
-# Condition F surveillance config
-MAX_SURVEILLANCE_ITERATIONS = 3
-SURVEILLANCE_CYCLE_DELAY = "1m"
 
 WG_QUICK_GUIDE = """## WG Quick Reference (Distilled)
 
@@ -441,32 +441,6 @@ async def poll_completion(
         await asyncio.sleep(poll_interval)
 
 
-async def poll_all_done(
-    wg_dir: str,
-    timeout_secs: float,
-    poll_interval: float = DEFAULT_POLL_INTERVAL,
-) -> tuple[str, float]:
-    """Poll until all tasks in the graph are in terminal state."""
-    start = time.monotonic()
-    terminal = {"done", "failed", "abandoned"}
-    while True:
-        elapsed = time.monotonic() - start
-        if elapsed > timeout_secs:
-            return "timeout", elapsed
-        result = await exec_wg(wg_dir, ["list", "--json"])
-        try:
-            tasks = json.loads(result.split("\n")[0]) if result.strip() else []
-            if isinstance(tasks, list) and len(tasks) > 0:
-                all_terminal = all(
-                    t.get("status", "").lower() in terminal for t in tasks
-                )
-                if all_terminal:
-                    return "done", elapsed
-        except (json.JSONDecodeError, IndexError):
-            pass
-        await asyncio.sleep(poll_interval)
-
-
 async def collect_metrics(wg_dir: str) -> dict:
     """Collect token/turn/cost metrics from agent stream.jsonl files."""
     agents_dir = os.path.join(wg_dir, "agents")
@@ -516,42 +490,6 @@ async def collect_metrics(wg_dir: str) -> dict:
         except Exception:
             pass
     return metrics
-
-
-def extract_surveillance_stats(wg_dir: str, surveillance_id: str) -> dict:
-    """Extract surveillance loop stats from the graph."""
-    stats = {
-        "iterations_completed": 0,
-        "issues_caught": [],
-        "converged": False,
-    }
-    graph_path = os.path.join(wg_dir, "graph.jsonl")
-    if not os.path.isfile(graph_path):
-        return stats
-    try:
-        with open(graph_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("id") == surveillance_id:
-                    cycle_cfg = entry.get("cycle_config", {})
-                    if cycle_cfg:
-                        stats["iterations_completed"] = cycle_cfg.get("current_iteration", 0)
-                    status = entry.get("status", "")
-                    if status == "done":
-                        stats["converged"] = True
-                if entry.get("type") == "log" and entry.get("task_id") == surveillance_id:
-                    msg = entry.get("message", "")
-                    if "invalid" in msg.lower() or "failed" in msg.lower() or "issue" in msg.lower():
-                        stats["issues_caught"].append(msg)
-    except Exception:
-        pass
-    return stats
 
 
 async def run_verify_command(verify_cmd: str, timeout: float = 60) -> tuple[bool, str]:
@@ -902,17 +840,15 @@ async def run_trial_condition_f(
     trial_id: str,
     results_dir: str,
     timeout: float = DEFAULT_TIMEOUT,
-    surveillance: bool = True,
+    condition_label: str = "F",
 ) -> dict:
-    """Run a single Condition F trial: wg-native + graph context + surveillance."""
+    """Run a single Condition F/G trial: wg-native + graph context, no surveillance."""
     task_id = task_def["id"]
-    init_task_id = f"init-{task_id}"
     work_task_id = f"work-{task_id}"
-    surv_task_id = f"surv-{task_id}"
 
     result = {
         "trial_id": trial_id,
-        "condition": "F" if surveillance else "G",
+        "condition": condition_label,
         "task_id": task_id,
         "difficulty": task_def["difficulty"],
         "replica": replica,
@@ -921,14 +857,7 @@ async def run_trial_condition_f(
         "elapsed_s": 0.0,
         "metrics": None,
         "verify_output": None,
-        "surveillance": {
-            "enabled": surveillance,
-            "created": False,
-            "cycle_edge": False,
-            "iterations": 0,
-            "issues_caught": [],
-            "converged": False,
-        },
+        "surveillance": None,
         "error": None,
     }
 
@@ -943,11 +872,10 @@ async def run_trial_condition_f(
         if "error" in init_out.lower() and "already" not in init_out.lower():
             raise RuntimeError(f"Init failed: {init_out}")
 
-        # 2. Write config (condition F: graph context, native executor)
-        max_agents = 2 if surveillance else 1
+        # 2. Write config (graph context, native executor, single agent)
         config = (
             "[coordinator]\n"
-            f"max_agents = {max_agents}\n"
+            "max_agents = 1\n"
             'executor = "native"\n'
             f'model = "{model}"\n'
             "worktree_isolation = false\n"
@@ -964,19 +892,10 @@ async def run_trial_condition_f(
         with open(os.path.join(wg_dir, "config.toml"), "w") as f:
             f.write(config)
 
-        # 3a. Create INIT task (external predecessor for cycle header fix)
-        await exec_wg(wg_dir, [
-            "add", f"Init: {task_def['title']}",
-            "--id", init_task_id,
-            "-d", "One-shot trigger task. Provides external predecessor for cycle header.",
-            "--no-place",
-        ])
-        await exec_wg(wg_dir, ["done", init_task_id])
-
-        # 3b. Create WORK task
+        # 3. Create WORK task with full wg context
         instruction = load_instruction(task_def)
         work_description = (
-            f"## Terminal Bench Trial (Condition {'F' if surveillance else 'G'} — wg-native)\n\n"
+            f"## Terminal Bench Trial (Condition {condition_label} — wg-native)\n\n"
             f"**Task:** {task_id} ({task_def['difficulty']})\n\n"
             f"{WG_QUICK_GUIDE}\n\n"
             f"## Instructions\n\n{instruction}\n"
@@ -984,7 +903,6 @@ async def run_trial_condition_f(
         add_work = await exec_wg(wg_dir, [
             "add", f"Work: {task_def['title']}",
             "--id", work_task_id,
-            "--after", init_task_id,
             "-d", work_description,
             "--verify", task_def["verify_cmd"],
             "--exec-mode", "full",
@@ -995,110 +913,28 @@ async def run_trial_condition_f(
         if "[exit code:" in add_work and work_task_id not in add_work:
             raise RuntimeError(f"Work task creation failed: {add_work}")
 
-        # 4. Create SURVEILLANCE task (condition F only)
-        poll_task_id = work_task_id
-        if surveillance:
-            surv_description = (
-                f"## Surveillance Task for: {task_id}\n\n"
-                f"You are a surveillance agent. Your job is to verify that the work task "
-                f"completed correctly.\n\n"
-                f"### What to check\n"
-                f"Run the following verification command:\n"
-                f"```bash\n{task_def['verify_cmd']}\n```\n\n"
-                f"### Decision logic\n"
-                f"1. Run the verify command above\n"
-                f"2. If it passes (exit code 0): the work is valid. Run:\n"
-                f"   ```bash\n"
-                f"   wg log {surv_task_id} 'Verification passed — output is valid'\n"
-                f"   wg done {surv_task_id} --converged\n"
-                f"   ```\n"
-                f"3. If it fails: log what went wrong, then signal for retry:\n"
-                f"   ```bash\n"
-                f"   wg log {surv_task_id} 'Verification FAILED: <describe issue>'\n"
-                f"   wg done {surv_task_id}\n"
-                f"   ```\n"
-                f"   (Using plain `wg done` without `--converged` causes the cycle to iterate,\n"
-                f"    which resets the work task so it can be retried.)\n\n"
-                f"### Important\n"
-                f"- You are in a cycle with max {MAX_SURVEILLANCE_ITERATIONS} iterations\n"
-                f"- Check `wg show {surv_task_id}` for your current loop_iteration\n"
-                f"- If this is iteration {MAX_SURVEILLANCE_ITERATIONS} and it still fails, "
-                f"use `wg done --converged` anyway and log the failure details\n"
-            )
-            add_surv = await exec_wg(wg_dir, [
-                "add", f"Surveil: {task_def['title']}",
-                "--id", surv_task_id,
-                "--after", work_task_id,
-                "-d", surv_description,
-                "--exec-mode", "light",
-                "--context-scope", "graph",
-                "--model", model,
-                "--no-place",
-            ])
-            if "[exit code:" in add_surv and surv_task_id not in add_surv:
-                raise RuntimeError(f"Surveillance task creation failed: {add_surv}")
-            result["surveillance"]["created"] = True
-
-            # 5. Close the cycle: work -> surv -> work (back-edge)
-            edit_out = await exec_wg(wg_dir, [
-                "edit", work_task_id,
-                "--add-after", surv_task_id,
-                "--max-iterations", str(MAX_SURVEILLANCE_ITERATIONS),
-                "--cycle-delay", SURVEILLANCE_CYCLE_DELAY,
-            ])
-            if "[exit code:" not in edit_out:
-                result["surveillance"]["cycle_edge"] = True
-
-            poll_task_id = surv_task_id
-
-        # 6. Start wg service
+        # 4. Start wg service
         await exec_wg(wg_dir, [
             "service", "start",
-            "--max-agents", str(max_agents),
+            "--max-agents", "1",
             "--executor", "native",
             "--model", model,
             "--no-coordinator-agent",
             "--force",
         ])
 
-        # 7. Poll for completion
-        status, elapsed = await poll_completion(wg_dir, poll_task_id, timeout)
-
-        # If surveillance never reached terminal, check overall graph
-        if surveillance and status not in ("done", "failed", "abandoned"):
-            overall_status, _ = await poll_all_done(
-                wg_dir, max(0, timeout - elapsed)
-            )
-            status = overall_status
-            elapsed = time.monotonic() - start
-
+        # 5. Poll for completion
+        status, elapsed = await poll_completion(wg_dir, work_task_id, timeout)
         result["status"] = status
         result["elapsed_s"] = round(elapsed, 2)
 
-        # 8. Stop service
+        # 6. Stop service
         await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
 
-        # 9. Collect surveillance stats
-        if surveillance:
-            surv_show = await exec_wg(wg_dir, ["show", surv_task_id])
-            for line in surv_show.splitlines():
-                s = line.strip().lower()
-                if "loop_iteration" in s or "iteration" in s:
-                    try:
-                        val = int(s.split(":")[-1].strip())
-                        result["surveillance"]["iterations"] = val
-                    except (ValueError, IndexError):
-                        pass
-            graph_stats = extract_surveillance_stats(wg_dir, surv_task_id)
-            if graph_stats["iterations_completed"] > 0:
-                result["surveillance"]["iterations"] = graph_stats["iterations_completed"]
-            result["surveillance"]["converged"] = graph_stats["converged"]
-            result["surveillance"]["issues_caught"] = graph_stats["issues_caught"]
-
-        # 10. Collect metrics
+        # 7. Collect metrics
         result["metrics"] = await collect_metrics(wg_dir)
 
-        # 11. External verify
+        # 8. External verify
         passed, output = await run_verify_command(task_def["verify_cmd"])
         result["verify_output"] = output
         if passed and result["status"] != "done":
@@ -1160,15 +996,10 @@ async def run_trial_dispatched(
         return await run_trial_condition_a(
             task_def, replica, model, trial_id, results_dir, timeout
         )
-    elif condition == "F":
+    elif condition in ("F", "G"):
         return await run_trial_condition_f(
             task_def, replica, model, trial_id, results_dir, timeout,
-            surveillance=True,
-        )
-    elif condition == "G":
-        return await run_trial_condition_f(
-            task_def, replica, model, trial_id, results_dir, timeout,
-            surveillance=False,
+            condition_label=condition,
         )
     else:
         raise ValueError(f"Unknown condition: {condition}")
@@ -1317,28 +1148,6 @@ def compute_condition_stats(results: list[dict], condition: str) -> dict:
                 "mean_time_s": round(sum(t_times) / len(t_times), 2) if t_times else 0,
             }
 
-    # Surveillance stats (F and G)
-    surveillance_stats = None
-    if condition in ("F", "G"):
-        surv_results = [r for r in cond_results if r.get("surveillance")]
-        if surv_results:
-            surveillance_stats = {
-                "enabled": condition == "F",
-                "total_iterations": sum(
-                    (r["surveillance"].get("iterations") or 0)
-                    for r in surv_results if r.get("surveillance")
-                ),
-                "converged_first_try": sum(
-                    1 for r in surv_results
-                    if r.get("surveillance", {}).get("converged")
-                    and (r.get("surveillance", {}).get("iterations") or 0) <= 1
-                ),
-                "issues_detected": sum(
-                    len(r.get("surveillance", {}).get("issues_caught") or [])
-                    for r in surv_results
-                ),
-            }
-
     return {
         "condition": condition,
         "total": total,
@@ -1357,7 +1166,6 @@ def compute_condition_stats(results: list[dict], condition: str) -> dict:
                 (total_input + total_output) / total, 0
             ) if total else 0,
         },
-        "surveillance_stats": surveillance_stats,
         "difficulty_stats": difficulty_stats,
         "task_stats": task_stats,
     }
