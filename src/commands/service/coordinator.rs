@@ -838,6 +838,8 @@ fn build_auto_assign_tasks(
                 .iter()
                 .filter(|t| t.agent.is_none() && t.assigned.is_none())
                 .filter(|t| !workgraph::graph::is_system_task(&t.id))
+                // Exclude shell tasks from auto-assign — they run commands, not agents
+                .filter(|t| t.exec.is_none() && t.exec_mode.as_deref() != Some("shell"))
                 .map(|t| (t.id.clone(), t.title.clone(), t.created_at.clone()))
                 .collect()
         };
@@ -1356,6 +1358,7 @@ fn build_auto_assign_tasks(
                     deliverables: vec![],
                     artifacts: vec![],
                     exec: Some("wg agency create".to_string()),
+                    timeout: None,
                     not_before: None,
                     created_at: Some(Utc::now().to_rfc3339()),
                     started_at: None,
@@ -1706,6 +1709,7 @@ fn build_flip_verification_tasks(
             deliverables: vec![],
             artifacts: vec![],
             exec: None,
+            timeout: None,
             not_before: None,
             created_at: Some(Utc::now().to_rfc3339()),
             started_at: None,
@@ -1958,6 +1962,7 @@ fn build_separate_verify_tasks(
             deliverables: vec![],
             artifacts: vec![],
             exec: None,
+            timeout: None,
             not_before: None,
             created_at: Some(Utc::now().to_rfc3339()),
             started_at: None,
@@ -2137,6 +2142,7 @@ fn build_auto_evolve_task(
         deliverables: vec![],
         artifacts: vec![],
         exec: Some(format!("wg evolve --budget {}", budget)),
+        timeout: None,
         not_before: None,
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
@@ -2319,6 +2325,7 @@ fn build_auto_create_task(
         deliverables: vec![],
         artifacts: vec![],
         exec: Some("wg agency create".to_string()),
+        timeout: None,
         not_before: None,
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
@@ -3214,7 +3221,7 @@ fn spawn_agents_for_ready_tasks(
             dir,
             &task.id,
             &effective_executor,
-            None,
+            task.timeout.as_deref(),
             task_model.as_deref(),
         ) {
             Ok((agent_id, pid)) => {

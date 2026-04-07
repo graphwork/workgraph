@@ -193,6 +193,8 @@ pub(crate) fn spawn_agent_inner(
 
     // Get task exec command for shell executor
     let task_exec = task.exec.clone();
+    // Get per-task timeout override
+    let task_timeout = task.timeout.clone();
     // Get task model preference
     let task_model = task.model.clone();
     // Get session_id for resume (from previous wg wait)
@@ -415,13 +417,19 @@ pub(crate) fn spawn_agent_inner(
         resume_session_id.as_deref(),
     )?;
 
-    // Resolve effective timeout: CLI param > executor config > coordinator config.
+    // Resolve effective timeout: CLI param > task.timeout > executor config > coordinator config.
     // Empty string means disabled.
     let effective_timeout_secs: Option<u64> = if let Some(t) = timeout {
         if t.is_empty() {
             None
         } else {
             Some(parse_timeout_secs(t).context("Invalid --timeout value")?)
+        }
+    } else if let Some(ref t) = task_timeout {
+        if t.is_empty() {
+            None
+        } else {
+            Some(parse_timeout_secs(t).context("Invalid task timeout value")?)
         }
     } else if let Some(t) = settings.timeout {
         if t == 0 { None } else { Some(t) }

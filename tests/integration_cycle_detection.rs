@@ -6265,3 +6265,285 @@ fn test_non_archived_cycle_still_resets_normally() {
     );
     assert_eq!(graph.get_task("archive-0").unwrap().status, Status::Open);
 }
+
+// ===========================================================================
+// Shell Task + Checker Cycle (Retry Loop) Tests
+// ===========================================================================
+
+/// Tests the shell-task → checker → retry → success cycle pattern.
+/// This validates the core "reset-from-downstream" workflow.
+#[test]
+fn test_shell_checker_cycle_iteration() {
+    // Shell task → checker → (back-edge to shell task).
+    // Checker owns the cycle_config. When both are Done and checker is not
+    // converged, both should reset to Open.
+    let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
+    shell_task.exec = Some("python3 run.py --batch 1".to_string());
+    shell_task.exec_mode = Some("shell".to_string());
+    shell_task.after = vec!["check-batch".to_string()]; // back-edge
+
+    let mut checker = make_task_with_status("check-batch", "Check Batch", Status::Done);
+    checker.after = vec!["run-batch".to_string()]; // forward edge
+    checker.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+
+    let mut graph = build_graph(vec![shell_task, checker]);
+    let analysis = graph.compute_cycle_analysis();
+
+    // Complete checker without --converged → cycle should iterate
+    let reactivated = evaluate_cycle_iteration(&mut graph, "check-batch", &analysis);
+
+    assert_eq!(
+        reactivated.len(),
+        2,
+        "Both shell task and checker should be re-activated"
+    );
+
+    let shell = graph.get_task("run-batch").unwrap();
+    assert_eq!(shell.status, Status::Open, "Shell task should be Open");
+    assert_eq!(shell.loop_iteration, 1, "Shell task iteration should be 1");
+
+    let check = graph.get_task("check-batch").unwrap();
+    assert_eq!(check.status, Status::Open, "Checker should be Open");
+    assert_eq!(check.loop_iteration, 1, "Checker iteration should be 1");
+}
+
+#[test]
+fn test_shell_checker_cycle_converged_stops() {
+    // Shell → checker cycle. Checker is converged → cycle should stop.
+    let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
+    shell_task.exec = Some("python3 run.py".to_string());
+    shell_task.after = vec!["check-batch".to_string()];
+
+    let mut checker = make_task_with_status("check-batch", "Check Batch", Status::Done);
+    checker.after = vec!["run-batch".to_string()];
+    checker.tags = vec!["converged".to_string()];
+    checker.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+
+    let mut graph = build_graph(vec![shell_task, checker]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "check-batch", &analysis);
+
+    assert!(
+        reactivated.is_empty(),
+        "Converged cycle should NOT re-activate any tasks"
+    );
+
+    // Both should stay Done
+    assert_eq!(
+        graph.get_task("run-batch").unwrap().status,
+        Status::Done
+    );
+    assert_eq!(
+        graph.get_task("check-batch").unwrap().status,
+        Status::Done
+    );
+}
+
+#[test]
+fn test_shell_checker_cycle_max_iterations_honored() {
+    // Shell → checker. Checker at max_iterations limit.
+    let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
+    shell_task.exec = Some("python3 run.py".to_string());
+    shell_task.after = vec!["check-batch".to_string()];
+    shell_task.loop_iteration = 4; // Already at iteration 4
+
+    let mut checker = make_task_with_status("check-batch", "Check Batch", Status::Done);
+    checker.after = vec!["run-batch".to_string()];
+    checker.loop_iteration = 4;
+    checker.cycle_config = Some(CycleConfig {
+        max_iterations: 5, // max=5, iteration 4 is the last (0..4 = 5 iterations)
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+
+    let mut graph = build_graph(vec![shell_task, checker]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "check-batch", &analysis);
+
+    assert!(
+        reactivated.is_empty(),
+        "Should NOT re-activate when max iterations reached"
+    );
+}
+
+#[test]
+fn test_shell_checker_cycle_logs_preserved() {
+    // Verify that log entries survive across cycle resets.
+    let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
+    shell_task.exec = Some("python3 run.py".to_string());
+    shell_task.after = vec!["check-batch".to_string()];
+    shell_task.log = vec![workgraph::graph::LogEntry {
+        timestamp: "2026-04-07T12:00:00Z".to_string(),
+        message: "Attempt 1: completed with 3 errors".to_string(),
+        actor: None,
+        user: None,
+    }];
+
+    let mut checker = make_task_with_status("check-batch", "Check Batch", Status::Done);
+    checker.after = vec!["run-batch".to_string()];
+    checker.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    checker.log = vec![workgraph::graph::LogEntry {
+        timestamp: "2026-04-07T12:05:00Z".to_string(),
+        message: "Attempt 1: 3 errors found, requesting retry".to_string(),
+        actor: None,
+        user: None,
+    }];
+
+    let mut graph = build_graph(vec![shell_task, checker]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "check-batch", &analysis);
+    assert_eq!(reactivated.len(), 2);
+
+    // Logs should be preserved (append-only, not cleared)
+    let shell = graph.get_task("run-batch").unwrap();
+    assert!(
+        shell.log.len() >= 1,
+        "Shell task logs should be preserved across reset"
+    );
+    assert!(
+        shell
+            .log
+            .iter()
+            .any(|e| e.message.contains("Attempt 1")),
+        "Original log entry should still exist"
+    );
+
+    let check = graph.get_task("check-batch").unwrap();
+    assert!(
+        check.log.len() >= 1,
+        "Checker logs should be preserved across reset"
+    );
+    assert!(
+        check
+            .log
+            .iter()
+            .any(|e| e.message.contains("3 errors")),
+        "Original checker log entry should still exist"
+    );
+}
+
+#[test]
+fn test_shell_checker_cycle_failure_restarts() {
+    // Shell → checker. Checker fails → cycle failure restart.
+    let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
+    shell_task.exec = Some("python3 run.py".to_string());
+    shell_task.after = vec!["check-batch".to_string()];
+
+    let mut checker = make_task_with_status("check-batch", "Check Batch", Status::Failed);
+    checker.after = vec!["run-batch".to_string()];
+    checker.failure_reason = Some("Agent crash".to_string());
+    checker.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: Some(3),
+    });
+
+    let mut graph = build_graph(vec![shell_task, checker]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let restarted = evaluate_cycle_on_failure(&mut graph, "check-batch", &analysis);
+
+    assert!(
+        !restarted.is_empty(),
+        "Failure restart should re-activate tasks"
+    );
+
+    // Checker should be reset to Open
+    let check = graph.get_task("check-batch").unwrap();
+    assert_eq!(check.status, Status::Open, "Failed checker should restart");
+}
+
+/// CLI integration test: wg add --exec creates a task with exec and exec_mode=shell.
+#[test]
+fn test_cli_add_with_exec_flag() {
+    let dir = TempDir::new().unwrap();
+    let wg_dir = dir.path().join(".workgraph");
+
+    wg_ok(&wg_dir, &["init"]);
+    let output = wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Run batch script",
+            "--exec",
+            "python3 run_batch.py --quality high",
+            "--no-place",
+        ],
+    );
+    assert!(
+        output.contains("run-batch-script"),
+        "Should create task with slugified ID: {}",
+        output
+    );
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph
+        .get_task("run-batch-script")
+        .expect("Task should exist");
+    assert_eq!(
+        task.exec.as_deref(),
+        Some("python3 run_batch.py --quality high"),
+        "Task should have exec command set"
+    );
+    assert_eq!(
+        task.exec_mode.as_deref(),
+        Some("shell"),
+        "exec_mode should auto-set to 'shell'"
+    );
+}
+
+/// CLI integration test: wg add --exec --timeout creates a task with timeout.
+#[test]
+fn test_cli_add_with_exec_and_timeout() {
+    let dir = TempDir::new().unwrap();
+    let wg_dir = dir.path().join(".workgraph");
+
+    wg_ok(&wg_dir, &["init"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Long render",
+            "--exec",
+            "render.sh",
+            "--timeout",
+            "6h",
+            "--no-place",
+        ],
+    );
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("long-render").expect("Task should exist");
+    assert_eq!(task.exec.as_deref(), Some("render.sh"));
+    assert_eq!(task.timeout.as_deref(), Some("6h"));
+}

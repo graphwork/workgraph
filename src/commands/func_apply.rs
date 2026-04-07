@@ -254,6 +254,7 @@ pub fn run(
                 deliverables: rendered.deliverables.clone(),
                 artifacts: vec![],
                 exec: None,
+                timeout: None,
                 not_before: None,
                 created_at: Some(Utc::now().to_rfc3339()),
                 started_at: None,

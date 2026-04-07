@@ -139,6 +139,14 @@ pub enum Commands {
         #[arg(long = "context-scope")]
         context_scope: Option<String>,
 
+        /// Shell command to execute for this task (auto-sets exec_mode=shell)
+        #[arg(long)]
+        exec: Option<String>,
+
+        /// Per-task timeout (e.g., 30s, 5m, 1h, 4h, 1d)
+        #[arg(long)]
+        timeout: Option<String>,
+
         /// Execution weight: full (default), light (read-only tools), bare (wg CLI only), shell (no LLM)
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,

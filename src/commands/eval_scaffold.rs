@@ -27,6 +27,13 @@ const DOMINATED_TAGS: &[&str] = &["evaluation", "assignment", "flip", "placement
 /// `.flip-*`) which are infrastructure and skip the pipeline.
 const PIPELINE_ELIGIBLE_PREFIXES: &[&str] = &[".verify-"];
 
+/// Returns true if a task uses the shell executor (command execution, no LLM).
+/// Shell tasks are exempt from the agency pipeline — no .assign-*, .flip-*,
+/// or .evaluate-* scaffolding.
+pub fn is_shell_task(task: &Task) -> bool {
+    task.exec.is_some() || task.exec_mode.as_deref() == Some("shell")
+}
+
 /// Returns true if a system task (dot-prefixed) should still go through the
 /// agency pipeline. `.verify-*` tasks are the primary example: they need
 /// intelligent agent matching via the same placement/assignment/evaluation
@@ -116,6 +123,12 @@ pub fn scaffold_full_pipeline(
 ) -> bool {
     // Skip system tasks (unless pipeline-eligible like .verify-*) and dominated-tag tasks
     if workgraph::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
+        return false;
+    }
+    // Skip shell executor tasks — they're commands, not agent work
+    if let Some(task) = graph.get_task(task_id)
+        && is_shell_task(task)
+    {
         return false;
     }
     if let Some(task) = graph.get_task(task_id)
@@ -294,6 +307,13 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
 
     // Skip system tasks (unless pipeline-eligible like .verify-*) — no assign for .evaluate, .flip, etc.
     if workgraph::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
+        return false;
+    }
+
+    // Skip shell executor tasks — they're commands, not agent work
+    if let Some(task) = graph.get_task(task_id)
+        && is_shell_task(task)
+    {
         return false;
     }
 
@@ -1195,5 +1215,95 @@ mod tests {
         assert!(!is_pipeline_eligible_system_task(".assign-my-task"));
         assert!(!is_pipeline_eligible_system_task(".flip-my-task"));
         assert!(!is_pipeline_eligible_system_task("regular-task"));
+    }
+
+    #[test]
+    fn test_is_shell_task() {
+        // Task with exec set → shell task
+        let mut task = make_task("shell-1", "Shell Task");
+        task.exec = Some("echo hello".to_string());
+        assert!(is_shell_task(&task));
+
+        // Task with exec_mode=shell → shell task
+        let mut task2 = make_task("shell-2", "Shell Task 2");
+        task2.exec_mode = Some("shell".to_string());
+        assert!(is_shell_task(&task2));
+
+        // Regular task → not a shell task
+        let task3 = make_task("regular", "Regular Task");
+        assert!(!is_shell_task(&task3));
+
+        // Task with exec_mode=full → not a shell task
+        let mut task4 = make_task("full", "Full Task");
+        task4.exec_mode = Some("full".to_string());
+        assert!(!is_shell_task(&task4));
+    }
+
+    #[test]
+    fn test_shell_task_skips_full_pipeline() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_assign = true;
+        config.agency.auto_evaluate = true;
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+
+        let mut task = make_task("run-tests", "Run Tests");
+        task.exec = Some("cargo test".to_string());
+        graph.add_node(Node::Task(task));
+
+        let modified =
+            scaffold_full_pipeline(dir.path(), &mut graph, "run-tests", "Run Tests", &config);
+        assert!(!modified);
+        assert!(graph.get_task(".assign-run-tests").is_none());
+        assert!(graph.get_task(".flip-run-tests").is_none());
+        assert!(graph.get_task(".evaluate-run-tests").is_none());
+    }
+
+    #[test]
+    fn test_shell_task_skips_assign() {
+        let mut graph = WorkGraph::new();
+
+        let mut task = make_task("run-script", "Run Script");
+        task.exec = Some("python3 run.py".to_string());
+        graph.add_node(Node::Task(task));
+
+        let modified = scaffold_assign_task(&mut graph, "run-script", "Run Script");
+        assert!(!modified);
+        assert!(graph.get_task(".assign-run-script").is_none());
+    }
+
+    #[test]
+    fn test_checker_downstream_of_shell_gets_pipeline() {
+        // A non-shell task depending on a shell task should still get full pipeline
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_assign = true;
+        config.agency.auto_evaluate = true;
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+
+        // Shell task
+        let mut shell_task = make_task("run-batch", "Run Batch");
+        shell_task.exec = Some("python3 batch.py".to_string());
+        graph.add_node(Node::Task(shell_task));
+
+        // Checker task (non-shell, depends on shell task)
+        let mut checker = make_task("check-batch", "Check Batch");
+        checker.after = vec!["run-batch".to_string()];
+        graph.add_node(Node::Task(checker));
+
+        // Shell task should not get pipeline
+        let modified_shell =
+            scaffold_full_pipeline(dir.path(), &mut graph, "run-batch", "Run Batch", &config);
+        assert!(!modified_shell);
+
+        // Checker task should get full pipeline
+        let modified_checker =
+            scaffold_full_pipeline(dir.path(), &mut graph, "check-batch", "Check Batch", &config);
+        assert!(modified_checker);
+        assert!(graph.get_task(".assign-check-batch").is_some());
+        assert!(graph.get_task(".flip-check-batch").is_some());
+        assert!(graph.get_task(".evaluate-check-batch").is_some());
     }
 }

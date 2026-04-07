@@ -971,6 +971,7 @@ fn handle_add_task(
         deliverables: deliverables.to_vec(),
         artifacts: vec![],
         exec: None,
+        timeout: None,
         not_before: None,
         created_at: Some(chrono::Utc::now().to_rfc3339()),
         started_at: None,

@@ -236,6 +236,10 @@ pub struct Task {
     /// Shell command to execute for this task (optional, for wg exec)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exec: Option<String>,
+    /// Per-task timeout duration string (e.g., "30m", "4h"). Takes priority over
+    /// executor config and coordinator config in timeout resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
     /// Task is not ready until this timestamp (ISO 8601 / RFC 3339)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_before: Option<String>,
@@ -857,6 +861,8 @@ struct TaskHelper {
     #[serde(default)]
     exec: Option<String>,
     #[serde(default)]
+    timeout: Option<String>,
+    #[serde(default)]
     not_before: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
@@ -983,6 +989,7 @@ impl<'de> Deserialize<'de> for Task {
             deliverables: helper.deliverables,
             artifacts: helper.artifacts,
             exec: helper.exec,
+            timeout: helper.timeout,
             not_before: helper.not_before,
             created_at: helper.created_at,
             started_at: helper.started_at,

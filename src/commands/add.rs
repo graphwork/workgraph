@@ -136,6 +136,8 @@ pub fn run(
     max_failure_restarts: Option<u32>,
     visibility: &str,
     context_scope: Option<&str>,
+    exec: Option<&str>,
+    timeout: Option<&str>,
     exec_mode: Option<&str>,
     paused: bool,
     no_place: bool,
@@ -165,8 +167,22 @@ pub fn run(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
+    // Validate timeout if provided
+    if let Some(t) = timeout {
+        parse_delay(t).ok_or_else(|| {
+            anyhow::anyhow!("Invalid timeout '{}'. Use format: 30s, 5m, 1h, 4h, 1d", t)
+        })?;
+    }
+
+    // Auto-set exec_mode to "shell" when --exec is provided (unless --exec-mode is explicit)
+    let effective_exec_mode = if exec.is_some() && exec_mode.is_none() {
+        Some("shell")
+    } else {
+        exec_mode
+    };
+
     // Validate exec_mode if provided
-    if let Some(mode) = exec_mode {
+    if let Some(mode) = effective_exec_mode {
         mode.parse::<workgraph::config::ExecMode>()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
@@ -392,7 +408,8 @@ pub fn run(
         inputs: inputs.to_vec(),
         deliverables: deliverables.to_vec(),
         artifacts: vec![],
-        exec: None,
+        exec: exec.map(String::from),
+        timeout: timeout.map(String::from),
         not_before: computed_not_before.clone(),
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
@@ -414,7 +431,7 @@ pub fn run(
         paused,
         visibility: visibility.to_string(),
         context_scope: context_scope.map(String::from),
-        exec_mode: exec_mode.map(String::from),
+        exec_mode: effective_exec_mode.map(String::from),
         token_usage: None,
         session_id: None,
         wait_condition: None,
@@ -721,6 +738,7 @@ fn add_task_directly(
             deliverables: deliverables.to_vec(),
             artifacts: vec![],
             exec: None,
+            timeout: None,
             not_before: None,
             created_at: Some(chrono::Utc::now().to_rfc3339()),
             started_at: None,
@@ -1204,6 +1222,8 @@ mod tests {
             "internal",
             None,
             None,
+            None,
+            None,
             false,
             false,
             &[],
@@ -1251,6 +1271,8 @@ mod tests {
             "internal",
             None,
             None,
+            None,
+            None,
             false,
             false,
             &[],
@@ -1296,6 +1318,8 @@ mod tests {
             false,
             None,
             "internal",
+            None,
+            None,
             None,
             None,
             false,
@@ -1352,6 +1376,8 @@ mod tests {
             "internal",
             None,
             None,
+            None,
+            None,
             false,
             false,
             &[],
@@ -1406,6 +1432,8 @@ mod tests {
             "internal",
             None,
             None,
+            None,
+            None,
             false,
             false,
             &[],
@@ -1451,6 +1479,8 @@ mod tests {
             false,
             None,
             "internal",
+            None,
+            None,
             None,
             None,
             true, // paused
@@ -1502,6 +1532,8 @@ mod tests {
             false,
             None,
             "internal",
+            None,
+            None,
             None,
             None,
             false,
@@ -1585,5 +1617,168 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = resolve_model_input("claude:opus", dir.path()).unwrap();
         assert_eq!(result, "claude:opus");
+    }
+
+    #[test]
+    fn test_add_with_exec_sets_shell_mode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = dir.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let graph_path = wg_dir.join("graph.jsonl");
+        save_graph(&WorkGraph::new(), &graph_path).unwrap();
+
+        let result = run(
+            &wg_dir,
+            "Run script",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None, // verify
+            None, // max_iterations
+            None, // cycle_guard
+            None, // cycle_delay
+            false, // no_converge
+            false, // no_restart_on_failure
+            None, // max_failure_restarts
+            "internal",
+            None,                          // context_scope
+            Some("echo hello world"),      // exec
+            None,                          // timeout
+            None,                          // exec_mode (should auto-set to shell)
+            false,                         // paused
+            true,                          // no_place
+            &[],
+            &[],
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_ok(), "wg add --exec should succeed: {:?}", result);
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("run-script").unwrap();
+        assert_eq!(task.exec.as_deref(), Some("echo hello world"));
+        assert_eq!(
+            task.exec_mode.as_deref(),
+            Some("shell"),
+            "exec_mode should auto-set to 'shell' when --exec is provided"
+        );
+    }
+
+    #[test]
+    fn test_add_with_exec_respects_explicit_exec_mode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = dir.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let graph_path = wg_dir.join("graph.jsonl");
+        save_graph(&WorkGraph::new(), &graph_path).unwrap();
+
+        let result = run(
+            &wg_dir,
+            "Run with bare",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            Some("echo hi"),   // exec
+            None,              // timeout
+            Some("bare"),      // explicit exec_mode overrides auto-shell
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("run-with-bare").unwrap();
+        assert_eq!(task.exec.as_deref(), Some("echo hi"));
+        assert_eq!(
+            task.exec_mode.as_deref(),
+            Some("bare"),
+            "explicit --exec-mode should override auto-shell"
+        );
+    }
+
+    #[test]
+    fn test_add_with_timeout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = dir.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let graph_path = wg_dir.join("graph.jsonl");
+        save_graph(&WorkGraph::new(), &graph_path).unwrap();
+
+        let result = run(
+            &wg_dir,
+            "Timed task",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            Some("python3 long.py"), // exec
+            Some("4h"),              // timeout
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("timed-task").unwrap();
+        assert_eq!(task.timeout.as_deref(), Some("4h"));
     }
 }
