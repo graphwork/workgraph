@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRIALS=3
 CONDITION="all"
 OUTPUT_DIR="$SCRIPT_DIR/results/reproduction"
-MODEL="minimax/minimax-m2.7"
+MODEL="openrouter:minimax/minimax-m2.7"
 MAX_TURNS=50
 TIMEOUT=1800
 CONCURRENT=4
@@ -35,7 +35,7 @@ CONCURRENT=4
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --trials)      TRIALS="$2"; shift 2 ;;
-        --condition)   CONDITION="$2"; shift 2 ;;
+        --condition)   CONDITION="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; shift 2 ;;
         --output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
         --model)       MODEL="$2"; shift 2 ;;
         --concurrent)  CONCURRENT="$2"; shift 2 ;;
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --trials N         Number of trials per task (default: 3, leaderboard: 5)"
-            echo "  --condition X      A, B, C, or all (default: all)"
+            echo "  --condition X      A, B, C, D, E, F, or all (default: all)"
             echo "  --output-dir DIR   Output directory (default: results/reproduction)"
             echo "  --model MODEL      Model name (default: minimax/minimax-m2.7)"
             echo "  --concurrent N     Concurrent tasks (default: 4)"
@@ -88,6 +88,9 @@ run_condition() {
         A) agent_class="wg.adapter:ConditionAAgent" ;;
         B) agent_class="wg.adapter:ConditionBAgent" ;;
         C) agent_class="wg.adapter:ConditionCAgent" ;;
+        D) agent_class="wg.adapter:ConditionDAgent" ;;
+        E) agent_class="wg.adapter:ConditionEAgent" ;;
+        F) agent_class="wg.adapter:ConditionFAgent" ;;
         *) echo "Unknown condition: $cond"; return 1 ;;
     esac
 
@@ -117,7 +120,7 @@ run_condition() {
 }
 
 if [[ "$CONDITION" == "all" ]]; then
-    for c in A B C; do
+    for c in A B C D E F; do
         run_condition "$c"
     done
 else
