@@ -39,6 +39,7 @@ Model routing end-to-end:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -551,20 +552,22 @@ async def _run_native_executor(
     """
     task_id = f"tb-{uuid.uuid4().hex[:8]}"
 
-    # Write the task instruction to a file inside the container to avoid
-    # shell quoting issues with arbitrary instruction text.
-    eof_marker = f"WGINST{uuid.uuid4().hex[:6]}"
+    # Write the task instruction to a file inside the container using base64
+    # encoding to avoid shell quoting and heredoc issues.
+    # (Harbor's exec() pipes commands to bash via stdin, which breaks heredocs.)
+    b64_instruction = base64.b64encode(
+        task_instruction.encode()
+    ).decode()
     write_instruction_cmd = (
-        f"cat > /tmp/tb-instruction.txt <<'{eof_marker}'\n"
-        f"{task_instruction}\n"
-        f"{eof_marker}"
+        f"echo '{b64_instruction}' | base64 -d > /tmp/tb-instruction.txt"
     )
     await environment.exec(command=write_instruction_cmd)
 
-    # Add the task to the graph.  Use --description-file if available,
-    # otherwise fall back to -d with the file content.
+    # Add the task to the graph using the instruction file.
+    # --no-place skips the placement pipeline and makes the task immediately
+    # available for dispatch (otherwise interactive default is paused/draft).
     add_cmd = (
-        f'wg add "TB task" --id {task_id} '
+        f'wg add "TB task" --id {task_id} --no-place '
         f'-d "$(cat /tmp/tb-instruction.txt)"'
     )
     add_result = await environment.exec(command=add_cmd)
@@ -1084,8 +1087,14 @@ class WorkgraphAgent(BaseAgent):
         self._temperature = temperature
 
     def _find_wg_binary(self) -> str:
-        """Locate the wg binary on the host."""
+        """Locate the wg binary on the host.
+
+        Prefers the bookworm-out build which is compiled against glibc 2.36
+        (Debian bookworm) for compatibility with TB Docker containers.
+        The host-native binary may require a newer glibc than containers have.
+        """
         candidates = [
+            "/home/erik/workgraph/target/bookworm-out/wg",
             os.path.expanduser("~/.cargo/bin/wg"),
             "/home/erik/workgraph/target/release/wg",
             "/home/erik/workgraph/target/debug/wg",
@@ -1139,22 +1148,32 @@ class WorkgraphAgent(BaseAgent):
             )
         logger.info("Initialized trial workgraph inside container")
 
-        # 3. Write config.toml inside the container
+        # 3. Write config.toml inside the container via base64 encoding.
+        #    Heredocs fail because Harbor's exec() pipes commands to bash
+        #    via stdin, and heredocs also read from stdin — conflict.
         config_content = _build_config_toml_content(self.condition, self._model)
-        eof = f"WGCFG{uuid.uuid4().hex[:6]}"
-        await environment.exec(
-            command=f"cat > .workgraph/config.toml <<'{eof}'\n{config_content}\n{eof}"
+        b64_config = base64.b64encode(config_content.encode()).decode()
+        cfg_write = await environment.exec(
+            command=f"echo '{b64_config}' | base64 -d > .workgraph/config.toml"
         )
+        if cfg_write.return_code != 0:
+            raise RuntimeError(
+                f"Failed to write config.toml: {cfg_write.stderr}"
+            )
 
         # 4. Write custom bundle if needed (Condition A: no wg tools)
         cfg = CONDITION_CONFIG[self.condition]
         if cfg.get("exclude_wg_tools"):
             bundle_content = _build_bundle_toml_content()
-            beof = f"WGBUN{uuid.uuid4().hex[:6]}"
+            b64_bundle = base64.b64encode(bundle_content.encode()).decode()
             await environment.exec(command="mkdir -p .workgraph/bundles")
-            await environment.exec(
-                command=f"cat > .workgraph/bundles/implementer.toml <<'{beof}'\n{bundle_content}\n{beof}"
+            bun_write = await environment.exec(
+                command=f"echo '{b64_bundle}' | base64 -d > .workgraph/bundles/implementer.toml"
             )
+            if bun_write.return_code != 0:
+                raise RuntimeError(
+                    f"Failed to write bundle: {bun_write.stderr}"
+                )
 
         # 5. Bootstrap agency for conditions D/E (inside the container)
         if cfg["agency"]:
