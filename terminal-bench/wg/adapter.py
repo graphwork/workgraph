@@ -56,6 +56,7 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from wg.tb_logging import TrialLogger
+from wg.tasks import lookup_verify_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +620,7 @@ async def _run_native_executor(
     condition: str,
     timeout_secs: float = DEFAULT_TRIAL_TIMEOUT,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
+    verify_cmd: str | None = None,
 ) -> dict[str, Any]:
     """Run the wg native executor entirely inside the Docker container.
 
@@ -654,9 +656,18 @@ async def _run_native_executor(
     # Add the task to the graph using the instruction file.
     # --no-place skips the placement pipeline and makes the task immediately
     # available for dispatch (otherwise interactive default is paused/draft).
+    # When a verify_cmd is provided, write it to a file and pass --verify so
+    # `wg done` automatically gates completion on the test command passing.
     exec_mode_flag = ''
+    verify_flag = ''
+    if verify_cmd:
+        b64_verify = base64.b64encode(verify_cmd.encode()).decode()
+        await environment.exec(
+            command=f"echo '{b64_verify}' | base64 -d > /tmp/tb-verify-cmd.txt"
+        )
+        verify_flag = ' --verify "$(cat /tmp/tb-verify-cmd.txt)"'
     add_cmd = (
-        f'wg add "TB task" --id {task_id} --no-place{exec_mode_flag} '
+        f'wg add "TB task" --id {task_id} --no-place{exec_mode_flag}{verify_flag} '
         f'-d "$(cat /tmp/tb-instruction.txt)"'
     )
     add_result = await environment.exec(command=add_cmd)
@@ -1336,6 +1347,16 @@ class WorkgraphAgent(BaseAgent):
 
         trial_log.begin_turn(0)
 
+        # Look up the verify command for this TB task so the wg task gets a
+        # --verify gate.  When present, `wg done` will automatically run the
+        # test command and keep the task open if it fails — forcing the agent
+        # to iterate until tests pass (the pilot F pattern).
+        verify_cmd = lookup_verify_cmd(instruction)
+        if verify_cmd:
+            logger.info(f"Verify gate found for trial: {verify_cmd[:80]}...")
+        else:
+            logger.warning("No verify gate found for this instruction — task will complete without test gate")
+
         # Run the native executor inside the container
         metrics = await _run_native_executor(
             environment=environment,
@@ -1344,6 +1365,7 @@ class WorkgraphAgent(BaseAgent):
             condition=self.condition,
             timeout_secs=self.timeout,
             poll_interval=self.poll_interval,
+            verify_cmd=verify_cmd,
         )
 
         # Download the entire .workgraph/ directory from the container

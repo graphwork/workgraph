@@ -26,99 +26,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from wg.tasks import TASKS_BY_ID
+
 
 # ---------------------------------------------------------------------------
 # TB Task definitions (host-side execution compatible)
 # ---------------------------------------------------------------------------
 
-# Each task has: id, title, instruction_file, verify_cmd, difficulty
-# verify_cmd runs on the host to check task completion
-
-TB_TASKS = {
-    "file-ops": {
-        "id": "file-ops",
-        "title": "File Operations: create project structure",
-        "instruction_file": "tasks/condition-a-calibration/01-file-ops-easy.txt",
-        "verify_cmd": (
-            "test -f /tmp/project/src/main.py && "
-            "test -f /tmp/project/src/utils.py && "
-            "test -f /tmp/project/src/tests/test_utils.py && "
-            "test -f /tmp/project/data/config.json && "
-            "test -f /tmp/project/README.md && "
-            "test -f /tmp/project/.gitignore && "
-            "python3 -c \"import json; json.load(open('/tmp/project/data/config.json'))\" && "
-            "python3 -m pytest /tmp/project/src/tests/test_utils.py -v"
-        ),
-        "difficulty": "easy",
-    },
-    "text-processing": {
-        "id": "text-processing",
-        "title": "Text Processing: word frequency counter",
-        "instruction_file": "tasks/condition-a-calibration/02-text-processing-easy.txt",
-        "verify_cmd": (
-            "test -f /tmp/wordfreq.py && "
-            "echo 'the the the dog dog cat' | python3 /tmp/wordfreq.py | head -1 | grep -q 'the'"
-        ),
-        "difficulty": "easy",
-    },
-    "debugging": {
-        "id": "debugging",
-        "title": "Debugging: fix merge sort bugs",
-        "instruction_file": "tasks/condition-a-calibration/03-debugging-medium.txt",
-        "verify_cmd": (
-            "test -f /tmp/buggy_sort.py && "
-            "python3 /tmp/buggy_sort.py 2>&1 | grep -v FAIL | grep -c PASS | "
-            "python3 -c \"import sys; n=int(sys.stdin.read().strip()); sys.exit(0 if n>=6 else 1)\""
-        ),
-        "difficulty": "medium",
-    },
-    "algorithm": {
-        "id": "algorithm",
-        "title": "Algorithm: key-value store with transactions",
-        "instruction_file": "tasks/condition-a-calibration/06-algorithm-hard.txt",
-        "verify_cmd": (
-            "test -f /tmp/kvstore.py && test -f /tmp/kv_test.txt && "
-            "python3 /tmp/kvstore.py < /tmp/kv_test.txt | head -1 | grep -q '10'"
-        ),
-        "difficulty": "hard",
-    },
-    "shell-scripting": {
-        "id": "shell-scripting",
-        "title": "Shell Scripting: log file analyzer",
-        "instruction_file": "tasks/condition-a-calibration/04-shell-scripting-medium.txt",
-        "verify_cmd": (
-            "test -f /tmp/log_analyzer.sh && "
-            "test -f /tmp/access.log && "
-            "bash /tmp/log_analyzer.sh /tmp/access.log 2>&1 | grep -qE '[0-9]'"
-        ),
-        "difficulty": "medium",
-    },
-    "data-processing": {
-        "id": "data-processing",
-        "title": "Data Processing: JSON to CSV department summary",
-        "instruction_file": "tasks/condition-a-calibration/05-data-processing-medium.txt",
-        "verify_cmd": (
-            "test -f /tmp/json_to_csv.py && "
-            "test -f /tmp/employees.json && "
-            "test -f /tmp/dept_summary.csv && "
-            "python3 -c \"import csv; r=list(csv.DictReader(open('/tmp/dept_summary.csv'))); "
-            "assert len(r)>=1\""
-        ),
-        "difficulty": "medium",
-    },
-    "ml": {
-        "id": "ml",
-        "title": "ML: k-means clustering from scratch",
-        "instruction_file": "tasks/condition-a-calibration/07-ml-hard.txt",
-        "verify_cmd": (
-            "test -f /tmp/kmeans.py && "
-            "python3 /tmp/kmeans.py 2>&1 | "
-            "python3 -c \"import sys; o=sys.stdin.read().lower(); "
-            "sys.exit(0 if 'centroid' in o or 'cluster' in o else 1)\""
-        ),
-        "difficulty": "hard",
-    },
-}
+# Task definitions (id, title, instruction_file, verify_cmd, difficulty)
+# are now shared via wg.tasks module. TB_TASKS is a backward-compatible alias.
+TB_TASKS = TASKS_BY_ID
 
 
 # ---------------------------------------------------------------------------
