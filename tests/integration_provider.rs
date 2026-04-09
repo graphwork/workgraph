@@ -209,6 +209,10 @@ fn test_create_provider_bare_is_anthropic() {
     // create_provider with a bare model name should choose Anthropic
     let tmp = setup_workgraph_dir();
 
+    // Unset WG_LLM_PROVIDER to avoid environment interference in CI/CI-like envs
+    // Unset WG_LLM_PROVIDER to avoid environment interference in CI/CI-like envs
+    unsafe { std::env::remove_var("WG_LLM_PROVIDER") };
+
     // Write config with endpoint pointing to our mock server
     let mock_body = anthropic_mock_response("claude-haiku-4-5");
     let base_url = start_mock_server(mock_body, 1);
