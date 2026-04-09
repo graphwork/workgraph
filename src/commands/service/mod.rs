@@ -1659,9 +1659,12 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             let config = workgraph::config::Config::load_or_default(dir);
             let threshold = config.effective_compaction_threshold();
             if threshold > 0 {
-                let state = CoordinatorState::load_or_default(dir);
-                if state.accumulated_tokens >= threshold {
-                    let acc_tokens = state.accumulated_tokens;
+                // Use total_accumulated_tokens to sum across ALL coordinator state files.
+                // Token accumulation is per-coordinator (via save_for), but compaction
+                // is a shared graph-level concern — any coordinator's growth should trigger.
+                let total_accumulated = CoordinatorState::total_accumulated_tokens(dir);
+                if total_accumulated >= threshold {
+                    let acc_tokens = total_accumulated;
                     if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
                         if let Some(task) = graph.get_task_mut(".compact-0") {
                             task.status = workgraph::graph::Status::Open;
@@ -1693,7 +1696,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                     }
                     logger.info(&format!(
                         "Re-opened .compact-0: tokens {} >= threshold {}",
-                        state.accumulated_tokens, threshold
+                        total_accumulated, threshold
                     ));
                 }
             }
@@ -1720,11 +1723,12 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
         let config = workgraph::config::Config::load_or_default(dir);
         let threshold = config.effective_compaction_threshold();
         if threshold > 0 {
-            let state = CoordinatorState::load_or_default(dir);
-            if state.accumulated_tokens < threshold {
+            // Use total_accumulated_tokens to sum across ALL coordinator state files.
+            let total_accumulated = CoordinatorState::total_accumulated_tokens(dir);
+            if total_accumulated < threshold {
                 logger.info(&format!(
                     "Compaction deferred: accumulated_tokens={} < threshold={}",
-                    state.accumulated_tokens, threshold
+                    total_accumulated, threshold
                 ));
                 return;
             }
