@@ -1208,7 +1208,11 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
         };
         graph.add_node(workgraph::graph::Node::Task(compact_task));
 
-        // Add back-edge from coordinator to compact (cycle)
+        // Add back-edge from coordinator to compact (cycle).
+        // NOTE: Do NOT add .archive-N to coordinator's after list — archive runs
+        // independently on a schedule and must NOT gate the coordinator. Adding
+        // archive as a blocker creates a circular dependency deadlock:
+        //   .coordinator → .archive → .coordinator (deadlock)
         if let Some(coord) = graph.get_task_mut(&format!(".coordinator-{}", next_id))
             && !coord.after.contains(&compact_id)
         {
@@ -1216,7 +1220,10 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
         }
     }
 
-    // Create companion .archive-N task forming a visible cycle
+    // Create companion .archive-N task (NO back-edge to coordinator).
+    // Archive runs independently and must NOT create a circular dependency.
+    // The coordinator should NOT wait for archive to complete — that creates
+    // deadlock: .coordinator → .archive → .coordinator
     let archive_id = format!(".archive-{}", next_id);
     if graph.get_task(&archive_id).is_none() {
         let archive_task = workgraph::graph::Task {
@@ -1240,13 +1247,7 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
             ..Default::default()
         };
         graph.add_node(workgraph::graph::Node::Task(archive_task));
-
-        // Add back-edge from coordinator to archive (cycle)
-        if let Some(coord) = graph.get_task_mut(&format!(".coordinator-{}", next_id))
-            && !coord.after.contains(&archive_id)
-        {
-            coord.after.push(archive_id);
-        }
+        // NOTE: No back-edge from coordinator to archive. Archive runs independently.
     }
 
     match workgraph::parser::modify_graph(&graph_path, |fresh| {

@@ -1987,6 +1987,14 @@ pub struct AgencyConfig {
     #[serde(default)]
     pub flip_enabled: bool,
 
+    /// Model to use for FLIP inference phase (inferring prompt from output)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_inference_model: Option<String>,
+
+    /// Model to use for FLIP comparison phase (comparing inferred prompt to actual)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_comparison_model: Option<String>,
+
     /// FLIP score threshold below which automatic Opus verification is triggered.
     /// When a FLIP evaluation scores below this threshold, the coordinator creates
     /// a verification task that independently checks whether the work was done.
@@ -2068,6 +2076,8 @@ impl Default for AgencyConfig {
             eval_gate_threshold: None,
             eval_gate_all: false,
             flip_enabled: true,
+            flip_inference_model: None,
+            flip_comparison_model: None,
             flip_verification_threshold: default_flip_verification_threshold(),
             auto_evolve: false,
             evolution_interval: default_evolution_interval(),
@@ -2406,7 +2416,7 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
-            heartbeat_interval: 0,
+            heartbeat_interval: 60, // Default: autonomous heartbeat every 60s (0 = disabled)
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
             compaction_token_threshold: default_compaction_token_threshold(),
@@ -3457,6 +3467,8 @@ assigner_agent = "abc123"
 evaluator_agent = "def456"
 evolver_agent = "ghi789"
 retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
+flip_inference_model = "openrouter:model-a"
+flip_comparison_model = "openrouter:model-b"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.agency.auto_evaluate);
@@ -3468,6 +3480,8 @@ retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
             config.agency.retention_heuristics,
             Some("Retire roles scoring below 0.3 after 10 evaluations".to_string())
         );
+        assert_eq!(config.agency.flip_inference_model, Some("openrouter:model-a".to_string()));
+        assert_eq!(config.agency.flip_comparison_model, Some("openrouter:model-b".to_string()));
     }
 
     #[test]
@@ -3477,6 +3491,8 @@ retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
         let mut config = Config::default();
         config.agency.auto_evaluate = true;
         config.agency.evolver_agent = Some("abc123".to_string());
+        config.agency.flip_inference_model = Some("openrouter:model-c".to_string());
+        config.agency.flip_comparison_model = Some("openrouter:model-d".to_string());
         config.save(temp_dir.path()).unwrap();
 
         let loaded = Config::load(temp_dir.path()).unwrap();
