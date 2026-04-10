@@ -2373,15 +2373,97 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // use it for the footer after all the mutable app borrows below.
     let output_mtime = detail.output_mtime;
 
+    // Reserve 1 line at the top for iteration navigation when there are archives.
     // Reserve 1 line at the bottom for the "last written X ago" footer when we have
     // an output timestamp.
+    let has_iter_nav = !app.iteration_archives.is_empty();
     let (content_area, footer_area_opt) = if output_mtime.is_some() && area.height > 2 {
         let [ca, fa] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
         (ca, Some(fa))
     } else {
         (area, None)
     };
-    let area = content_area;
+    let (header_area, area) = if has_iter_nav && area.height > 2 {
+        let [ha, ca] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(content_area);
+        (Some(ha), ca)
+    } else {
+        (None, content_area)
+    };
+
+    // ── Iteration navigation header ──
+    if let Some(ha) = header_area {
+        app.last_iter_nav_area = ha;
+
+        let total = app.iteration_archives.len() + 1; // archives + current
+        let label = match app.viewing_iteration {
+            Some(idx) => format!("{}/{}", idx + 1, total),
+            None => format!("{}/{}", total, total),
+        };
+
+        // ◀ arrow: clickable if not at oldest (i.e., viewing_iteration is not Some(0) when set,
+        // or there are archives when viewing current)
+        let can_go_prev = match app.viewing_iteration {
+            None => !app.iteration_archives.is_empty(), // can go to last archive
+            Some(idx) => idx > 0,                       // can go to previous archive
+        };
+        // ▶ arrow: clickable if not at current (viewing_iteration is Some and not at end)
+        let can_go_next = match app.viewing_iteration {
+            Some(idx) => idx + 1 < app.iteration_archives.len(),
+            None => false, // already at current
+        };
+
+        let left_arrow = if can_go_prev {
+            Span::styled(
+                "◀",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("◀", Style::default().fg(Color::DarkGray))
+        };
+        let right_arrow = if can_go_next {
+            Span::styled(
+                "▶",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("▶", Style::default().fg(Color::DarkGray))
+        };
+
+        let middle_text = format!(" iter {} ", label);
+
+        // Build the line: left arrow | center | right arrow
+        // We want them roughly positioned: ◀ on left side, ▶ on right side
+        let usable_width = ha.width.saturating_sub(2) as usize;
+        let center_len = middle_text.len();
+        // Distribute remaining space between/around the arrows
+        let arrow_width = 2; // ◀ or ▶
+        let gap = 2;
+        let side_width = (usable_width.saturating_sub(center_len + arrow_width * 2 + gap * 2)) / 2;
+
+        let line = Line::from(vec![
+            left_arrow,
+            Span::raw(" ".repeat(side_width.max(1))),
+            Span::styled(
+                middle_text,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(side_width.max(1))),
+            right_arrow,
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(Color::Rgb(15, 15, 25))),
+            ha,
+        );
+    } else {
+        app.last_iter_nav_area = Rect::default();
+    }
 
     // Build visible lines: filter out content of collapsed sections, add ▸/▾ indicators.
     let mut visible_lines: Vec<String> = Vec::new();

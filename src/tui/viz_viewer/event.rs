@@ -2750,6 +2750,47 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Click on "▼ new output" indicator in Log tab: scroll to bottom.
                 app.focused_panel = FocusedPanel::RightPanel;
                 app.log_scroll_to_bottom();
+            } else if app.last_iter_nav_area.width > 0
+                && app.last_iter_nav_area.contains(pos)
+                && app.right_panel_tab == RightPanelTab::Detail
+            {
+                // Click on ◀ ▶ iteration navigation in Detail tab header.
+                app.focused_panel = FocusedPanel::RightPanel;
+                let col = column.saturating_sub(app.last_iter_nav_area.x);
+                let total = app.iteration_archives.len() + 1;
+                let usable_width = app.last_iter_nav_area.width.saturating_sub(2) as usize;
+                let center_len = format!(" iter {}/{} ", total, total).len();
+                let arrow_width = 2; // ◀ or ▶
+                let gap = 2;
+                let side_width =
+                    (usable_width.saturating_sub(center_len + arrow_width * 2 + gap * 2)) / 2;
+
+                // ◀ is at position side_width (with leading space)
+                // ▶ is at position side_width + center_len + gap * 2 + arrow_width
+                let left_arrow_end = 1 + side_width;
+                let right_arrow_start = 1 + side_width + center_len + gap * 2;
+
+                if usize::from(col) <= left_arrow_end {
+                    // Click on ◀: go to previous iteration
+                    if app.iteration_prev() {
+                        app.load_hud_detail();
+                        let msg = match app.viewing_iteration {
+                            Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                            None => format!("Viewing current ({}/{})", total, total),
+                        };
+                        app.push_toast(msg, super::state::ToastSeverity::Info);
+                    }
+                } else if usize::from(col) >= right_arrow_start {
+                    // Click on ▶: go to next iteration
+                    if app.iteration_next() {
+                        app.load_hud_detail();
+                        let msg = match app.viewing_iteration {
+                            Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                            None => format!("Viewing current ({}/{})", total, total),
+                        };
+                        app.push_toast(msg, super::state::ToastSeverity::Info);
+                    }
+                }
             } else if in_right_content && app.right_panel_tab == RightPanelTab::Detail {
                 // Click in Detail tab: toggle section collapse if clicking a header.
                 app.focused_panel = FocusedPanel::RightPanel;

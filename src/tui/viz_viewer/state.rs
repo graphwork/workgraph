@@ -3649,6 +3649,9 @@ pub struct VizApp {
     #[allow(dead_code)]
     pub last_log_new_output_area: Rect,
 
+    /// Hit-test area for the ◀ ▶ iteration navigation arrows in the Detail tab header.
+    pub last_iter_nav_area: Rect,
+
     // ── Touch echo (click/touch visual feedback) ──
     /// Whether touch echo indicators are enabled (toggled with `*`).
     pub touch_echo_enabled: bool,
@@ -3913,6 +3916,7 @@ impl VizApp {
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
+            last_iter_nav_area: Rect::default(),
             touch_echo_enabled: false,
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
@@ -8002,6 +8006,7 @@ impl VizApp {
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
+            last_iter_nav_area: Rect::default(),
             touch_echo_enabled: false,
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
