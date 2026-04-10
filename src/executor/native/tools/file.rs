@@ -112,6 +112,15 @@ impl Tool for ReadFileTool {
         let start = if offset > 0 { offset - 1 } else { 0 };
         let end = (start + limit).min(lines.len());
 
+        // Bounds check: return error if offset exceeds file length
+        if start >= lines.len() {
+            return ToolOutput::error(format!(
+                "File has {} lines, offset {} is out of range",
+                lines.len(),
+                offset
+            ));
+        }
+
         let mut output = String::new();
         for (i, line) in lines[start..end].iter().enumerate() {
             let line_num = start + i + 1;
@@ -772,4 +781,44 @@ fn is_likely_binary(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| binary_extensions.contains(&ext.to_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_read_file_offset_beyond_end_returns_error() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+        use crate::executor::native::tools::file_cache::FileCache;
+
+        let cache = Arc::new(Mutex::new(FileCache::new()));
+        let tool = ReadFileTool { cache };
+
+        // Create a temp file with exactly 3 lines
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_str().unwrap();
+        std::fs::write(temp_path, "line1\nline2\nline3\n").unwrap();
+
+        // Call read_file with offset=10 (beyond the 3 lines in the file)
+        let input = serde_json::json!({
+            "path": temp_path,
+            "offset": 10
+        });
+
+        let output = tool.execute(&input).await;
+
+        // Should return an error, not panic
+        assert!(
+            output.is_error,
+            "Expected error for offset beyond file length, got: {:?}",
+            output
+        );
+        assert!(
+            output.content.contains("out of range"),
+            "Error message should mention 'out of range', got: {:?}",
+            output.content
+        );
+    }
 }
