@@ -34,7 +34,6 @@ use std::thread::{self, JoinHandle};
 use chrono::{DateTime, Utc};
 
 use workgraph::chat;
-use workgraph::executor::native::journal::JournalEntryKind;
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
 use workgraph::service::compactor::{CompactorState, context_md_path};
