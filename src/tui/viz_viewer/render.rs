@@ -4074,7 +4074,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let wrap_width = width;
 
     for s in &app.log_pane.rendered_lines {
-        // Render log entry as a marker line with the ⊞ symbol in light blue.
+        // Render log entry as a marker line with the ⊞ symbol in pink (matching agency phase annotations).
         let message = if let Some(bracket_end) = s.find(']') {
             let timestamp = &s[..=bracket_end];
             let msg = s[bracket_end + 1..].trim_start();
@@ -4090,19 +4090,22 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 if i == 0 {
                     composed_lines.push(Line::from(Span::styled(
                         wl.clone(),
-                        Style::default().fg(Color::LightBlue),
+                        // True pink (ANSI 219) — matches agency phase annotations like [∴ evaluating]
+                        Style::default().fg(Color::Indexed(219)),
                     )));
                 } else {
                     composed_lines.push(Line::from(Span::styled(
                         format!("  {}", wl),
-                        Style::default().fg(Color::LightBlue),
+                        // True pink (ANSI 219) — matches agency phase annotations like [∴ evaluating]
+                        Style::default().fg(Color::Indexed(219)),
                     )));
                 }
             }
         } else {
             composed_lines.push(Line::from(Span::styled(
                 message,
-                Style::default().fg(Color::LightBlue),
+                // True pink (ANSI 219) — matches agency phase annotations like [∴ evaluating]
+                Style::default().fg(Color::Indexed(219)),
             )));
         }
     }
@@ -12559,7 +12562,8 @@ mod tests {
         }
     }
 
-    /// Verify that log tab agent marker lines use the ⊞ symbol and light blue styling.
+    /// Verify that log tab agent marker lines use the ⊞ symbol and pink styling
+    /// (matching agency phase annotations like [∴ evaluating]).
     #[test]
     fn test_log_tab_agent_markers() {
         let log_entry = "[2026-03-25T19:06:45] Starting work on task";
@@ -12587,12 +12591,12 @@ mod tests {
             "Agent marker line should preserve the message"
         );
 
-        // Verify the styling would be LightBlue (matching draw_log_tab).
-        let styled_line = Line::from(Span::styled(message, Style::default().fg(Color::LightBlue)));
+        // Verify the styling would be pink/rose (ANSI 219) — matching agency phase annotations.
+        let styled_line = Line::from(Span::styled(message, Style::default().fg(Color::Indexed(219))));
         assert_eq!(
             styled_line.spans[0].style.fg,
-            Some(Color::LightBlue),
-            "Agent marker lines should use LightBlue color"
+            Some(Color::Indexed(219)),
+            "Agent marker lines should use pink/rose color (ANSI 219)"
         );
     }
 
