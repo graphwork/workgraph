@@ -397,9 +397,7 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     if let Some(role) = input.role {
         let _ = writeln!(out, "**Role:** {} ({})", role.name, role.id);
         let _ = writeln!(out, "{}\n", role.description);
-        let outcome_display = input
-            .resolved_outcome_name
-            .unwrap_or(&role.outcome_id);
+        let outcome_display = input.resolved_outcome_name.unwrap_or(&role.outcome_id);
         let _ = writeln!(out, "**Desired Outcome:** {}\n", outcome_display);
     } else {
         out.push_str("*No role was assigned.*\n\n");
@@ -1794,10 +1792,7 @@ mod tests {
         // It MUST contain actual content
         assert!(prompt.contains("#### Skills"));
         assert!(prompt.contains("#### Desired Outcome"));
-        assert!(
-            outcome.is_some(),
-            "Outcome should resolve from the store"
-        );
+        assert!(outcome.is_some(), "Outcome should resolve from the store");
         let outcome = outcome.unwrap();
         assert!(
             prompt.contains(&outcome.name),

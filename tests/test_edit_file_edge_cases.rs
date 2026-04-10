@@ -22,7 +22,7 @@
 use std::fs;
 use tempfile::TempDir;
 
-use workgraph::executor::native::tools::{ToolRegistry, ToolOutput};
+use workgraph::executor::native::tools::{ToolOutput, ToolRegistry};
 
 /// Helper to create a ToolRegistry with file tools registered
 fn make_tool_registry() -> ToolRegistry {
@@ -69,9 +69,19 @@ async fn test_edit_with_unix_line_endings() {
     fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "line2", "LINE2_MODIFIED").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "line2",
+        "LINE2_MODIFIED",
+    )
+    .await;
 
-    assert!(is_success(&result), "Edit with Unix line endings should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Edit with Unix line endings should succeed: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "line1\nLINE2_MODIFIED\nline3\n");
 }
@@ -85,9 +95,19 @@ async fn test_edit_with_windows_line_endings() {
     fs::write(&file_path, "line1\r\nline2\r\nline3\r\n").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "line2", "LINE2_MODIFIED").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "line2",
+        "LINE2_MODIFIED",
+    )
+    .await;
 
-    assert!(is_success(&result), "Edit with Windows line endings should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Edit with Windows line endings should succeed: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "line1\r\nLINE2_MODIFIED\r\nline3\r\n");
 }
@@ -101,12 +121,21 @@ async fn test_edit_fails_on_line_ending_mismatch() {
     fs::write(&file_path, "line1\r\nline2\r\nline3\r\n").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "line1\nline2", "A\nB").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "line1\nline2",
+        "A\nB",
+    )
+    .await;
 
     assert!(!is_success(&result), "Should fail on line ending mismatch");
     let msg = error_msg(&result);
-    assert!(msg.contains("not found") || msg.contains("exactly"), 
-        "Error should mention exact matching requirement: {}", msg);
+    assert!(
+        msg.contains("not found") || msg.contains("exactly"),
+        "Error should mention exact matching requirement: {}",
+        msg
+    );
 }
 
 /// Test: Mixed line endings in file content
@@ -118,8 +147,18 @@ async fn test_edit_with_mixed_line_endings() {
     fs::write(&file_path, "unix\nwindows\r\nmixed\r\nunix2\n").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "windows\r\nmixed", "WINDOWS\r\nMIXED").await;
-    assert!(is_success(&result), "Edit with mixed line endings should succeed: {:?}", result);
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "windows\r\nmixed",
+        "WINDOWS\r\nMIXED",
+    )
+    .await;
+    assert!(
+        is_success(&result),
+        "Edit with mixed line endings should succeed: {:?}",
+        result
+    );
 }
 
 // ── 2. Whitespace Variation Tests ───────────────────────────────────────────
@@ -133,7 +172,13 @@ async fn test_edit_fails_with_extra_spaces() {
     fs::write(&file_path, "hello world").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "hello world ", "hi there").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "hello world ",
+        "hi there",
+    )
+    .await;
 
     assert!(!is_success(&result), "Extra space should cause mismatch");
 }
@@ -147,7 +192,13 @@ async fn test_edit_fails_with_missing_spaces() {
     fs::write(&file_path, "hello   world").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "hello world", "hi there").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "hello world",
+        "hi there",
+    )
+    .await;
 
     assert!(!is_success(&result), "Missing spaces should cause mismatch");
 }
@@ -161,9 +212,18 @@ async fn test_edit_fails_with_tab_space_mismatch() {
     fs::write(&file_path, "function() {\n\tindent\n}").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "    indent", "        NEW").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "    indent",
+        "        NEW",
+    )
+    .await;
 
-    assert!(!is_success(&result), "Tab vs space mismatch should cause failure");
+    assert!(
+        !is_success(&result),
+        "Tab vs space mismatch should cause failure"
+    );
 }
 
 /// Test: Trailing whitespace difference
@@ -175,9 +235,18 @@ async fn test_edit_fails_with_trailing_whitespace_difference() {
     fs::write(&file_path, "code   \nnext").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "code\nnext", "CODE\nNEXT").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "code\nnext",
+        "CODE\nNEXT",
+    )
+    .await;
 
-    assert!(!is_success(&result), "Trailing whitespace difference should cause failure");
+    assert!(
+        !is_success(&result),
+        "Trailing whitespace difference should cause failure"
+    );
 }
 
 /// Test: Leading whitespace difference (search string not a substring of file content)
@@ -193,7 +262,10 @@ async fn test_edit_fails_with_leading_whitespace_difference() {
     // "  beta" (different word, different spacing) - will not match
     let result = edit_file(&registry, file_path.to_str().unwrap(), "  beta", "BETA").await;
 
-    assert!(!is_success(&result), "Leading whitespace difference with different content should cause failure");
+    assert!(
+        !is_success(&result),
+        "Leading whitespace difference with different content should cause failure"
+    );
 }
 
 // ── 3. Partial vs Full Line Matching Tests ───────────────────────────────────
@@ -209,7 +281,11 @@ async fn test_edit_partial_line_content() {
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "middle", "MIDDLE").await;
 
-    assert!(is_success(&result), "Partial line match should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Partial line match should succeed: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "START MIDDLE END");
 }
@@ -241,7 +317,11 @@ async fn test_edit_empty_line() {
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "\n\n", "\n---\n").await;
 
-    assert!(is_success(&result), "Empty line match should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Empty line match should succeed: {:?}",
+        result
+    );
 }
 
 // ── 4. Exact Match Requirement Tests ────────────────────────────────────────
@@ -256,7 +336,10 @@ async fn test_edit_requires_exact_match() {
 
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "foo", "baz").await;
-    assert!(is_success(&result), "Substring match should succeed when unique");
+    assert!(
+        is_success(&result),
+        "Substring match should succeed when unique"
+    );
 
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "bazbar");
@@ -271,9 +354,19 @@ async fn test_edit_exact_match_special_chars() {
     fs::write(&file_path, "fn main() {\n    println!(\"hello\");\n}").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "println!(\"hello\")", "println!(\"world\")").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "println!(\"hello\")",
+        "println!(\"world\")",
+    )
+    .await;
 
-    assert!(is_success(&result), "Special chars should match exactly: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Special chars should match exactly: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert!(content.contains("world"), "Content should contain 'world'");
 }
@@ -291,7 +384,11 @@ async fn test_edit_unicode_characters() {
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "世界", "地球").await;
 
-    assert!(is_success(&result), "Unicode edit should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Unicode edit should succeed: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "Hello 地球 🌍");
 }
@@ -305,9 +402,19 @@ async fn test_edit_unicode_with_line_endings() {
     fs::write(&file_path, "English line\n日本語のライン\nEmoji line 🐱\n").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "日本語のライン", "中國線").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "日本語のライン",
+        "中國線",
+    )
+    .await;
 
-    assert!(is_success(&result), "Unicode with line endings should work: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Unicode with line endings should work: {:?}",
+        result
+    );
     let content = fs::read_to_string(&file_path).unwrap();
     assert!(content.contains("中國線"));
 }
@@ -321,9 +428,19 @@ async fn test_edit_mixed_ascii_unicode() {
     fs::write(&file_path, "/* Comment: café */\nlet x = 1;").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "/* Comment: café */", "// Comment: coffee").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "/* Comment: café */",
+        "// Comment: coffee",
+    )
+    .await;
 
-    assert!(is_success(&result), "Mixed ASCII/Unicode should work: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Mixed ASCII/Unicode should work: {:?}",
+        result
+    );
 }
 
 // ── 6. Multiple Match Prevention Tests ──────────────────────────────────────
@@ -341,8 +458,11 @@ async fn test_edit_fails_on_multiple_matches() {
 
     assert!(!is_success(&result), "Multiple matches should fail");
     let msg = error_msg(&result);
-    assert!(msg.contains("3") || msg.contains("unique"), 
-        "Error should mention count or uniqueness: {}", msg);
+    assert!(
+        msg.contains("3") || msg.contains("unique"),
+        "Error should mention count or uniqueness: {}",
+        msg
+    );
 }
 
 /// Test: Single match succeeds
@@ -368,12 +488,24 @@ async fn test_edit_with_context_is_unique() {
     fs::write(&file_path, "const x = 1;\nconst y = 2;\nconst z = 3;").unwrap();
 
     let registry = make_tool_registry();
-    
+
     let result1 = edit_file(&registry, file_path.to_str().unwrap(), "const", "let").await;
-    assert!(!is_success(&result1), "'const' alone should have multiple matches");
-    
-    let result2 = edit_file(&registry, file_path.to_str().unwrap(), "const x = 1;", "let x = 1;").await;
-    assert!(is_success(&result2), "More context should make match unique");
+    assert!(
+        !is_success(&result1),
+        "'const' alone should have multiple matches"
+    );
+
+    let result2 = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "const x = 1;",
+        "let x = 1;",
+    )
+    .await;
+    assert!(
+        is_success(&result2),
+        "More context should make match unique"
+    );
 }
 
 // ── 7. Error Message Tests ───────────────────────────────────────────────────
@@ -387,12 +519,24 @@ async fn test_error_message_string_not_found() {
     fs::write(&file_path, "hello world").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "not present", "replacement").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "not present",
+        "replacement",
+    )
+    .await;
 
-    assert!(!is_success(&result), "Should return error for missing string");
+    assert!(
+        !is_success(&result),
+        "Should return error for missing string"
+    );
     let msg = error_msg(&result);
-    assert!(msg.contains("not found") || msg.contains("exactly"), 
-        "Error should be helpful: {}", msg);
+    assert!(
+        msg.contains("not found") || msg.contains("exactly"),
+        "Error should be helpful: {}",
+        msg
+    );
 }
 
 /// Test: Error message for non-unique match
@@ -406,22 +550,37 @@ async fn test_error_message_multiple_matches() {
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "item", "ITEM").await;
 
-    assert!(!is_success(&result), "Should return error for non-unique match");
+    assert!(
+        !is_success(&result),
+        "Should return error for non-unique match"
+    );
     let msg = error_msg(&result);
-    assert!(msg.contains("3") && msg.contains("unique"), 
-        "Error should mention count and uniqueness: {}", msg);
+    assert!(
+        msg.contains("3") && msg.contains("unique"),
+        "Error should mention count and uniqueness: {}",
+        msg
+    );
 }
 
 /// Test: Error message for missing file
 #[tokio::test]
 async fn test_error_message_missing_file() {
     let registry = make_tool_registry();
-    let result = edit_file(&registry, "/nonexistent/path/file.txt", "text", "replacement").await;
+    let result = edit_file(
+        &registry,
+        "/nonexistent/path/file.txt",
+        "text",
+        "replacement",
+    )
+    .await;
 
     assert!(!is_success(&result), "Should return error for missing file");
     let msg = error_msg(&result);
-    assert!(msg.contains("read") || msg.contains("Failed"), 
-        "Error should mention file reading issue: {}", msg);
+    assert!(
+        msg.contains("read") || msg.contains("Failed"),
+        "Error should mention file reading issue: {}",
+        msg
+    );
 }
 
 // ── 8. Edge Cases ────────────────────────────────────────────────────────────
@@ -438,7 +597,11 @@ async fn test_edit_long_line() {
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "short", "LONG").await;
 
-    assert!(is_success(&result), "Long line edit should succeed: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Long line edit should succeed: {:?}",
+        result
+    );
 }
 
 /// Test: Empty file
@@ -450,7 +613,13 @@ async fn test_edit_empty_file() {
     fs::write(&file_path, "").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "anything", "replacement").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "anything",
+        "replacement",
+    )
+    .await;
 
     assert!(!is_success(&result), "Edit on empty file should fail");
 }
@@ -464,12 +633,18 @@ async fn test_edit_trailing_newline_vs_not() {
     fs::write(&file_path, "line1\n").unwrap();
 
     let registry = make_tool_registry();
-    
+
     let result1 = edit_file(&registry, file_path.to_str().unwrap(), "line1\n", "LINE1\n").await;
-    assert!(is_success(&result1), "Match with trailing newline should work");
-    
+    assert!(
+        is_success(&result1),
+        "Match with trailing newline should work"
+    );
+
     let result2 = edit_file(&registry, file_path.to_str().unwrap(), "line1", "LINE1").await;
-    assert!(!is_success(&result2), "Missing trailing newline should fail when file has it");
+    assert!(
+        !is_success(&result2),
+        "Missing trailing newline should fail when file has it"
+    );
 }
 
 /// Test: Replacement string is empty
@@ -510,7 +685,9 @@ async fn test_edit_with_null_bytes() {
     let dir = TempDir::new().unwrap();
     let file_path = dir.path().join("binary.txt");
 
-    let content = vec![b'h', b'e', b'l', b'l', b'o', 0, b'w', b'o', b'r', b'l', b'd'];
+    let content = vec![
+        b'h', b'e', b'l', b'l', b'o', 0, b'w', b'o', b'r', b'l', b'd',
+    ];
     fs::write(&file_path, content).unwrap();
 
     let registry = make_tool_registry();
@@ -530,12 +707,26 @@ async fn test_edit_inside_function() {
     let dir = TempDir::new().unwrap();
     let file_path = dir.path().join("function.rs");
 
-    fs::write(&file_path, "fn test() {\n    let x = 1;\n    println!(\"{}\", x);\n}").unwrap();
+    fs::write(
+        &file_path,
+        "fn test() {\n    let x = 1;\n    println!(\"{}\", x);\n}",
+    )
+    .unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "    let x = 1;", "    let x = 42;").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "    let x = 1;",
+        "    let x = 42;",
+    )
+    .await;
 
-    assert!(is_success(&result), "Function edit should work: {:?}", result);
+    assert!(
+        is_success(&result),
+        "Function edit should work: {:?}",
+        result
+    );
 }
 
 /// Test: Common pattern - editing with indentation
@@ -547,7 +738,13 @@ async fn test_edit_with_indentation() {
     fs::write(&file_path, "    indented line\nnext line").unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), "    indented line", "        MORE indented").await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        "    indented line",
+        "        MORE indented",
+    )
+    .await;
 
     assert!(is_success(&result), "Indented edit should work");
     let content = fs::read_to_string(&file_path).unwrap();
@@ -563,7 +760,13 @@ async fn test_edit_json_content() {
     fs::write(&file_path, r#"{"name": "test", "value": 123}"#).unwrap();
 
     let registry = make_tool_registry();
-    let result = edit_file(&registry, file_path.to_str().unwrap(), r#""value": 123"#, r#""value": 456"#).await;
+    let result = edit_file(
+        &registry,
+        file_path.to_str().unwrap(),
+        r#""value": 123"#,
+        r#""value": 456"#,
+    )
+    .await;
 
     assert!(is_success(&result), "JSON edit should work: {:?}", result);
     let content = fs::read_to_string(&file_path).unwrap();
@@ -579,16 +782,16 @@ async fn test_consecutive_edits() {
     fs::write(&file_path, "a b c d e").unwrap();
 
     let registry = make_tool_registry();
-    
+
     let r1 = edit_file(&registry, file_path.to_str().unwrap(), "a", "A").await;
     assert!(is_success(&r1), "First edit should succeed");
-    
+
     let r2 = edit_file(&registry, file_path.to_str().unwrap(), "b", "B").await;
     assert!(is_success(&r2), "Second edit should succeed");
-    
+
     let r3 = edit_file(&registry, file_path.to_str().unwrap(), "c", "C").await;
     assert!(is_success(&r3), "Third edit should succeed");
-    
+
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "A B C d e");
 }
@@ -603,8 +806,11 @@ async fn test_edit_that_creates_duplicate() {
 
     let registry = make_tool_registry();
     let result = edit_file(&registry, file_path.to_str().unwrap(), "bar", "foo").await;
-    assert!(is_success(&result), "Edit should succeed (tool doesn't check for post-edit duplicates)");
-    
+    assert!(
+        is_success(&result),
+        "Edit should succeed (tool doesn't check for post-edit duplicates)"
+    );
+
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "foo foo");
 }

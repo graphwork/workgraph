@@ -1,14 +1,14 @@
 //! File tools: read_file, write_file, edit_file, glob, grep.
 
 use std::fs;
-use std::sync::Arc;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use regex::Regex;
 use serde_json::json;
+use tokio::sync::Mutex;
 
 use super::file_cache::FileCache;
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
@@ -100,10 +100,7 @@ impl Tool for ReadFileTool {
                     (content, false)
                 }
                 Err(e) => {
-                    return ToolOutput::error(format!(
-                        "Failed to read file '{}': {}",
-                        path_str, e
-                    ));
+                    return ToolOutput::error(format!("Failed to read file '{}': {}", path_str, e));
                 }
             }
         };
@@ -235,7 +232,11 @@ fn context_snippet(content: &str, expected_pos: usize, context_lines: usize) -> 
     let mut snippet = String::new();
     for (i, line) in lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
-        let marker = if start + i == line_containing_pos { ">>>" } else { "   " };
+        let marker = if start + i == line_containing_pos {
+            ">>>"
+        } else {
+            "   "
+        };
         snippet.push_str(&format!("{}{:>4}| {}\n", marker, line_num, line));
     }
     snippet
@@ -316,8 +317,14 @@ fn find_similar_region<'a>(content: &'a str, search: &str) -> Option<(usize, Str
             if exp_trailing != act_trailing {
                 suggestion.push_str(&format!(
                     "  Leading content differs:\n    expected: '{}'\n    actual:   '{}'\n",
-                    exp_trailing.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"),
-                    act_trailing.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")
+                    exp_trailing
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                        .replace('\t', "\\t"),
+                    act_trailing
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                        .replace('\t', "\\t")
                 ));
             }
 
@@ -334,7 +341,9 @@ fn find_similar_region<'a>(content: &'a str, search: &str) -> Option<(usize, Str
             let exp_has_newline = first_line.ends_with('\n') || first_line.ends_with('\r');
             let act_has_newline = matched_line.ends_with('\n') || matched_line.ends_with('\r');
             if exp_has_newline != act_has_newline {
-                suggestion.push_str("  Note: newline handling differs (check if trailing newline is included)\n");
+                suggestion.push_str(
+                    "  Note: newline handling differs (check if trailing newline is included)\n",
+                );
             }
         }
 
@@ -402,8 +411,14 @@ impl Tool for EditFileTool {
             Some(s) => s,
             None => return ToolOutput::error("Missing required parameter: new_string".to_string()),
         };
-        let normalize_whitespace = input.get("normalize_whitespace").and_then(|v| v.as_bool()).unwrap_or(false);
-        let normalize_line_endings = input.get("normalize_line_endings").and_then(|v| v.as_bool()).unwrap_or(false);
+        let normalize_whitespace = input
+            .get("normalize_whitespace")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let normalize_line_endings = input
+            .get("normalize_line_endings")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -411,7 +426,8 @@ impl Tool for EditFileTool {
         };
 
         // Determine the normalized versions of content and old_string for matching
-        let (normalized_content, normalized_old) = if normalize_whitespace || normalize_line_endings {
+        let (normalized_content, normalized_old) = if normalize_whitespace || normalize_line_endings
+        {
             let content_normalized = if normalize_line_endings {
                 normalize_line_endings_str(&content)
             } else {
@@ -457,10 +473,12 @@ impl Tool for EditFileTool {
         // Find the actual position in the original (non-normalized) content
         let start_pos = match normalized_content.find(&normalized_old) {
             Some(pos) => pos,
-            None => return ToolOutput::error(format!(
-                "old_string not found in '{}'. Make sure the string matches exactly.",
-                path
-            )),
+            None => {
+                return ToolOutput::error(format!(
+                    "old_string not found in '{}'. Make sure the string matches exactly.",
+                    path
+                ));
+            }
         };
 
         // Calculate the end position in the normalized string
@@ -468,12 +486,24 @@ impl Tool for EditFileTool {
 
         // Now find the corresponding positions in the original content
         let original_start = if normalize_whitespace || normalize_line_endings {
-            find_original_position(&content, &normalized_content, start_pos, normalize_whitespace, normalize_line_endings)
+            find_original_position(
+                &content,
+                &normalized_content,
+                start_pos,
+                normalize_whitespace,
+                normalize_line_endings,
+            )
         } else {
             start_pos
         };
         let original_end = if normalize_whitespace || normalize_line_endings {
-            find_original_position(&content, &normalized_content, end_pos, normalize_whitespace, normalize_line_endings)
+            find_original_position(
+                &content,
+                &normalized_content,
+                end_pos,
+                normalize_whitespace,
+                normalize_line_endings,
+            )
         } else {
             end_pos
         };
@@ -515,7 +545,13 @@ fn normalize_whitespace_str(s: &str) -> String {
 
 /// Find the corresponding position in the original string for a position in the normalized string.
 /// This is needed because normalization can change string length.
-fn find_original_position(original: &str, normalized: &str, normalized_pos: usize, normalize_ws: bool, normalize_le: bool) -> usize {
+fn find_original_position(
+    original: &str,
+    normalized: &str,
+    normalized_pos: usize,
+    normalize_ws: bool,
+    normalize_le: bool,
+) -> usize {
     if !normalize_ws && !normalize_le {
         return normalized_pos;
     }
@@ -789,9 +825,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_file_offset_beyond_end_returns_error() {
+        use crate::executor::native::tools::file_cache::FileCache;
         use std::sync::Arc;
         use tokio::sync::Mutex;
-        use crate::executor::native::tools::file_cache::FileCache;
 
         let cache = Arc::new(Mutex::new(FileCache::new()));
         let tool = ReadFileTool { cache };
