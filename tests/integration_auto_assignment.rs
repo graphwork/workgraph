@@ -284,6 +284,11 @@ fn build_assign_subgraph(dir: &Path) {
             unplaced: false,
             place_near: vec![],
             place_before: vec![],
+            independent: false,
+            iteration_round: 0,
+            iteration_anchor: None,
+            iteration_parent: None,
+            iteration_config: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));

@@ -1262,6 +1262,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            false,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1311,6 +1314,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            false,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));

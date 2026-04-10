@@ -264,9 +264,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -317,9 +314,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -402,9 +396,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -462,9 +453,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -516,9 +504,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -570,9 +555,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -624,9 +606,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -681,9 +660,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -740,9 +716,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -799,9 +772,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -855,9 +825,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            false,
-            None,
-            false,
             None,
         )
         .unwrap();
@@ -912,10 +879,6 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
-            false,
-            None,
-            false,
-            None,
             false,
             None,
         )
