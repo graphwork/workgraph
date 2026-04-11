@@ -393,7 +393,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,  // iteration_config
+            None, // iteration_config
         )
         .unwrap();
 
