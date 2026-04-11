@@ -95,6 +95,7 @@ impl MockOpenRouterProvider {
         ])
     }
 
+    #[allow(dead_code)]
     fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }
@@ -193,6 +194,7 @@ impl MockAnthropicProvider {
         ])
     }
 
+    #[allow(dead_code)]
     fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }

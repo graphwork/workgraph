@@ -47,10 +47,12 @@ impl ErrorInjectingProvider {
         }
     }
 
+    #[allow(dead_code)]
     fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn captured_messages(&self) -> Vec<Vec<Message>> {
         self.captured_messages.lock().unwrap().clone()
     }
