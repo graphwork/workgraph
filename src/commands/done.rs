@@ -54,9 +54,6 @@ struct VerifyOutput {
 struct ProgressMonitor {
     last_stdout_activity: std::time::Instant,
     last_stderr_activity: std::time::Instant,
-    total_stdout_bytes: usize,
-    total_stderr_bytes: usize,
-    process_start: std::time::Instant,
 }
 
 impl ProgressMonitor {
@@ -65,25 +62,9 @@ impl ProgressMonitor {
         Self {
             last_stdout_activity: now,
             last_stderr_activity: now,
-            total_stdout_bytes: 0,
-            total_stderr_bytes: 0,
-            process_start: now,
         }
     }
 
-    fn update_stdout(&mut self, new_bytes: usize) {
-        if new_bytes > 0 {
-            self.last_stdout_activity = std::time::Instant::now();
-            self.total_stdout_bytes += new_bytes;
-        }
-    }
-
-    fn update_stderr(&mut self, new_bytes: usize) {
-        if new_bytes > 0 {
-            self.last_stderr_activity = std::time::Instant::now();
-            self.total_stderr_bytes += new_bytes;
-        }
-    }
 
     fn last_activity(&self) -> std::time::Instant {
         self.last_stdout_activity.max(self.last_stderr_activity)
@@ -99,9 +80,7 @@ impl ProgressMonitor {
 enum TriageResult {
     GenuineHang { reason: String },
     WaitingOnLocks { detected_locks: Vec<String> },
-    HighSystemLoad { load_avg: f64 },
     UnknownButActive { activity_type: String },
-    ResourcePressure { details: String },
 }
 
 /// Get the list of modified files in the current worktree using git diff.

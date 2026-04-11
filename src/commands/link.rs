@@ -292,7 +292,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             false,
             false,
             None,
@@ -309,6 +308,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         )
         .unwrap();
     }
