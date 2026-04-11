@@ -243,7 +243,8 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -263,7 +264,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
@@ -292,7 +293,8 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -312,7 +314,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
@@ -373,7 +375,8 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,

@@ -122,6 +122,7 @@ pub fn run(
     model: Option<&str>,
     provider: Option<&str>,
     verify: Option<&str>,
+    verify_timeout: Option<&str>,
     max_iterations: Option<u32>,
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
@@ -420,6 +421,7 @@ pub fn run(
         provider: provider.map(String::from),
         endpoint: None,
         verify: verify.map(String::from),
+        verify_timeout: verify_timeout.map(String::from),
         agent: None,
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -576,6 +578,7 @@ pub fn run_remote(
     model: Option<&str>,
     provider: Option<&str>,
     verify: Option<&str>,
+    verify_timeout: Option<&str>,
 ) -> Result<()> {
     use workgraph::federation::{check_peer_service, resolve_peer};
 
@@ -632,6 +635,7 @@ pub fn run_remote(
             deliverables: deliverables.to_vec(),
             model: model.map(String::from),
             verify: verify.map(String::from),
+            verify_timeout: verify_timeout.map(String::from),
             origin: Some(origin),
         };
 
@@ -668,6 +672,7 @@ pub fn run_remote(
             model,
             provider,
             verify,
+            verify_timeout,
             &origin,
         )?;
         println!(
@@ -693,6 +698,7 @@ fn add_task_directly(
     model: Option<&str>,
     provider: Option<&str>,
     verify: Option<&str>,
+    verify_timeout: Option<&str>,
     origin: &str,
 ) -> Result<String> {
     use workgraph::graph::{Node, Status, Task};
@@ -753,6 +759,7 @@ fn add_task_directly(
             provider: provider.map(String::from),
             endpoint: None,
             verify: verify.map(String::from),
+            verify_timeout: verify_timeout.map(String::from),
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,
@@ -1242,7 +1249,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -1293,7 +1301,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -1344,7 +1353,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -1364,7 +1374,7 @@ mod tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         );
         assert!(result.is_err());
         assert!(
@@ -1402,7 +1412,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -1422,7 +1433,7 @@ mod tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         );
         assert!(result.is_err());
         assert!(
@@ -1457,7 +1468,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,

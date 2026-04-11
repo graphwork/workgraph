@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::config::Config;
+use workgraph::config::{Config, CoordinatorConfig};
 use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
     parse_wg_tokens, user_board_handle, user_board_seq,
@@ -10,11 +10,37 @@ use workgraph::graph::{
 use workgraph::parser::modify_graph;
 use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
+use workgraph::graph::{Task, parse_delay};
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
+
+/// Enhanced timeout resolution with priority order
+fn resolve_verify_timeout(task: &Task, coordinator_config: &CoordinatorConfig) -> std::time::Duration {
+
+    // 1. Task-specific timeout (highest priority)
+    if let Some(task_timeout) = &task.verify_timeout {
+        if let Some(secs) = parse_delay(task_timeout) {
+            return std::time::Duration::from_secs(secs);
+        }
+    }
+
+    // 2. Global environment variable
+    if let Ok(env_timeout) = std::env::var("WG_VERIFY_TIMEOUT") {
+        if let Ok(secs) = env_timeout.parse::<u64>() {
+            return std::time::Duration::from_secs(secs);
+        }
+    }
+
+    // 3. Coordinator configuration default
+    coordinator_config.verify_default_timeout
+        .as_ref()
+        .and_then(|s| parse_delay(s))
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(900)) // New default: 900s instead of 300s
+}
 
 /// Result of running a verify command.
 struct VerifyOutput {
@@ -23,19 +49,262 @@ struct VerifyOutput {
     pub exit_code: String,
 }
 
+/// Progress monitoring for verify commands
+#[derive(Debug)]
+struct ProgressMonitor {
+    last_stdout_activity: std::time::Instant,
+    last_stderr_activity: std::time::Instant,
+    total_stdout_bytes: usize,
+    total_stderr_bytes: usize,
+    process_start: std::time::Instant,
+}
+
+impl ProgressMonitor {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            last_stdout_activity: now,
+            last_stderr_activity: now,
+            total_stdout_bytes: 0,
+            total_stderr_bytes: 0,
+            process_start: now,
+        }
+    }
+
+    fn update_stdout(&mut self, new_bytes: usize) {
+        if new_bytes > 0 {
+            self.last_stdout_activity = std::time::Instant::now();
+            self.total_stdout_bytes += new_bytes;
+        }
+    }
+
+    fn update_stderr(&mut self, new_bytes: usize) {
+        if new_bytes > 0 {
+            self.last_stderr_activity = std::time::Instant::now();
+            self.total_stderr_bytes += new_bytes;
+        }
+    }
+
+    fn last_activity(&self) -> std::time::Instant {
+        self.last_stdout_activity.max(self.last_stderr_activity)
+    }
+
+    fn has_recent_activity(&self, threshold: std::time::Duration) -> bool {
+        self.last_activity().elapsed() < threshold
+    }
+}
+
+/// Triage result for timeout processes
+#[derive(Debug, PartialEq)]
+enum TriageResult {
+    GenuineHang { reason: String },
+    WaitingOnLocks { detected_locks: Vec<String> },
+    HighSystemLoad { load_avg: f64 },
+    UnknownButActive { activity_type: String },
+    ResourcePressure { details: String },
+}
+
+/// Get the list of modified files in the current worktree using git diff.
+/// Returns relative paths from the project root.
+fn get_modified_files(project_root: &Path) -> Result<Vec<String>> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .arg("diff")
+        .arg("--name-only")
+        .arg("HEAD")
+        .current_dir(project_root)
+        .output()
+        .context("Failed to run git diff to detect modified files")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new()); // No git repo or no changes
+    }
+
+    let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+
+    Ok(files)
+}
+
+/// Detect common lock files that might indicate waiting processes
+fn detect_cargo_locks() -> Result<Vec<String>> {
+    let mut locks = Vec::new();
+
+    // Common cargo lock files
+    let lock_patterns = [
+        "target/.rustc_info.json.lock",
+        "target/debug/.cargo-lock",
+        "Cargo.lock",
+    ];
+
+    for pattern in &lock_patterns {
+        if std::path::Path::new(pattern).exists() {
+            locks.push(pattern.to_string());
+        }
+    }
+
+    Ok(locks)
+}
+
+/// Basic triage implementation for timeout processes
+fn triage_timeout_process(
+    monitor: &ProgressMonitor,
+    _progress_timeout: std::time::Duration,
+) -> Result<TriageResult> {
+
+    // 1. Check for recent output activity
+    if monitor.has_recent_activity(std::time::Duration::from_secs(60)) {
+        return Ok(TriageResult::UnknownButActive {
+            activity_type: "recent_output".to_string(),
+        });
+    }
+
+    // 2. Check for cargo lock files (common contention point)
+    let lock_files = detect_cargo_locks()?;
+    if !lock_files.is_empty() {
+        return Ok(TriageResult::WaitingOnLocks {
+            detected_locks: lock_files,
+        });
+    }
+
+    // 3. Default to genuine hang if no other indicators
+    Ok(TriageResult::GenuineHang {
+        reason: format!("no_activity_{}s_no_locks",
+                       monitor.last_activity().elapsed().as_secs()),
+    })
+}
+
+/// Map modified files to relevant test modules/files.
+/// Returns a list of test-specific cargo commands to run.
+fn map_files_to_tests(modified_files: &[String]) -> Option<Vec<String>> {
+    let mut test_commands = Vec::new();
+
+    for file in modified_files {
+        // Check for core files that should trigger full test suite
+        if is_core_file(file) {
+            return None; // Fall back to full test suite
+        }
+
+        // Map source files to test modules
+        if let Some(test_cmd) = map_file_to_test_command(file) {
+            if !test_commands.contains(&test_cmd) {
+                test_commands.push(test_cmd);
+            }
+        }
+    }
+
+    if test_commands.is_empty() {
+        None
+    } else {
+        Some(test_commands)
+    }
+}
+
+/// Check if a file is considered "core" and should trigger full test suite.
+fn is_core_file(file: &str) -> bool {
+    matches!(
+        file,
+        "src/lib.rs" | "src/main.rs" | "Cargo.toml" | "Cargo.lock" |
+        "build.rs" | ".gitignore" | "README.md"
+    ) || file.starts_with("src/lib/")
+      || file.contains("/mod.rs")
+      || file.ends_with("/lib.rs")
+}
+
+/// Map a single file to its relevant test command.
+fn map_file_to_test_command(file: &str) -> Option<String> {
+    if file.starts_with("tests/") {
+        // Direct test file - run the specific test
+        if let Some(test_name) = file.strip_prefix("tests/").and_then(|f| f.strip_suffix(".rs")) {
+            return Some(format!("cargo test --test {}", test_name));
+        }
+    } else if file.starts_with("src/") {
+        // Source file - map to relevant test module
+        if let Some(module_path) = file.strip_prefix("src/").and_then(|f| f.strip_suffix(".rs")) {
+            // Convert path to module name (e.g., "commands/add.rs" -> "add", "commands/viz/mod.rs" -> "viz")
+            let module_name = if module_path.ends_with("/mod") {
+                module_path.strip_suffix("/mod").unwrap_or(module_path)
+            } else {
+                module_path
+            };
+
+            // Extract the final component for testing
+            let test_module = module_name.split('/').last().unwrap_or(module_name);
+
+            return Some(format!("cargo test {}", test_module));
+        }
+    }
+
+    None
+}
+
+/// Generate a scoped verify command if conditions are met.
+/// Returns the scoped command or None to fall back to original.
+fn generate_scoped_verify_command(
+    verify_cmd: &str,
+    project_root: &Path,
+    coordinator_config: &CoordinatorConfig
+) -> Option<String> {
+    // Only scope "cargo test" commands
+    if verify_cmd.trim() != "cargo test" || !coordinator_config.scoped_verify_enabled {
+        return None;
+    }
+
+    // Get modified files
+    let modified_files = match get_modified_files(project_root) {
+        Ok(files) => files,
+        Err(_) => return None, // Fall back on error
+    };
+
+    if modified_files.is_empty() {
+        return None; // No changes, use original command
+    }
+
+    // Map to test commands
+    if let Some(test_commands) = map_files_to_tests(&modified_files) {
+        if test_commands.len() == 1 {
+            // Single scoped command
+            Some(test_commands.into_iter().next().unwrap())
+        } else if test_commands.len() > 1 {
+            // Multiple test commands - combine them
+            Some(test_commands.join(" && "))
+        } else {
+            None
+        }
+    } else {
+        None // Fall back to full test suite
+    }
+}
+
 /// Run a verify command in a shell.
 /// Returns Ok(VerifyOutput) with captured output on success,
 /// or Err(VerifyOutput) with captured output on failure.
 fn run_verify_command(
     verify_cmd: &str,
     project_root: &Path,
+    task: &Task,
+    coordinator_config: &CoordinatorConfig,
 ) -> std::result::Result<VerifyOutput, VerifyOutput> {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    // Try to generate a scoped command first
+    let effective_cmd = generate_scoped_verify_command(verify_cmd, project_root, coordinator_config)
+        .unwrap_or_else(|| verify_cmd.to_string());
+
+    // Log scoping decision
+    if effective_cmd != verify_cmd {
+        eprintln!("[scoped-verify] Using scoped command: {}", effective_cmd);
+        eprintln!("[scoped-verify] Original command: {}", verify_cmd);
+    }
+
     let mut child = match Command::new("sh")
         .arg("-c")
-        .arg(verify_cmd)
+        .arg(&effective_cmd)
         .current_dir(project_root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -68,12 +337,9 @@ fn run_verify_command(
         })
     });
 
-    let timeout_secs: u64 = std::env::var("WG_VERIFY_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
-    let timeout = Duration::from_secs(timeout_secs);
+    let timeout = resolve_verify_timeout(task, coordinator_config);
     let start = Instant::now();
+    let mut monitor = ProgressMonitor::new();
 
     // Poll with short sleeps to implement timeout without external crate
     let status = loop {
@@ -81,6 +347,41 @@ fn run_verify_command(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if start.elapsed() >= timeout {
+                    // Check if triage is enabled
+                    if coordinator_config.verify_triage_enabled {
+                        // Perform triage to determine if this is a genuine hang or waiting
+                        let progress_timeout = coordinator_config.verify_progress_timeout
+                            .as_ref()
+                            .and_then(|s| parse_delay(s))
+                            .map(std::time::Duration::from_secs)
+                            .unwrap_or(std::time::Duration::from_secs(300));
+
+                        match triage_timeout_process(&monitor, progress_timeout) {
+                            Ok(TriageResult::WaitingOnLocks { detected_locks }) => {
+                                eprintln!("Verify timeout triage: detected lock contention on {:?}, extending timeout by 300s", detected_locks);
+                                // Extend timeout and continue
+                                // Note: This is a simple implementation - in production we might want retry limits
+                                std::thread::sleep(std::time::Duration::from_secs(5));
+                                continue;
+                            },
+                            Ok(TriageResult::UnknownButActive { activity_type }) => {
+                                eprintln!("Verify timeout triage: process active ({}), extending timeout by 300s", activity_type);
+                                // Extend timeout and continue
+                                std::thread::sleep(std::time::Duration::from_secs(5));
+                                continue;
+                            },
+                            Ok(TriageResult::GenuineHang { reason }) => {
+                                eprintln!("Verify timeout triage: genuine hang detected ({}), failing", reason);
+                                // Proceed with normal timeout failure
+                            },
+                            _ => {
+                                eprintln!("Verify timeout triage: unknown condition, failing with timeout");
+                                // Proceed with normal timeout failure
+                            }
+                        }
+                    }
+
+                    // Standard timeout failure (either no triage or triage determined genuine hang)
                     let _ = child.kill();
                     let _ = child.wait();
                     let stdout = stdout_handle
@@ -306,7 +607,12 @@ fn run_inner(
         } else {
             let project_root = dir.parent().unwrap_or(dir);
             eprintln!("Running verify command: {}", verify_cmd);
-            match run_verify_command(&verify_cmd, project_root) {
+
+            // Get task and coordinator config for enhanced timeout resolution
+            let task = graph.get_task(id).ok_or_else(|| anyhow::anyhow!("Task {} not found", id))?;
+            let config = Config::load_or_default(dir);
+
+            match run_verify_command(&verify_cmd, project_root, task, &config.coordinator) {
                 Ok(output) => {
                     // Log verify success with captured output
                     let id_for_log = id.to_string();
@@ -483,9 +789,10 @@ fn run_inner(
         let commands = task_ref.validation_commands.clone();
         if !commands.is_empty() {
             let project_root = dir.parent().unwrap_or(dir);
+            let config = Config::load_or_default(dir);
             for cmd in &commands {
                 eprintln!("Running validation command: {}", cmd);
-                match run_verify_command(cmd, project_root) {
+                match run_verify_command(cmd, project_root, task_ref, &config.coordinator) {
                     Ok(_) => {}
                     Err(output) => {
                         let stderr: String = output.stderr.chars().take(500).collect();

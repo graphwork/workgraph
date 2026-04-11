@@ -314,6 +314,7 @@ fn main() -> Result<()> {
             model,
             provider,
             verify,
+            verify_timeout,
             max_iterations,
             cycle_guard,
             cycle_delay,
@@ -368,6 +369,7 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     provider.as_deref(),
                     verify.as_deref(),
+                    verify_timeout.as_deref(),
                 )
             } else {
                 commands::add::run(
@@ -387,6 +389,7 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     provider.as_deref(),
                     verify.as_deref(),
+                    verify_timeout.as_deref(),
                     max_iterations,
                     cycle_guard.as_deref(),
                     cycle_delay.as_deref(),

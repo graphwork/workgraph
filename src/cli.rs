@@ -107,6 +107,10 @@ pub enum Commands {
         #[arg(long)]
         verify: Option<String>,
 
+        /// Verification timeout (e.g., '15m', '900s'). Overrides global WG_VERIFY_TIMEOUT
+        #[arg(long = "verify-timeout")]
+        verify_timeout: Option<String>,
+
         /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
         #[arg(long = "max-iterations")]
         max_iterations: Option<u32>,

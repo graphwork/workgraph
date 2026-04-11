@@ -276,6 +276,10 @@ pub struct Task {
     /// Verification criteria - if set, task requires review before done
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+    /// Verification timeout override for this specific task (e.g., "15m", "900s")
+    /// Takes priority over global WG_VERIFY_TIMEOUT and coordinator defaults
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_timeout: Option<String>,
     /// Agent assigned to this task (content-hash of an Agent in the agency)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -903,6 +907,8 @@ struct TaskHelper {
     #[serde(default)]
     verify: Option<String>,
     #[serde(default)]
+    verify_timeout: Option<String>,
+    #[serde(default)]
     agent: Option<String>,
     /// Deprecated: silently ignored on deserialization for backward compatibility.
     /// Accepts both old string format ("loops_to": "b") and array format ("loops_to": ["b"]).
@@ -1018,6 +1024,7 @@ impl<'de> Deserialize<'de> for Task {
             provider: helper.provider,
             endpoint: helper.endpoint,
             verify: helper.verify,
+            verify_timeout: helper.verify_timeout,
             agent,
             loop_iteration: helper.loop_iteration,
             last_iteration_completed_at: helper.last_iteration_completed_at,
