@@ -4,6 +4,7 @@
 //! generates JSON Schema definitions for the API, and dispatches calls.
 
 pub mod bash;
+pub mod bg;
 pub mod file;
 pub mod file_cache;
 pub mod wg;
@@ -341,6 +342,9 @@ impl ToolRegistry {
 
         // Web search tool
         web_search::register_web_search_tool(&mut registry);
+
+        // Background job tool
+        bg::register_bg_tool(&mut registry, workgraph_dir.to_path_buf());
 
         registry
     }

@@ -9,6 +9,7 @@
 //! Claude CLI or Amplifier for agent execution.
 
 pub mod agent;
+pub mod background;
 pub mod bundle;
 pub mod client;
 pub mod journal;
