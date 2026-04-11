@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use serde_json::json;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};

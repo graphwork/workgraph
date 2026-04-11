@@ -89,8 +89,6 @@ impl JobStatus {
 /// Manages persistence and discovery of background jobs.
 #[derive(Debug, Clone)]
 pub struct JobStore {
-    /// Directory where job files are stored.
-    base_dir: PathBuf,
     /// Cache of loaded jobs (refreshed on demand).
     jobs: HashMap<String, Job>,
     /// Maximum concurrent jobs allowed.
@@ -106,7 +104,6 @@ impl JobStore {
         fs::create_dir_all(&jobs_dir).context("Failed to create jobs directory")?;
 
         let mut store = Self {
-            base_dir,
             jobs: HashMap::new(),
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             jobs_dir,
