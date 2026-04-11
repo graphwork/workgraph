@@ -205,7 +205,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -245,7 +246,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -285,6 +287,8 @@ mod tests {
             None,
             None,
             None,
+            None, // verify
+            None, // verify_timeout
             None,
             None,
             None,
@@ -305,7 +309,6 @@ mod tests {
             None,
             false,
             false,
-            None,
         )
         .unwrap();
     }

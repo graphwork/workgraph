@@ -420,6 +420,7 @@ mod tests {
             provider: None,
             endpoint: None,
             verify: None,
+            verify_timeout: None,
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,
