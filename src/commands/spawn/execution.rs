@@ -325,6 +325,35 @@ pub(crate) fn spawn_agent_inner(
             || settings.executor_type == "native")
     {
         let prompt = build_prompt(&vars, scope, &scope_ctx);
+
+        // Debug logging: capture spawn metadata if WG_DEBUG_PROMPTS is set
+        if std::env::var("WG_DEBUG_PROMPTS").is_ok() {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/wg_debug_prompts.log")
+            {
+                use std::io::Write;
+                let debug_info = format!(
+                    "=== WG DEBUG: Spawning Agent ===\n\
+                    Task ID: {}\n\
+                    Executor: {}\n\
+                    Model: {}\n\
+                    Context Scope: {:?}\n\
+                    Execution Mode: {}\n\
+                    Agent Identity: {}\n\
+                    === End of Spawn Metadata ===\n\n",
+                    task_id,
+                    executor_name,
+                    vars.model,
+                    scope,
+                    resolved_exec_mode.as_str(),
+                    task.agent.as_deref().unwrap_or("Default (no specific agent assigned)")
+                );
+                let _ = file.write_all(debug_info.as_bytes());
+            }
+        }
+
         settings.prompt_template = Some(PromptTemplate { template: prompt });
     }
 
