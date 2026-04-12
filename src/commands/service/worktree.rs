@@ -3,6 +3,8 @@
 //! Handles cleanup of git worktrees created for isolated agents:
 //! - Dead agent worktree recovery and removal
 //! - Orphaned worktree cleanup on service restart
+
+#![allow(dead_code)]
 //! - Age-based pruning of stale worktrees
 
 use anyhow::{anyhow, Context, Result};
@@ -729,7 +731,8 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
 
 /// Get all recovery branches sorted by age (oldest first).
 /// Returns a list of (branch_name, last_commit_timestamp) tuples.
-pub fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
+#[allow(dead_code)]
+fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
     let output = Command::new("git")
         .args(["branch", "-r", "--format=%(refname:short) %(committerdate:unix)"])
         .current_dir(project_root)
@@ -795,7 +798,8 @@ pub fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> 
 
 /// Prune recovery branches based on age and count limits.
 /// Returns the number of branches pruned.
-pub fn prune_recovery_branches(
+#[allow(dead_code)]
+fn prune_recovery_branches(
     project_root: &Path,
     config: &ResourceManagementConfig,
 ) -> Result<usize> {
@@ -857,6 +861,7 @@ pub fn prune_recovery_branches(
 }
 
 /// Delete a recovery branch both locally and remotely (if present).
+#[allow(dead_code)]
 fn delete_recovery_branch(project_root: &Path, branch: &str) -> Result<()> {
     // Delete local branch
     let output = Command::new("git")
@@ -894,6 +899,7 @@ fn delete_recovery_branch(project_root: &Path, branch: &str) -> Result<()> {
 
 /// Run recovery branch pruning if enough time has passed since last prune.
 /// This is typically called from the coordinator's triage loop.
+#[allow(dead_code)]
 pub fn maybe_prune_recovery_branches(
     project_root: &Path,
     config: &ResourceManagementConfig,
@@ -918,12 +924,14 @@ pub fn maybe_prune_recovery_branches(
 
 /// A cleanup job to be processed by the cleanup queue.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CleanupJob {
     pub job_type: CleanupJobType,
     pub priority: CleanupPriority,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum CleanupJobType {
     DeadAgent {
         project_root: PathBuf,
@@ -958,6 +966,7 @@ impl std::fmt::Display for CleanupJobType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub enum CleanupPriority {
     Low = 0,
     Normal = 1,
@@ -967,18 +976,21 @@ pub enum CleanupPriority {
 
 /// A thread-safe cleanup job queue for coordinating worktree cleanup operations.
 /// Prevents resource contention during high-frequency cleanup scenarios.
+#[allow(dead_code)]
 pub struct CleanupQueue {
     inner: Arc<Mutex<CleanupQueueInner>>,
     not_empty: Arc<Condvar>,
     not_full: Arc<Condvar>,
 }
 
+#[allow(dead_code)]
 struct CleanupQueueInner {
     queue: VecDeque<CleanupJob>,
     max_size: usize,
     shutdown: bool,
 }
 
+#[allow(dead_code)]
 impl CleanupQueue {
     /// Create a new cleanup queue with the specified maximum size.
     pub fn new(max_size: usize) -> Self {
@@ -1068,11 +1080,13 @@ impl CleanupQueue {
 }
 
 /// A cleanup worker that processes jobs from the cleanup queue.
+#[allow(dead_code)]
 pub struct CleanupWorker {
     queue: Arc<CleanupQueue>,
     config: ResourceManagementConfig,
 }
 
+#[allow(dead_code)]
 impl CleanupWorker {
     /// Create a new cleanup worker with the given queue and configuration.
     pub fn new(queue: Arc<CleanupQueue>, config: ResourceManagementConfig) -> Self {
@@ -1148,6 +1162,7 @@ impl CleanupWorker {
 }
 
 /// Enqueue a dead agent cleanup job.
+#[allow(dead_code)]
 pub fn enqueue_dead_agent_cleanup(
     queue: &CleanupQueue,
     project_root: PathBuf,
@@ -1169,6 +1184,7 @@ pub fn enqueue_dead_agent_cleanup(
 }
 
 /// Enqueue an orphaned worktree cleanup job.
+#[allow(dead_code)]
 pub fn enqueue_orphaned_cleanup(
     queue: &CleanupQueue,
     project_root: PathBuf,
@@ -1188,6 +1204,7 @@ pub fn enqueue_orphaned_cleanup(
 }
 
 /// Enqueue a recovery branch pruning job.
+#[allow(dead_code)]
 pub fn enqueue_recovery_prune(
     queue: &CleanupQueue,
     project_root: PathBuf,
