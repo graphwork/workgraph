@@ -1,9 +1,10 @@
 use serde_json;
 use workgraph::graph::{Task, Status, Priority, Node};
 
-fn main() {
+#[test]
+fn test_cron_task_serialization() {
     // Test serialization with cron fields
-    let mut task = Task {
+    let task = Task {
         id: "test-cron".to_string(),
         title: "Test Cron Task".to_string(),
         description: None,
