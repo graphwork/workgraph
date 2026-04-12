@@ -173,7 +173,7 @@ fn simulate_cleanup_with_error_handling(project_root: &Path, agent_id: &str, wor
 // ── Malformed Metadata Tests ─────────────────────────────────────────────────
 
 #[test]
-fn test_malformed_metadata_handling() {
+fn test_edge_cases_malformed_metadata() {
     // Test cleanup behavior with malformed metadata.json files
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");
@@ -244,7 +244,7 @@ fn test_malformed_metadata_handling() {
 }
 
 #[test]
-fn test_missing_metadata_file_handling() {
+fn test_edge_cases_missing_metadata_file() {
     // Test cleanup behavior when metadata.json doesn't exist
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");
@@ -263,7 +263,7 @@ fn test_missing_metadata_file_handling() {
 // ── Missing Worktree Directory Tests ─────────────────────────────────────────
 
 #[test]
-fn test_missing_worktree_cleanup() {
+fn test_edge_cases_missing_worktree() {
     // Test cleanup when worktree directory is missing but metadata exists
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");
@@ -326,7 +326,7 @@ fn test_partially_missing_worktree_structure() {
 // ── Permission Denied Tests ──────────────────────────────────────────────────
 
 #[test]
-fn test_permission_denied_scenarios() {
+fn test_edge_cases_permission_denied() {
     // Test cleanup behavior with permission-related issues
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");
@@ -404,7 +404,7 @@ fn test_permission_denied_metadata_access() {
 // ── Corrupted Git Metadata Tests ─────────────────────────────────────────────
 
 #[test]
-fn test_corrupted_git_metadata_handling() {
+fn test_edge_cases_corrupted_git() {
     // Test cleanup when git worktree metadata is corrupted
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");

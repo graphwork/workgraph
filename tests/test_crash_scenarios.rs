@@ -278,7 +278,7 @@ where
 /// 5. Verify coordinator detects death and cleans up
 #[test]
 #[serial]
-fn test_agent_sigkill_cleanup() {
+fn test_crash_scenarios_sigkill_cleanup() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
@@ -411,7 +411,7 @@ fn test_agent_sigkill_cleanup() {
 /// 5. Verify coordinator detects death and cleans up
 #[test]
 #[serial]
-fn test_agent_sigterm_cleanup() {
+fn test_crash_scenarios_sigterm_cleanup() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
@@ -523,7 +523,7 @@ fn test_agent_sigterm_cleanup() {
 /// 4. Verify coordinator detects timeout and cleans up
 #[test]
 #[serial]
-fn test_agent_timeout_cleanup() {
+fn test_crash_scenarios_timeout_cleanup() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
@@ -641,7 +641,7 @@ auto_evaluate = false
 /// 4. Verify coordinator handles multiple crashes correctly
 #[test]
 #[serial]
-fn test_multiple_agent_crash_cleanup() {
+fn test_crash_scenarios_multiple_agent_crash() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
@@ -798,7 +798,7 @@ fn test_multiple_agent_crash_cleanup() {
 /// 3. Verify task remains available for retry
 #[test]
 #[serial]
-fn test_agent_spawn_failure_cleanup() {
+fn test_crash_scenarios_spawn_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
