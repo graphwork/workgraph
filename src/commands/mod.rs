@@ -68,6 +68,7 @@ pub mod native_exec;
 pub mod next;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
+pub mod openrouter;
 pub mod pause;
 pub mod peer;
 pub mod placement;

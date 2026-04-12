@@ -850,6 +850,12 @@ pub enum Commands {
         json: bool,
     },
 
+    /// OpenRouter cost monitoring and management
+    Openrouter {
+        #[command(subcommand)]
+        command: OpenRouterCommands,
+    },
+
     /// Send and receive messages to/from tasks and agents
     Msg {
         #[command(subcommand)]
@@ -2090,6 +2096,26 @@ pub enum KeyCommands {
 
     /// Show key configuration status for all providers
     List,
+}
+
+#[derive(Subcommand)]
+pub enum OpenRouterCommands {
+    /// Show OpenRouter API key status and usage
+    Status,
+    /// Show session cost summary
+    Session,
+    /// Set cost cap limits
+    SetLimit {
+        /// Global cost cap in USD
+        #[arg(long)]
+        global: Option<f64>,
+        /// Session cost cap in USD
+        #[arg(long)]
+        session: Option<f64>,
+        /// Task cost cap in USD
+        #[arg(long)]
+        task: Option<f64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3558,6 +3584,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Key { .. } => "key",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
+        Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
     }
 }

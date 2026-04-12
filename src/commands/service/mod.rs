@@ -42,6 +42,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use chrono::{DateTime, Utc};
 
+
 use workgraph::agency;
 use workgraph::config::Config;
 use workgraph::parser::load_graph;
@@ -375,6 +376,62 @@ pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
         .join(format!("coordinator-state-{}.json", coordinator_id))
 }
 
+/// Session cost tracking for OpenRouter cost caps
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionCostTracking {
+    /// Total cost for this coordinator session (USD)
+    pub session_cost_usd: f64,
+    /// Session start time
+    pub session_start: chrono::DateTime<chrono::Utc>,
+    /// Last OpenRouter key status check
+    pub last_key_check: Option<chrono::DateTime<chrono::Utc>>,
+    /// Cached key status from last check
+    pub key_status: Option<workgraph::executor::native::openai_client::OpenRouterKeyStatus>,
+}
+
+impl Default for SessionCostTracking {
+    fn default() -> Self {
+        Self {
+            session_cost_usd: 0.0,
+            session_start: chrono::Utc::now(),
+            last_key_check: None,
+            key_status: None,
+        }
+    }
+}
+
+impl SessionCostTracking {
+    /// Add cost to the session total
+    pub fn add_cost(&mut self, cost_usd: f64) {
+        self.session_cost_usd += cost_usd;
+    }
+
+    /// Check if session cost exceeds the given cap
+    pub fn exceeds_cap(&self, cap_usd: Option<f64>) -> bool {
+        if let Some(cap) = cap_usd {
+            self.session_cost_usd >= cap
+        } else {
+            false
+        }
+    }
+
+    /// Check if key status should be refreshed based on interval
+    pub fn should_check_key_status(&self, interval_minutes: u32) -> bool {
+        if let Some(last_check) = self.last_key_check {
+            let elapsed = chrono::Utc::now() - last_check;
+            elapsed > chrono::Duration::minutes(interval_minutes as i64)
+        } else {
+            true // Never checked before
+        }
+    }
+
+    /// Update the cached key status
+    pub fn update_key_status(&mut self, status: workgraph::executor::native::openai_client::OpenRouterKeyStatus) {
+        self.last_key_check = Some(chrono::Utc::now());
+        self.key_status = Some(status);
+    }
+}
+
 /// Runtime coordinator state persisted to disk for status queries
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CoordinatorState {
@@ -413,6 +470,9 @@ pub struct CoordinatorState {
     /// Resets to 0 after successful compaction.
     #[serde(default)]
     pub accumulated_tokens: u64,
+    /// Session cost tracking for OpenRouter cost caps
+    #[serde(default)]
+    pub cost_tracking: SessionCostTracking,
 }
 
 impl CoordinatorState {
@@ -1899,6 +1959,7 @@ pub fn run_daemon(
         accumulated_tokens: CoordinatorState::load(&dir)
             .map(|cs| cs.accumulated_tokens)
             .unwrap_or(0),
+        cost_tracking: SessionCostTracking::default(),
     };
     coord_state.save(&dir);
 

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use workgraph::agency;
-use workgraph::config::{Config, EndpointConfig};
+use workgraph::config::{Config, EndpointConfig, CapBehavior};
 use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
@@ -114,6 +114,14 @@ pub(crate) fn spawn_agent_inner(
 
     // Resolve context scope
     let config = Config::load_or_default(dir);
+
+    // Check OpenRouter cost caps before proceeding with expensive operations
+    if let Some(provider) = model.and_then(|m| workgraph::config::parse_model_spec(m).provider) {
+        if provider == "openrouter" {
+            check_openrouter_cost_caps(&config, dir, task_id, model)?;
+        }
+    }
+
     let scope = resolve_task_scope(task, &config, dir);
 
     // Build context from dependencies
@@ -1491,6 +1499,135 @@ fn resolve_model_via_registry(
         // Model came from executor/coordinator defaults — pass through unchanged.
         // It may be a direct model ID the executor understands.
         Ok((effective_model, None, None))
+    }
+}
+
+/// Check OpenRouter cost caps before spawning an agent
+fn check_openrouter_cost_caps(
+    config: &Config,
+    workgraph_dir: &Path,
+    task_id: &str,
+    model: Option<&str>,
+) -> Result<()> {
+    use workgraph::executor::native::openai_client::{fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir};
+    use crate::commands::service::CoordinatorState;
+
+    let openrouter_config = &config.openrouter;
+
+    // Early exit if no cost caps are configured
+    if openrouter_config.cost_cap_global_usd.is_none()
+        && openrouter_config.cost_cap_session_usd.is_none()
+        && openrouter_config.cost_cap_task_usd.is_none() {
+        return Ok(());
+    }
+
+    // Get OpenRouter API key for status checking
+    let api_key = match resolve_openai_api_key_from_dir(workgraph_dir) {
+        Ok(key) => key,
+        Err(_) => {
+            // If no API key available, we can't check costs, so allow the operation
+            return Ok(());
+        }
+    };
+
+    let service_dir = workgraph_dir.join(".workgraph/service");
+
+    // Load current coordinator state for session cost tracking
+    let mut coordinator_state = CoordinatorState::load_for(&service_dir, 0)
+        .unwrap_or_default();
+
+    // Check if we should refresh key status
+    if coordinator_state.cost_tracking.should_check_key_status(openrouter_config.key_status_check_interval_minutes) {
+        match fetch_openrouter_key_status_blocking(&api_key, None) {
+            Ok(key_status) => {
+                coordinator_state.cost_tracking.update_key_status(key_status);
+                // Save updated state
+                let _ = coordinator_state.save_for(&service_dir, 0);
+            }
+            Err(e) => {
+                // Log warning but don't block operation
+                eprintln!("Warning: Failed to check OpenRouter key status: {}", e);
+            }
+        }
+    }
+
+    // Check session cost cap
+    if let Some(session_cap) = openrouter_config.cost_cap_session_usd {
+        if coordinator_state.cost_tracking.session_cost_usd >= session_cap {
+            return handle_cost_cap_violation(
+                &openrouter_config.cap_behavior,
+                &format!("Session cost cap of ${:.2} exceeded (current: ${:.2})",
+                    session_cap, coordinator_state.cost_tracking.session_cost_usd),
+                openrouter_config.fallback_model.as_deref(),
+                task_id,
+                model,
+            );
+        }
+    }
+
+    // Check global cost cap using key status if available
+    if let (Some(global_cap), Some(key_status)) = (
+        openrouter_config.cost_cap_global_usd,
+        &coordinator_state.cost_tracking.key_status,
+    ) {
+        if key_status.usage >= global_cap {
+            return handle_cost_cap_violation(
+                &openrouter_config.cap_behavior,
+                &format!("Global cost cap of ${:.2} exceeded (current: ${:.2})",
+                    global_cap, key_status.usage),
+                openrouter_config.fallback_model.as_deref(),
+                task_id,
+                model,
+            );
+        }
+    }
+
+    // Check warning thresholds
+    if let Some(key_status) = &coordinator_state.cost_tracking.key_status {
+        if key_status.is_above_threshold(openrouter_config.warn_at_usage_percent as f64) {
+            eprintln!(
+                "Warning: OpenRouter usage at {:.1}% of limit (${:.2}/${:.2})",
+                key_status.usage_percentage(),
+                key_status.usage,
+                key_status.limit
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle cost cap violation according to the configured behavior
+fn handle_cost_cap_violation(
+    behavior: &CapBehavior,
+    message: &str,
+    fallback_model: Option<&str>,
+    task_id: &str,
+    _current_model: Option<&str>,
+) -> Result<()> {
+    match behavior {
+        CapBehavior::Fail => {
+            anyhow::bail!("Cost cap exceeded: {}", message);
+        }
+        CapBehavior::Fallback => {
+            if let Some(fallback) = fallback_model {
+                eprintln!(
+                    "Warning: {} - would fallback to model '{}' for task '{}' (fallback not implemented yet)",
+                    message, fallback, task_id
+                );
+                Ok(())
+            } else {
+                anyhow::bail!("Cost cap exceeded: {} (no fallback model configured)", message);
+            }
+        }
+        CapBehavior::Escalate => {
+            eprintln!("Warning: {} - continuing due to escalate behavior", message);
+            Ok(())
+        }
+        CapBehavior::Readonly => {
+            eprintln!("Warning: {} - entering read-only mode", message);
+            Ok(())
+        }
     }
 }
 

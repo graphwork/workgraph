@@ -1927,6 +1927,55 @@ fn make_parse_error_input(raw_arguments: &str, _error_message: &str) -> serde_js
     })
 }
 
+// ── OpenRouter key status ───────────────────────────────────────────────
+
+/// OpenRouter API key status returned by the `/api/v1/key` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterKeyStatus {
+    /// Total credit limit in USD
+    #[serde(default)]
+    pub limit: f64,
+    /// Remaining credit limit in USD
+    #[serde(default)]
+    pub limit_remaining: f64,
+    /// Total usage in USD
+    #[serde(default)]
+    pub usage: f64,
+    /// Daily usage in USD
+    #[serde(default)]
+    pub usage_daily: f64,
+    /// Weekly usage in USD
+    #[serde(default)]
+    pub usage_weekly: f64,
+    /// Monthly usage in USD
+    #[serde(default)]
+    pub usage_monthly: f64,
+    /// Whether this is a free tier key
+    #[serde(default)]
+    pub is_free_tier: bool,
+}
+
+impl OpenRouterKeyStatus {
+    /// Calculate the usage percentage of the total limit
+    pub fn usage_percentage(&self) -> f64 {
+        if self.limit <= 0.0 {
+            0.0
+        } else {
+            (self.usage / self.limit) * 100.0
+        }
+    }
+
+    /// Check if usage is above the given threshold percentage
+    pub fn is_above_threshold(&self, threshold_percent: f64) -> bool {
+        self.usage_percentage() >= threshold_percent
+    }
+
+    /// Check if the key is approaching or at the limit
+    pub fn is_near_limit(&self, buffer: f64) -> bool {
+        self.limit_remaining <= buffer
+    }
+}
+
 // ── OpenRouter model discovery ──────────────────────────────────────────
 
 /// A model returned by the OpenRouter `/api/v1/models` endpoint.
@@ -2021,6 +2070,49 @@ pub fn fetch_openrouter_models_blocking(
 ) -> Result<Vec<OpenRouterModel>> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     rt.block_on(fetch_openrouter_models(api_key, base_url))
+}
+
+/// Fetch OpenRouter API key status asynchronously.
+pub async fn fetch_openrouter_key_status(
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Result<OpenRouterKeyStatus> {
+    let base = base_url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/');
+    let url = format!("{}/key", base);
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let resp = http
+        .get(&url)
+        .header("authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .context("Failed to fetch key status from OpenRouter API")?;
+
+    let status = resp.status().as_u16();
+    if status != 200 {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(oai_api_error(status, &body));
+    }
+
+    let key_status: OpenRouterKeyStatus = resp
+        .json()
+        .await
+        .context("Failed to parse key status response")?;
+
+    Ok(key_status)
+}
+
+/// Fetch OpenRouter API key status synchronously (blocking).
+pub fn fetch_openrouter_key_status_blocking(
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Result<OpenRouterKeyStatus> {
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+    rt.block_on(fetch_openrouter_key_status(api_key, base_url))
 }
 
 // ── OpenRouter auto-routing & model validation ──────────────────────────

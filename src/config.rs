@@ -90,6 +90,10 @@ pub struct Config {
     #[serde(default)]
     pub chat: ChatConfig,
 
+    /// OpenRouter cost cap and monitoring configuration
+    #[serde(default)]
+    pub openrouter: OpenRouterConfig,
+
     /// True when `agent.model` was explicitly set in local config.
     /// Used by `resolve_model_for_role` to skip tier defaults in favor of agent.model.
     #[serde(skip)]
@@ -133,6 +137,110 @@ impl Default for ChatConfig {
             max_messages: default_chat_max_messages(),
             retention_days: default_chat_retention_days(),
             compact_threshold: default_chat_compact_threshold(),
+        }
+    }
+}
+
+/// OpenRouter cost cap and monitoring configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterConfig {
+    /// Global project cost cap in USD
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cap_global_usd: Option<f64>,
+
+    /// Per-session cost cap in USD
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cap_session_usd: Option<f64>,
+
+    /// Per-task cost cap in USD
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cap_task_usd: Option<f64>,
+
+    /// Behavior when cost cap is reached
+    #[serde(default = "default_cap_behavior")]
+    pub cap_behavior: CapBehavior,
+
+    /// Fallback model when cap_behavior is "fallback"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
+
+    /// How often to check key status in minutes
+    #[serde(default = "default_key_status_check_interval")]
+    pub key_status_check_interval_minutes: u32,
+
+    /// Warning threshold as percentage of limit (0-100)
+    #[serde(default = "default_warn_usage_percent")]
+    pub warn_at_usage_percent: u8,
+
+    /// Cost estimation buffer multiplier
+    #[serde(default = "default_cost_estimation_buffer")]
+    pub cost_estimation_buffer: f64,
+
+    /// Enable cache tracking from OpenRouter responses
+    #[serde(default = "default_enable_cache_tracking")]
+    pub enable_cache_tracking: bool,
+
+    /// Track session costs in coordinator state
+    #[serde(default = "default_track_session_costs")]
+    pub track_session_costs: bool,
+
+    /// Persist cost history to files
+    #[serde(default)]
+    pub persist_cost_history: bool,
+}
+
+/// Cost cap enforcement behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CapBehavior {
+    /// Fail the task/session immediately
+    Fail,
+    /// Fall back to a cheaper model
+    Fallback,
+    /// Escalate to user for decision
+    Escalate,
+    /// Switch to read-only mode (monitoring only)
+    Readonly,
+}
+
+fn default_cap_behavior() -> CapBehavior {
+    CapBehavior::Escalate
+}
+
+fn default_key_status_check_interval() -> u32 {
+    5
+}
+
+fn default_warn_usage_percent() -> u8 {
+    80
+}
+
+fn default_cost_estimation_buffer() -> f64 {
+    1.2
+}
+
+fn default_enable_cache_tracking() -> bool {
+    true
+}
+
+fn default_track_session_costs() -> bool {
+    true
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            cost_cap_global_usd: None,
+            cost_cap_session_usd: None,
+            cost_cap_task_usd: None,
+            cap_behavior: default_cap_behavior(),
+            fallback_model: None,
+            key_status_check_interval_minutes: default_key_status_check_interval(),
+            warn_at_usage_percent: default_warn_usage_percent(),
+            cost_estimation_buffer: default_cost_estimation_buffer(),
+            enable_cache_tracking: default_enable_cache_tracking(),
+            track_session_costs: default_track_session_costs(),
+            persist_cost_history: false,
         }
     }
 }
