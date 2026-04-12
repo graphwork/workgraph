@@ -22,6 +22,84 @@ use super::state::{
     RightPanelTab, TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
 };
 
+/// Handle content reload when iteration changes.
+fn handle_iteration_change(app: &mut VizApp) {
+    // Always reload Detail tab content
+    app.load_hud_detail();
+
+    // Invalidate Log and Messages panes so they reload with updated headers
+    app.invalidate_log_pane();
+    app.invalidate_messages_panel();
+
+    // Force reload of the current tab's content
+    match app.right_panel_tab {
+        RightPanelTab::Log => {
+            app.load_log_pane();
+        }
+        RightPanelTab::Messages => {
+            app.load_messages_panel();
+        }
+        _ => {} // Detail tab is already reloaded above
+    }
+}
+
+/// Handle mouse clicks on the iteration navigator widget.
+fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
+    if app.iteration_archives.is_empty() {
+        return; // No iterations to navigate
+    }
+
+    let nav_area = app.last_iteration_nav_area;
+    let relative_column = click_column.saturating_sub(nav_area.x);
+
+    // Calculate click targets based on the navigator layout: "◀ iter 2/5 ▶"
+    // Left arrow is at position 0, right arrow is at the end
+    let total = app.iteration_archives.len() + 1;
+    let current_display = match app.viewing_iteration {
+        None => total,
+        Some(idx) => idx + 1,
+    };
+
+    let navigator_text = format!("◀ iter {}/{} ▶", current_display, total);
+    let text_width = navigator_text.chars().count() as u16;
+    let right_arrow_pos = text_width.saturating_sub(1); // Position of ▶
+
+    // Determine navigation capabilities
+    let can_go_prev = match app.viewing_iteration {
+        None => !app.iteration_archives.is_empty(),
+        Some(idx) => idx > 0,
+    };
+    let can_go_next = match app.viewing_iteration {
+        Some(idx) => idx + 1 < app.iteration_archives.len(),
+        None => false,
+    };
+
+    if relative_column == 0 && can_go_prev {
+        // Click on left arrow ◀
+        if app.iteration_prev() {
+            handle_iteration_change(app);
+            let total = app.iteration_archives.len() + 1;
+            let msg = match app.viewing_iteration {
+                Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                None => format!("Viewing current ({}/{})", total, total),
+            };
+            app.push_toast(msg, super::state::ToastSeverity::Info);
+        }
+    } else if relative_column == right_arrow_pos && can_go_next {
+        // Click on right arrow ▶
+        if app.iteration_next() {
+            handle_iteration_change(app);
+            let total = app.iteration_archives.len() + 1;
+            let msg = match app.viewing_iteration {
+                Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                None => format!("Viewing current ({}/{})", total, total),
+            };
+            app.push_toast(msg, super::state::ToastSeverity::Info);
+        }
+    }
+    // Clicks on the counter text (middle area) are ignored
+}
+
 /// Apply the current mouse capture state to the terminal.
 ///
 /// Uses modes 1002 (button-event tracking) and 1006 (SGR extended coordinates)
@@ -2016,10 +2094,13 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             });
         }
 
-        // Detail tab: '[' browses to older iteration
-        KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Detail => {
+        // Task tabs: '[' browses to older iteration
+        KeyCode::Char('[') if matches!(
+            app.right_panel_tab,
+            RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
+        ) => {
             if app.iteration_prev() {
-                app.load_hud_detail();
+                handle_iteration_change(app);
                 let total = app.iteration_archives.len() + 1;
                 let msg = match app.viewing_iteration {
                     Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
@@ -2028,10 +2109,13 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.push_toast(msg, super::state::ToastSeverity::Info);
             }
         }
-        // Detail tab: ']' browses to newer iteration
-        KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Detail => {
+        // Task tabs: ']' browses to newer iteration
+        KeyCode::Char(']') if matches!(
+            app.right_panel_tab,
+            RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
+        ) => {
             if app.iteration_next() {
-                app.load_hud_detail();
+                handle_iteration_change(app);
                 let total = app.iteration_archives.len() + 1;
                 let msg = match app.viewing_iteration {
                     Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
@@ -2673,13 +2757,22 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Checked before divider handlers because the horizontal divider's
                 // 3-row grab zone can overlap the tab bar row in stacked mode.
                 app.focused_panel = FocusedPanel::RightPanel;
-                let col_in_tabs = column.saturating_sub(app.last_tab_bar_area.x);
-                if let Some(tab) = tab_at_column(col_in_tabs) {
-                    // Special behavior for Log tab: toggle view mode if already active
-                    if tab == RightPanelTab::Log && app.right_panel_tab == RightPanelTab::Log {
-                        app.toggle_log_view();
-                    } else {
-                        app.right_panel_tab = tab;
+
+                // Check for iteration navigator click first
+                let in_iteration_nav = app.last_iteration_nav_area.width > 0
+                    && app.last_iteration_nav_area.contains(pos);
+
+                if in_iteration_nav {
+                    handle_iteration_navigator_click(app, column);
+                } else {
+                    let col_in_tabs = column.saturating_sub(app.last_tab_bar_area.x);
+                    if let Some(tab) = tab_at_column(col_in_tabs) {
+                        // Special behavior for Log tab: toggle view mode if already active
+                        if tab == RightPanelTab::Log && app.right_panel_tab == RightPanelTab::Log {
+                            app.toggle_log_view();
+                        } else {
+                            app.right_panel_tab = tab;
+                        }
                     }
                 }
             } else if in_divider {

@@ -3371,6 +3371,8 @@ pub struct VizApp {
     pub fullscreen_bottom_hover: bool,
     /// The tab bar area inside the right panel from the last render frame.
     pub last_tab_bar_area: Rect,
+    /// The iteration navigator widget area within the tab bar for mouse click handling.
+    pub last_iteration_nav_area: Rect,
     /// The content area inside the right panel (below tab bar) from the last render frame.
     pub last_right_content_area: Rect,
     /// The chat input area from the last render frame (for click-to-resume editing).
@@ -3823,6 +3825,7 @@ impl VizApp {
             fullscreen_top_hover: false,
             fullscreen_bottom_hover: false,
             last_tab_bar_area: Rect::default(),
+            last_iteration_nav_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
@@ -7969,6 +7972,7 @@ impl VizApp {
             fullscreen_top_hover: false,
             fullscreen_bottom_hover: false,
             last_tab_bar_area: Rect::default(),
+            last_iteration_nav_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),

@@ -2321,7 +2321,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 /// `msg_status` colors the Messages tab icon to reflect TUI read state.
 fn draw_tab_bar(
     frame: &mut Frame,
-    app: &VizApp,
+    app: &mut VizApp,
     active: RightPanelTab,
     area: Rect,
     msg_status: Option<workgraph::messages::CoordinatorMessageStatus>,
@@ -2352,17 +2352,151 @@ fn draw_tab_bar(
         .collect();
     let active_idx = active.index();
 
-    let tabs = Tabs::new(tab_labels)
-        .select(active_idx)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider("│");
+    // Check if we should show iteration navigator
+    let should_show_iterator = is_task_relative_tab(active)
+        && app.selected_task_id().is_some()
+        && !app.iteration_archives.is_empty();
 
-    frame.render_widget(tabs, area);
+    if should_show_iterator {
+        // Calculate space for iteration navigator
+        let navigator_text = format_iteration_navigator(app);
+        let navigator_width = navigator_text.chars().count() as u16;
+
+        // Split area: tabs on left, navigator on right
+        let tab_width = area.width.saturating_sub(navigator_width + 1); // +1 for padding
+        let tab_area = Rect {
+            width: tab_width,
+            ..area
+        };
+        let nav_area = Rect {
+            x: area.x + tab_width,
+            y: area.y,
+            width: navigator_width + 1,
+            height: area.height,
+        };
+
+        // Store click regions for mouse handling
+        app.last_iteration_nav_area = nav_area;
+
+        // Render tabs in reduced area
+        let tabs = Tabs::new(tab_labels)
+            .select(active_idx)
+            .style(Style::default().fg(Color::DarkGray))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .divider("│");
+        frame.render_widget(tabs, tab_area);
+
+        // Render iteration navigator
+        render_iteration_navigator(frame, app, nav_area);
+    } else {
+        // No navigator needed, use full area for tabs
+        app.last_iteration_nav_area = Rect::default(); // Clear click region
+
+        let tabs = Tabs::new(tab_labels)
+            .select(active_idx)
+            .style(Style::default().fg(Color::DarkGray))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .divider("│");
+        frame.render_widget(tabs, area);
+    }
+}
+
+/// Check if a tab is task-relative (should show iteration navigator).
+fn is_task_relative_tab(tab: RightPanelTab) -> bool {
+    matches!(
+        tab,
+        RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
+    )
+}
+
+/// Format the iteration navigator text based on current state.
+fn format_iteration_navigator(app: &VizApp) -> String {
+    let total = app.iteration_archives.len() + 1;
+    let current_display = match app.viewing_iteration {
+        None => total,        // "5/5" when viewing current
+        Some(idx) => idx + 1, // "2/5" when viewing archive
+    };
+
+    // Responsive layout based on available width
+    // Standard: "◀ iter 2/5 ▶", Compact: "◀ 2/5 ▶", Minimal: "◀▶"
+    format!("◀ iter {}/{} ▶", current_display, total)
+}
+
+/// Render the iteration navigator widget in the given area.
+fn render_iteration_navigator(frame: &mut Frame, app: &VizApp, area: Rect) {
+    let total = app.iteration_archives.len() + 1;
+    let current_display = match app.viewing_iteration {
+        None => total,
+        Some(idx) => idx + 1,
+    };
+
+    // Determine navigation capabilities
+    let can_go_prev = match app.viewing_iteration {
+        None => !app.iteration_archives.is_empty(),
+        Some(idx) => idx > 0,
+    };
+    let can_go_next = match app.viewing_iteration {
+        Some(idx) => idx + 1 < app.iteration_archives.len(),
+        None => false,
+    };
+
+    // Create styled spans for the navigator
+    let left_arrow_style = if can_go_prev {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let right_arrow_style = if can_go_next {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let counter_style = Style::default().fg(Color::Cyan);
+
+    let navigator_line = Line::from(vec![
+        Span::styled("◀", left_arrow_style),
+        Span::raw(" iter "),
+        Span::styled(format!("{}/{}", current_display, total), counter_style),
+        Span::raw(" "),
+        Span::styled("▶", right_arrow_style),
+    ]);
+
+    let paragraph = Paragraph::new(navigator_line).alignment(Alignment::Right);
+    frame.render_widget(paragraph, area);
+}
+
+/// Create header text for Log tab with iteration context.
+fn create_log_tab_header(app: &VizApp) -> String {
+    let base_title = "Task Log";
+    match app.viewing_iteration {
+        None => base_title.to_string(),
+        Some(idx) => {
+            let total = app.iteration_archives.len() + 1;
+            format!("{} [viewing iter {}/{}]", base_title, idx + 1, total)
+        }
+    }
+}
+
+/// Create header text for Messages tab with iteration context.
+fn create_messages_tab_header(app: &VizApp) -> String {
+    let base_title = "Messages";
+    match app.viewing_iteration {
+        None => base_title.to_string(),
+        Some(idx) => {
+            let total = app.iteration_archives.len() + 1;
+            format!("{} [viewing iter {}/{}]", base_title, idx + 1, total)
+        }
+    }
 }
 
 /// Draw the Detail tab content (evolved from HUD).
@@ -4007,10 +4141,13 @@ fn render_editor_word_wrap(
 fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let width = area.width as usize;
 
+    // Create header with iteration context
+    let header_title = create_log_tab_header(app);
+
     if app.log_pane.rendered_lines.is_empty() {
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Activity Log",
+                header_title,
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -4237,6 +4374,18 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     let end = (scroll + viewport_h).min(total_lines);
     let mut visible: Vec<Line> = composed_lines[scroll..end].to_vec();
+
+    // Prepend header with iteration context
+    let header_line = Line::from(vec![
+        Span::styled(
+            create_log_tab_header(app),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    visible.insert(0, header_line);
+    visible.insert(1, Line::from(""));
 
     // Spinner at bottom when agent is actively working — same as Output tab.
     let is_working = app.log_pane.agent_id.as_ref().is_some_and(|aid| {
@@ -5384,7 +5533,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if app.messages_panel.task_id.is_none() {
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Messages",
+                create_messages_tab_header(app),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -5403,7 +5552,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if app.messages_panel.entries.is_empty() {
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Messages",
+                create_messages_tab_header(app),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
