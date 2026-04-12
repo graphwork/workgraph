@@ -457,6 +457,10 @@ mod tests {
             iteration_config: None,
             iteration_round: 0,
             iteration_parent: None,
+            cron_schedule: None,
+            cron_enabled: false,
+            last_cron_fire: None,
+            next_cron_fire: None,
         }
     }
 

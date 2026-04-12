@@ -383,6 +383,10 @@ mod tests {
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            cron_schedule: None,
+            cron_enabled: false,
+            last_cron_fire: None,
+            next_cron_fire: None,
         }
     }
 
