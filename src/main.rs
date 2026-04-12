@@ -336,6 +336,7 @@ fn main() -> Result<()> {
             independent,
             propagation,
             retry_strategy,
+            priority,
         } => {
             // Determine effective paused/unplaced state:
             // - --paused always pauses (user-managed draft, skips placement)
@@ -410,6 +411,7 @@ fn main() -> Result<()> {
                     allow_phantom,
                     independent,
                     parse_iteration_config(propagation.as_deref(), retry_strategy.as_deref()),
+                    priority.as_deref(),
                 )
             }
         }
@@ -465,6 +467,9 @@ fn main() -> Result<()> {
             verify.as_deref(),
             allow_phantom,
         ),
+        Commands::Reprioritize { id, priority } => {
+            commands::reprioritize::run(&workgraph_dir, &id, &priority)
+        }
         Commands::Done {
             id,
             converged,
@@ -2461,6 +2466,9 @@ fn main() -> Result<()> {
         },
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
+        },
+        cli::Commands::Reprioritize { id, priority } => {
+            commands::reprioritize::run(&workgraph_dir, &id, &priority)
         },
     }
 }

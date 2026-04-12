@@ -317,14 +317,12 @@ pub(crate) fn spawn_agent_inner(
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
 
-    // Inject wg usage guide for non-Claude models.
-    // Claude agents get this context from CLAUDE.md; native executor models need it
-    // explicitly injected into the prompt with model-appropriate knowledge tier.
-    if settings.executor_type != "claude" {
-        let model_str = settings.model.as_deref().unwrap_or("");
-        let model_tier = super::context::classify_model_tier(model_str);
-        scope_ctx.wg_guide_content = super::context::build_tiered_guide(dir, model_tier, model_str);
-    }
+    // Universal wg context injection for all executor types.
+    // Ensures all executors receive consistent workgraph context in their prompts,
+    // with model-appropriate knowledge tier based on context window and capabilities.
+    let model_str = settings.model.as_deref().unwrap_or("");
+    let model_tier = super::context::classify_model_tier(model_str);
+    scope_ctx.wg_guide_content = super::context::build_tiered_guide(dir, model_tier, model_str);
 
     // Scope-based prompt assembly for built-in executors.
     // When no custom prompt_template is defined (built-in defaults),
