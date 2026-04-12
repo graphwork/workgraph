@@ -264,7 +264,7 @@ pub fn run_ask(
         }
 
         // Load last seen update_id
-        let mut offset = load_last_update_id().unwrap_or(0);
+        let offset = load_last_update_id().unwrap_or(0);
 
         let start_time = std::time::Instant::now();
         let timeout_duration = std::time::Duration::from_secs(timeout_seconds);
