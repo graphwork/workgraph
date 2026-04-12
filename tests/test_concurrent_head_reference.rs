@@ -115,7 +115,7 @@ fn test_concurrent_worktree_creation_head_reference() {
     // Spawn multiple threads that create worktrees simultaneously
     for i in 0..num_agents {
         let project_clone = Arc::clone(&project_arc);
-        let wg_dir_clone = Arc::clone(&wg_dir_arc);
+        let _wg_dir_clone = Arc::clone(&wg_dir_arc);
 
         let handle = thread::spawn(move || {
             let agent_id = format!("agent-{}", i);
@@ -262,7 +262,7 @@ fn test_worktree_creation_with_git_operations_in_progress() {
     // Meanwhile, try to create worktrees
     for i in 0..3 {
         let project_clone = Arc::clone(&project_arc);
-        let wg_dir_clone = Arc::clone(&wg_dir_arc);
+        let _wg_dir_clone = Arc::clone(&wg_dir_arc);
 
         let handle = thread::spawn(move || {
             thread::sleep(std::time::Duration::from_millis(i * 50)); // Stagger starts
