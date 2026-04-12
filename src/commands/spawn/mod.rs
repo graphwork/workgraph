@@ -171,45 +171,117 @@ mod tests {
         }
     }
 
+    fn init_git_repo(path: &Path) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(["init"])
+            .arg(path)
+            .output()
+            .unwrap()
+    }
+
+    fn git_config(path: &Path, key: &str, value: &str) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(["config", key, value])
+            .current_dir(path)
+            .output()
+            .unwrap()
+    }
+
+    fn git_add_and_commit(path: &Path, filename: &str, message: &str) -> Result<(), String> {
+        let add_output = std::process::Command::new("git")
+            .args(["add", filename])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        if !add_output.status.success() {
+            return Err(format!("git add failed: {}", String::from_utf8_lossy(&add_output.stderr)));
+        }
+
+        let commit_output = std::process::Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        if !commit_output.status.success() {
+            return Err(format!("git commit failed: {}", String::from_utf8_lossy(&commit_output.stderr)));
+        }
+        Ok(())
+    }
+
     fn setup_graph(dir: &Path, tasks: Vec<Task>) {
         let path = graph_path(dir);
         fs::create_dir_all(dir).unwrap();
 
         // Initialize git repository for worktree tests
-        let project_root = dir.parent().unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .arg(project_root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(project_root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(project_root)
-            .output()
-            .unwrap();
-        // Set safe directory to avoid dubious ownership errors in temp directories
-        std::process::Command::new("git")
+        // Create a proper project structure similar to worktree tests
+        let temp_parent = dir.parent().unwrap();
+        // Use a unique project directory name to avoid conflicts
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let project_root = temp_parent.join(format!("project-{}", timestamp));
+        // Clean up any existing project directory to start fresh
+        let _ = fs::remove_dir_all(&project_root);
+        fs::create_dir_all(&project_root).unwrap();
+
+        // Initialize git repo in the project directory
+        init_git_repo(&project_root);
+        git_config(&project_root, "user.email", "test@test.com");
+        git_config(&project_root, "user.name", "Test");
+
+        // Clean up any leftover worktrees from previous test runs
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(&project_root)
+            .output();
+
+        // Set safe directory for this specific project directory only
+        let _safe_dir_output = std::process::Command::new("git")
             .args(["config", "--global", "--add", "safe.directory", &project_root.to_string_lossy()])
             .output()
             .unwrap();
+        // Also add the final location where the test will run
+        let _safe_dir_output2 = std::process::Command::new("git")
+            .args(["config", "--global", "--add", "safe.directory", &dir.to_string_lossy()])
+            .output()
+            .unwrap();
 
-        // Create initial commit
-        fs::write(project_root.join("README.md"), "Test project").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(project_root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(project_root)
-            .output()
-            .unwrap();
+        // Create a simple file and commit it
+        let file_path = project_root.join("file.txt");
+        fs::write(&file_path, "hello").unwrap();
+        git_add_and_commit(&project_root, "file.txt", "init").unwrap();
+
+        // Create the test directory structure correctly
+        // The test expects to call run(temp_dir.path(), ...), so temp_dir should BE the project root
+        let _ = std::fs::remove_dir_all(dir);
+
+        // Copy the project to the test directory location
+        fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+            fs::create_dir_all(dest)?;
+            for entry in fs::read_dir(src)? {
+                let entry = entry?;
+                let src_path = entry.path();
+                let dest_path = dest.join(entry.file_name());
+                if src_path.is_dir() {
+                    copy_dir_recursive(&src_path, &dest_path)?;
+                } else {
+                    fs::copy(&src_path, &dest_path)?;
+                }
+            }
+            Ok(())
+        }
+
+        copy_dir_recursive(&project_root, dir).unwrap();
+
+        // Now create the graph file in the copied .workgraph directory
+        let wg_dir = dir.join(".workgraph");
+        let graph_path = wg_dir.join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        for task in &tasks {
+            graph.add_node(Node::Task(task.clone()));
+        }
+        save_graph(&graph, &graph_path).unwrap();
 
         let mut graph = WorkGraph::new();
         for task in tasks {
