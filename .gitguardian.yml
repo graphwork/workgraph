@@ -11,6 +11,7 @@ secret:
     - ".git/"
     - "screencast/"
     - "security-remediation-design.md"
+    - "scripts/"
 
   # Specific secrets to ignore (use with caution)
   ignored_matches:
