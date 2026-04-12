@@ -171,6 +171,14 @@ mod tests {
         }
     }
 
+    fn get_unique_id() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
+    }
+
     fn init_git_repo(path: &Path) -> std::process::Output {
         std::process::Command::new("git")
             .args(["init"])
@@ -393,11 +401,14 @@ mod tests {
     #[test]
     fn test_spawn_creates_output_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let mut task = make_task("t1", "Test Task");
+        // Use a unique task ID to avoid branch collisions with parallel tests
+        let unique_id = get_unique_id();
+        let task_id = format!("t{}", unique_id);
+        let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
-        run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
+        run(temp_dir.path(), &task_id, "shell", None, None, false).unwrap();
 
         // Poll for the spawned process to create output file (up to 5s)
         let agent_dir = temp_dir.path().join("agents").join("agent-1");

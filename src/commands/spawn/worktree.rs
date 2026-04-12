@@ -20,9 +20,10 @@ pub struct WorktreeInfo {
 
 /// Create a worktree for an agent.
 ///
-/// 1. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
-/// 2. Symlink `.workgraph` into the worktree
-/// 3. Run `worktree-setup.sh` if it exists (best-effort)
+/// 1. Clean up any existing worktree/branch with the same name (for test isolation)
+/// 2. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
+/// 3. Symlink `.workgraph` into the worktree
+/// 4. Run `worktree-setup.sh` if it exists (best-effort)
 pub fn create_worktree(
     project_root: &Path,
     workgraph_dir: &Path,
@@ -31,6 +32,10 @@ pub fn create_worktree(
 ) -> Result<WorktreeInfo> {
     let branch = format!("wg/{}/{}", agent_id, task_id);
     let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
+
+    // Clean up any existing worktree/branch first (especially important for tests)
+    // This ensures we don't have leftover state from previous runs
+    let _ = remove_worktree(project_root, &worktree_dir, &branch);
 
     // Create worktree from HEAD
     let output = Command::new("git")
