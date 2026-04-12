@@ -270,6 +270,7 @@ wg service resume           # Resume dispatching
 | `wg edit <id> --no-converge` | Force all cycle iterations |
 | `wg edit <id> --no-restart-on-failure` | Disable cycle restart on failure |
 | `wg edit <id> --max-failure-restarts 2` | Cap failure-triggered restarts |
+| `wg edit <id> --allow-cycle` | Allow cycle creation without CycleConfig (overrides cycle detection guard) |
 | `wg add-dep <task> <dep>` | Add a dependency edge between two existing tasks |
 | `wg rm-dep <task> <dep>` | Remove a dependency edge between two tasks |
 
@@ -297,6 +298,7 @@ wg service resume           # Resume dispatching
 | `wg fail <id> --reason "why"` | Mark task failed |
 | `wg retry <id>` | Retry failed task |
 | `wg abandon <id> --reason "why"` | Abandon permanently |
+| `wg requeue <id> --reason "why"` | Requeue in-progress task for failed-dependency triage (resets to open) |
 | `wg reclaim <id> --from old --to new` | Reassign from dead agent |
 
 ### Querying & viewing
@@ -410,6 +412,34 @@ wg service resume           # Resume dispatching
 | `wg msg list <task>` | List all messages for a task |
 | `wg msg read <task> --agent <id>` | Read unread messages (marks as read) |
 | `wg msg poll <task> --agent <id>` | Poll for new messages (exit code 0 = new, 1 = none) |
+
+### User boards
+
+| Command | Purpose |
+|---------|---------|
+| `wg user init` | Create a user board for the current user |
+| `wg user init <name>` | Create a user board for a specific user |
+| `wg user list` | List all user boards (active and archived) |
+| `wg user archive` | Archive the active board and create a successor |
+
+### Provider profiles
+
+| Command | Purpose |
+|---------|---------|
+| `wg profile set <name>` | Set the active provider profile |
+| `wg profile show` | Show current profile and resolved model mappings |
+| `wg profile list` | List available profiles |
+| `wg profile refresh` | Refresh model data from OpenRouter and recompute rankings |
+
+### Cost tracking
+
+| Command | Purpose |
+|---------|---------|
+| `wg spend` | Show token usage and estimated cost summaries |
+| `wg spend --today` | Show only today's spend |
+| `wg openrouter status` | Show OpenRouter API key status and usage |
+| `wg openrouter session` | Show session cost summary |
+| `wg openrouter set-limit` | Set cost cap limits |
 
 ### Chat (coordinator interaction)
 
