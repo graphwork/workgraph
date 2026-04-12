@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use workgraph::config::ResourceManagementConfig;
+use workgraph::metrics::{CleanupTimer, ResourceRecoveryStats, record_recovery_branch};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -61,9 +62,46 @@ where
     Err(last_error.unwrap_or_else(|| anyhow!("Operation {} failed with no error details", operation_name)))
 }
 
+/// Calculate the total size of a directory in bytes for metrics tracking.
+/// Returns 0 if the directory doesn't exist or can't be read.
+fn calculate_directory_size(dir: &Path) -> Result<u64> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    let mut total_size = 0;
+
+    fn visit_dir(dir: &Path, total_size: &mut u64) -> std::io::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                visit_dir(&path, total_size)?;
+            } else {
+                if let Ok(metadata) = entry.metadata() {
+                    *total_size += metadata.len();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    visit_dir(dir, &mut total_size).unwrap_or_else(|_| {
+        eprintln!("[metrics] Warning: Failed to calculate directory size for {:?}", dir);
+    });
+
+    Ok(total_size)
+}
+
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    let timer = CleanupTimer::start(format!("remove_worktree: {}", branch));
+    let mut resources = ResourceRecoveryStats::default();
     let mut cleanup_errors = Vec::new();
+
+    // Calculate disk space before cleanup for metrics
+    let initial_size = calculate_directory_size(worktree_path).unwrap_or(0);
 
     // Remove .workgraph symlink first (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
@@ -75,12 +113,15 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
                     cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?} even after permission fix: {}", symlink_path, fallback_err));
                 } else {
                     eprintln!("[worktree] Successfully removed .workgraph symlink after permission fix");
+                    resources.symlinks_cleaned += 1;
                 }
             }
             Err(e) => {
                 cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?}: {}", symlink_path, e));
             }
-            Ok(()) => {}
+            Ok(()) => {
+                resources.symlinks_cleaned += 1;
+            }
         }
     }
 
@@ -94,12 +135,15 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
                     cleanup_errors.push(format!("Failed to remove target directory {:?} even after permission fix: {}", target_dir, fallback_err));
                 } else {
                     eprintln!("[worktree] Successfully removed target directory after permission fix");
+                    resources.directories_removed += 1;
                 }
             }
             Err(e) => {
                 cleanup_errors.push(format!("Failed to remove target directory {:?}: {}", target_dir, e));
             }
-            Ok(()) => {}
+            Ok(()) => {
+                resources.directories_removed += 1;
+            }
         }
     }
 
@@ -114,6 +158,9 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+    } else {
+        resources.worktrees_removed += 1;
+        resources.disk_space_recovered_bytes += initial_size;
     }
 
     // Delete the branch
@@ -126,6 +173,8 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         cleanup_errors.push(format!("Git branch delete failed for '{}': {}", branch, stderr.trim()));
+    } else {
+        resources.branches_pruned += 1;
     }
 
     // Prune stale worktree entries
@@ -140,7 +189,10 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
         cleanup_errors.push(format!("Git worktree prune failed: {}", stderr.trim()));
     }
 
-    if !cleanup_errors.is_empty() {
+    let success = cleanup_errors.is_empty();
+    timer.complete(success, resources);
+
+    if !success {
         return Err(anyhow!("Worktree removal completed with errors:\n{}", cleanup_errors.join("\n")));
     }
 
@@ -354,12 +406,16 @@ pub fn cleanup_dead_agent_worktree_with_config(
     agent_id: &str,
     config: Option<&ResourceManagementConfig>,
 ) {
+    use workgraph::metrics::record_dead_agent_cleanup;
+
     eprintln!("[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})", agent_id, worktree_path, branch);
 
     // Recover commits before removing
     let commit_count = recover_commits(project_root, branch, agent_id);
     if commit_count > 0 {
         eprintln!("[worktree] Recovered {} commits from dead agent {}", commit_count, agent_id);
+        // If commit recovery creates a recovery branch, track it
+        record_recovery_branch();
     }
 
     // Remove the worktree with retry logic
@@ -377,6 +433,7 @@ pub fn cleanup_dead_agent_worktree_with_config(
     match cleanup_result {
         Ok(()) => {
             eprintln!("[worktree] Successfully cleaned up worktree for dead agent {}", agent_id);
+            record_dead_agent_cleanup();
         }
         Err(e) => {
             eprintln!(
@@ -394,6 +451,7 @@ pub fn cleanup_dead_agent_worktree_with_config(
                     eprintln!("[worktree] Fallback also failed: {}", fallback_err);
                 } else {
                     eprintln!("[worktree] Fallback succeeded: directory removed");
+                    record_dead_agent_cleanup();
                 }
             }
         }
@@ -441,12 +499,16 @@ pub fn find_branch_for_worktree(project_root: &Path, worktree_path: &Path) -> Op
 /// Called once on service startup. Scans `.wg-worktrees/` for directories
 /// that don't correspond to alive agents.
 pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
+    use workgraph::metrics::{CleanupTimer, record_orphaned_cleanup};
+
+    let timer = CleanupTimer::start("cleanup_orphaned_worktrees");
     let project_root = dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
     let worktrees_dir = project_root.join(WORKTREES_DIR);
 
     if !worktrees_dir.exists() {
+        timer.complete(true, workgraph::metrics::ResourceRecoveryStats::default());
         return Ok(0);
     }
 
@@ -525,6 +587,7 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
             }
 
             cleaned += 1;
+            record_orphaned_cleanup();
         }
     }
 
@@ -535,6 +598,12 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
             .current_dir(project_root)
             .output();
     }
+
+    let resources = workgraph::metrics::ResourceRecoveryStats {
+        worktrees_removed: cleaned as u64,
+        ..Default::default()
+    };
+    timer.complete(true, resources);
 
     Ok(cleaned)
 }
