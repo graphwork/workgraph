@@ -80,7 +80,7 @@ fn init_wg() -> (TempDir, PathBuf) {
         .expect("Failed to init git repo");
 
     Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
+        .args(["config", "user.email", "test@example.com"])
         .current_dir(project_root)
         .output()
         .expect("Failed to set git email");
