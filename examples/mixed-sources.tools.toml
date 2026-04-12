@@ -1,0 +1,94 @@
+# Mixed Tool Sources - Complex project using multiple tool source types
+[meta]
+version = "1.0"
+description = "Multi-source tool configuration for complex projects"
+
+[sources]
+
+[sources.native]
+type = "builtin"
+tools = ["file", "bash", "wg", "web_search", "bg"]
+description = "Full native workgraph toolset"
+
+[sources.claude-skills]
+type = "mcp"
+server_url = "stdio:claude-skills-server"
+description = "Claude Code skills via MCP"
+
+[sources.project-tools]
+type = "directory"
+path = "./tools"
+recursive = true
+description = "Project-specific tool implementations"
+
+[sources.shared-bundle]
+type = "bundle"
+bundle = "ml-research"
+source = "git+https://github.com/company/ml-tools.git"
+description = "Shared ML research bundle from company repo"
+
+[sources.web-services]
+type = "mcp"
+server_url = "http://internal.company.com:8080/mcp"
+timeout = 60
+tools = ["database_query", "metrics_fetch", "notification_send"]
+description = "Internal company web services"
+
+[bundles]
+
+[bundles.researcher]
+tools = [
+  "file:read", "file:glob", "file:grep",
+  "web_search", "claude-skills:search", "claude-skills:analyze",
+  "project-tools:pdf_parse", "project-tools:data_clean",
+  "web-services:database_query", "web-services:metrics_fetch",
+  "wg:show", "wg:list", "wg:log", "wg:artifact"
+]
+description = "Research with access to internal and external data"
+
+[bundles.implementer]
+extends = "builtin:implementer"
+tools = [
+  "+project-tools:*",
+  "+claude-skills:code_review", "+claude-skills:test_gen",
+  "+shared-bundle:*"
+]
+exclude = ["bash:rm", "bash:sudo", "web-services:*"]
+description = "Implementation with project tools but no production access"
+
+[bundles.deployer]
+tools = [
+  "file:*", "bash",
+  "project-tools:build", "project-tools:test", "project-tools:package",
+  "web-services:*",
+  "bg:*",
+  "wg:*"
+]
+description = "Deployment with full system and service access"
+
+[bundles.ml-specialist]
+extends = "shared-bundle"
+tools = [
+  "+file:*",
+  "+project-tools:model_train", "+project-tools:model_eval",
+  "+web-services:metrics_fetch",
+  "+wg:*"
+]
+description = "Machine learning tasks with specialized tools"
+
+[task-scopes]
+"research-*" = { bundle = "researcher" }
+"implement-*" = { bundle = "implementer" }
+"deploy-*" = { bundle = "deployer" }
+"train-*" = { bundle = "ml-specialist" }
+"eval-*" = { bundle = "ml-specialist" }
+"debug-*" = {
+  tools = ["file:*", "bash", "bg:*", "web-services:metrics_fetch", "wg:*"],
+  exclude = ["web-services:database_query"]
+}
+
+[defaults]
+claude = { bundle = "researcher" }
+native = { bundle = "implementer" }
+shell = { tools = ["bash", "project-tools:build", "wg:*"] }
+amplifier = { bundle = "deployer" }

@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workgraph.dev/schemas/tool-manifest.schema.json",
+  "title": "Workgraph Tool Manifest",
+  "description": "Schema for workgraph tool manifest configuration",
+  "type": "object",
+  "required": ["meta"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+          "description": "Schema version (semver)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the tool configuration"
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "description": "Tool source definitions",
+      "patternProperties": {
+        "^[a-zA-Z][a-zA-Z0-9_-]*$": {
+          "$ref": "#/$defs/toolSource"
+        }
+      }
+    },
+    "bundles": {
+      "type": "object",
+      "description": "Tool bundle definitions",
+      "patternProperties": {
+        "^[a-zA-Z][a-zA-Z0-9_-]*$": {
+          "$ref": "#/$defs/toolBundle"
+        }
+      }
+    },
+    "task-scopes": {
+      "type": "object",
+      "description": "Per-task tool scoping rules",
+      "patternProperties": {
+        ".*": {
+          "$ref": "#/$defs/taskScope"
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default tool sets per executor type",
+      "properties": {
+        "claude": { "$ref": "#/$defs/toolSelection" },
+        "native": { "$ref": "#/$defs/toolSelection" },
+        "shell": { "$ref": "#/$defs/toolSelection" },
+        "amplifier": { "$ref": "#/$defs/toolSelection" }
+      }
+    }
+  },
+  "$defs": {
+    "toolSource": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["builtin", "mcp", "directory", "bundle"],
+          "description": "Type of tool source"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the source"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "builtin" } } },
+          "then": {
+            "properties": {
+              "tools": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "List of builtin tool categories"
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "mcp" } } },
+          "then": {
+            "properties": {
+              "server_url": {
+                "type": "string",
+                "description": "MCP server URL (stdio:command, http://..., unix:///...)"
+              },
+              "config_path": {
+                "type": "string",
+                "description": "Path to MCP server configuration file"
+              },
+              "tools": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional explicit tool list (discovers all if omitted)"
+              },
+              "timeout": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Connection timeout in seconds"
+              }
+            },
+            "required": ["server_url"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "directory" } } },
+          "then": {
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Directory containing tool implementations"
+              },
+              "recursive": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether to search subdirectories"
+              }
+            },
+            "required": ["path"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "bundle" } } },
+          "then": {
+            "properties": {
+              "bundle": {
+                "type": "string",
+                "description": "Name of bundle to reference"
+              },
+              "source": {
+                "type": "string",
+                "description": "Source project for cross-project bundle sharing"
+              }
+            },
+            "required": ["bundle"]
+          }
+        }
+      ]
+    },
+    "toolBundle": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the bundle"
+        },
+        "extends": {
+          "type": "string",
+          "description": "Parent bundle to inherit from"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of tools in source:tool format or '*' for all"
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tools to exclude from the bundle"
+        },
+        "context_scope": {
+          "type": "string",
+          "enum": ["clean", "task", "graph", "full"],
+          "description": "Context scope for agents using this bundle"
+        },
+        "system_prompt_suffix": {
+          "type": "string",
+          "description": "Additional system prompt content for this bundle"
+        }
+      }
+    },
+    "taskScope": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string",
+          "description": "Bundle to use for matching tasks"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Specific tools for matching tasks"
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tools to exclude for matching tasks"
+        }
+      }
+    },
+    "toolSelection": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string",
+          "description": "Default bundle for this executor"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Specific default tools"
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tools to exclude by default"
+        }
+      }
+    }
+  }
+}

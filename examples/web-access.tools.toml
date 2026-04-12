@@ -1,0 +1,65 @@
+# Web Access Tools - Manifest for projects requiring web scraping and API access
+[meta]
+version = "1.0"
+description = "Web-enabled tools for data gathering and API integration"
+
+[sources]
+
+[sources.native]
+type = "builtin"
+tools = ["file", "bash", "wg", "web_search"]
+description = "Core workgraph tools with web search"
+
+[sources.web-tools]
+type = "mcp"
+server_url = "http://localhost:3000/mcp"
+tools = ["web_fetch", "web_scrape", "pdf_extract", "api_call"]
+description = "Extended web capabilities via MCP server"
+
+[sources.claude-skills]
+type = "mcp"
+server_url = "stdio:claude-skills-server"
+config_path = "~/.claude/mcp.json"
+description = "Claude Code skills for web analysis"
+
+[bundles]
+
+[bundles.web-researcher]
+tools = [
+  "file:read", "file:write", "file:glob", "file:grep",
+  "web_search", "web-tools:web_fetch", "web-tools:web_scrape",
+  "claude-skills:analyze", "claude-skills:summarize",
+  "bash:curl", "bash:jq",
+  "wg:show", "wg:log", "wg:artifact"
+]
+description = "Comprehensive web research capabilities"
+
+[bundles.api-tester]
+tools = [
+  "file:read", "file:write",
+  "web-tools:api_call", "web-tools:web_fetch",
+  "bash:curl", "bash:jq", "bash:grep",
+  "wg:*"
+]
+description = "API testing and validation tools"
+
+[bundles.content-scraper]
+tools = [
+  "file:write", "file:edit",
+  "web-tools:web_scrape", "web-tools:pdf_extract",
+  "claude-skills:clean_text", "claude-skills:extract_data",
+  "wg:*"
+]
+description = "Content extraction and processing"
+
+[task-scopes]
+"scrape-*" = { bundle = "content-scraper" }
+"api-*" = { bundle = "api-tester" }
+"research-*" = { bundle = "web-researcher" }
+"fetch-*" = { bundle = "web-researcher" }
+
+[defaults]
+claude = { bundle = "web-researcher" }
+native = { bundle = "api-tester" }
+shell = { tools = ["bash:curl", "bash:jq", "wg:*"] }
+amplifier = { bundle = "web-researcher" }

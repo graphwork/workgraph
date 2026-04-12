@@ -1,0 +1,39 @@
+# Basic File Operations - Minimal tool manifest for file-focused projects
+[meta]
+version = "1.0"
+description = "Basic file operations for document processing and analysis"
+
+[sources]
+
+[sources.native]
+type = "builtin"
+tools = ["file", "wg"]
+description = "Core workgraph file and workflow tools"
+
+[bundles]
+
+[bundles.reader]
+extends = "builtin:research"
+tools = [
+  "file:read", "file:glob", "file:grep",
+  "wg:show", "wg:list", "wg:log"
+]
+description = "Read-only file operations for analysis tasks"
+
+[bundles.editor]
+tools = [
+  "file:read", "file:write", "file:edit", "file:glob", "file:grep",
+  "wg:*"
+]
+description = "Full file editing capabilities"
+
+[task-scopes]
+"analyze-*" = { bundle = "reader" }
+"process-*" = { bundle = "editor" }
+"research-*" = { bundle = "reader" }
+
+[defaults]
+claude = { bundle = "reader" }
+native = { bundle = "editor" }
+shell = { tools = ["wg:show", "wg:list"] }
+amplifier = { bundle = "editor" }

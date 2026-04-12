@@ -1,0 +1,76 @@
+# MCP Server Integration - Example using multiple MCP servers with workgraph
+[meta]
+version = "1.0"
+description = "Full MCP integration with Gmail, Calendar, and custom servers"
+
+[sources]
+
+[sources.native]
+type = "builtin"
+tools = ["file", "bash", "wg"]
+description = "Essential workgraph tools"
+
+[sources.gmail]
+type = "mcp"
+server_url = "stdio:gmail-mcp-server"
+config_path = "~/.config/gmail-mcp.json"
+description = "Gmail integration via MCP"
+
+[sources.calendar]
+type = "mcp"
+server_url = "stdio:calendar-mcp-server"
+config_path = "~/.config/calendar-mcp.json"
+description = "Google Calendar integration via MCP"
+
+[sources.claude-skills]
+type = "mcp"
+server_url = "stdio:claude-skills-server"
+description = "Claude Code skills and meta-tools"
+
+[sources.custom-tools]
+type = "mcp"
+server_url = "unix:///tmp/custom-mcp.sock"
+timeout = 30
+description = "Project-specific custom tools"
+
+[bundles]
+
+[bundles.communication]
+tools = [
+  "file:read", "file:write",
+  "gmail:send", "gmail:read", "gmail:search",
+  "calendar:create_event", "calendar:find_free_time",
+  "wg:show", "wg:log", "wg:msg"
+]
+description = "Email and calendar management"
+
+[bundles.development]
+extends = "builtin:implementer"
+tools = [
+  "+claude-skills:*",
+  "+custom-tools:build", "+custom-tools:deploy", "+custom-tools:monitor"
+]
+exclude = ["bash:rm", "bash:sudo"]
+description = "Development with safety restrictions"
+
+[bundles.automation]
+tools = [
+  "file:*", "bash",
+  "gmail:*", "calendar:*",
+  "claude-skills:schedule", "claude-skills:monitor",
+  "custom-tools:*",
+  "wg:*"
+]
+description = "Full automation capabilities"
+
+[task-scopes]
+"email-*" = { bundle = "communication" }
+"schedule-*" = { bundle = "communication" }
+"deploy-*" = { bundle = "development" }
+"monitor-*" = { bundle = "automation" }
+
+[defaults]
+claude = { bundle = "development" }
+native = { bundle = "automation" }
+shell = { tools = ["bash", "wg:*"] }
+amplifier = { bundle = "automation" }
