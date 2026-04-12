@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sync-spec)
+Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sync-spec)
 
 ---
 
@@ -23,6 +23,8 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/models.md` | Model, endpoint, and API key management guide | Users, agents |
 | `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
 | `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
+| `docs/AGENT-LIFECYCLE.md` | Hardened agent lifecycle: spawn, work, complete, die — full state machine | Operators, contributors |
+| `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management | Operators, contributors |
 | `docs/agent-git-hygiene.md` | Git hygiene rules for multi-agent shared repos | Agents, operators |
 | `docs/guides/openrouter-setup.md` | OpenRouter provider setup guide | Users, operators |
 | `docs/guides/server-setup.md` | Server setup guide | Users, operators |
@@ -45,6 +47,12 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/manual/04-coordination.typ` | Coordination & execution: daemon, tick, dispatch, wrapper, IPC, watch, custom executors | Deep readers |
 | `docs/manual/05-evolution.typ` | Evolution & improvement: evaluation, performance, strategies, lineage, autopoiesis | Deep readers |
 | `docs/manual/workgraph-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
+| `docs/manual/workgraph-manual.md` | Full assembled manual (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/01-overview.md` | System overview (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/02-task-graph.md` | Task graph chapter (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/03-agency.md` | Agency chapter (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/04-coordination.md` | Coordination chapter (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/05-evolution.md` | Evolution chapter (Markdown, derived from Typst) | Deep readers |
 | `docs/manual/README.md` | Manual build instructions | Contributors |
 | `docs/manual/PLAN.md` | Manual chapter planning notes | Contributors |
 | `docs/manual/UPDATE-SPEC.md` | Spec for manual updates | Contributors |
@@ -135,6 +143,17 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/design/terminal-wrapping-strategy.md` | Terminal wrapping strategy design | Design |
 | `docs/design/tui-inspector-tri-state.md` | TUI inspector tri-state design | Implemented |
 | `docs/design/tui-multiplexing-concurrent-access.md` | TUI multiplexing concurrent access | Design |
+| `docs/design/bare-coordinator.md` | Bare coordinator (minimal coordinator) design | Design |
+| `docs/design/coordinator-id-assignment.md` | Coordinator ID assignment design | Implemented |
+| `docs/design/design-autopoietic-task-agency.md` | Autopoietic task agency design | Design |
+| `docs/design/native-graph-iteration.md` | Native graph iteration design | Design |
+| `docs/design/phantom-edge-prevention.md` | Phantom edge prevention design | Implemented |
+| `docs/design/safe-coordinator-cycle.md` | Safe coordinator cycle design | Implemented |
+| `docs/design-shell-executor.md` | Shell executor design | Implemented |
+| `docs/designs/chat-message-ordering-and-delivery.md` | Chat message ordering and delivery | Implemented |
+| `docs/designs/failed-dep-triage.md` | Failed dependency triage design | Implemented |
+| `docs/designs/quality-pass.md` | Quality pass design | Design |
+| `docs/designs/tui-iteration-history-and-viz-selfloop.md` | TUI iteration history and viz self-loop | Implemented |
 
 ## Research Documents
 
@@ -208,9 +227,28 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/research/log-view-scrollbar-research.md` | Log view scrollbar research | Research |
 | `docs/research/multi-user-tui-feasibility.md` | Multi-user TUI feasibility study | Research |
 | `docs/research/native-executor-dual-api-audit.md` | Native executor dual API audit | Research |
-| `docs/research/primitive-pool-sync.md` | Primitive pool sync research | Research |
-| `docs/research/ranked-model-list.md` | Ranked model list research | Research |
+| ~~`docs/research/primitive-pool-sync.md`~~ | ~~Primitive pool sync research~~ | ~~Removed (file no longer exists)~~ |
+| ~~`docs/research/ranked-model-list.md`~~ | ~~Ranked model list research~~ | ~~Removed (file no longer exists)~~ |
 | `docs/research/unified-conversation-layer-design.md` | Unified conversation layer design | Research |
+| `docs/research/primitive-pool-location.md` | Primitive pool location research | Research |
+| `docs/research/agency-primitive-sync-model.md` | Agency primitive sync model research | Research |
+| `docs/research/tui-inspector-panel-resizing.md` | TUI inspector panel resizing research | Research |
+| `docs/research/spiral-cycle-unrolling-gap-analysis.md` | Spiral cycle unrolling gap analysis | Research |
+| `docs/research/iterate-vs-retry-design.md` | Iterate vs retry design research | Research |
+| `docs/research/openrouter-leaderboard-api.md` | OpenRouter leaderboard API research | Research |
+| `docs/research/profile-research.md` | Provider profile research | Research |
+| `docs/research/wg-config-profiles.md` | Config profiles research | Research |
+| `docs/research/evolve-yaml-cache-paths.md` | Evolve YAML cache paths research | Research |
+| `docs/research/config-structure-and-setup.md` | Config structure and setup research | Research |
+| `docs/research/stuck-detection-research.md` | Stuck detection research | Research |
+| `docs/research/thinking-token-patterns.md` | Thinking token patterns research | Research |
+| `docs/research/tb-autopoietic-integration.md` | TB autopoietic integration research | Research |
+| `docs/research/litellm-executor-fallback-analysis.md` | LiteLLM executor fallback analysis | Research |
+| `docs/research/supervisor-agent-loop.md` | Supervisor agent loop research | Research |
+| `docs/research/phantom-edge-analysis.md` | Phantom edge analysis research | Research |
+| `docs/research/shell-executor-and-retry-patterns.md` | Shell executor and retry patterns research | Research |
+| `docs/research/native-executor-compact-messages-pattern.md` | Native executor compact messages pattern | Research |
+| `docs/research/existing-design-documents-journal-compaction.md` | Existing design docs on journal compaction | Research |
 
 ## Report Documents (additional)
 
@@ -219,11 +257,17 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/reports/openrouter-model-config-guide.md` | OpenRouter model configuration guide | Current |
 | `docs/reports/per-task-model-override.md` | Per-task model override report | Current |
 | `docs/reports/or-executor-research.md` | OpenRouter executor research | Current |
-| `docs/reports/bug-report-dynamic-model-list-browsing.md` | Bug report: dynamic model list browsing | Current |
+| ~~`docs/reports/bug-report-dynamic-model-list-browsing.md`~~ | ~~Bug report: dynamic model list browsing~~ | ~~Removed (file no longer exists)~~ |
 | `docs/reports/native-executor-streaming-investigation.md` | Native executor streaming investigation | Current |
 | `docs/reports/vizview-notification-investigation.md` | VizView notification investigation | Current |
 | `docs/reports/tui-chat-message-interleaving-investigation.md` | TUI chat message interleaving investigation | Current |
 | `docs/reports/cycle-deadlock-investigation.md` | Cycle deadlock investigation | Current |
+| `docs/reports/bug-report-assign-task-not-blocking.md` | Bug report: assign task not blocking | Current |
+| `docs/reports/bug-report-user-board-leak.md` | Bug report: user board leak | Current |
+| `docs/reports/openrouter-new-repo-setup-guide.md` | OpenRouter new repo setup guide | Current |
+| `docs/reports/research-coordinator-chat-ordering.md` | Coordinator chat ordering research | Current |
+| `docs/reports/smoke-test-cycle-lifecycle.md` | Cycle lifecycle smoke test report | Current |
+| `docs/reports/triage-task-naming-investigation.md` | Triage task naming investigation | Current |
 
 ## Plan Documents
 
@@ -231,10 +275,15 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 |------|---------|
 | `docs/plans/server-side-multi-user-workplan.md` | Server-side multi-user work plan |
 | `docs/plans/tui-liveness-monitoring-workplan.md` | TUI liveness monitoring work plan |
-| `docs/plans/federation-and-distributed-sync.md` | Federation and distributed sync plan |
+| ~~`docs/plans/federation-and-distributed-sync.md`~~ | ~~Federation and distributed sync plan~~ | ~~Removed (file no longer exists)~~ |
 | `docs/plans/integrated-multi-user-roadmap.md` | Integrated multi-user roadmap |
 | `docs/plans/fs-watcher-validation.md` | FS watcher validation plan |
 | `docs/plans/coordinator-chat-history-design.md` | Coordinator chat history design plan |
+| `docs/plans/assignment-time-placement-guard.md` | Assignment-time placement guard plan |
+| `docs/plans/model-registry-and-update-trace.md` | Model registry and update trace plan |
+| `docs/plans/provider-profiles.md` | Provider profiles plan |
+| `docs/plans/spiral-unrolling-design.md` | Spiral unrolling design plan |
+| `docs/plans/user-board-design.md` | User board design plan |
 
 ## Other Documentation
 
@@ -254,8 +303,21 @@ Last updated: 2026-03-28 (verified by doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sy
 | `docs/design-unified-message-pane.md` | Unified message pane design |
 | `docs/design-verify-first-eval-pipeline.md` | Verify-first evaluation pipeline design |
 | `docs/survey-context-management.md` | Context management survey |
+| `docs/audit/agent-work-integrity.md` | Agent work integrity audit |
+| `docs/doc-sync-audit-2026-04-12.md` | Documentation audit checklist (2026-04-12) |
+| `docs/prompts/selfhost.md` | Self-hosting prompt template |
 | `docs/smoke-test-coordinator-modals.md` | Coordinator modals smoke test spec |
 | `docs/test-specs/trace-replay-test-spec.md` | Test specifications |
+| `docs/terminal-bench/DESIGN-native-executor-improvements.md` | Native executor improvements design (terminal bench) |
+| `docs/terminal-bench/REFERENCE-terminal-bench-campaign.md` | Terminal bench campaign reference |
+| `docs/terminal-bench/REVIEW-doc-analysis.md` | Terminal bench doc analysis review |
+| `docs/terminal-bench/ROADMAP-terminal-bench.md` | Terminal bench roadmap |
+
+## Audit Documents
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `docs/audit/doc-sync-apr12-delta-checklist.md` | Documentation audit delta checklist (2026-04-12) | Current |
 
 ## Archive
 
