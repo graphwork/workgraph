@@ -3956,7 +3956,7 @@ fn test_deep_no_max_iterations_no_auto_iteration() {
     wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
 
     // Create manual back-edge: A --add-after B
-    wg_ok(&wg_dir, &["edit", "a", "--add-after", "b"]);
+    wg_ok(&wg_dir, &["edit", "a", "--add-after", "b", "--allow-cycle"]);
 
     // Verify back-edge exists
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
