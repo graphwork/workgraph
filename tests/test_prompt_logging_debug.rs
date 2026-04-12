@@ -69,7 +69,43 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 /// Initialize a workgraph in a temp directory and return the .workgraph path.
 fn init_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let project_root = tmp.path();
+    let wg_dir = project_root.join(".workgraph");
+
+    // Initialize git repository (required for worktree creation)
+    Command::new("git")
+        .args(["init"])
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to init git repo");
+
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to set git email");
+
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to set git name");
+
+    // Create an initial commit (required for worktree creation)
+    std::fs::write(project_root.join("README.md"), "# Test Project").expect("Failed to write README");
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to git add");
+
+    Command::new("git")
+        .args(["commit", "-m", "initial commit"])
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to git commit");
+
     wg_ok(&wg_dir, &["init"]);
     (tmp, wg_dir)
 }
