@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use workgraph::format_hours;
-use workgraph::graph::{Priority, Status, WorkGraph};
+use workgraph::graph::{Status, WorkGraph};
 
 /// Information about a task on the critical path
 #[derive(Debug, Clone, Serialize)]

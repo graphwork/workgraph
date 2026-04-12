@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::MatrixConfig;
-use workgraph::graph::{Priority, Status, Task};
+use workgraph::graph::{Status, Task};
 use workgraph::parser::load_graph;
 
 // Use the appropriate Matrix client based on the enabled feature

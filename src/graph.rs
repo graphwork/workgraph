@@ -3086,8 +3086,10 @@ mod tests {
         // This should deserialize successfully with default priority
         #[derive(serde::Deserialize)]
         struct TestTask {
-            id: String,
-            title: String,
+            #[serde(rename = "id")]
+            _id: String,
+            #[serde(rename = "title")]
+            _title: String,
             #[serde(default)]
             priority: Priority,
         }
