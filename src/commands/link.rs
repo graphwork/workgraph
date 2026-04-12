@@ -227,6 +227,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
 
@@ -268,6 +269,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
 
@@ -309,6 +311,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
     }
