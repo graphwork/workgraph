@@ -113,7 +113,6 @@ pub struct ProviderHealth {
     pub auto_resume_at: Option<String>,
 }
 
-
 impl ProviderHealth {
     /// Load provider health from disk
     pub fn load(dir: &Path) -> Result<Self> {
