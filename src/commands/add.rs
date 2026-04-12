@@ -506,6 +506,10 @@ pub fn run(
         iteration_anchor: None,
         iteration_parent: None,
         iteration_config,
+        cron_schedule: None,
+        cron_enabled: false,
+        last_cron_fire: None,
+        next_cron_fire: None,
     };
 
     // Add task to graph
@@ -845,6 +849,10 @@ fn add_task_directly(
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            cron_schedule: None,
+            cron_enabled: false,
+            last_cron_fire: None,
+            next_cron_fire: None,
         };
 
         graph.add_node(Node::Task(task));

@@ -427,6 +427,18 @@ pub struct Task {
     /// Iteration configuration (max_retries, propagation, retry_strategy)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iteration_config: Option<crate::agency::IterationConfig>,
+    /// Cron schedule expression (e.g., "0 2 * * *" for daily at 2am)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron_schedule: Option<String>,
+    /// Whether this task has cron scheduling enabled
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub cron_enabled: bool,
+    /// Timestamp of last cron trigger (ISO 8601 / RFC 3339)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_cron_fire: Option<String>,
+    /// Timestamp of next scheduled cron trigger (ISO 8601 / RFC 3339)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cron_fire: Option<String>,
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -1005,6 +1017,18 @@ struct TaskHelper {
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
+    /// Cron schedule expression (e.g., "0 2 * * *" for daily at 2am)
+    #[serde(default)]
+    cron_schedule: Option<String>,
+    /// Whether this task has cron scheduling enabled
+    #[serde(default)]
+    cron_enabled: bool,
+    /// Timestamp of last cron trigger (ISO 8601 / RFC 3339)
+    #[serde(default)]
+    last_cron_fire: Option<String>,
+    /// Timestamp of next scheduled cron trigger (ISO 8601 / RFC 3339)
+    #[serde(default)]
+    next_cron_fire: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for Task {
@@ -1090,6 +1114,10 @@ impl<'de> Deserialize<'de> for Task {
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            cron_schedule: helper.cron_schedule,
+            cron_enabled: helper.cron_enabled,
+            last_cron_fire: helper.last_cron_fire,
+            next_cron_fire: helper.next_cron_fire,
         })
     }
 }
