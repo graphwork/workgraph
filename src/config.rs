@@ -2409,7 +2409,7 @@ pub struct CoordinatorConfig {
     /// Whether to scan for test files before spawning agents and inject
     /// discovered tests into agent context. When enabled, the executor also
     /// auto-populates `--verify` gates for tasks that have no explicit verify
-    /// command but have discoverable test files. Default: true.
+    /// command but have discoverable test files. Default: false.
     #[serde(default = "default_auto_test_discovery")]
     pub auto_test_discovery: bool,
 
@@ -2486,7 +2486,7 @@ pub struct ResourceManagementConfig {
 }
 
 fn default_auto_test_discovery() -> bool {
-    true
+    false
 }
 
 fn default_scoped_verify_enabled() -> bool {
