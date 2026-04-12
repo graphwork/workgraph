@@ -104,7 +104,7 @@ fn test_next_fire_calculation() {
     assert!(next.is_some(), "Should calculate next fire time");
     let next_time = next.unwrap();
     assert_eq!(next_time.hour(), 2, "Next fire should be at 2 AM");
-    assert_eq!(next_time.date_naive().succ_opt().unwrap(), from_3am.date_naive().succ_opt().unwrap());
+    assert_eq!(next_time.date_naive(), from_3am.date_naive().succ_opt().unwrap(), "Next fire should be next day");
 }
 
 #[test]
