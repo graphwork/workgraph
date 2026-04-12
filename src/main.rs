@@ -2218,6 +2218,24 @@ fn main() -> Result<()> {
                 commands::telegram::run_send(chat_id.as_deref(), &message)
             }
             TelegramCommands::Status => commands::telegram::run_status(cli.json),
+            TelegramCommands::Poll { timeout, chat_id } => {
+                commands::telegram::run_poll(chat_id.as_deref(), timeout)
+            }
+            TelegramCommands::Ask {
+                message,
+                timeout,
+                interval,
+                chat_id,
+                task_id
+            } => {
+                commands::telegram::run_ask(
+                    &message,
+                    chat_id.as_deref(),
+                    timeout,
+                    interval,
+                    task_id.as_deref()
+                )
+            }
         },
         Commands::Endpoints { command } | Commands::Endpoint { command } => match command {
             EndpointsCommands::List => commands::endpoints::run_list(&workgraph_dir, cli.json),

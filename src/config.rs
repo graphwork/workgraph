@@ -2572,7 +2572,7 @@ impl Default for CoordinatorConfig {
             compaction_threshold_ratio: default_compaction_threshold_ratio(),
             eval_frequency: default_eval_frequency(),
             trial_budget_secs: None,
-            worktree_isolation: false,
+            worktree_isolation: true,
             max_coordinators: default_max_coordinators(),
             archive_retention_days: default_archive_retention_days(),
             registry_refresh_interval: default_registry_refresh_interval(),

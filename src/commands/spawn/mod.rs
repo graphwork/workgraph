@@ -174,6 +174,43 @@ mod tests {
     fn setup_graph(dir: &Path, tasks: Vec<Task>) {
         let path = graph_path(dir);
         fs::create_dir_all(dir).unwrap();
+
+        // Initialize git repository for worktree tests
+        let project_root = dir.parent().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .arg(project_root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(project_root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(project_root)
+            .output()
+            .unwrap();
+        // Set safe directory to avoid dubious ownership errors in temp directories
+        std::process::Command::new("git")
+            .args(["config", "--global", "--add", "safe.directory", &project_root.to_string_lossy()])
+            .output()
+            .unwrap();
+
+        // Create initial commit
+        fs::write(project_root.join("README.md"), "Test project").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(project_root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(project_root)
+            .output()
+            .unwrap();
+
         let mut graph = WorkGraph::new();
         for task in tasks {
             graph.add_node(Node::Task(task));
