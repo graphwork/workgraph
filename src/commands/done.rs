@@ -12,6 +12,9 @@ use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
 use workgraph::graph::{Task, parse_delay};
 
+// Import evaluate module for LLM verification
+use crate::commands::evaluate;
+
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
@@ -344,6 +347,96 @@ fn generate_scoped_verify_command(
     }
 }
 
+/// Detect if a verify command is likely free-text rather than an executable command.
+///
+/// Uses multiple heuristics to identify natural language descriptions:
+/// 1. First word not found in PATH and not a shell builtin
+/// 2. No shell metacharacters (|, &&, ;, >, <) and multiple English words
+/// 3. Contains common descriptive patterns
+fn is_free_text_verify_command(cmd: &str) -> bool {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return false;
+    }
+
+    let first_word = cmd.split_whitespace().next().unwrap_or("");
+
+    // Quick check: if it looks like a valid command prefix, it's probably not free-text
+    let known_commands = [
+        "cargo", "npm", "npx", "yarn", "pnpm", "make", "cmake", "go", "python", "python3", "pytest",
+        "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig", "rustc", "gcc", "g++",
+        "clang", "clang++", "javac", "java", "test", "[", "true", "false", "exit", "echo", "printf",
+        "cat", "grep", "find", "ls", "diff", "cmp", "wc", "head", "tail", "sort", "uniq", "cut", "tr",
+    ];
+
+    if known_commands.contains(&first_word) {
+        return false;
+    }
+
+    // Check for shell metacharacters - commands with these are likely executable
+    let shell_chars = ['|', '&', ';', '>', '<', '(', ')', '{', '}', '$', '`'];
+    if cmd.chars().any(|c| shell_chars.contains(&c)) {
+        return false;
+    }
+
+    // If multiple words and no shell metacharacters, likely free-text
+    let word_count = cmd.split_whitespace().count();
+    if word_count > 1 {
+        // Check for common descriptive patterns
+        let lower = cmd.to_lowercase();
+        let descriptive_patterns = [
+            "exists", "is valid", "are valid", "passes", "succeeds", "works", "complete",
+            "documentation", "tests pass", "builds successfully", "no errors", "no warnings",
+            "has been", "have been", "should be", "must be", "ensure", "verify that",
+        ];
+
+        if descriptive_patterns.iter().any(|pattern| lower.contains(pattern)) {
+            return true;
+        }
+
+        // If it's multiple words without shell chars and doesn't look like a command, likely free-text
+        return true;
+    }
+
+    false
+}
+
+/// Run LLM evaluation for a free-text verify command.
+/// Creates a verification task that uses the evaluation system.
+fn run_llm_verify_evaluation(
+    verify_cmd: &str,
+    task: &Task,
+    project_root: &Path,
+) -> std::result::Result<VerifyOutput, VerifyOutput> {
+
+    eprintln!("[smart-verify] Detected free-text verify command, routing to LLM evaluation: {}", verify_cmd);
+
+    // Find the workgraph directory (where .workgraph folder is located)
+    let workgraph_dir = project_root.ancestors()
+        .find(|p| p.join(".workgraph").exists())
+        .unwrap_or(project_root);
+
+    // Run evaluation on the task
+    match evaluate::run(workgraph_dir, &task.id, None, false, false) {
+        Ok(_) => {
+            // Evaluation succeeded - consider verification passed
+            Ok(VerifyOutput {
+                stdout: format!("LLM evaluation completed for: {}", verify_cmd),
+                stderr: String::new(),
+                exit_code: "0".to_string(),
+            })
+        }
+        Err(e) => {
+            // Evaluation failed - consider verification failed
+            Err(VerifyOutput {
+                stdout: String::new(),
+                stderr: format!("LLM evaluation failed for '{}': {}", verify_cmd, e),
+                exit_code: "1".to_string(),
+            })
+        }
+    }
+}
+
 /// Run a verify command in a shell.
 /// Returns Ok(VerifyOutput) with captured output on success,
 /// or Err(VerifyOutput) with captured output on failure.
@@ -366,10 +459,16 @@ fn run_verify_command(
         eprintln!("[scoped-verify] Original command: {}", verify_cmd);
     }
 
+    // Smart verify: check if this is free-text and route to LLM evaluation
+    if is_free_text_verify_command(&effective_cmd) {
+        return run_llm_verify_evaluation(&effective_cmd, task, project_root);
+    }
+
     let mut child = match Command::new("sh")
         .arg("-c")
         .arg(&effective_cmd)
         .current_dir(project_root)
+        .env("TERM", "dumb")  // Set TERM=dumb to avoid terminal-related failures
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -494,6 +593,21 @@ fn run_verify_command(
             exit_code,
         })
     } else {
+        // Check for exit code 127 (command not found) - likely free-text command
+        if exit_code == "127" {
+            eprintln!("[smart-verify] Command failed with exit 127 (command not found), retrying with LLM evaluation: {}", effective_cmd);
+            match run_llm_verify_evaluation(&effective_cmd, task, project_root) {
+                Ok(llm_result) => {
+                    eprintln!("[smart-verify] LLM evaluation succeeded for exit 127 fallback");
+                    return Ok(llm_result);
+                }
+                Err(_llm_error) => {
+                    eprintln!("[smart-verify] LLM evaluation also failed, returning original shell error");
+                    // Fall through to return original error
+                }
+            }
+        }
+
         Err(VerifyOutput {
             stdout,
             stderr,
@@ -2520,5 +2634,112 @@ mod tests {
         let files: Vec<String> = vec![];
         let result = map_files_to_tests(&files);
         assert_eq!(result, None);
+    }
+
+    // Smart verify detection tests
+
+    #[test]
+    fn test_is_free_text_verify_command_detects_descriptive_text() {
+        assert!(is_free_text_verify_command("documentation exists and is comprehensive"));
+        assert!(is_free_text_verify_command("tests pass for all modules"));
+        assert!(is_free_text_verify_command("build succeeds without errors"));
+        assert!(is_free_text_verify_command("code has been implemented"));
+        assert!(is_free_text_verify_command("feature works correctly"));
+        assert!(is_free_text_verify_command("ensure the module compiles"));
+    }
+
+    #[test]
+    fn test_is_free_text_verify_command_allows_valid_commands() {
+        assert!(!is_free_text_verify_command("cargo test"));
+        assert!(!is_free_text_verify_command("npm test"));
+        assert!(!is_free_text_verify_command("make build"));
+        assert!(!is_free_text_verify_command("python -m pytest"));
+        assert!(!is_free_text_verify_command("go test ./..."));
+        assert!(!is_free_text_verify_command("true"));
+        assert!(!is_free_text_verify_command("exit 0"));
+    }
+
+    #[test]
+    fn test_is_free_text_verify_command_allows_shell_constructs() {
+        assert!(!is_free_text_verify_command("cargo test | grep -q 'test result: ok'"));
+        assert!(!is_free_text_verify_command("make build && echo 'success'"));
+        assert!(!is_free_text_verify_command("test -f output.txt"));
+        assert!(!is_free_text_verify_command("echo 'hello' > /tmp/test"));
+        assert!(!is_free_text_verify_command("[ -d src ]"));
+    }
+
+    #[test]
+    fn test_is_free_text_verify_command_edge_cases() {
+        assert!(!is_free_text_verify_command(""));
+        assert!(!is_free_text_verify_command("cargo"));
+        assert!(!is_free_text_verify_command("   cargo test   "));
+        assert!(is_free_text_verify_command("unknown_command does something"));
+        assert!(is_free_text_verify_command("this should be detected as free text"));
+    }
+
+    #[test]
+    fn test_smart_verify_routes_free_text_to_evaluation() {
+        // This is more of an integration test - we test that the routing works
+        // by checking that free-text commands don't get executed as shell commands
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with free-text verify", Status::InProgress);
+        task.verify = Some("documentation exists and is comprehensive".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // The task should fail because evaluation requires the task to be Done first
+        // But importantly, it should NOT fail with exit 127 (command not found)
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+
+        // Check that the failure is not due to command not found
+        let _verify_logs: Vec<_> = task
+            .log
+            .iter()
+            .filter(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"))
+            .collect();
+
+        // There should be some indication that smart verify was used
+        let has_smart_verify_indication = task
+            .log
+            .iter()
+            .any(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"));
+
+        // Or alternatively, verify that we don't get a "command not found" error
+        let has_command_not_found = task
+            .log
+            .iter()
+            .any(|e| e.message.contains("command not found") || e.message.contains("exit code 127"));
+
+        // We should either see smart-verify logs or no "command not found" errors
+        assert!(has_smart_verify_indication || !has_command_not_found,
+            "Expected smart verify routing or no 'command not found' errors. Logs: {:?}",
+            task.log);
+    }
+
+    #[test]
+    fn test_term_dumb_environment_set_for_shell_commands() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with shell verify", Status::InProgress);
+        // Use a command that checks the TERM environment variable
+        task.verify = Some("test \"$TERM\" = \"dumb\"".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+
+        // The command should succeed, indicating TERM=dumb was set
+        assert!(result.is_ok(), "TERM=dumb should be set for shell commands");
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
     }
 }

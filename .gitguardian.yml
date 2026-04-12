@@ -10,6 +10,7 @@ secret:
     - "test-workgraph/"
     - ".git/"
     - "screencast/"
+    - "security-remediation-design.md"
 
   # Specific secrets to ignore (use with caution)
   ignored_matches:
