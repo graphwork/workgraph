@@ -4069,6 +4069,9 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut composed_lines: Vec<Line> = Vec::new();
     let wrap_width = width;
 
+    // Track if we have structured log entries
+    let has_log_entries = !app.log_pane.rendered_lines.is_empty();
+
     for s in &app.log_pane.rendered_lines {
         // Render log entry as a marker line with the ⊞ symbol in pink (matching agency phase annotations).
         let message = if let Some(bracket_end) = s.find(']') {
@@ -4106,9 +4109,24 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     }
 
+    // Add delimiter between structured log entries and raw agent output
+    let agent_lines = &app.log_pane.agent_output.rendered_lines;
+    let has_agent_output = !agent_lines.is_empty();
+
+    // Add delimiter if we have both structured log entries and raw agent output
+    if has_log_entries && has_agent_output {
+        // Create a horizontal rule delimiter - visually distinct but not heavy
+        let delimiter_char = "─";
+        let delimiter_width = width.min(40); // Cap width for readability
+        let delimiter_line = delimiter_char.repeat(delimiter_width);
+        composed_lines.push(Line::from(Span::styled(
+            delimiter_line,
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+        )));
+    }
+
     // Append the rendered agent output with word wrapping and tool-box awareness,
     // matching the Chat view's rendering for visual parity.
-    let agent_lines = &app.log_pane.agent_output.rendered_lines;
     if !agent_lines.is_empty() {
         let border_style = Style::default().fg(Color::DarkGray);
         let tool_name_style = Style::default()

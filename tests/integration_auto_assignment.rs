@@ -17,7 +17,7 @@ use tempfile::TempDir;
 
 use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
 use workgraph::config::Config;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
+use workgraph::graph::{Node, Priority, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks;
 use workgraph::service::executor::TemplateVars;
@@ -230,6 +230,7 @@ fn build_assign_subgraph(dir: &Path) {
             title: format!("Assign agent for: {}", ready_task.title),
             description: Some(desc),
             status: Status::Open,
+            priority: Priority::default(),
             assigned: None,
             estimate: None,
             before: vec![ready_task.id.clone()],

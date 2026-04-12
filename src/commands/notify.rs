@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::MatrixConfig;
-use workgraph::graph::{Status, Task};
+use workgraph::graph::{Priority, Status, Task};
 use workgraph::parser::load_graph;
 
 // Use the appropriate Matrix client based on the enabled feature
@@ -314,7 +314,7 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::Task;
+    use workgraph::graph::{Priority, Task};
 
     fn make_test_task() -> Task {
         Task {
@@ -322,6 +322,7 @@ mod tests {
             title: "Test Task Title".to_string(),
             description: Some("This is a test description".to_string()),
             status: Status::InProgress,
+            priority: Priority::default(),
             assigned: Some("agent-1".to_string()),
             estimate: None,
             before: vec![],

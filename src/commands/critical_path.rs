@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use workgraph::format_hours;
-use workgraph::graph::{Status, WorkGraph};
+use workgraph::graph::{Priority, Status, WorkGraph};
 
 /// Information about a task on the critical path
 #[derive(Debug, Clone, Serialize)]
@@ -377,7 +377,7 @@ fn find_cycles_dfs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Estimate, Node, Task};
+    use workgraph::graph::{Estimate, Node, Priority, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -393,6 +393,7 @@ mod tests {
             title: title.to_string(),
             description: None,
             status: Status::Open,
+            priority: Priority::default(),
             assigned: None,
             estimate: Some(Estimate {
                 hours: Some(hours),

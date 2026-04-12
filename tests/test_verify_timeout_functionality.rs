@@ -4,7 +4,7 @@ use std::path::Path;
 
 use workgraph::parser::load_graph;
 use workgraph::config::CoordinatorConfig;
-use workgraph::graph::{WorkGraph, Task, Status, parse_delay, Node};
+use workgraph::graph::{WorkGraph, Task, Status, Priority, parse_delay, Node};
 
 /// Helper to load a workgraph from a directory (mimics load_workgraph)
 fn load_workgraph(dir: &Path) -> Result<(WorkGraph, std::path::PathBuf)> {
@@ -23,6 +23,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         title: format!("Test task {}", id),
         description: None,
         status: Status::Open,
+        priority: Priority::default(),
         assigned: None,
         estimate: None,
         before: vec![],
