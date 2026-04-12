@@ -3,7 +3,7 @@
 //! Provides commands to manually clean up orphaned worktrees, recovery branches,
 //! and other edge cases that may not be handled by automatic cleanup operations.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use std::collections::HashSet;
@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use workgraph::graph::{Status, WorkGraph};
 
-use super::{load_workgraph};
+use super::load_workgraph;
 use crate::commands::service::worktree::{WORKTREES_DIR, remove_worktree, verify_worktree_cleanup};
 
 /// Parse an ISO 8601 timestamp string to SystemTime
@@ -24,7 +24,6 @@ fn parse_timestamp_to_systemtime(timestamp_opt: &Option<String>) -> Option<Syste
     let duration_since_epoch = dt.timestamp() as u64;
     Some(UNIX_EPOCH + Duration::from_secs(duration_since_epoch))
 }
-
 
 /// Manual cleanup commands for edge case recovery
 #[derive(Parser, Debug)]
@@ -114,11 +113,12 @@ pub enum CleanupMode {
     Aggressive,
 }
 
-
 pub fn run(args: CleanupArgs) -> Result<()> {
     match args.subcmd {
         CleanupSubcommand::Orphaned(orphaned_args) => run_orphaned_cleanup(orphaned_args),
-        CleanupSubcommand::RecoveryBranches(recovery_args) => run_recovery_branches_cleanup(recovery_args),
+        CleanupSubcommand::RecoveryBranches(recovery_args) => {
+            run_recovery_branches_cleanup(recovery_args)
+        }
         CleanupSubcommand::Nightly(nightly_args) => run_nightly_cleanup(nightly_args),
     }
 }
@@ -131,14 +131,20 @@ fn run_orphaned_cleanup(args: OrphanedArgs) -> Result<()> {
         std::env::current_dir().context("Failed to get current directory")?
     };
 
-    println!("Scanning for orphaned worktrees in: {}", project_root.display());
+    println!(
+        "Scanning for orphaned worktrees in: {}",
+        project_root.display()
+    );
 
     // Load workgraph to verify project structure
     let (_graph, _graph_path) = load_workgraph(&project_root)?;
 
     let worktrees_dir = project_root.join(WORKTREES_DIR);
     if !worktrees_dir.exists() {
-        println!("No worktrees directory found at: {}", worktrees_dir.display());
+        println!(
+            "No worktrees directory found at: {}",
+            worktrees_dir.display()
+        );
         return Ok(());
     }
 
@@ -165,7 +171,10 @@ fn run_orphaned_cleanup(args: OrphanedArgs) -> Result<()> {
         }
     }
 
-    println!("Found {} active agents with valid metadata", active_agents.len());
+    println!(
+        "Found {} active agents with valid metadata",
+        active_agents.len()
+    );
 
     // Scan worktrees directory for orphaned entries
     let mut orphaned_worktrees = Vec::new();
@@ -177,7 +186,11 @@ fn run_orphaned_cleanup(args: OrphanedArgs) -> Result<()> {
             // Check if this worktree has a corresponding active agent
             if !active_agents.contains(&worktree_name) {
                 orphaned_worktrees.push((worktree_name.clone(), entry.path()));
-                println!("Found orphaned worktree: {} -> {}", worktree_name, entry.path().display());
+                println!(
+                    "Found orphaned worktree: {} -> {}",
+                    worktree_name,
+                    entry.path().display()
+                );
             }
         }
     }
@@ -246,7 +259,10 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
         std::env::current_dir().context("Failed to get current directory")?
     };
 
-    println!("Scanning for old recovery branches in: {}", project_root.display());
+    println!(
+        "Scanning for old recovery branches in: {}",
+        project_root.display()
+    );
 
     // Verify this is a git repository
     if !project_root.join(".git").exists() {
@@ -298,12 +314,16 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
                     let age_seconds = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
-                        .as_secs() as i64 - timestamp;
+                        .as_secs() as i64
+                        - timestamp;
 
                     if age_seconds > max_age_seconds {
                         let age_days = age_seconds / (24 * 3600);
                         old_branches.push((branch.to_string(), age_days));
-                        println!("Found old recovery branch: {} (age: {} days)", branch, age_days);
+                        println!(
+                            "Found old recovery branch: {} (age: {} days)",
+                            branch, age_days
+                        );
                     }
                 }
             }
@@ -311,11 +331,18 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
     }
 
     if old_branches.is_empty() {
-        println!("No recovery branches older than {} days found.", args.max_age_days);
+        println!(
+            "No recovery branches older than {} days found.",
+            args.max_age_days
+        );
         return Ok(());
     }
 
-    println!("Found {} recovery branch(es) older than {} days", old_branches.len(), args.max_age_days);
+    println!(
+        "Found {} recovery branch(es) older than {} days",
+        old_branches.len(),
+        args.max_age_days
+    );
 
     if !args.execute {
         println!("\nDry-run mode. Use --execute to actually perform cleanup.");
@@ -328,7 +355,10 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
     let mut cleanup_successes = 0;
 
     for (branch, age_days) in old_branches {
-        println!("Deleting recovery branch: {} (age: {} days)", branch, age_days);
+        println!(
+            "Deleting recovery branch: {} (age: {} days)",
+            branch, age_days
+        );
 
         let output = Command::new("git")
             .args(["branch", "-D", &branch])
@@ -341,7 +371,11 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
             println!("✓ Successfully deleted recovery branch: {}", branch);
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let error_msg = format!("Failed to delete recovery branch {}: {}", branch, stderr.trim());
+            let error_msg = format!(
+                "Failed to delete recovery branch {}: {}",
+                branch,
+                stderr.trim()
+            );
             cleanup_errors.push(error_msg.clone());
 
             if args.force {
@@ -368,7 +402,11 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
 }
 
 /// Clean up a specific orphaned worktree with enhanced error handling
-fn cleanup_orphaned_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+fn cleanup_orphaned_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<()> {
     // Try standard cleanup first
     match remove_worktree(project_root, worktree_path, branch) {
         Ok(()) => {
@@ -377,7 +415,10 @@ fn cleanup_orphaned_worktree(project_root: &Path, worktree_path: &Path, branch: 
             return Ok(());
         }
         Err(e) => {
-            eprintln!("[cleanup] Standard removal failed for {:?}: {}", worktree_path, e);
+            eprintln!(
+                "[cleanup] Standard removal failed for {:?}: {}",
+                worktree_path, e
+            );
             eprintln!("[cleanup] Attempting fallback cleanup...");
         }
     }
@@ -387,7 +428,11 @@ fn cleanup_orphaned_worktree(project_root: &Path, worktree_path: &Path, branch: 
 }
 
 /// Attempt manual cleanup of a worktree with permission-aware error handling
-fn attempt_manual_worktree_cleanup(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+fn attempt_manual_worktree_cleanup(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<()> {
     let mut cleanup_errors = Vec::new();
 
     // Step 1: Clean up .workgraph symlink with permission handling
@@ -406,7 +451,9 @@ fn attempt_manual_worktree_cleanup(project_root: &Path, worktree_path: &Path, br
                 if let Err(perm_err) = fix_permissions_and_retry_removal(&wg_symlink) {
                     cleanup_errors.push(format!("Permission fix also failed: {}", perm_err));
                 } else {
-                    eprintln!("[cleanup] Successfully removed .workgraph symlink after permission fix");
+                    eprintln!(
+                        "[cleanup] Successfully removed .workgraph symlink after permission fix"
+                    );
                 }
             }
         }
@@ -426,9 +473,14 @@ fn attempt_manual_worktree_cleanup(project_root: &Path, worktree_path: &Path, br
 
                 // Try to fix permissions and retry
                 if let Err(perm_err) = fix_directory_permissions_and_retry(&target_dir) {
-                    cleanup_errors.push(format!("Target directory permission fix failed: {}", perm_err));
+                    cleanup_errors.push(format!(
+                        "Target directory permission fix failed: {}",
+                        perm_err
+                    ));
                 } else {
-                    eprintln!("[cleanup] Successfully removed target directory after permission fix");
+                    eprintln!(
+                        "[cleanup] Successfully removed target directory after permission fix"
+                    );
                 }
             }
         }
@@ -474,7 +526,9 @@ fn attempt_manual_worktree_cleanup(project_root: &Path, worktree_path: &Path, br
                 if let Err(perm_err) = fix_directory_permissions_and_retry(worktree_path) {
                     cleanup_errors.push(format!("Final directory cleanup failed: {}", perm_err));
                 } else {
-                    eprintln!("[cleanup] Successfully removed worktree directory after permission fix");
+                    eprintln!(
+                        "[cleanup] Successfully removed worktree directory after permission fix"
+                    );
                 }
             }
         }
@@ -483,7 +537,10 @@ fn attempt_manual_worktree_cleanup(project_root: &Path, worktree_path: &Path, br
     if cleanup_errors.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("Manual cleanup completed with errors:\n{}", cleanup_errors.join("\n")))
+        Err(anyhow!(
+            "Manual cleanup completed with errors:\n{}",
+            cleanup_errors.join("\n")
+        ))
     }
 }
 
@@ -606,10 +663,13 @@ impl CleanupSummary {
     }
 }
 
-
 /// Clean up old and abandoned tasks
 #[allow(dead_code)]
-fn cleanup_tasks(graph: &WorkGraph, args: &NightlyArgs, summary: &mut CleanupSummary) -> Result<()> {
+fn cleanup_tasks(
+    graph: &WorkGraph,
+    args: &NightlyArgs,
+    summary: &mut CleanupSummary,
+) -> Result<()> {
     println!("Scanning tasks for cleanup opportunities...");
 
     let tasks: Vec<_> = graph.tasks().collect();
@@ -653,7 +713,8 @@ fn cleanup_tasks(graph: &WorkGraph, args: &NightlyArgs, summary: &mut CleanupSum
         };
 
         if should_archive {
-            let age_days = if let Some(created_at) = parse_timestamp_to_systemtime(&task.created_at) {
+            let age_days = if let Some(created_at) = parse_timestamp_to_systemtime(&task.created_at)
+            {
                 now.duration_since(created_at)
                     .map(|d| d.as_secs() / (24 * 3600))
                     .unwrap_or(0)
@@ -670,7 +731,10 @@ fn cleanup_tasks(graph: &WorkGraph, args: &NightlyArgs, summary: &mut CleanupSum
         return Ok(());
     }
 
-    println!("Found {} tasks eligible for archiving:", archive_candidates.len());
+    println!(
+        "Found {} tasks eligible for archiving:",
+        archive_candidates.len()
+    );
     for (task_id, status, age_days) in &archive_candidates {
         println!("  - {} ({:?}, {} days old)", task_id, status, age_days);
     }
@@ -696,7 +760,11 @@ fn cleanup_tasks(graph: &WorkGraph, args: &NightlyArgs, summary: &mut CleanupSum
 }
 
 /// Clean up temporary files and build artifacts
-fn cleanup_filesystem(project_root: &Path, args: &NightlyArgs, summary: &mut CleanupSummary) -> Result<()> {
+fn cleanup_filesystem(
+    project_root: &Path,
+    args: &NightlyArgs,
+    summary: &mut CleanupSummary,
+) -> Result<()> {
     println!("Scanning file system for cleanup opportunities...");
 
     let cleanup_targets = vec![
@@ -715,8 +783,10 @@ fn cleanup_filesystem(project_root: &Path, args: &NightlyArgs, summary: &mut Cle
                     summary.directories_cleaned += dirs_cleaned;
                     summary.disk_space_freed += space_freed;
                     if files_cleaned > 0 || dirs_cleaned > 0 {
-                        println!("✓ Cleaned {}: {} files, {} dirs, {} bytes freed",
-                                dir_name, files_cleaned, dirs_cleaned, space_freed);
+                        println!(
+                            "✓ Cleaned {}: {} files, {} dirs, {} bytes freed",
+                            dir_name, files_cleaned, dirs_cleaned, space_freed
+                        );
                     }
                 }
                 Err(e) => {
@@ -736,7 +806,11 @@ fn cleanup_filesystem(project_root: &Path, args: &NightlyArgs, summary: &mut Cle
 }
 
 /// Clean up git-related artifacts
-fn cleanup_git(project_root: &Path, args: &NightlyArgs, summary: &mut CleanupSummary) -> Result<()> {
+fn cleanup_git(
+    project_root: &Path,
+    args: &NightlyArgs,
+    summary: &mut CleanupSummary,
+) -> Result<()> {
     println!("Performing git cleanup operations...");
 
     // Git garbage collection
@@ -790,16 +864,16 @@ fn cleanup_git(project_root: &Path, args: &NightlyArgs, summary: &mut CleanupSum
 
 /// Check if a task is an agency-related task that should be archived when done
 fn is_agency_task(task_id: &str) -> bool {
-    task_id.starts_with(".evaluate-") ||
-    task_id.starts_with(".assign-") ||
-    task_id.starts_with(".flip-")
+    task_id.starts_with(".evaluate-")
+        || task_id.starts_with(".assign-")
+        || task_id.starts_with(".flip-")
 }
 
 /// Check if a task is an old coordinator task that should be archived
 fn is_old_coordinator_task(task_id: &str) -> bool {
-    task_id.starts_with(".coordinator-") ||
-    task_id.starts_with(".archive-") ||
-    task_id.starts_with(".compact-")
+    task_id.starts_with(".coordinator-")
+        || task_id.starts_with(".archive-")
+        || task_id.starts_with(".compact-")
 }
 
 /// Archive a specific task
@@ -819,7 +893,11 @@ fn archive_task(task_id: &str) -> Result<()> {
 }
 
 /// Clean up a directory based on file age
-fn cleanup_directory(dir_path: &Path, max_age: Duration, args: &NightlyArgs) -> Result<(usize, usize, u64)> {
+fn cleanup_directory(
+    dir_path: &Path,
+    max_age: Duration,
+    args: &NightlyArgs,
+) -> Result<(usize, usize, u64)> {
     if !dir_path.exists() {
         return Ok((0, 0, 0));
     }
@@ -829,8 +907,15 @@ fn cleanup_directory(dir_path: &Path, max_age: Duration, args: &NightlyArgs) -> 
     let mut space_freed = 0u64;
     let now = SystemTime::now();
 
-    fn cleanup_recursive(path: &Path, max_age: Duration, now: SystemTime, execute: bool,
-                         files: &mut usize, dirs: &mut usize, space: &mut u64) -> Result<()> {
+    fn cleanup_recursive(
+        path: &Path,
+        max_age: Duration,
+        now: SystemTime,
+        execute: bool,
+        files: &mut usize,
+        dirs: &mut usize,
+        space: &mut u64,
+    ) -> Result<()> {
         for entry in fs::read_dir(path).context("Failed to read directory")? {
             let entry = entry.context("Failed to read directory entry")?;
             let entry_path = entry.path();
@@ -844,7 +929,8 @@ fn cleanup_directory(dir_path: &Path, max_age: Duration, args: &NightlyArgs) -> 
 
                     if entry_path.is_dir() {
                         if execute {
-                            fs::remove_dir_all(&entry_path).context("Failed to remove directory")?;
+                            fs::remove_dir_all(&entry_path)
+                                .context("Failed to remove directory")?;
                         }
                         *dirs += 1;
                         *space += file_size;
@@ -864,7 +950,15 @@ fn cleanup_directory(dir_path: &Path, max_age: Duration, args: &NightlyArgs) -> 
         Ok(())
     }
 
-    cleanup_recursive(dir_path, max_age, now, args.execute, &mut files_cleaned, &mut dirs_cleaned, &mut space_freed)?;
+    cleanup_recursive(
+        dir_path,
+        max_age,
+        now,
+        args.execute,
+        &mut files_cleaned,
+        &mut dirs_cleaned,
+        &mut space_freed,
+    )?;
 
     Ok((files_cleaned, dirs_cleaned, space_freed))
 }

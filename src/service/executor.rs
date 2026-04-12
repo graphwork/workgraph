@@ -899,25 +899,28 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
     let assembled_prompt = parts.join("\n\n");
 
     // Debug logging: capture complete prompt if WG_DEBUG_PROMPTS is set
-    if std::env::var("WG_DEBUG_PROMPTS").is_ok() {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+    if std::env::var("WG_DEBUG_PROMPTS").is_ok()
+        && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open("/tmp/wg_debug_prompts.log")
-        {
-            use std::io::Write;
-            let debug_info = format!(
-                "=== WG DEBUG: Assembled Prompt for Task {} ===\n\
-                Scope: {:?}\n\
-                Model: {}\n\
-                Prompt length: {} characters\n\
-                Prompt content:\n\
-                {}\n\
-                === End of Prompt ===\n\n",
-                vars.task_id, scope, vars.model, assembled_prompt.len(), assembled_prompt
-            );
-            let _ = file.write_all(debug_info.as_bytes());
-        }
+    {
+        use std::io::Write;
+        let debug_info = format!(
+            "=== WG DEBUG: Assembled Prompt for Task {} ===\n\
+            Scope: {:?}\n\
+            Model: {}\n\
+            Prompt length: {} characters\n\
+            Prompt content:\n\
+            {}\n\
+            === End of Prompt ===\n\n",
+            vars.task_id,
+            scope,
+            vars.model,
+            assembled_prompt.len(),
+            assembled_prompt
+        );
+        let _ = file.write_all(debug_info.as_bytes());
     }
 
     assembled_prompt

@@ -489,13 +489,11 @@ impl OpenAiClient {
                                 text_parts.push(text.clone());
                             }
                             ContentBlock::Thinking {
-                                reasoning_details: rd,
+                                reasoning_details: Some(rd),
                                 ..
                             } => {
                                 // Pass back reasoning_details verbatim for models that need it
-                                if let Some(rd) = rd {
-                                    reasoning_details = Some(rd.clone());
-                                }
+                                reasoning_details = Some(rd.clone());
                             }
                             ContentBlock::ToolUse { id, name, input } => {
                                 tool_calls.push(OaiToolCall {

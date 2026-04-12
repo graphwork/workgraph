@@ -39,7 +39,12 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
 }
 
-fn wg_cmd_with_env(wg_dir: &Path, args: &[&str], env_key: &str, env_value: &str) -> std::process::Output {
+fn wg_cmd_with_env(
+    wg_dir: &Path,
+    args: &[&str],
+    env_key: &str,
+    env_value: &str,
+) -> std::process::Output {
     Command::new(wg_binary())
         .arg("--dir")
         .arg(wg_dir)
@@ -92,7 +97,8 @@ fn init_wg() -> (TempDir, PathBuf) {
         .expect("Failed to set git name");
 
     // Create an initial commit (required for worktree creation)
-    std::fs::write(project_root.join("README.md"), "# Test Project").expect("Failed to write README");
+    std::fs::write(project_root.join("README.md"), "# Test Project")
+        .expect("Failed to write README");
 
     Command::new("git")
         .args(["add", "."])
@@ -123,10 +129,23 @@ fn test_debug_prompt_logging_enabled() {
     let _ = fs::remove_file(debug_log_path);
 
     // Create a test task
-    wg_ok(&wg_dir, &["add", "Test debug logging", "--verify", "echo 'test complete'"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Test debug logging",
+            "--verify",
+            "echo 'test complete'",
+        ],
+    );
 
     // Spawn with debug enabled using WG_DEBUG_PROMPTS=1
-    let output = wg_cmd_with_env(&wg_dir, &["spawn", "test-debug-logging", "--executor", "native"], "WG_DEBUG_PROMPTS", "1");
+    let output = wg_cmd_with_env(
+        &wg_dir,
+        &["spawn", "test-debug-logging", "--executor", "native"],
+        "WG_DEBUG_PROMPTS",
+        "1",
+    );
 
     // Check that spawn succeeded
     if !output.status.success() {
@@ -135,11 +154,19 @@ fn test_debug_prompt_logging_enabled() {
         println!("Spawn output:\nstdout: {}\nstderr: {}", stdout, stderr);
         // For native executor, we might need to run the spawn differently
         // Let's also try with shell executor instead
-        let output2 = wg_cmd_with_env(&wg_dir, &["spawn", "test-debug-logging", "--executor", "shell"], "WG_DEBUG_PROMPTS", "1");
+        let output2 = wg_cmd_with_env(
+            &wg_dir,
+            &["spawn", "test-debug-logging", "--executor", "shell"],
+            "WG_DEBUG_PROMPTS",
+            "1",
+        );
         if !output2.status.success() {
             let stdout2 = String::from_utf8_lossy(&output2.stdout);
             let stderr2 = String::from_utf8_lossy(&output2.stderr);
-            panic!("Both native and shell executors failed:\nNative - stdout: {}\nstderr: {}\nShell - stdout: {}\nstderr: {}", stdout, stderr, stdout2, stderr2);
+            panic!(
+                "Both native and shell executors failed:\nNative - stdout: {}\nstderr: {}\nShell - stdout: {}\nstderr: {}",
+                stdout, stderr, stdout2, stderr2
+            );
         }
     }
 
@@ -149,8 +176,8 @@ fn test_debug_prompt_logging_enabled() {
         "Debug log file should be created when WG_DEBUG_PROMPTS=1"
     );
 
-    let log_content = fs::read_to_string(debug_log_path)
-        .expect("Should be able to read debug log file");
+    let log_content =
+        fs::read_to_string(debug_log_path).expect("Should be able to read debug log file");
 
     // Verify the log contains the expected spawn metadata
     assert!(
@@ -193,21 +220,35 @@ fn test_debug_prompt_logging_disabled() {
     let _ = fs::remove_file(debug_log_path);
 
     // Create a test task
-    wg_ok(&wg_dir, &["add", "Test no debug logging", "--verify", "echo 'test complete'"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Test no debug logging",
+            "--verify",
+            "echo 'test complete'",
+        ],
+    );
 
     // Spawn WITHOUT debug enabled (no WG_DEBUG_PROMPTS env var)
-    let output = wg_cmd(&wg_dir, &["spawn", "test-no-debug-logging", "--executor", "native"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["spawn", "test-no-debug-logging", "--executor", "native"],
+    );
 
     // Check that spawn succeeded or try shell executor
     if !output.status.success() {
-        let _output2 = wg_cmd(&wg_dir, &["spawn", "test-no-debug-logging", "--executor", "shell"]);
+        let _output2 = wg_cmd(
+            &wg_dir,
+            &["spawn", "test-no-debug-logging", "--executor", "shell"],
+        );
         // We don't care if spawn fails here, we're just testing that debug logging doesn't happen
     }
 
     // Verify no debug log file was created (or if it exists, it doesn't contain our task)
     if Path::new(debug_log_path).exists() {
-        let log_content = fs::read_to_string(debug_log_path)
-            .expect("Should be able to read debug log file");
+        let log_content =
+            fs::read_to_string(debug_log_path).expect("Should be able to read debug log file");
         assert!(
             !log_content.contains("Task ID: test-no-debug-logging"),
             "Debug log should not contain our task when WG_DEBUG_PROMPTS is not set"

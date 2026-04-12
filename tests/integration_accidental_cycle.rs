@@ -126,14 +126,25 @@ fn test_accidental_cycle_prevention() {
     let stderr = wg_fail(&wg_dir, &["edit", "c", "--add-after", "a"]);
 
     // Should fail due to cycle detection guard
-    assert!(stderr.contains("cycle"), "Error should mention cycle: {}", stderr);
-    assert!(stderr.contains("CycleConfig"), "Error should suggest CycleConfig: {}", stderr);
+    assert!(
+        stderr.contains("cycle"),
+        "Error should mention cycle: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("CycleConfig"),
+        "Error should suggest CycleConfig: {}",
+        stderr
+    );
 
     // Verify the graph was not modified
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
     let task_c = graph.get_task("c").unwrap();
-    assert!(task_c.after.is_empty(), "Task C should not have new dependencies");
+    assert!(
+        task_c.after.is_empty(),
+        "Task C should not have new dependencies"
+    );
 
     // Test that --allow-cycle override works
     wg_ok(&wg_dir, &["edit", "c", "--add-after", "a", "--allow-cycle"]);
@@ -141,7 +152,10 @@ fn test_accidental_cycle_prevention() {
     // Verify the cycle was created
     let graph = load_graph(&graph_path).unwrap();
     let task_c = graph.get_task("c").unwrap();
-    assert!(task_c.after.contains(&"a".to_string()), "Task C should now depend on A");
+    assert!(
+        task_c.after.contains(&"a".to_string()),
+        "Task C should now depend on A"
+    );
 }
 
 /// Test 2: Recovery - Verify auto-break-in for unconfigured cycles
@@ -175,9 +189,7 @@ fn test_accidental_cycle_auto_recovery() {
     assert_eq!(cycle.members.len(), 3, "Cycle should have 3 members");
 
     // Verify all tasks are in the cycle
-    let cycle_members: HashSet<String> = cycle.members.iter()
-        .map(|m| m.clone())
-        .collect();
+    let cycle_members: HashSet<String> = cycle.members.iter().map(|m| m.clone()).collect();
     assert!(cycle_members.contains("a"));
     assert!(cycle_members.contains("b"));
     assert!(cycle_members.contains("c"));
@@ -186,11 +198,18 @@ fn test_accidental_cycle_auto_recovery() {
     let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
     // Auto-break-in should make exactly one task ready
-    assert_eq!(ready_tasks.len(), 1, "Auto-break-in should make exactly one task ready");
+    assert_eq!(
+        ready_tasks.len(),
+        1,
+        "Auto-break-in should make exactly one task ready"
+    );
 
     // Should be deterministic (alphabetically first)
     let ready_task = &ready_tasks[0];
-    assert_eq!(ready_task.id, "a", "Task 'a' should be selected for auto-break-in");
+    assert_eq!(
+        ready_task.id, "a",
+        "Task 'a' should be selected for auto-break-in"
+    );
     assert_eq!(ready_task.status, Status::Open, "Ready task should be Open");
 }
 
@@ -221,7 +240,11 @@ fn test_accidental_cycle_no_regression_configured() {
 
     // Analyze cycles
     let cycle_analysis = CycleAnalysis::from_graph(&graph);
-    assert_eq!(cycle_analysis.cycles.len(), 1, "Should detect configured cycle");
+    assert_eq!(
+        cycle_analysis.cycles.len(),
+        1,
+        "Should detect configured cycle"
+    );
 
     // Get ready tasks - should work normally via back-edge exemption
     let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
@@ -229,7 +252,8 @@ fn test_accidental_cycle_no_regression_configured() {
     // The cycle header (task with cycle_config) should be ready
     assert!(!ready_tasks.is_empty(), "Cycle header should be ready");
 
-    let ready_task = ready_tasks.iter()
+    let ready_task = ready_tasks
+        .iter()
         .find(|t| t.cycle_config.is_some())
         .expect("Task with cycle_config should be ready");
     assert_eq!(ready_task.id, "a", "Cycle header should be task A");
@@ -276,17 +300,25 @@ fn test_accidental_cycle_mixed_scenario() {
     let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
     // Should have ready tasks from both cycles
-    assert_eq!(ready_tasks.len(), 2, "Should have one ready task from each cycle");
+    assert_eq!(
+        ready_tasks.len(),
+        2,
+        "Should have one ready task from each cycle"
+    );
 
     // One should be the configured cycle header (task A)
-    let configured_ready = ready_tasks.iter()
-        .find(|t| t.cycle_config.is_some());
-    assert!(configured_ready.is_some(), "Configured cycle header should be ready");
+    let configured_ready = ready_tasks.iter().find(|t| t.cycle_config.is_some());
+    assert!(
+        configured_ready.is_some(),
+        "Configured cycle header should be ready"
+    );
 
     // One should be the auto-break-in task from unconfigured cycle (task X)
-    let unconfigured_ready = ready_tasks.iter()
-        .find(|t| t.id == "x");
-    assert!(unconfigured_ready.is_some(), "Auto-break-in task should be ready");
+    let unconfigured_ready = ready_tasks.iter().find(|t| t.id == "x");
+    assert!(
+        unconfigured_ready.is_some(),
+        "Auto-break-in task should be ready"
+    );
 }
 
 /// Test 5: E2E simulation of triage creating fix task
@@ -299,14 +331,39 @@ fn test_accidental_cycle_triage_simulation() {
     let temp_dir = TempDir::new().unwrap();
 
     // Create a scenario: implement-feature → test-feature → deploy-feature
-    let implement = make_task_with_deps("implement-feature", "Implement Feature", Status::Done, vec![]);
-    let test_task = make_task_with_deps("test-feature", "Test Feature", Status::Failed, vec!["implement-feature"]);
-    let deploy = make_task_with_deps("deploy-feature", "Deploy Feature", Status::Open, vec!["test-feature"]);
+    let implement = make_task_with_deps(
+        "implement-feature",
+        "Implement Feature",
+        Status::Done,
+        vec![],
+    );
+    let test_task = make_task_with_deps(
+        "test-feature",
+        "Test Feature",
+        Status::Failed,
+        vec!["implement-feature"],
+    );
+    let deploy = make_task_with_deps(
+        "deploy-feature",
+        "Deploy Feature",
+        Status::Open,
+        vec!["test-feature"],
+    );
 
     let wg_dir = setup_workgraph(&temp_dir, vec![implement, test_task, deploy]);
 
     // Simulate triage creating a fix task that depends on the failed test
-    wg_ok(&wg_dir, &["add", "Fix test failure", "--id", "fix-test", "--after", "test-feature"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Fix test failure",
+            "--id",
+            "fix-test",
+            "--after",
+            "test-feature",
+        ],
+    );
 
     // This should succeed - no cycle yet
     let graph_path = wg_dir.join("graph.jsonl");
@@ -315,14 +372,24 @@ fn test_accidental_cycle_triage_simulation() {
     assert_eq!(fix_task.after, vec!["test-feature"]);
 
     // Now try to make deploy depend on the fix (could be reasonable)
-    wg_ok(&wg_dir, &["edit", "deploy-feature", "--add-after", "fix-test"]);
+    wg_ok(
+        &wg_dir,
+        &["edit", "deploy-feature", "--add-after", "fix-test"],
+    );
 
     // But if we try to create a real cycle by making fix depend on deploy,
     // it should be prevented
-    let stderr = wg_fail(&wg_dir, &["edit", "fix-test", "--add-after", "deploy-feature"]);
+    let stderr = wg_fail(
+        &wg_dir,
+        &["edit", "fix-test", "--add-after", "deploy-feature"],
+    );
 
     // Should be prevented due to cycle detection
-    assert!(stderr.contains("cycle"), "Error should mention cycle creation: {}", stderr);
+    assert!(
+        stderr.contains("cycle"),
+        "Error should mention cycle creation: {}",
+        stderr
+    );
 }
 
 /// Test 6: CLI Integration - Test ready command with unconfigured cycles
@@ -347,9 +414,22 @@ fn test_accidental_cycle_cli_ready() {
     let output = wg_ok(&wg_dir, &["ready"]);
 
     // Should show exactly one task (the break-in task)
-    let lines: Vec<&str> = output.trim().split('\n').filter(|l| !l.trim().is_empty()).collect();
-    let task_lines: Vec<&str> = lines.iter().filter(|l| l.contains("Task")).cloned().collect();
-    assert_eq!(task_lines.len(), 1, "Should show exactly one ready task from auto-break-in: {}", output);
+    let lines: Vec<&str> = output
+        .trim()
+        .split('\n')
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let task_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.contains("Task"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        task_lines.len(),
+        1,
+        "Should show exactly one ready task from auto-break-in: {}",
+        output
+    );
 
     // Should be task 'a' (alphabetically first)
     assert!(output.contains("a"), "Ready task should be 'a': {}", output);

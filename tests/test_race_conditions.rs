@@ -106,7 +106,11 @@ fn create_mock_registry(service_dir: &Path) -> PathBuf {
 }
 
 /// Create a test worktree using git commands
-fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
+fn create_test_worktree(
+    project_root: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<PathBuf, String> {
     let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -144,7 +148,11 @@ fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> R
 }
 
 /// Remove a worktree using git commands
-fn remove_test_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<(), String> {
+fn remove_test_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
     // Remove .workgraph symlink if it exists
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
@@ -268,13 +276,19 @@ fn test_concurrent_cleanup_attempts() {
 
     // Verify cleanup attempts were made
     let total_attempts = *cleanup_attempts.lock().unwrap();
-    assert_eq!(total_attempts, num_agents, "All cleanup threads should have attempted cleanup");
+    assert_eq!(
+        total_attempts, num_agents,
+        "All cleanup threads should have attempted cleanup"
+    );
 
     // Verify no worktrees remain (at least one cleanup should have succeeded for each)
     for worktree_path in &worktree_paths {
         if worktree_path.exists() {
             // If it still exists, verify it's not corrupted
-            assert!(worktree_path.join("file.txt").exists(), "If worktree exists, it should be intact");
+            assert!(
+                worktree_path.join("file.txt").exists(),
+                "If worktree exists, it should be intact"
+            );
         }
     }
 }
@@ -370,11 +384,20 @@ fn test_metadata_access_race_conditions() {
     let total_reads = *read_attempts.lock().unwrap();
     let total_writes = *write_attempts.lock().unwrap();
 
-    println!("Concurrent metadata operations: {} reads, {} writes", total_reads, total_writes);
+    println!(
+        "Concurrent metadata operations: {} reads, {} writes",
+        total_reads, total_writes
+    );
 
     // We should have some successful operations (exact numbers depend on timing)
-    assert!(total_reads > 0, "Should have some successful metadata reads");
-    assert!(total_writes > 0, "Should have some successful metadata writes");
+    assert!(
+        total_reads > 0,
+        "Should have some successful metadata reads"
+    );
+    assert!(
+        total_writes > 0,
+        "Should have some successful metadata writes"
+    );
 
     // Final metadata file should be valid JSON
     if metadata_path_arc.exists() {
@@ -431,7 +454,10 @@ fn test_agent_death_cleanup_race() {
             thread::sleep(Duration::from_millis(i as u64 * 10));
 
             // Mark agent as dead in registry (simulate triage detection)
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
             let updated_registry = serde_json::json!({
                 "agents": {
                     agent_id.clone(): {
@@ -519,11 +545,22 @@ fn test_agent_death_cleanup_race() {
     println!("Cleanup results: {:?}", *results);
 
     // Should have attempted cleanup for at least some agents
-    assert!(!results.is_empty(), "Should have detected and cleaned up some dead agents");
+    assert!(
+        !results.is_empty(),
+        "Should have detected and cleaned up some dead agents"
+    );
 
     // All cleanup attempts should either succeed or fail gracefully (no panics)
     for (agent_id, success) in results.iter() {
-        println!("Agent {} cleanup: {}", agent_id, if *success { "succeeded" } else { "failed gracefully" });
+        println!(
+            "Agent {} cleanup: {}",
+            agent_id,
+            if *success {
+                "succeeded"
+            } else {
+                "failed gracefully"
+            }
+        );
     }
 }
 
@@ -550,7 +587,11 @@ fn test_service_restart_coordinator_race() {
         let worktree_path = create_test_worktree(&project, &agent_id, &task_id).unwrap();
 
         // Create some fake work in the worktree
-        fs::write(worktree_path.join("orphan_work.txt"), format!("work from {}", agent_id)).unwrap();
+        fs::write(
+            worktree_path.join("orphan_work.txt"),
+            format!("work from {}", agent_id),
+        )
+        .unwrap();
 
         orphan_paths.push((agent_id, task_id, worktree_path));
     }
@@ -583,8 +624,10 @@ fn test_service_restart_coordinator_race() {
                             let agent_id = path.file_name().unwrap().to_string_lossy();
 
                             // Find corresponding orphan info
-                            if let Some((_, task_id, _)) = orphan_paths_clone.iter()
-                                .find(|(id, _, _)| id == &agent_id.as_ref()) {
+                            if let Some((_, task_id, _)) = orphan_paths_clone
+                                .iter()
+                                .find(|(id, _, _)| id == &agent_id.as_ref())
+                            {
                                 let branch = format!("wg/{}/{}", agent_id, task_id);
 
                                 // Attempt cleanup
@@ -645,29 +688,51 @@ fn test_service_restart_coordinator_race() {
     let attempts = cleanup_attempts.lock().unwrap();
     println!("Concurrent cleanup attempts: {:?}", *attempts);
 
-    assert_eq!(attempts.len(), 2, "Should have both service restart and coordinator cleanup attempts");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "Should have both service restart and coordinator cleanup attempts"
+    );
 
     // Verify no data corruption - worktrees should either be gone or intact
     for (_, _, worktree_path) in &orphan_paths {
         if worktree_path.exists() {
             // If still exists, verify integrity
-            assert!(worktree_path.join("file.txt").exists(), "Worktree should be intact if it exists");
+            assert!(
+                worktree_path.join("file.txt").exists(),
+                "Worktree should be intact if it exists"
+            );
         }
     }
 
     // At least one cleanup method should have succeeded for each orphan
-    let service_results = &attempts.iter().find(|(type_, _)| type_ == &"service_restart").unwrap().1;
-    let coordinator_results = &attempts.iter().find(|(type_, _)| type_ == &"coordinator_tick").unwrap().1;
+    let service_results = &attempts
+        .iter()
+        .find(|(type_, _)| type_ == &"service_restart")
+        .unwrap()
+        .1;
+    let coordinator_results = &attempts
+        .iter()
+        .find(|(type_, _)| type_ == &"coordinator_tick")
+        .unwrap()
+        .1;
 
     for i in 0..num_orphans {
         let agent_id = format!("orphan-agent-{}", i);
-        let service_cleaned = service_results.iter().any(|(id, success)| id == &agent_id && *success);
-        let coordinator_cleaned = coordinator_results.iter().any(|(id, success)| id == &agent_id && *success);
+        let service_cleaned = service_results
+            .iter()
+            .any(|(id, success)| id == &agent_id && *success);
+        let coordinator_cleaned = coordinator_results
+            .iter()
+            .any(|(id, success)| id == &agent_id && *success);
 
         // One of them should have succeeded (or both, but no corruption)
         if !service_cleaned && !coordinator_cleaned {
             // If both failed, the worktree might still exist (acceptable)
-            println!("Both cleanup attempts failed for agent {}, checking worktree state", agent_id);
+            println!(
+                "Both cleanup attempts failed for agent {}, checking worktree state",
+                agent_id
+            );
         }
     }
 }

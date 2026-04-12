@@ -1,30 +1,42 @@
+use chrono::{TimeZone, Timelike, Utc};
 use serde_json;
 use tempfile::TempDir;
-use workgraph::graph::{Task, Status, Priority, Node, WorkGraph};
-use workgraph::cron::{parse_cron_expression, is_cron_due, calculate_next_fire};
+use workgraph::cron::{calculate_next_fire, is_cron_due, parse_cron_expression};
+use workgraph::graph::{Node, Priority, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
-use chrono::{Utc, TimeZone, Timelike};
 
 #[test]
 fn test_cron_expression_parsing() {
     // Test 5-field format (gets converted to 6-field)
     let result = parse_cron_expression("0 2 * * *");
-    assert!(result.is_ok(), "5-field cron expression should parse: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "5-field cron expression should parse: {:?}",
+        result
+    );
 
     // Test 6-field format
     let result = parse_cron_expression("0 0 2 * * *");
-    assert!(result.is_ok(), "6-field cron expression should parse: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "6-field cron expression should parse: {:?}",
+        result
+    );
 
     // Test invalid format
     let result = parse_cron_expression("invalid cron");
     assert!(result.is_err(), "Invalid cron expression should fail");
 
     // Test edge cases
-    let result = parse_cron_expression("0 */5 * * * *");  // Every 5 minutes
+    let result = parse_cron_expression("0 */5 * * * *"); // Every 5 minutes
     assert!(result.is_ok(), "Every 5 minutes should parse: {:?}", result);
 
-    let result = parse_cron_expression("0 0 12 * * 1-5");  // Weekdays at noon
-    assert!(result.is_ok(), "Weekdays at noon should parse: {:?}", result);
+    let result = parse_cron_expression("0 0 12 * * 1-5"); // Weekdays at noon
+    assert!(
+        result.is_ok(),
+        "Weekdays at noon should parse: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -34,32 +46,44 @@ fn test_cron_due_checking() {
         id: "test-cron".to_string(),
         title: "Test Cron Task".to_string(),
         cron_enabled: true,
-        cron_schedule: Some("0 0 2 * * *".to_string()),  // Daily at 2 AM
+        cron_schedule: Some("0 0 2 * * *".to_string()), // Daily at 2 AM
         last_cron_fire: None,
         ..create_test_task()
     };
 
     // Test when schedule matches current time (should be due)
     let schedule_time = Utc.with_ymd_and_hms(2024, 1, 1, 2, 0, 0).unwrap();
-    assert!(is_cron_due(&task, schedule_time), "Task should be due at scheduled time");
+    assert!(
+        is_cron_due(&task, schedule_time),
+        "Task should be due at scheduled time"
+    );
 
     // Test when schedule doesn't match (should not be due)
     let non_schedule_time = Utc.with_ymd_and_hms(2024, 1, 1, 3, 0, 0).unwrap();
-    assert!(!is_cron_due(&task, non_schedule_time), "Task should not be due at non-scheduled time");
+    assert!(
+        !is_cron_due(&task, non_schedule_time),
+        "Task should not be due at non-scheduled time"
+    );
 
     // Test disabled cron
     let disabled_task = Task {
         cron_enabled: false,
         ..task.clone()
     };
-    assert!(!is_cron_due(&disabled_task, schedule_time), "Disabled cron task should never be due");
+    assert!(
+        !is_cron_due(&disabled_task, schedule_time),
+        "Disabled cron task should never be due"
+    );
 
     // Test task with no schedule
     let no_schedule_task = Task {
         cron_schedule: None,
         ..task.clone()
     };
-    assert!(!is_cron_due(&no_schedule_task, schedule_time), "Task with no schedule should never be due");
+    assert!(
+        !is_cron_due(&no_schedule_task, schedule_time),
+        "Task with no schedule should never be due"
+    );
 }
 
 #[test]
@@ -68,27 +92,36 @@ fn test_cron_due_with_last_fire() {
         id: "test-cron".to_string(),
         title: "Test Cron Task".to_string(),
         cron_enabled: true,
-        cron_schedule: Some("0 0 2 * * *".to_string()),  // Daily at 2 AM
-        last_cron_fire: Some("2024-01-01T02:00:00Z".to_string()),  // Fired at 2 AM on Jan 1
+        cron_schedule: Some("0 0 2 * * *".to_string()), // Daily at 2 AM
+        last_cron_fire: Some("2024-01-01T02:00:00Z".to_string()), // Fired at 2 AM on Jan 1
         ..create_test_task()
     };
 
     // Test at 1 AM next day - should not be due yet
     let early_time = Utc.with_ymd_and_hms(2024, 1, 2, 1, 0, 0).unwrap();
-    assert!(!is_cron_due(&task, early_time), "Task should not be due before next scheduled time");
+    assert!(
+        !is_cron_due(&task, early_time),
+        "Task should not be due before next scheduled time"
+    );
 
     // Test at 2 AM next day - should be due
     let due_time = Utc.with_ymd_and_hms(2024, 1, 2, 2, 0, 0).unwrap();
-    assert!(is_cron_due(&task, due_time), "Task should be due at next scheduled time");
+    assert!(
+        is_cron_due(&task, due_time),
+        "Task should be due at next scheduled time"
+    );
 
     // Test at 3 AM next day - should be due (missed window)
     let late_time = Utc.with_ymd_and_hms(2024, 1, 2, 3, 0, 0).unwrap();
-    assert!(is_cron_due(&task, late_time), "Task should be due even after missed window");
+    assert!(
+        is_cron_due(&task, late_time),
+        "Task should be due even after missed window"
+    );
 }
 
 #[test]
 fn test_next_fire_calculation() {
-    let schedule = parse_cron_expression("0 0 2 * * *").unwrap();  // Daily at 2 AM
+    let schedule = parse_cron_expression("0 0 2 * * *").unwrap(); // Daily at 2 AM
 
     // Test from 1 AM - next should be 2 AM same day
     let from_1am = Utc.with_ymd_and_hms(2024, 1, 1, 1, 0, 0).unwrap();
@@ -96,7 +129,11 @@ fn test_next_fire_calculation() {
     assert!(next.is_some(), "Should calculate next fire time");
     let next_time = next.unwrap();
     assert_eq!(next_time.hour(), 2, "Next fire should be at 2 AM");
-    assert_eq!(next_time.date_naive(), from_1am.date_naive(), "Next fire should be same day");
+    assert_eq!(
+        next_time.date_naive(),
+        from_1am.date_naive(),
+        "Next fire should be same day"
+    );
 
     // Test from 3 AM - next should be 2 AM next day
     let from_3am = Utc.with_ymd_and_hms(2024, 1, 1, 3, 0, 0).unwrap();
@@ -104,7 +141,11 @@ fn test_next_fire_calculation() {
     assert!(next.is_some(), "Should calculate next fire time");
     let next_time = next.unwrap();
     assert_eq!(next_time.hour(), 2, "Next fire should be at 2 AM");
-    assert_eq!(next_time.date_naive(), from_3am.date_naive().succ_opt().unwrap(), "Next fire should be next day");
+    assert_eq!(
+        next_time.date_naive(),
+        from_3am.date_naive().succ_opt().unwrap(),
+        "Next fire should be next day"
+    );
 }
 
 #[test]
@@ -122,18 +163,42 @@ fn test_cron_task_serialization() {
 
     // Test serialization
     let json = serde_json::to_string(&Node::Task(task.clone())).unwrap();
-    assert!(json.contains("\"cron_schedule\":\"0 2 * * *\""), "JSON should contain cron_schedule");
-    assert!(json.contains("\"cron_enabled\":true"), "JSON should contain cron_enabled");
-    assert!(json.contains("\"last_cron_fire\":\"2026-04-12T02:00:00Z\""), "JSON should contain last_cron_fire");
-    assert!(json.contains("\"next_cron_fire\":\"2026-04-13T02:00:00Z\""), "JSON should contain next_cron_fire");
+    assert!(
+        json.contains("\"cron_schedule\":\"0 2 * * *\""),
+        "JSON should contain cron_schedule"
+    );
+    assert!(
+        json.contains("\"cron_enabled\":true"),
+        "JSON should contain cron_enabled"
+    );
+    assert!(
+        json.contains("\"last_cron_fire\":\"2026-04-12T02:00:00Z\""),
+        "JSON should contain last_cron_fire"
+    );
+    assert!(
+        json.contains("\"next_cron_fire\":\"2026-04-13T02:00:00Z\""),
+        "JSON should contain next_cron_fire"
+    );
 
     // Test deserialization
     let deserialized: Node = serde_json::from_str(&json).unwrap();
     if let Node::Task(deserialized_task) = deserialized {
-        assert_eq!(deserialized_task.cron_schedule, task.cron_schedule, "cron_schedule should round-trip");
-        assert_eq!(deserialized_task.cron_enabled, task.cron_enabled, "cron_enabled should round-trip");
-        assert_eq!(deserialized_task.last_cron_fire, task.last_cron_fire, "last_cron_fire should round-trip");
-        assert_eq!(deserialized_task.next_cron_fire, task.next_cron_fire, "next_cron_fire should round-trip");
+        assert_eq!(
+            deserialized_task.cron_schedule, task.cron_schedule,
+            "cron_schedule should round-trip"
+        );
+        assert_eq!(
+            deserialized_task.cron_enabled, task.cron_enabled,
+            "cron_enabled should round-trip"
+        );
+        assert_eq!(
+            deserialized_task.last_cron_fire, task.last_cron_fire,
+            "last_cron_fire should round-trip"
+        );
+        assert_eq!(
+            deserialized_task.next_cron_fire, task.next_cron_fire,
+            "next_cron_fire should round-trip"
+        );
     } else {
         panic!("Deserialized node should be a Task");
     }
@@ -152,7 +217,7 @@ fn test_cron_workflow_end_to_end() {
         title: "Nightly Cleanup".to_string(),
         description: Some("Clean up old logs and temp files".to_string()),
         cron_enabled: true,
-        cron_schedule: Some("0 0 2 * * *".to_string()),  // Daily at 2 AM
+        cron_schedule: Some("0 0 2 * * *".to_string()), // Daily at 2 AM
         last_cron_fire: None,
         next_cron_fire: None,
         ..create_test_task()
@@ -168,8 +233,15 @@ fn test_cron_workflow_end_to_end() {
     let task = loaded_graph.get_task("nightly-cleanup").unwrap();
 
     assert!(task.cron_enabled, "Cron should be enabled");
-    assert_eq!(task.cron_schedule, Some("0 0 2 * * *".to_string()), "Cron schedule should be preserved");
-    assert!(task.last_cron_fire.is_none(), "Last fire should initially be None");
+    assert_eq!(
+        task.cron_schedule,
+        Some("0 0 2 * * *".to_string()),
+        "Cron schedule should be preserved"
+    );
+    assert!(
+        task.last_cron_fire.is_none(),
+        "Last fire should initially be None"
+    );
 }
 
 /// Helper to create a default test task

@@ -435,13 +435,7 @@ fn has_trailing_descriptive_words(cmd: &str) -> bool {
     let cmd = cmd.trim().to_lowercase();
 
     // Common trailing words that indicate descriptive text
-    let trailing_descriptive_words = &[
-        "passes",
-        "succeeds",
-        "works",
-        "runs",
-        "compiles",
-    ];
+    let trailing_descriptive_words = &["passes", "succeeds", "works", "runs", "compiles"];
 
     for word in trailing_descriptive_words {
         if cmd.ends_with(word) {

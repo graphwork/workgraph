@@ -312,7 +312,7 @@ pub fn connect(user: Option<&str>) -> Result<()> {
     // Check if the session already exists
     let has_session = Command::new("tmux")
         .args(["has-session", "-t", &session_name])
-        .stderr(std::process::Stdio::null())  // Suppress stderr to avoid terminal errors in test environments
+        .stderr(std::process::Stdio::null()) // Suppress stderr to avoid terminal errors in test environments
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -322,7 +322,7 @@ pub fn connect(user: Option<&str>) -> Result<()> {
         let status = Command::new("tmux")
             .args(["attach-session", "-t", &session_name])
             .env("WG_USER", &user)
-            .stderr(std::process::Stdio::null())  // Suppress stderr to avoid terminal errors in test environments
+            .stderr(std::process::Stdio::null()) // Suppress stderr to avoid terminal errors in test environments
             .status()
             .context("Failed to attach to tmux session")?;
         if !status.success() {
@@ -333,7 +333,7 @@ pub fn connect(user: Option<&str>) -> Result<()> {
         let status = Command::new("tmux")
             .args(["new-session", "-s", &session_name])
             .env("WG_USER", &user)
-            .stderr(std::process::Stdio::null())  // Suppress stderr to avoid terminal errors in test environments
+            .stderr(std::process::Stdio::null()) // Suppress stderr to avoid terminal errors in test environments
             .status()
             .context("Failed to create tmux session")?;
         if !status.success() {

@@ -331,7 +331,14 @@ mod tests {
     fn test_run_unknown_status_filter() {
         let dir = tempdir().unwrap();
         setup_workgraph(dir.path(), vec![make_task("t1", "Task", Status::Open)]);
-        let result = run(dir.path(), Some("nonexistent-status"), false, &[], None, false);
+        let result = run(
+            dir.path(),
+            Some("nonexistent-status"),
+            false,
+            &[],
+            None,
+            false,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown status"));
     }

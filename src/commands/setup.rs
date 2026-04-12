@@ -565,30 +565,31 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
     // Validate if we have a key and validation is not skipped
     let mut discovered_model_ids = Vec::new();
     if let Some(ref key) = api_key
-        && !args.skip_validation {
-            eprintln!("Validating API key for {} ...", provider);
-            match validate_api_key(provider, key, Some(url)) {
-                Ok(result) => {
-                    if result.success {
-                        eprintln!(
-                            "  \u{2713} {} (found {} models)",
-                            result.message,
-                            result.model_ids.len()
-                        );
-                        discovered_model_ids = result.model_ids;
-                    } else {
-                        bail!(
-                            "API key validation failed: {} (status {})",
-                            result.message,
-                            result.status_code
-                        );
-                    }
-                }
-                Err(e) => {
-                    bail!("Could not connect to {} API: {}", provider, e);
+        && !args.skip_validation
+    {
+        eprintln!("Validating API key for {} ...", provider);
+        match validate_api_key(provider, key, Some(url)) {
+            Ok(result) => {
+                if result.success {
+                    eprintln!(
+                        "  \u{2713} {} (found {} models)",
+                        result.message,
+                        result.model_ids.len()
+                    );
+                    discovered_model_ids = result.model_ids;
+                } else {
+                    bail!(
+                        "API key validation failed: {} (status {})",
+                        result.message,
+                        result.status_code
+                    );
                 }
             }
+            Err(e) => {
+                bail!("Could not connect to {} API: {}", provider, e);
+            }
         }
+    }
 
     // Build model registry from discovered or use defaults
     let model_registry_entries = if !discovered_model_ids.is_empty() {
@@ -693,12 +694,13 @@ fn resolve_key_from_args(args: &SetupArgs) -> Result<Option<String>> {
     }
 
     if let Some(ref env_var) = args.api_key_env
-        && let Ok(key) = std::env::var(env_var) {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                return Ok(Some(key));
-            }
+        && let Ok(key) = std::env::var(env_var)
+    {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Ok(Some(key));
         }
+    }
 
     // Try provider-specific env vars
     let provider = args.provider.as_deref().unwrap_or("anthropic");
@@ -717,12 +719,13 @@ fn resolve_key_from_args(args: &SetupArgs) -> Result<Option<String>> {
 /// Resolve an API key from EndpointChoices (reading env var or key file).
 fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
     if let Some(ref env_var) = ep.api_key_env
-        && let Ok(key) = std::env::var(env_var) {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                return Some(key);
-            }
+        && let Ok(key) = std::env::var(env_var)
+    {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Some(key);
         }
+    }
     if let Some(ref file_path) = ep.api_key_file {
         let expanded = if file_path.starts_with('~') {
             if let Some(home) = dirs::home_dir() {
@@ -1706,21 +1709,22 @@ fn guide_notification_setup() -> Result<String> {
     // Check if already configured
     if let Some(ref path) = config_path
         && path.exists()
-            && let Ok(Some(existing)) = notify_config::NotifyConfig::load_default() {
-                let summary = existing.status_summary();
-                println!("  Notifications already configured:");
-                for line in summary.lines() {
-                    println!("    {}", line);
-                }
+        && let Ok(Some(existing)) = notify_config::NotifyConfig::load_default()
+    {
+        let summary = existing.status_summary();
+        println!("  Notifications already configured:");
+        for line in summary.lines() {
+            println!("    {}", line);
+        }
 
-                let update = Confirm::new()
-                    .with_prompt("Reconfigure notifications?")
-                    .default(false)
-                    .interact()?;
-                if !update {
-                    return Ok("already configured ✓".to_string());
-                }
-            }
+        let update = Confirm::new()
+            .with_prompt("Reconfigure notifications?")
+            .default(false)
+            .interact()?;
+        if !update {
+            return Ok("already configured ✓".to_string());
+        }
+    }
 
     let channel_options = &[
         "Telegram",

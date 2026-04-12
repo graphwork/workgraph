@@ -14,7 +14,7 @@ use workgraph::graph::{
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::profile;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
-use workgraph::service::{ProviderHealth, ProviderErrorKind, classify_error, extract_provider_id};
+use workgraph::service::{ProviderErrorKind, ProviderHealth, classify_error, extract_provider_id};
 use workgraph::stream_event::{self, StreamEvent};
 
 use crate::commands::is_process_alive;
@@ -140,7 +140,11 @@ fn check_stream_liveness(agent: &AgentEntry) -> Option<i64> {
 /// `grace_period_secs` is the minimum uptime before a dead PID is acted on.
 /// This avoids race conditions where the coordinator registers a PID but the
 /// process hasn't fully started yet.
-fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64, heartbeat_timeout_secs: i64) -> Option<DeadReason> {
+fn detect_dead_reason(
+    agent: &AgentEntry,
+    grace_period_secs: i64,
+    heartbeat_timeout_secs: i64,
+) -> Option<DeadReason> {
     if !agent.is_alive() {
         return None;
     }
@@ -170,7 +174,10 @@ fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64, heartbeat_time
     }
 
     // Check for heartbeat timeout
-    if let Ok(last_hb) = agent.last_heartbeat.parse::<chrono::DateTime<chrono::Utc>>() {
+    if let Ok(last_hb) = agent
+        .last_heartbeat
+        .parse::<chrono::DateTime<chrono::Utc>>()
+    {
         let now = chrono::Utc::now();
         let since_heartbeat = (now - last_hb).num_seconds();
         if since_heartbeat > heartbeat_timeout_secs {
@@ -497,7 +504,8 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 );
 
                 // Attempt fallback cleanup by scanning for agent worktrees
-                if let Err(fallback_err) = attempt_fallback_worktree_cleanup(project_root, agent_id) {
+                if let Err(fallback_err) = attempt_fallback_worktree_cleanup(project_root, agent_id)
+                {
                     eprintln!(
                         "[triage] Fallback worktree cleanup also failed for agent {}: {}",
                         agent_id, fallback_err
@@ -510,11 +518,17 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     // Provider health tracking: analyze dead agents for provider failure patterns
     if !dead.is_empty() {
         if let Err(e) = track_provider_health(dir, &dead, &locked_registry, &config) {
-            eprintln!("[coordinator] Warning: provider health tracking failed: {}", e);
+            eprintln!(
+                "[coordinator] Warning: provider health tracking failed: {}",
+                e
+            );
         }
 
         // Log metrics summary when dead agents are cleaned
-        eprintln!("[triage] Dead agent cleanup completed for {} agents", dead.len());
+        eprintln!(
+            "[triage] Dead agent cleanup completed for {} agents",
+            dead.len()
+        );
         log_metrics_summary();
     }
 
@@ -540,7 +554,10 @@ fn track_provider_health(
         let agent = match locked_registry.get_agent(agent_id) {
             Some(a) => a,
             None => {
-                eprintln!("[provider-health] Warning: agent {} not found in registry", agent_id);
+                eprintln!(
+                    "[provider-health] Warning: agent {} not found in registry",
+                    agent_id
+                );
                 continue;
             }
         };
@@ -577,7 +594,10 @@ fn track_provider_health(
                 provider_health.record_failure(
                     &provider_id,
                     error_kind,
-                    task.failure_reason.as_deref().unwrap_or("unknown error").to_string(),
+                    task.failure_reason
+                        .as_deref()
+                        .unwrap_or("unknown error")
+                        .to_string(),
                 );
             }
             ProviderErrorKind::Transient | ProviderErrorKind::FatalTask => {
@@ -609,7 +629,10 @@ fn track_provider_health(
     if provider_health.service_paused {
         eprintln!(
             "[provider-health] Service paused: {}",
-            provider_health.pause_reason.as_deref().unwrap_or("unknown reason")
+            provider_health
+                .pause_reason
+                .as_deref()
+                .unwrap_or("unknown reason")
         );
     }
 
@@ -830,9 +853,10 @@ fn try_escalate_model(task: &mut Task, dir: &Path, config: &Config) {
     // but only persist it if escalation actually succeeds.
     let mut tried_with_current = task.tried_models.clone();
     if let Some(ref current) = task.model
-        && !tried_with_current.contains(current) {
-            tried_with_current.push(current.clone());
-        }
+        && !tried_with_current.contains(current)
+    {
+        tried_with_current.push(current.clone());
+    }
 
     if let Some(result) = profile::escalate_model(
         dir,
@@ -1140,7 +1164,10 @@ fn attempt_fallback_worktree_cleanup(project_root: &Path, agent_id: &str) -> Res
                         cleanup_errors.join("; ")
                     );
                 } else {
-                    eprintln!("[triage] Successfully completed fallback cleanup for agent {}", agent_id);
+                    eprintln!(
+                        "[triage] Successfully completed fallback cleanup for agent {}",
+                        agent_id
+                    );
                 }
             }
         }
@@ -1945,7 +1972,12 @@ mod tests {
 
         let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse metadata.json"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to parse metadata.json")
+        );
     }
 
     #[test]

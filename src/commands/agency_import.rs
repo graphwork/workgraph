@@ -157,9 +157,10 @@ pub fn run_from_bytes(
 
         let mut parent_ids = vec![];
         if let Some(ref pch) = parent_content_hash
-            && !pch.is_empty() {
-                parent_ids.push(pch.clone());
-            }
+            && !pch.is_empty()
+        {
+            parent_ids.push(pch.clone());
+        }
 
         let lineage = Lineage {
             parent_ids,
@@ -365,48 +366,49 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
 
     // Change detection: compare hash of fetched CSV against manifest
     if (!opts.force || opts.check)
-        && let Some(existing_manifest) = read_manifest(workgraph_dir)? {
-            // Fetch and check
-            let csv_bytes = match fetch_csv(&url) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    if opts.check {
-                        eprintln!("Warning: could not fetch upstream: {}", e);
-                        std::process::exit(2);
-                    }
-                    return Err(e);
+        && let Some(existing_manifest) = read_manifest(workgraph_dir)?
+    {
+        // Fetch and check
+        let csv_bytes = match fetch_csv(&url) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                if opts.check {
+                    eprintln!("Warning: could not fetch upstream: {}", e);
+                    std::process::exit(2);
                 }
-            };
-            let new_hash = sha256_hex(&csv_bytes);
-
-            if opts.check {
-                if new_hash == existing_manifest.content_hash {
-                    println!("Up to date (hash: {}…)", &new_hash[..12]);
-                    std::process::exit(1);
-                } else {
-                    println!(
-                        "Upstream has changed (local: {}… remote: {}…)",
-                        &existing_manifest.content_hash[..12],
-                        &new_hash[..12]
-                    );
-                    std::process::exit(0);
-                }
+                return Err(e);
             }
+        };
+        let new_hash = sha256_hex(&csv_bytes);
 
-            if !opts.force && new_hash == existing_manifest.content_hash {
-                println!("Already up to date (hash: {}…)", &new_hash[..12]);
-                return Ok(ImportCounts::default());
+        if opts.check {
+            if new_hash == existing_manifest.content_hash {
+                println!("Up to date (hash: {}…)", &new_hash[..12]);
+                std::process::exit(1);
+            } else {
+                println!(
+                    "Upstream has changed (local: {}… remote: {}…)",
+                    &existing_manifest.content_hash[..12],
+                    &new_hash[..12]
+                );
+                std::process::exit(0);
             }
-
-            // Hash differs — import
-            return run_from_bytes(
-                workgraph_dir,
-                &url,
-                &csv_bytes,
-                opts.dry_run,
-                opts.tag.as_deref(),
-            );
         }
+
+        if !opts.force && new_hash == existing_manifest.content_hash {
+            println!("Already up to date (hash: {}…)", &new_hash[..12]);
+            return Ok(ImportCounts::default());
+        }
+
+        // Hash differs — import
+        return run_from_bytes(
+            workgraph_dir,
+            &url,
+            &csv_bytes,
+            opts.dry_run,
+            opts.tag.as_deref(),
+        );
+    }
 
     // No existing manifest or --force: fetch and import
     let csv_bytes = match fetch_csv(&url) {
@@ -544,9 +546,10 @@ fn parse_agency_columns(
         metadata.insert("origin_instance_id".to_string(), origin_instance_id);
     }
     if let Some(ref pch) = parent_content_hash
-        && !pch.is_empty() {
-            metadata.insert("parent_content_hash".to_string(), pch.clone());
-        }
+        && !pch.is_empty()
+    {
+        metadata.insert("parent_content_hash".to_string(), pch.clone());
+    }
 
     (quality_score, domain_tags, metadata, parent_content_hash)
 }

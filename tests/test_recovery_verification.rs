@@ -86,13 +86,18 @@ fn cleanup_dead_agent_worktree(
     branch: &str,
     agent_id: &str,
 ) {
-    eprintln!("[test] Cleaning up dead agent {} worktree {:?} (branch: {})",
-        agent_id, worktree_path, branch);
+    eprintln!(
+        "[test] Cleaning up dead agent {} worktree {:?} (branch: {})",
+        agent_id, worktree_path, branch
+    );
 
     // Recover commits before removing
     let commit_count = recover_commits(project_root, branch, agent_id);
     if commit_count > 0 {
-        eprintln!("[test] Recovered {} commits from dead agent {}", commit_count, agent_id);
+        eprintln!(
+            "[test] Recovered {} commits from dead agent {}",
+            commit_count, agent_id
+        );
     }
 
     // Remove the worktree
@@ -152,7 +157,11 @@ fn init_git_repo(path: &Path) {
 }
 
 /// Create a test worktree using git commands
-fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
+fn create_test_worktree(
+    project_root: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<PathBuf, String> {
     let worktree_dir = project_root.join(WORKTREES_DIR).join(agent_id);
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -209,7 +218,12 @@ fn add_uncommitted_changes(worktree_path: &Path, content: &str) -> Result<(), St
 }
 
 /// Add and commit changes to a worktree (simulating committed agent work)
-fn add_committed_changes(worktree_path: &Path, filename: &str, content: &str, commit_msg: &str) -> Result<(), String> {
+fn add_committed_changes(
+    worktree_path: &Path,
+    filename: &str,
+    content: &str,
+    commit_msg: &str,
+) -> Result<(), String> {
     fs::write(worktree_path.join(filename), content)
         .map_err(|e| format!("Failed to write committed work: {}", e))?;
 
@@ -259,7 +273,11 @@ fn branch_exists(project_root: &Path, branch: &str) -> bool {
 }
 
 /// Get the content of a file from a specific branch
-fn get_file_content_from_branch(project_root: &Path, branch: &str, filename: &str) -> Result<String, String> {
+fn get_file_content_from_branch(
+    project_root: &Path,
+    branch: &str,
+    filename: &str,
+) -> Result<String, String> {
     let output = Command::new("git")
         .args(["show", &format!("{}:{}", branch, filename)])
         .current_dir(project_root)
@@ -300,16 +318,21 @@ fn test_recovery_verification_branch_creation() {
 
     let agent_id = "agent-recovery-1";
     let task_id = "task-recovery-test";
-    let worktree_path = create_test_worktree(&project, agent_id, task_id)
-        .expect("Failed to create test worktree");
+    let worktree_path =
+        create_test_worktree(&project, agent_id, task_id).expect("Failed to create test worktree");
 
     // Add committed work to the worktree
-    add_committed_changes(&worktree_path, "agent_work.txt", "Important agent work", "Add agent work")
-        .expect("Failed to add committed changes");
+    add_committed_changes(
+        &worktree_path,
+        "agent_work.txt",
+        "Important agent work",
+        "Add agent work",
+    )
+    .expect("Failed to add committed changes");
 
     // Find the branch name
-    let branch = find_branch_for_worktree(&project, &worktree_path)
-        .expect("Failed to find worktree branch");
+    let branch =
+        find_branch_for_worktree(&project, &worktree_path).expect("Failed to find worktree branch");
 
     // Test recovery branch creation
     let commit_count = recover_commits(&project, &branch, agent_id);
@@ -323,10 +346,14 @@ fn test_recovery_verification_branch_creation() {
     );
 
     // Verify recovery branch contains the committed work
-    let recovered_content = get_file_content_from_branch(&project, &expected_recovery_branch, "agent_work.txt")
-        .expect("Failed to get content from recovery branch");
-    assert_eq!(recovered_content.trim(), "Important agent work",
-        "Recovery branch should preserve committed work content");
+    let recovered_content =
+        get_file_content_from_branch(&project, &expected_recovery_branch, "agent_work.txt")
+            .expect("Failed to get content from recovery branch");
+    assert_eq!(
+        recovered_content.trim(),
+        "Important agent work",
+        "Recovery branch should preserve committed work content"
+    );
 }
 
 #[test]
@@ -339,8 +366,16 @@ fn test_recovery_verification_naming_pattern() {
 
     let test_cases = vec![
         ("agent-1", "task-simple", "recover/agent-1/task-simple"),
-        ("agent-complex-name", "task-with-dashes", "recover/agent-complex-name/task-with-dashes"),
-        ("agent-123", "task-abc-456", "recover/agent-123/task-abc-456"),
+        (
+            "agent-complex-name",
+            "task-with-dashes",
+            "recover/agent-complex-name/task-with-dashes",
+        ),
+        (
+            "agent-123",
+            "task-abc-456",
+            "recover/agent-123/task-abc-456",
+        ),
     ];
 
     for (agent_id, task_id, expected_recovery) in test_cases {
@@ -385,44 +420,80 @@ fn test_recovery_verification_content_preservation() {
 
     let agent_id = "agent-preservation";
     let task_id = "task-content-test";
-    let worktree_path = create_test_worktree(&project, agent_id, task_id)
-        .expect("Failed to create test worktree");
+    let worktree_path =
+        create_test_worktree(&project, agent_id, task_id).expect("Failed to create test worktree");
 
     // Add multiple files with different types of content
-    add_committed_changes(&worktree_path, "code.rs", "fn main() { println!(\"Hello\"); }", "Add Rust code")
-        .expect("Failed to add code file");
-    add_committed_changes(&worktree_path, "data.json", r#"{"key": "value", "num": 42}"#, "Add JSON data")
-        .expect("Failed to add JSON file");
-    add_committed_changes(&worktree_path, "README.md", "# Project\n\nThis is important work.", "Add documentation")
-        .expect("Failed to add README");
+    add_committed_changes(
+        &worktree_path,
+        "code.rs",
+        "fn main() { println!(\"Hello\"); }",
+        "Add Rust code",
+    )
+    .expect("Failed to add code file");
+    add_committed_changes(
+        &worktree_path,
+        "data.json",
+        r#"{"key": "value", "num": 42}"#,
+        "Add JSON data",
+    )
+    .expect("Failed to add JSON file");
+    add_committed_changes(
+        &worktree_path,
+        "README.md",
+        "# Project\n\nThis is important work.",
+        "Add documentation",
+    )
+    .expect("Failed to add README");
 
     let branch = format!("wg/{}/{}", agent_id, task_id);
     let commit_count = recover_commits(&project, &branch, agent_id);
     assert_eq!(commit_count, 3, "Should recover all 3 commits");
 
     let recovery_branch = format!("recover/{}/{}", agent_id, task_id);
-    assert!(branch_exists(&project, &recovery_branch), "Recovery branch should exist");
+    assert!(
+        branch_exists(&project, &recovery_branch),
+        "Recovery branch should exist"
+    );
 
     // Verify all files are preserved with correct content
     let code_content = get_file_content_from_branch(&project, &recovery_branch, "code.rs")
         .expect("Failed to get code content");
-    assert_eq!(code_content.trim(), "fn main() { println!(\"Hello\"); }",
-        "Rust code should be preserved exactly");
+    assert_eq!(
+        code_content.trim(),
+        "fn main() { println!(\"Hello\"); }",
+        "Rust code should be preserved exactly"
+    );
 
     let json_content = get_file_content_from_branch(&project, &recovery_branch, "data.json")
         .expect("Failed to get JSON content");
-    assert_eq!(json_content.trim(), r#"{"key": "value", "num": 42}"#,
-        "JSON data should be preserved exactly");
+    assert_eq!(
+        json_content.trim(),
+        r#"{"key": "value", "num": 42}"#,
+        "JSON data should be preserved exactly"
+    );
 
     let readme_content = get_file_content_from_branch(&project, &recovery_branch, "README.md")
         .expect("Failed to get README content");
-    assert_eq!(readme_content.trim(), "# Project\n\nThis is important work.",
-        "README should be preserved with formatting");
+    assert_eq!(
+        readme_content.trim(),
+        "# Project\n\nThis is important work.",
+        "README should be preserved with formatting"
+    );
 
     // Verify original files still exist in worktree (before cleanup)
-    assert!(worktree_path.join("code.rs").exists(), "Original files should exist in worktree");
-    assert!(worktree_path.join("data.json").exists(), "Original files should exist in worktree");
-    assert!(worktree_path.join("README.md").exists(), "Original files should exist in worktree");
+    assert!(
+        worktree_path.join("code.rs").exists(),
+        "Original files should exist in worktree"
+    );
+    assert!(
+        worktree_path.join("data.json").exists(),
+        "Original files should exist in worktree"
+    );
+    assert!(
+        worktree_path.join("README.md").exists(),
+        "Original files should exist in worktree"
+    );
 }
 
 #[test]
@@ -448,12 +519,21 @@ fn test_recovery_verification_multiple_branches() {
             .expect("Failed to create test worktree");
 
         // Add unique work for each task
-        add_committed_changes(&worktree_path, "task_work.txt", work_content, &format!("Work for {}", task_id))
-            .expect("Failed to add committed changes");
+        add_committed_changes(
+            &worktree_path,
+            "task_work.txt",
+            work_content,
+            &format!("Work for {}", task_id),
+        )
+        .expect("Failed to add committed changes");
 
         let branch = format!("wg/{}/{}", agent_id, task_id);
         let commit_count = recover_commits(&project, &branch, agent_id);
-        assert_eq!(commit_count, 1, "Should recover 1 commit for task {}", task_id);
+        assert_eq!(
+            commit_count, 1,
+            "Should recover 1 commit for task {}",
+            task_id
+        );
 
         let recovery_branch = format!("recover/{}/{}", agent_id, task_id);
         recovery_branches.push((recovery_branch.clone(), work_content.to_string()));
@@ -466,13 +546,21 @@ fn test_recovery_verification_multiple_branches() {
     }
 
     // Verify all recovery branches exist simultaneously and have correct content
-    assert_eq!(recovery_branches.len(), 3, "Should have 3 recovery branches");
+    assert_eq!(
+        recovery_branches.len(),
+        3,
+        "Should have 3 recovery branches"
+    );
 
     for (recovery_branch, expected_content) in &recovery_branches {
         let content = get_file_content_from_branch(&project, recovery_branch, "task_work.txt")
             .expect("Failed to get task work content");
-        assert_eq!(content.trim(), expected_content,
-            "Recovery branch {} should have correct content", recovery_branch);
+        assert_eq!(
+            content.trim(),
+            expected_content,
+            "Recovery branch {} should have correct content",
+            recovery_branch
+        );
     }
 
     // Verify all branches follow correct naming pattern for same agent
@@ -480,14 +568,27 @@ fn test_recovery_verification_multiple_branches() {
     let beta_branch = "recover/agent-multi/task-beta";
     let gamma_branch = "recover/agent-multi/task-gamma";
 
-    assert!(branch_exists(&project, alpha_branch), "Alpha recovery branch should exist");
-    assert!(branch_exists(&project, beta_branch), "Beta recovery branch should exist");
-    assert!(branch_exists(&project, gamma_branch), "Gamma recovery branch should exist");
+    assert!(
+        branch_exists(&project, alpha_branch),
+        "Alpha recovery branch should exist"
+    );
+    assert!(
+        branch_exists(&project, beta_branch),
+        "Beta recovery branch should exist"
+    );
+    assert!(
+        branch_exists(&project, gamma_branch),
+        "Gamma recovery branch should exist"
+    );
 
     // Verify branch names are distinct and don't conflict
     let all_branches = vec![alpha_branch, beta_branch, gamma_branch];
     let unique_branches: std::collections::HashSet<_> = all_branches.iter().collect();
-    assert_eq!(unique_branches.len(), 3, "All recovery branch names should be unique");
+    assert_eq!(
+        unique_branches.len(),
+        3,
+        "All recovery branch names should be unique"
+    );
 }
 
 #[test]
@@ -501,41 +602,69 @@ fn test_recovery_verification_uncommitted_scenario() {
 
     let agent_id = "agent-mixed";
     let task_id = "task-mixed-work";
-    let worktree_path = create_test_worktree(&project, agent_id, task_id)
-        .expect("Failed to create test worktree");
+    let worktree_path =
+        create_test_worktree(&project, agent_id, task_id).expect("Failed to create test worktree");
 
     // Add committed work first
-    add_committed_changes(&worktree_path, "committed.txt", "This is committed work", "Add committed work")
-        .expect("Failed to add committed changes");
+    add_committed_changes(
+        &worktree_path,
+        "committed.txt",
+        "This is committed work",
+        "Add committed work",
+    )
+    .expect("Failed to add committed changes");
 
     // Add uncommitted changes
-    simulate_uncommitted_work(&worktree_path)
-        .expect("Failed to simulate uncommitted work");
+    simulate_uncommitted_work(&worktree_path).expect("Failed to simulate uncommitted work");
 
     // Verify uncommitted changes exist before recovery
-    assert!(worktree_path.join("uncommitted_work.txt").exists(), "Uncommitted work should exist");
-    assert!(worktree_path.join("unstaged_work.txt").exists(), "Unstaged work should exist");
+    assert!(
+        worktree_path.join("uncommitted_work.txt").exists(),
+        "Uncommitted work should exist"
+    );
+    assert!(
+        worktree_path.join("unstaged_work.txt").exists(),
+        "Unstaged work should exist"
+    );
 
     let branch = format!("wg/{}/{}", agent_id, task_id);
     let commit_count = recover_commits(&project, &branch, agent_id);
-    assert_eq!(commit_count, 1, "Should recover committed work even with uncommitted changes present");
+    assert_eq!(
+        commit_count, 1,
+        "Should recover committed work even with uncommitted changes present"
+    );
 
     let recovery_branch = format!("recover/{}/{}", agent_id, task_id);
-    assert!(branch_exists(&project, &recovery_branch), "Recovery branch should exist");
+    assert!(
+        branch_exists(&project, &recovery_branch),
+        "Recovery branch should exist"
+    );
 
     // Verify committed work is preserved in recovery branch
-    let committed_content = get_file_content_from_branch(&project, &recovery_branch, "committed.txt")
-        .expect("Failed to get committed content from recovery branch");
-    assert_eq!(committed_content.trim(), "This is committed work",
-        "Committed work should be preserved in recovery branch");
+    let committed_content =
+        get_file_content_from_branch(&project, &recovery_branch, "committed.txt")
+            .expect("Failed to get committed content from recovery branch");
+    assert_eq!(
+        committed_content.trim(),
+        "This is committed work",
+        "Committed work should be preserved in recovery branch"
+    );
 
     // Verify that uncommitted files don't exist in the recovery branch
     // (This is expected behavior - only committed work is recoverable via branches)
-    let uncommitted_result = get_file_content_from_branch(&project, &recovery_branch, "uncommitted_work.txt");
-    assert!(uncommitted_result.is_err(), "Uncommitted work should not exist in recovery branch");
+    let uncommitted_result =
+        get_file_content_from_branch(&project, &recovery_branch, "uncommitted_work.txt");
+    assert!(
+        uncommitted_result.is_err(),
+        "Uncommitted work should not exist in recovery branch"
+    );
 
-    let unstaged_result = get_file_content_from_branch(&project, &recovery_branch, "unstaged_work.txt");
-    assert!(unstaged_result.is_err(), "Unstaged work should not exist in recovery branch");
+    let unstaged_result =
+        get_file_content_from_branch(&project, &recovery_branch, "unstaged_work.txt");
+    assert!(
+        unstaged_result.is_err(),
+        "Unstaged work should not exist in recovery branch"
+    );
 }
 
 #[test]
@@ -548,20 +677,24 @@ fn test_recovery_verification_no_commits() {
 
     let agent_id = "agent-no-commits";
     let task_id = "task-no-work";
-    let worktree_path = create_test_worktree(&project, agent_id, task_id)
-        .expect("Failed to create test worktree");
+    let worktree_path =
+        create_test_worktree(&project, agent_id, task_id).expect("Failed to create test worktree");
 
     // Only add uncommitted changes, no commits
-    simulate_uncommitted_work(&worktree_path)
-        .expect("Failed to simulate uncommitted work");
+    simulate_uncommitted_work(&worktree_path).expect("Failed to simulate uncommitted work");
 
     let branch = format!("wg/{}/{}", agent_id, task_id);
     let commit_count = recover_commits(&project, &branch, agent_id);
-    assert_eq!(commit_count, 0, "Should not recover any commits when no commits exist");
+    assert_eq!(
+        commit_count, 0,
+        "Should not recover any commits when no commits exist"
+    );
 
     let recovery_branch = format!("recover/{}/{}", agent_id, task_id);
-    assert!(!branch_exists(&project, &recovery_branch),
-        "Recovery branch should not be created when no commits exist");
+    assert!(
+        !branch_exists(&project, &recovery_branch),
+        "Recovery branch should not be created when no commits exist"
+    );
 }
 
 #[test]
@@ -574,12 +707,17 @@ fn test_recovery_verification_cleanup_integration() {
 
     let agent_id = "agent-cleanup";
     let task_id = "task-cleanup-test";
-    let worktree_path = create_test_worktree(&project, agent_id, task_id)
-        .expect("Failed to create test worktree");
+    let worktree_path =
+        create_test_worktree(&project, agent_id, task_id).expect("Failed to create test worktree");
 
     // Add committed work
-    add_committed_changes(&worktree_path, "cleanup_work.txt", "Work before cleanup", "Work before cleanup")
-        .expect("Failed to add committed changes");
+    add_committed_changes(
+        &worktree_path,
+        "cleanup_work.txt",
+        "Work before cleanup",
+        "Work before cleanup",
+    )
+    .expect("Failed to add committed changes");
 
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -590,16 +728,26 @@ fn test_recovery_verification_cleanup_integration() {
     assert!(!worktree_path.exists(), "Worktree should be cleaned up");
 
     // Verify original branch is removed
-    assert!(!branch_exists(&project, &branch), "Original branch should be removed");
+    assert!(
+        !branch_exists(&project, &branch),
+        "Original branch should be removed"
+    );
 
     // Verify recovery branch exists and has correct content
     let recovery_branch = format!("recover/{}/{}", agent_id, task_id);
-    assert!(branch_exists(&project, &recovery_branch), "Recovery branch should exist after cleanup");
+    assert!(
+        branch_exists(&project, &recovery_branch),
+        "Recovery branch should exist after cleanup"
+    );
 
-    let recovered_content = get_file_content_from_branch(&project, &recovery_branch, "cleanup_work.txt")
-        .expect("Failed to get content from recovery branch");
-    assert_eq!(recovered_content.trim(), "Work before cleanup",
-        "Recovery branch should preserve work after cleanup");
+    let recovered_content =
+        get_file_content_from_branch(&project, &recovery_branch, "cleanup_work.txt")
+            .expect("Failed to get content from recovery branch");
+    assert_eq!(
+        recovered_content.trim(),
+        "Work before cleanup",
+        "Recovery branch should preserve work after cleanup"
+    );
 }
 
 #[cfg(test)]

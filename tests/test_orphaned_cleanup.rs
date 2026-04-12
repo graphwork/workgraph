@@ -79,7 +79,11 @@ max_recovery_branches = 10
 }
 
 /// Create a test worktree using git commands
-fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
+fn create_test_worktree(
+    project_root: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<PathBuf, String> {
     let worktree_dir = project_root.join(WORKTREES_DIR).join(agent_id);
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -124,8 +128,15 @@ fn create_agent_registry(service_dir: &Path, agents: Vec<(&str, u32, bool)>) -> 
     let now = chrono::Utc::now().to_rfc3339();
 
     for (agent_id, pid, is_alive) in agents {
-        let status = if is_alive { AgentStatus::Working } else { AgentStatus::Dead };
-        let task_id = format!("task-{}", agent_id.strip_prefix("agent-").unwrap_or(agent_id));
+        let status = if is_alive {
+            AgentStatus::Working
+        } else {
+            AgentStatus::Dead
+        };
+        let task_id = format!(
+            "task-{}",
+            agent_id.strip_prefix("agent-").unwrap_or(agent_id)
+        );
 
         let agent_entry = AgentEntry {
             id: agent_id.to_string(),
@@ -143,7 +154,8 @@ fn create_agent_registry(service_dir: &Path, agents: Vec<(&str, u32, bool)>) -> 
         registry.agents.insert(agent_id.to_string(), agent_entry);
     }
 
-    registry.save(service_dir)
+    registry
+        .save(service_dir)
         .map_err(|e| format!("Failed to save registry: {}", e))?;
 
     Ok(())
@@ -166,7 +178,10 @@ fn create_agent_metadata(agent_dir: &Path, agent_id: &str, task_id: &str, worktr
 }
 
 /// Simulate previous service run with leftover worktrees and dead agents
-fn setup_previous_service_scenario(project_root: &Path, num_orphans: usize) -> Vec<(String, String, PathBuf)> {
+fn setup_previous_service_scenario(
+    project_root: &Path,
+    num_orphans: usize,
+) -> Vec<(String, String, PathBuf)> {
     let mut orphans = Vec::new();
 
     for i in 0..num_orphans {
@@ -178,8 +193,11 @@ fn setup_previous_service_scenario(project_root: &Path, num_orphans: usize) -> V
             .expect("Failed to create test worktree");
 
         // Add some work to the worktree to simulate real usage
-        fs::write(worktree_path.join("work.txt"), format!("work from {}", agent_id))
-            .expect("Failed to write work file");
+        fs::write(
+            worktree_path.join("work.txt"),
+            format!("work from {}", agent_id),
+        )
+        .expect("Failed to write work file");
 
         // Create .workgraph symlink (as agents would)
         let wg_symlink = worktree_path.join(".workgraph");
@@ -203,7 +221,8 @@ fn setup_previous_service_scenario(project_root: &Path, num_orphans: usize) -> V
 
     // Create registry with dead agents (simulating previous run aftermath)
     let service_dir = project_root.join(".workgraph").join("service");
-    let dead_agents: Vec<(&str, u32, bool)> = orphans.iter()
+    let dead_agents: Vec<(&str, u32, bool)> = orphans
+        .iter()
         .map(|(agent_id, _, _)| (agent_id.as_str(), 12345, false)) // All dead
         .collect();
 
@@ -216,8 +235,8 @@ fn setup_previous_service_scenario(project_root: &Path, num_orphans: usize) -> V
 /// Simulate the orphan detection logic that would run during service startup
 fn detect_orphaned_worktrees(project_root: &Path) -> Result<Vec<String>, String> {
     let service_dir = project_root.join(".workgraph").join("service");
-    let registry = AgentRegistry::load(&service_dir)
-        .map_err(|e| format!("Failed to load registry: {}", e))?;
+    let registry =
+        AgentRegistry::load(&service_dir).map_err(|e| format!("Failed to load registry: {}", e))?;
 
     let worktrees_dir = project_root.join(WORKTREES_DIR);
     let mut orphans = Vec::new();
@@ -283,35 +302,53 @@ fn test_service_restart_orphaned_cleanup() {
 
     // Verify orphaned worktrees exist before cleanup
     for (_, _, worktree_path) in &orphan_info {
-        assert!(worktree_path.exists(), "Orphaned worktree should exist before cleanup");
-        assert!(worktree_path.join("work.txt").exists(), "Work file should exist in orphaned worktree");
+        assert!(
+            worktree_path.exists(),
+            "Orphaned worktree should exist before cleanup"
+        );
+        assert!(
+            worktree_path.join("work.txt").exists(),
+            "Work file should exist in orphaned worktree"
+        );
     }
 
     // Simulate service startup orphan detection
-    let detected_orphans = detect_orphaned_worktrees(&project)
-        .expect("Should detect orphaned worktrees");
+    let detected_orphans =
+        detect_orphaned_worktrees(&project).expect("Should detect orphaned worktrees");
 
-    assert_eq!(detected_orphans.len(), num_orphans, "Should detect all orphaned worktrees");
+    assert_eq!(
+        detected_orphans.len(),
+        num_orphans,
+        "Should detect all orphaned worktrees"
+    );
 
     // Verify detected orphans match our setup
     for (agent_id, _, _) in &orphan_info {
-        assert!(detected_orphans.contains(agent_id),
-            "Should detect orphan {}", agent_id);
+        assert!(
+            detected_orphans.contains(agent_id),
+            "Should detect orphan {}",
+            agent_id
+        );
     }
 
     // Simulate cleanup operations on detected orphans
     for agent_id in &detected_orphans {
-        simulate_cleanup_operations(&project, agent_id)
-            .expect("Cleanup operations should succeed");
+        simulate_cleanup_operations(&project, agent_id).expect("Cleanup operations should succeed");
     }
 
     // Verify cleanup results
     for (agent_id, _, worktree_path) in &orphan_info {
         if worktree_path.exists() {
-            assert!(!worktree_path.join(".workgraph").exists(),
-                "Symlink should be removed from {}", agent_id);
-            assert!(!worktree_path.join("target").exists(),
-                "Target directory should be removed from {}", agent_id);
+            assert!(
+                !worktree_path.join(".workgraph").exists(),
+                "Symlink should be removed from {}",
+                agent_id
+            );
+            assert!(
+                !worktree_path.join("target").exists(),
+                "Target directory should be removed from {}",
+                agent_id
+            );
         }
     }
 }
@@ -368,48 +405,68 @@ fn test_multiple_orphaned_agents_cleanup() {
         registry_agents.push((agent_id.as_str(), 67890, true)); // Alive
     }
 
-    create_agent_registry(&service_dir, registry_agents)
-        .expect("Failed to create mixed registry");
+    create_agent_registry(&service_dir, registry_agents).expect("Failed to create mixed registry");
 
     // Detect orphaned worktrees
-    let detected_orphans = detect_orphaned_worktrees(&project)
-        .expect("Should detect orphaned worktrees");
+    let detected_orphans =
+        detect_orphaned_worktrees(&project).expect("Should detect orphaned worktrees");
 
     // Verify only dead agents are detected as orphaned
-    assert_eq!(detected_orphans.len(), num_dead_with_worktrees,
-        "Should detect only dead agent worktrees as orphaned");
+    assert_eq!(
+        detected_orphans.len(),
+        num_dead_with_worktrees,
+        "Should detect only dead agent worktrees as orphaned"
+    );
 
     for (agent_id, _, _) in &dead_worktrees {
-        assert!(detected_orphans.contains(agent_id),
-            "Dead agent {} should be detected as orphaned", agent_id);
+        assert!(
+            detected_orphans.contains(agent_id),
+            "Dead agent {} should be detected as orphaned",
+            agent_id
+        );
     }
 
     for (agent_id, _, _) in &alive_worktrees {
-        assert!(!detected_orphans.contains(agent_id),
-            "Alive agent {} should NOT be detected as orphaned", agent_id);
+        assert!(
+            !detected_orphans.contains(agent_id),
+            "Alive agent {} should NOT be detected as orphaned",
+            agent_id
+        );
     }
 
     // Simulate cleanup on orphaned agents only
     for agent_id in &detected_orphans {
-        simulate_cleanup_operations(&project, agent_id)
-            .expect("Cleanup should succeed");
+        simulate_cleanup_operations(&project, agent_id).expect("Cleanup should succeed");
     }
 
     // Verify cleanup results: dead agent worktrees are cleaned
     for (agent_id, _, worktree_path) in &dead_worktrees {
         if worktree_path.exists() {
-            assert!(!worktree_path.join(".workgraph").exists(),
-                "Dead agent {} symlink should be removed", agent_id);
-            assert!(!worktree_path.join("target").exists(),
-                "Dead agent {} target should be removed", agent_id);
+            assert!(
+                !worktree_path.join(".workgraph").exists(),
+                "Dead agent {} symlink should be removed",
+                agent_id
+            );
+            assert!(
+                !worktree_path.join("target").exists(),
+                "Dead agent {} target should be removed",
+                agent_id
+            );
         }
     }
 
     // Verify alive agent worktrees are preserved
     for (agent_id, _, worktree_path) in &alive_worktrees {
-        assert!(worktree_path.exists(), "Alive agent {} worktree should be preserved", agent_id);
-        assert!(worktree_path.join("file.txt").exists(),
-            "Alive agent {} worktree should be intact", agent_id);
+        assert!(
+            worktree_path.exists(),
+            "Alive agent {} worktree should be preserved",
+            agent_id
+        );
+        assert!(
+            worktree_path.join("file.txt").exists(),
+            "Alive agent {} worktree should be intact",
+            agent_id
+        );
     }
 }
 
@@ -440,8 +497,7 @@ fn test_startup_coordinator_cleanup_integration() {
             barrier_clone.wait();
 
             // Detect orphaned worktrees
-            let orphans = detect_orphaned_worktrees(&*project_clone)
-                .unwrap_or_default();
+            let orphans = detect_orphaned_worktrees(&*project_clone).unwrap_or_default();
 
             // Simulate cleanup on detected orphans
             let mut cleanup_count = 0;
@@ -469,8 +525,7 @@ fn test_startup_coordinator_cleanup_integration() {
             thread::sleep(Duration::from_millis(10)); // Simulate coordinator tick delay
 
             // Detect any remaining orphaned worktrees (might find fewer if startup already ran)
-            let orphans = detect_orphaned_worktrees(&*project_clone)
-                .unwrap_or_default();
+            let orphans = detect_orphaned_worktrees(&*project_clone).unwrap_or_default();
 
             // Simulate additional cleanup operations
             let mut cleanup_count = 0;
@@ -503,28 +558,49 @@ fn test_startup_coordinator_cleanup_integration() {
 
     // Verify both cleanup attempts
     let results = cleanup_results.lock().unwrap();
-    assert_eq!(results.len(), 2, "Should have both startup and coordinator results");
+    assert_eq!(
+        results.len(),
+        2,
+        "Should have both startup and coordinator results"
+    );
 
-    let startup_result = results.iter().find(|(type_, _)| type_ == &"startup").unwrap();
-    let coordinator_result = results.iter().find(|(type_, _)| type_ == &"coordinator").unwrap();
+    let startup_result = results
+        .iter()
+        .find(|(type_, _)| type_ == &"startup")
+        .unwrap();
+    let coordinator_result = results
+        .iter()
+        .find(|(type_, _)| type_ == &"coordinator")
+        .unwrap();
 
     // Startup should clean up some orphans
-    assert!(startup_result.1 > 0, "Startup cleanup should clean some orphans, cleaned {}", startup_result.1);
+    assert!(
+        startup_result.1 > 0,
+        "Startup cleanup should clean some orphans, cleaned {}",
+        startup_result.1
+    );
 
     // Coordinator might find additional cleanup or nothing (depending on race timing)
-    println!("Startup cleaned: {}, Coordinator cleaned: {}", startup_result.1, coordinator_result.1);
+    println!(
+        "Startup cleaned: {}, Coordinator cleaned: {}",
+        startup_result.1, coordinator_result.1
+    );
 
     // Final verification: all orphaned worktree artifacts should be cleaned
     for (_, _, worktree_path) in &orphan_info {
         if worktree_path.exists() {
-            assert!(!worktree_path.join(".workgraph").exists(),
-                "Worktree symlinks should be cleaned up after integration");
+            assert!(
+                !worktree_path.join(".workgraph").exists(),
+                "Worktree symlinks should be cleaned up after integration"
+            );
 
             // Target cleanup might not happen if directories don't exist
             if worktree_path.join("target").exists() {
                 // If target still exists, it should be from a race condition - acceptable
-                println!("Target directory still exists after cleanup (race condition): {:?}",
-                    worktree_path.join("target"));
+                println!(
+                    "Target directory still exists after cleanup (race condition): {:?}",
+                    worktree_path.join("target")
+                );
             }
         }
     }
@@ -551,7 +627,11 @@ fn test_large_scale_orphaned_cleanup() {
         // Every 4th worktree gets nested directories
         if i % 4 == 0 {
             fs::create_dir_all(worktree_path.join("deep/nested/dir")).unwrap();
-            fs::write(worktree_path.join("deep/nested/dir/file.dat"), "nested data").unwrap();
+            fs::write(
+                worktree_path.join("deep/nested/dir/file.dat"),
+                "nested data",
+            )
+            .unwrap();
         }
 
         // All worktrees get agent metadata
@@ -565,10 +645,15 @@ fn test_large_scale_orphaned_cleanup() {
     let start_time = std::time::Instant::now();
 
     // Detect all orphaned worktrees
-    let detected_orphans = detect_orphaned_worktrees(&project)
-        .expect("Should detect orphaned worktrees");
+    let detected_orphans =
+        detect_orphaned_worktrees(&project).expect("Should detect orphaned worktrees");
 
-    assert_eq!(detected_orphans.len(), num_orphans, "Should detect all {} orphaned worktrees", num_orphans);
+    assert_eq!(
+        detected_orphans.len(),
+        num_orphans,
+        "Should detect all {} orphaned worktrees",
+        num_orphans
+    );
 
     // Simulate cleanup operations
     let mut cleaned_count = 0;
@@ -581,10 +666,18 @@ fn test_large_scale_orphaned_cleanup() {
     let elapsed = start_time.elapsed();
 
     // Verify cleanup succeeded
-    assert_eq!(cleaned_count, num_orphans, "Should clean up all {} orphaned worktrees", num_orphans);
+    assert_eq!(
+        cleaned_count, num_orphans,
+        "Should clean up all {} orphaned worktrees",
+        num_orphans
+    );
 
     // Verify reasonable performance (should complete in under 10 seconds for 20 worktrees)
-    assert!(elapsed.as_secs() < 10, "Large scale cleanup should complete in reasonable time, took {:?}", elapsed);
+    assert!(
+        elapsed.as_secs() < 10,
+        "Large scale cleanup should complete in reasonable time, took {:?}",
+        elapsed
+    );
 
     // Verify thorough cleanup - check a sample of the orphaned locations
     for (i, (agent_id, task_id, worktree_path)) in orphan_info.iter().enumerate() {
@@ -596,17 +689,27 @@ fn test_large_scale_orphaned_cleanup() {
             .output()
             .expect("Failed to list branches");
         let branches = String::from_utf8_lossy(&git_output.stdout);
-        assert!(branches.contains(&branch), "Branch {} should exist (not testing git cleanup in this test)", branch);
+        assert!(
+            branches.contains(&branch),
+            "Branch {} should exist (not testing git cleanup in this test)",
+            branch
+        );
 
         // Verify cleanup artifacts
         if worktree_path.exists() {
-            assert!(!worktree_path.join(".workgraph").exists(),
-                "Agent {} symlink should be removed", agent_id);
+            assert!(
+                !worktree_path.join(".workgraph").exists(),
+                "Agent {} symlink should be removed",
+                agent_id
+            );
 
             // Target directories should be cleaned up
             if i % 3 == 0 {
-                assert!(!worktree_path.join("target").exists(),
-                    "Agent {} target directory should be cleaned", agent_id);
+                assert!(
+                    !worktree_path.join("target").exists(),
+                    "Agent {} target directory should be cleaned",
+                    agent_id
+                );
             }
         }
     }
@@ -627,6 +730,8 @@ mod tests {
         // 3. Startup and coordinator cleanup coordinate properly without conflicts
         // 4. Large-scale cleanup operations remain efficient and thorough
 
-        println!("✅ Orphaned cleanup integration tests demonstrate proper service restart behavior");
+        println!(
+            "✅ Orphaned cleanup integration tests demonstrate proper service restart behavior"
+        );
     }
 }

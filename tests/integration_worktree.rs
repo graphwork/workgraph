@@ -3,8 +3,8 @@
 //! This verifies that agents running in isolated worktrees don't contend
 //! over cargo file locks, which was the #1 source of task failures.
 
-use std::process::{Command, Stdio};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 use tempfile::TempDir;
 
@@ -30,7 +30,9 @@ fn init_test_repo(path: &Path) {
         .expect("Failed to set git name");
 
     // Create a basic Rust project
-    std::fs::write(path.join("Cargo.toml"), r#"
+    std::fs::write(
+        path.join("Cargo.toml"),
+        r#"
 [package]
 name = "testproject"
 version = "0.1.0"
@@ -39,11 +41,15 @@ edition = "2021"
 [[bin]]
 name = "testbin"
 path = "src/main.rs"
-"#).expect("Failed to write Cargo.toml");
+"#,
+    )
+    .expect("Failed to write Cargo.toml");
 
     std::fs::create_dir_all(path.join("src")).expect("Failed to create src dir");
 
-    std::fs::write(path.join("src/main.rs"), r#"
+    std::fs::write(
+        path.join("src/main.rs"),
+        r#"
 fn main() {
     println!("Hello from test project");
 }
@@ -55,7 +61,9 @@ mod tests {
         assert_eq!(2 + 2, 4);
     }
 }
-"#).expect("Failed to write src/main.rs");
+"#,
+    )
+    .expect("Failed to write src/main.rs");
 
     // Initial commit
     Command::new("git")
@@ -76,7 +84,8 @@ fn create_test_worktree(project_root: &Path, agent_id: &str) -> std::path::PathB
     let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
     let branch = format!("wg/{}/test-task", agent_id);
 
-    std::fs::create_dir_all(&worktree_dir.parent().unwrap()).expect("Failed to create worktrees dir");
+    std::fs::create_dir_all(&worktree_dir.parent().unwrap())
+        .expect("Failed to create worktrees dir");
 
     let output = Command::new("git")
         .args(["worktree", "add"])
@@ -87,7 +96,10 @@ fn create_test_worktree(project_root: &Path, agent_id: &str) -> std::path::PathB
         .expect("Failed to create worktree");
 
     if !output.status.success() {
-        panic!("git worktree add failed: {}", String::from_utf8_lossy(&output.stderr));
+        panic!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     worktree_dir
@@ -154,9 +166,15 @@ fn test_worktree_cargo_isolation() {
 
     // If they were properly isolated, they should complete relatively quickly
     // (not serialized waiting for locks). This is a rough heuristic.
-    assert!(elapsed.as_secs() < 30, "Concurrent tests should complete in reasonable time if properly isolated");
+    assert!(
+        elapsed.as_secs() < 30,
+        "Concurrent tests should complete in reasonable time if properly isolated"
+    );
 
-    println!("✓ Worktree isolation test passed - concurrent cargo operations completed in {:?}", elapsed);
+    println!(
+        "✓ Worktree isolation test passed - concurrent cargo operations completed in {:?}",
+        elapsed
+    );
 }
 
 #[test]
@@ -165,7 +183,10 @@ fn test_worktree_isolation_default_config() {
 
     // Verify that worktree isolation is enabled by default
     let config = CoordinatorConfig::default();
-    assert!(config.worktree_isolation, "Worktree isolation should be enabled by default to prevent cargo lock contention");
+    assert!(
+        config.worktree_isolation,
+        "Worktree isolation should be enabled by default to prevent cargo lock contention"
+    );
 }
 
 #[test]
@@ -188,7 +209,10 @@ fn test_worktree_creates_separate_target_dirs() {
         .env("CARGO_TARGET_DIR", wt1.join("target"))
         .output()
         .expect("Failed to run cargo check in wt1");
-    assert!(output1.status.success(), "Cargo check should succeed in wt1");
+    assert!(
+        output1.status.success(),
+        "Cargo check should succeed in wt1"
+    );
 
     let output2 = Command::new("cargo")
         .arg("check")
@@ -196,16 +220,34 @@ fn test_worktree_creates_separate_target_dirs() {
         .env("CARGO_TARGET_DIR", wt2.join("target"))
         .output()
         .expect("Failed to run cargo check in wt2");
-    assert!(output2.status.success(), "Cargo check should succeed in wt2");
+    assert!(
+        output2.status.success(),
+        "Cargo check should succeed in wt2"
+    );
 
     // Verify separate target directories were created
-    assert!(wt1.join("target").exists(), "Worktree 1 should have its own target directory");
-    assert!(wt2.join("target").exists(), "Worktree 2 should have its own target directory");
+    assert!(
+        wt1.join("target").exists(),
+        "Worktree 1 should have its own target directory"
+    );
+    assert!(
+        wt2.join("target").exists(),
+        "Worktree 2 should have its own target directory"
+    );
 
     // Verify they are different directories
-    let target1_path = wt1.join("target").canonicalize().expect("Failed to canonicalize target1");
-    let target2_path = wt2.join("target").canonicalize().expect("Failed to canonicalize target2");
-    assert_ne!(target1_path, target2_path, "Each worktree should have a separate target directory");
+    let target1_path = wt1
+        .join("target")
+        .canonicalize()
+        .expect("Failed to canonicalize target1");
+    let target2_path = wt2
+        .join("target")
+        .canonicalize()
+        .expect("Failed to canonicalize target2");
+    assert_ne!(
+        target1_path, target2_path,
+        "Each worktree should have a separate target directory"
+    );
 
     println!("✓ Separate target directories test passed");
 }

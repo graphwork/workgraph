@@ -17,8 +17,8 @@ use workgraph::agency::{
 use workgraph::chat;
 use workgraph::config::Config;
 use workgraph::graph::{
-    LogEntry, Node, Priority, Status, Task, WaitCondition, WaitSpec, evaluate_all_cycle_failure_restarts,
-    evaluate_all_cycle_iterations,
+    LogEntry, Node, Priority, Status, Task, WaitCondition, WaitSpec,
+    evaluate_all_cycle_failure_restarts, evaluate_all_cycle_iterations,
 };
 use workgraph::messages;
 use workgraph::parser::{load_graph, modify_graph};
@@ -853,9 +853,10 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
         if all_deps_satisfied {
             // Get mutable reference to update the task
             if let Some(task) = graph.get_task_mut(&task_id)
-                && !task.after.is_empty() {
-                    task.status = Status::Open;
-                    task.log.push(LogEntry {
+                && !task.after.is_empty()
+            {
+                task.status = Status::Open;
+                task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("coordinator".to_string()),
                         user: Some(workgraph::current_user()),
@@ -864,39 +865,40 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
                             task.after.join(", ")
                         ),
                     });
-                    eprintln!(
-                        "[coordinator] Unblocked stuck task '{}' (blocked on: {})",
-                        task.id,
-                        task.after.join(", ")
-                    );
-                    modified = true;
-                }
+                eprintln!(
+                    "[coordinator] Unblocked stuck task '{}' (blocked on: {})",
+                    task.id,
+                    task.after.join(", ")
+                );
+                modified = true;
+            }
         } else {
             // Log diagnostic for stale blocked state
             if let Some(task) = graph.tasks().find(|t| t.id == task_id)
-                && !task.after.is_empty() {
-                    let waiting_on: Vec<String> = task
-                        .after
-                        .iter()
-                        .filter_map(|dep_id| {
-                            graph.tasks().find(|t| t.id == *dep_id).map(|t| {
-                                if !t.status.is_terminal() {
-                                    format!("{}:{:?}", dep_id, t.status)
-                                } else {
-                                    String::new()
-                                }
-                            })
+                && !task.after.is_empty()
+            {
+                let waiting_on: Vec<String> = task
+                    .after
+                    .iter()
+                    .filter_map(|dep_id| {
+                        graph.tasks().find(|t| t.id == *dep_id).map(|t| {
+                            if !t.status.is_terminal() {
+                                format!("{}:{:?}", dep_id, t.status)
+                            } else {
+                                String::new()
+                            }
                         })
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !waiting_on.is_empty() {
-                        eprintln!(
-                            "[coordinator] Task '{}' still blocked on: {}",
-                            task_id,
-                            waiting_on.join(", ")
-                        );
-                    }
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !waiting_on.is_empty() {
+                    eprintln!(
+                        "[coordinator] Task '{}' still blocked on: {}",
+                        task_id,
+                        waiting_on.join(", ")
+                    );
                 }
+            }
         }
     }
 
@@ -2989,32 +2991,36 @@ fn sort_tasks_by_priority_with_features<'a>(
             // Starvation prevention: bump priority for old tasks
             if let Some(ref created_at_str) = task.created_at {
                 if let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(created_at_str) {
-                let age = now.signed_duration_since(created_at.with_timezone(&Utc));
-                let age_hours = age.num_hours();
+                    let age = now.signed_duration_since(created_at.with_timezone(&Utc));
+                    let age_hours = age.num_hours();
 
-                if age_hours > starvation_threshold_hours {
-                    // Bump priority by one level for every 24 hours of waiting
-                    let bumps = (age_hours / starvation_threshold_hours) as usize;
-                    for _ in 0..bumps {
-                        effective_priority = match effective_priority {
-                            Priority::Idle => Priority::Low,
-                            Priority::Low => Priority::Normal,
-                            Priority::Normal => Priority::High,
-                            Priority::High => Priority::Critical,
-                            Priority::Critical => Priority::Critical, // Can't go higher
-                        };
+                    if age_hours > starvation_threshold_hours {
+                        // Bump priority by one level for every 24 hours of waiting
+                        let bumps = (age_hours / starvation_threshold_hours) as usize;
+                        for _ in 0..bumps {
+                            effective_priority = match effective_priority {
+                                Priority::Idle => Priority::Low,
+                                Priority::Low => Priority::Normal,
+                                Priority::Normal => Priority::High,
+                                Priority::High => Priority::Critical,
+                                Priority::Critical => Priority::Critical, // Can't go higher
+                            };
+                        }
+                        eprintln!(
+                            "[coordinator] Priority bump: {} (age: {}h) -> {}",
+                            task.id, age_hours, effective_priority
+                        );
                     }
-                    eprintln!("[coordinator] Priority bump: {} (age: {}h) -> {}",
-                             task.id, age_hours, effective_priority);
-                }
                 }
             }
 
             // Priority inheritance: check if this task blocks any high-priority tasks
             let inherited_priority = compute_priority_inheritance(task, graph);
             if inherited_priority < effective_priority {
-                eprintln!("[coordinator] Priority inheritance: {} ({} -> {})",
-                         task.id, effective_priority, inherited_priority);
+                eprintln!(
+                    "[coordinator] Priority inheritance: {} ({} -> {})",
+                    task.id, effective_priority, inherited_priority
+                );
                 effective_priority = inherited_priority;
             }
 
@@ -3034,9 +3040,11 @@ fn sort_tasks_by_priority_with_features<'a>(
             .take(5) // Log first 5 for brevity
             .map(|task| format!("{}:{}", task.id, task.priority))
             .collect();
-        eprintln!("[coordinator] Priority dispatch order: [{}{}]",
-                 priority_summary.join(", "),
-                 if sorted_tasks.len() > 5 { ", ..." } else { "" });
+        eprintln!(
+            "[coordinator] Priority dispatch order: [{}{}]",
+            priority_summary.join(", "),
+            if sorted_tasks.len() > 5 { ", ..." } else { "" }
+        );
     }
 
     sorted_tasks
@@ -3865,7 +3873,10 @@ pub fn coordinator_tick(
     // Phase 5.6: Check if spawning is paused due to provider health failures.
     match workgraph::service::ProviderHealth::load(dir) {
         Ok(provider_health) if provider_health.should_pause_spawning() => {
-            eprintln!("[coordinator] Spawning paused: {}", provider_health.get_status_summary());
+            eprintln!(
+                "[coordinator] Spawning paused: {}",
+                provider_health.get_status_summary()
+            );
             let cycle_analysis = graph.compute_cycle_analysis();
             let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
             // Exclude daemon-managed loop tasks from ready count.
@@ -3877,7 +3888,10 @@ pub fn coordinator_tick(
             });
         }
         Err(e) => {
-            eprintln!("[coordinator] Warning: failed to load provider health: {}", e);
+            eprintln!(
+                "[coordinator] Warning: failed to load provider health: {}",
+                e
+            );
         }
         _ => {} // Provider health is healthy, continue
     }
@@ -5928,6 +5942,7 @@ mod tests {
             None,         // not_before
             None,         // verify
             false,        // allow_phantom
+            false,        // allow_cycle
         )
         .unwrap();
 

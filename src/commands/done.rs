@@ -7,10 +7,10 @@ use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
     parse_wg_tokens, user_board_handle, user_board_seq,
 };
+use workgraph::graph::{Task, parse_delay};
 use workgraph::parser::modify_graph;
 use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
-use workgraph::graph::{Task, parse_delay};
 
 // Import evaluate module for LLM verification
 use crate::commands::evaluate;
@@ -21,8 +21,10 @@ use super::graph_path;
 use workgraph::parser::load_graph;
 
 /// Enhanced timeout resolution with priority order
-fn resolve_verify_timeout(task: &Task, coordinator_config: &CoordinatorConfig) -> std::time::Duration {
-
+fn resolve_verify_timeout(
+    task: &Task,
+    coordinator_config: &CoordinatorConfig,
+) -> std::time::Duration {
     // 1. Task-specific timeout (highest priority)
     if let Some(task_timeout) = &task.verify_timeout {
         if let Some(secs) = parse_delay(task_timeout) {
@@ -38,7 +40,8 @@ fn resolve_verify_timeout(task: &Task, coordinator_config: &CoordinatorConfig) -
     }
 
     // 3. Coordinator configuration default
-    coordinator_config.verify_default_timeout
+    coordinator_config
+        .verify_default_timeout
         .as_ref()
         .and_then(|s| parse_delay(s))
         .map(std::time::Duration::from_secs)
@@ -67,7 +70,6 @@ impl ProgressMonitor {
             last_stderr_activity: now,
         }
     }
-
 
     fn last_activity(&self) -> std::time::Instant {
         self.last_stdout_activity.max(self.last_stderr_activity)
@@ -157,7 +159,6 @@ fn triage_timeout_process(
     monitor: &ProgressMonitor,
     _progress_timeout: std::time::Duration,
 ) -> Result<TriageResult> {
-
     // 1. Check for recent output activity
     if monitor.has_recent_activity(std::time::Duration::from_secs(60)) {
         return Ok(TriageResult::UnknownButActive {
@@ -175,8 +176,10 @@ fn triage_timeout_process(
 
     // 3. Default to genuine hang if no other indicators
     Ok(TriageResult::GenuineHang {
-        reason: format!("no_activity_{}s_no_locks",
-                       monitor.last_activity().elapsed().as_secs()),
+        reason: format!(
+            "no_activity_{}s_no_locks",
+            monitor.last_activity().elapsed().as_secs()
+        ),
     })
 }
 
@@ -211,8 +214,12 @@ fn run_verify_command_with_retry(
             Err(error) => {
                 // Check if this is a lock contention issue
                 if is_lock_contention_error(&error.stderr) {
-                    eprintln!("Verify attempt {}/{} failed due to file lock contention: {}",
-                             attempt, MAX_RETRIES, error.stderr.lines().next().unwrap_or(""));
+                    eprintln!(
+                        "Verify attempt {}/{} failed due to file lock contention: {}",
+                        attempt,
+                        MAX_RETRIES,
+                        error.stderr.lines().next().unwrap_or("")
+                    );
 
                     if attempt < MAX_RETRIES {
                         let delay_secs = BASE_DELAY_SECS * (2_u64.pow(attempt - 1)); // Exponential backoff
@@ -227,7 +234,10 @@ fn run_verify_command_with_retry(
                         eprintln!("Verify timeout appears to be due to file lock contention");
                         if attempt < MAX_RETRIES {
                             let delay_secs = BASE_DELAY_SECS * (2_u64.pow(attempt - 1));
-                            eprintln!("Retrying in {} seconds with extended timeout...", delay_secs);
+                            eprintln!(
+                                "Retrying in {} seconds with extended timeout...",
+                                delay_secs
+                            );
                             std::thread::sleep(std::time::Duration::from_secs(delay_secs));
                             last_error = Some(error);
                             continue;
@@ -275,23 +285,34 @@ fn map_files_to_tests(modified_files: &[String]) -> Option<Vec<String>> {
 fn is_core_file(file: &str) -> bool {
     matches!(
         file,
-        "src/lib.rs" | "src/main.rs" | "Cargo.toml" | "Cargo.lock" |
-        "build.rs" | ".gitignore" | "README.md"
+        "src/lib.rs"
+            | "src/main.rs"
+            | "Cargo.toml"
+            | "Cargo.lock"
+            | "build.rs"
+            | ".gitignore"
+            | "README.md"
     ) || file.starts_with("src/lib/")
-      || file.contains("/mod.rs")
-      || file.ends_with("/lib.rs")
+        || file.contains("/mod.rs")
+        || file.ends_with("/lib.rs")
 }
 
 /// Map a single file to its relevant test command.
 fn map_file_to_test_command(file: &str) -> Option<String> {
     if file.starts_with("tests/") {
         // Direct test file - run the specific test
-        if let Some(test_name) = file.strip_prefix("tests/").and_then(|f| f.strip_suffix(".rs")) {
+        if let Some(test_name) = file
+            .strip_prefix("tests/")
+            .and_then(|f| f.strip_suffix(".rs"))
+        {
             return Some(format!("cargo test --test {}", test_name));
         }
     } else if file.starts_with("src/") {
         // Source file - map to relevant test module
-        if let Some(module_path) = file.strip_prefix("src/").and_then(|f| f.strip_suffix(".rs")) {
+        if let Some(module_path) = file
+            .strip_prefix("src/")
+            .and_then(|f| f.strip_suffix(".rs"))
+        {
             // Convert path to module name (e.g., "commands/add.rs" -> "add", "commands/viz/mod.rs" -> "viz")
             let module_name = if module_path.ends_with("/mod") {
                 module_path.strip_suffix("/mod").unwrap_or(module_path)
@@ -314,7 +335,7 @@ fn map_file_to_test_command(file: &str) -> Option<String> {
 fn generate_scoped_verify_command(
     verify_cmd: &str,
     project_root: &Path,
-    coordinator_config: &CoordinatorConfig
+    coordinator_config: &CoordinatorConfig,
 ) -> Option<String> {
     // Only scope "cargo test" commands
     if verify_cmd.trim() != "cargo test" || !coordinator_config.scoped_verify_enabled {
@@ -363,10 +384,11 @@ fn is_free_text_verify_command(cmd: &str) -> bool {
 
     // Quick check: if it looks like a valid command prefix, it's probably not free-text
     let known_commands = [
-        "cargo", "npm", "npx", "yarn", "pnpm", "make", "cmake", "go", "python", "python3", "pytest",
-        "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig", "rustc", "gcc", "g++",
-        "clang", "clang++", "javac", "java", "test", "[", "true", "false", "exit", "echo", "printf",
-        "cat", "grep", "find", "ls", "diff", "cmp", "wc", "head", "tail", "sort", "uniq", "cut", "tr",
+        "cargo", "npm", "npx", "yarn", "pnpm", "make", "cmake", "go", "python", "python3",
+        "pytest", "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig", "rustc",
+        "gcc", "g++", "clang", "clang++", "javac", "java", "test", "[", "true", "false", "exit",
+        "echo", "printf", "cat", "grep", "find", "ls", "diff", "cmp", "wc", "head", "tail", "sort",
+        "uniq", "cut", "tr",
     ];
 
     if known_commands.contains(&first_word) {
@@ -385,12 +407,30 @@ fn is_free_text_verify_command(cmd: &str) -> bool {
         // Check for common descriptive patterns
         let lower = cmd.to_lowercase();
         let descriptive_patterns = [
-            "exists", "is valid", "are valid", "passes", "succeeds", "works", "complete",
-            "documentation", "tests pass", "builds successfully", "no errors", "no warnings",
-            "has been", "have been", "should be", "must be", "ensure", "verify that",
+            "exists",
+            "is valid",
+            "are valid",
+            "passes",
+            "succeeds",
+            "works",
+            "complete",
+            "documentation",
+            "tests pass",
+            "builds successfully",
+            "no errors",
+            "no warnings",
+            "has been",
+            "have been",
+            "should be",
+            "must be",
+            "ensure",
+            "verify that",
         ];
 
-        if descriptive_patterns.iter().any(|pattern| lower.contains(pattern)) {
+        if descriptive_patterns
+            .iter()
+            .any(|pattern| lower.contains(pattern))
+        {
             return true;
         }
 
@@ -408,11 +448,14 @@ fn run_llm_verify_evaluation(
     task: &Task,
     project_root: &Path,
 ) -> std::result::Result<VerifyOutput, VerifyOutput> {
-
-    eprintln!("[smart-verify] Detected free-text verify command, routing to LLM evaluation: {}", verify_cmd);
+    eprintln!(
+        "[smart-verify] Detected free-text verify command, routing to LLM evaluation: {}",
+        verify_cmd
+    );
 
     // Find the workgraph directory (where .workgraph folder is located)
-    let workgraph_dir = project_root.ancestors()
+    let workgraph_dir = project_root
+        .ancestors()
         .find(|p| p.join(".workgraph").exists())
         .unwrap_or(project_root);
 
@@ -450,8 +493,9 @@ fn run_verify_command(
     use std::time::{Duration, Instant};
 
     // Try to generate a scoped command first
-    let effective_cmd = generate_scoped_verify_command(verify_cmd, project_root, coordinator_config)
-        .unwrap_or_else(|| verify_cmd.to_string());
+    let effective_cmd =
+        generate_scoped_verify_command(verify_cmd, project_root, coordinator_config)
+            .unwrap_or_else(|| verify_cmd.to_string());
 
     // Log scoping decision
     if effective_cmd != verify_cmd {
@@ -468,7 +512,7 @@ fn run_verify_command(
         .arg("-c")
         .arg(&effective_cmd)
         .current_dir(project_root)
-        .env("TERM", "dumb")  // Set TERM=dumb to avoid terminal-related failures
+        .env("TERM", "dumb") // Set TERM=dumb to avoid terminal-related failures
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -513,7 +557,8 @@ fn run_verify_command(
                     // Check if triage is enabled
                     if coordinator_config.verify_triage_enabled {
                         // Perform triage to determine if this is a genuine hang or waiting
-                        let progress_timeout = coordinator_config.verify_progress_timeout
+                        let progress_timeout = coordinator_config
+                            .verify_progress_timeout
                             .as_ref()
                             .and_then(|s| parse_delay(s))
                             .map(std::time::Duration::from_secs)
@@ -521,24 +566,35 @@ fn run_verify_command(
 
                         match triage_timeout_process(&monitor, progress_timeout) {
                             Ok(TriageResult::WaitingOnLocks { detected_locks }) => {
-                                eprintln!("Verify timeout triage: detected lock contention on {:?}, extending timeout by 300s", detected_locks);
+                                eprintln!(
+                                    "Verify timeout triage: detected lock contention on {:?}, extending timeout by 300s",
+                                    detected_locks
+                                );
                                 // Extend timeout and continue
                                 // Note: This is a simple implementation - in production we might want retry limits
                                 std::thread::sleep(std::time::Duration::from_secs(5));
                                 continue;
-                            },
+                            }
                             Ok(TriageResult::UnknownButActive { activity_type }) => {
-                                eprintln!("Verify timeout triage: process active ({}), extending timeout by 300s", activity_type);
+                                eprintln!(
+                                    "Verify timeout triage: process active ({}), extending timeout by 300s",
+                                    activity_type
+                                );
                                 // Extend timeout and continue
                                 std::thread::sleep(std::time::Duration::from_secs(5));
                                 continue;
-                            },
+                            }
                             Ok(TriageResult::GenuineHang { reason }) => {
-                                eprintln!("Verify timeout triage: genuine hang detected ({}), failing", reason);
+                                eprintln!(
+                                    "Verify timeout triage: genuine hang detected ({}), failing",
+                                    reason
+                                );
                                 // Proceed with normal timeout failure
-                            },
+                            }
                             _ => {
-                                eprintln!("Verify timeout triage: unknown condition, failing with timeout");
+                                eprintln!(
+                                    "Verify timeout triage: unknown condition, failing with timeout"
+                                );
                                 // Proceed with normal timeout failure
                             }
                         }
@@ -595,14 +651,19 @@ fn run_verify_command(
     } else {
         // Check for exit code 127 (command not found) - likely free-text command
         if exit_code == "127" {
-            eprintln!("[smart-verify] Command failed with exit 127 (command not found), retrying with LLM evaluation: {}", effective_cmd);
+            eprintln!(
+                "[smart-verify] Command failed with exit 127 (command not found), retrying with LLM evaluation: {}",
+                effective_cmd
+            );
             match run_llm_verify_evaluation(&effective_cmd, task, project_root) {
                 Ok(llm_result) => {
                     eprintln!("[smart-verify] LLM evaluation succeeded for exit 127 fallback");
                     return Ok(llm_result);
                 }
                 Err(_llm_error) => {
-                    eprintln!("[smart-verify] LLM evaluation also failed, returning original shell error");
+                    eprintln!(
+                        "[smart-verify] LLM evaluation also failed, returning original shell error"
+                    );
                     // Fall through to return original error
                 }
             }
@@ -787,10 +848,17 @@ fn run_inner(
             eprintln!("Running verify command: {}", verify_cmd);
 
             // Get task and coordinator config for enhanced timeout resolution
-            let task = graph.get_task(id).ok_or_else(|| anyhow::anyhow!("Task {} not found", id))?;
+            let task = graph
+                .get_task(id)
+                .ok_or_else(|| anyhow::anyhow!("Task {} not found", id))?;
             let config = Config::load_or_default(dir);
 
-            match run_verify_command_with_retry(&verify_cmd, project_root, task, &config.coordinator) {
+            match run_verify_command_with_retry(
+                &verify_cmd,
+                project_root,
+                task,
+                &config.coordinator,
+            ) {
                 Ok(output) => {
                     // Log verify success with captured output
                     let id_for_log = id.to_string();
@@ -839,7 +907,9 @@ fn run_inner(
                 }
                 Err(output) => {
                     // Check if this is a malformed verify command that can be auto-corrected
-                    if let Some(corrected_cmd) = workgraph::verify_lint::auto_correct_verify_command(&verify_cmd) {
+                    if let Some(corrected_cmd) =
+                        workgraph::verify_lint::auto_correct_verify_command(&verify_cmd)
+                    {
                         eprintln!(
                             "Verify command appears malformed, auto-correcting: {} → {}",
                             verify_cmd, corrected_cmd
@@ -856,28 +926,42 @@ fn run_inner(
                                     timestamp: Utc::now().to_rfc3339(),
                                     actor: Some("verify-autocorrect".to_string()),
                                     user: None,
-                                    message: format!("Auto-corrected malformed verify command: '{}' → '{}'", verify_cmd, corrected_cmd_clone),
+                                    message: format!(
+                                        "Auto-corrected malformed verify command: '{}' → '{}'",
+                                        verify_cmd, corrected_cmd_clone
+                                    ),
                                 });
                                 true
                             } else {
                                 false
                             }
-                        }).context("Failed to save auto-corrected verify command")?;
+                        })
+                        .context("Failed to save auto-corrected verify command")?;
 
                         // Retry with the corrected command
                         eprintln!("Retrying with corrected command: {}", corrected_cmd);
 
                         // Reload graph to get updated task
                         let (new_graph, _) = super::load_workgraph_mut(dir)?;
-                        let updated_task = new_graph.get_task(id).ok_or_else(|| anyhow::anyhow!("Task {} not found after update", id))?;
+                        let updated_task = new_graph
+                            .get_task(id)
+                            .ok_or_else(|| anyhow::anyhow!("Task {} not found after update", id))?;
 
-                        match run_verify_command_with_retry(&corrected_cmd, project_root, updated_task, &config.coordinator) {
+                        match run_verify_command_with_retry(
+                            &corrected_cmd,
+                            project_root,
+                            updated_task,
+                            &config.coordinator,
+                        ) {
                             Ok(output) => {
                                 // Auto-correction worked! Log success
                                 let id_for_log = id.to_string();
-                                let stdout_preview: String = output.stdout.chars().take(200).collect();
-                                let stderr_preview: String = output.stderr.chars().take(200).collect();
-                                let mut log_msg = "Verify passed (after auto-correction).".to_string();
+                                let stdout_preview: String =
+                                    output.stdout.chars().take(200).collect();
+                                let stderr_preview: String =
+                                    output.stderr.chars().take(200).collect();
+                                let mut log_msg =
+                                    "Verify passed (after auto-correction).".to_string();
                                 if !stdout_preview.is_empty() {
                                     log_msg.push_str(&format!(" stdout: {}", stdout_preview));
                                 }
@@ -902,7 +986,9 @@ fn run_inner(
                             }
                             Err(_) => {
                                 // Auto-corrected command also failed, proceed with normal failure handling
-                                eprintln!("Auto-corrected verify command also failed, treating as normal verify failure");
+                                eprintln!(
+                                    "Auto-corrected verify command also failed, treating as normal verify failure"
+                                );
                                 // Fall through to normal failure handling with the original command
                             }
                         }
@@ -986,15 +1072,16 @@ fn run_inner(
                     // Reload graph to check if circuit breaker tripped
                     let (new_graph, _) = super::load_workgraph_mut(dir)?;
                     if let Some(task) = new_graph.get_task(id)
-                        && task.status == Status::Failed {
-                            eprintln!(
-                                "Verify circuit breaker tripped for '{}': {} consecutive failures. Task auto-failed.",
-                                id, task.verify_failures,
-                            );
-                            super::notify_graph_changed(dir);
-                            // Return Ok — the task is now Failed, not an error in the command
-                            return Ok(());
-                        }
+                        && task.status == Status::Failed
+                    {
+                        eprintln!(
+                            "Verify circuit breaker tripped for '{}': {} consecutive failures. Task auto-failed.",
+                            id, task.verify_failures,
+                        );
+                        super::notify_graph_changed(dir);
+                        // Return Ok — the task is now Failed, not an error in the command
+                        return Ok(());
+                    }
 
                     // Not yet at threshold — propagate error so agent retries
                     let mut error_msg = format!(
@@ -1041,7 +1128,12 @@ fn run_inner(
             let config = Config::load_or_default(dir);
             for cmd in &commands {
                 eprintln!("Running validation command: {}", cmd);
-                match run_verify_command_with_retry(cmd, project_root, task_ref, &config.coordinator) {
+                match run_verify_command_with_retry(
+                    cmd,
+                    project_root,
+                    task_ref,
+                    &config.coordinator,
+                ) {
                     Ok(_) => {}
                     Err(output) => {
                         let stderr: String = output.stderr.chars().take(500).collect();
@@ -1325,27 +1417,29 @@ fn run_inner(
     // User board auto-increment: if a user board is archived (done), create the successor.
     if let Some(task) = graph.get_task(id)
         && task.tags.iter().any(|t| t == "user-board")
-            && let Some(handle) = user_board_handle(id) {
-                let current_seq = user_board_seq(id).unwrap_or(0);
-                let next_seq = current_seq + 1;
-                let successor = create_user_board_task(handle, next_seq);
-                let successor_id = successor.id.clone();
-                let graph_path = super::graph_path(dir);
-                if let Err(e) = modify_graph(&graph_path, |graph| {
-                    // Also add 'archived' tag to the current board
-                    if let Some(t) = graph.get_task_mut(id)
-                        && !t.tags.contains(&"archived".to_string()) {
-                            t.tags.push("archived".to_string());
-                        }
-                    graph.add_node(Node::Task(successor));
-                    true
-                }) {
-                    eprintln!("Warning: failed to create successor board: {}", e);
-                } else {
-                    println!("Created successor board '{}'", successor_id);
-                    super::notify_graph_changed(dir);
-                }
+        && let Some(handle) = user_board_handle(id)
+    {
+        let current_seq = user_board_seq(id).unwrap_or(0);
+        let next_seq = current_seq + 1;
+        let successor = create_user_board_task(handle, next_seq);
+        let successor_id = successor.id.clone();
+        let graph_path = super::graph_path(dir);
+        if let Err(e) = modify_graph(&graph_path, |graph| {
+            // Also add 'archived' tag to the current board
+            if let Some(t) = graph.get_task_mut(id)
+                && !t.tags.contains(&"archived".to_string())
+            {
+                t.tags.push("archived".to_string());
             }
+            graph.add_node(Node::Task(successor));
+            true
+        }) {
+            eprintln!("Warning: failed to create successor board: {}", e);
+        } else {
+            println!("Created successor board '{}'", successor_id);
+            super::notify_graph_changed(dir);
+        }
+    }
 
     for task_id in &cycle_reactivated {
         println!("  Cycle: re-activated '{}'", task_id);
@@ -2627,7 +2721,10 @@ mod tests {
         let result = map_files_to_tests(&files);
         assert_eq!(
             result,
-            Some(vec!["cargo test add".to_string(), "cargo test graph".to_string()])
+            Some(vec![
+                "cargo test add".to_string(),
+                "cargo test graph".to_string()
+            ])
         );
 
         // Empty files list should return None
@@ -2640,7 +2737,9 @@ mod tests {
 
     #[test]
     fn test_is_free_text_verify_command_detects_descriptive_text() {
-        assert!(is_free_text_verify_command("documentation exists and is comprehensive"));
+        assert!(is_free_text_verify_command(
+            "documentation exists and is comprehensive"
+        ));
         assert!(is_free_text_verify_command("tests pass for all modules"));
         assert!(is_free_text_verify_command("build succeeds without errors"));
         assert!(is_free_text_verify_command("code has been implemented"));
@@ -2661,7 +2760,9 @@ mod tests {
 
     #[test]
     fn test_is_free_text_verify_command_allows_shell_constructs() {
-        assert!(!is_free_text_verify_command("cargo test | grep -q 'test result: ok'"));
+        assert!(!is_free_text_verify_command(
+            "cargo test | grep -q 'test result: ok'"
+        ));
         assert!(!is_free_text_verify_command("make build && echo 'success'"));
         assert!(!is_free_text_verify_command("test -f output.txt"));
         assert!(!is_free_text_verify_command("echo 'hello' > /tmp/test"));
@@ -2673,8 +2774,12 @@ mod tests {
         assert!(!is_free_text_verify_command(""));
         assert!(!is_free_text_verify_command("cargo"));
         assert!(!is_free_text_verify_command("   cargo test   "));
-        assert!(is_free_text_verify_command("unknown_command does something"));
-        assert!(is_free_text_verify_command("this should be detected as free text"));
+        assert!(is_free_text_verify_command(
+            "unknown_command does something"
+        ));
+        assert!(is_free_text_verify_command(
+            "this should be detected as free text"
+        ));
     }
 
     #[test]
@@ -2711,15 +2816,16 @@ mod tests {
             .any(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"));
 
         // Or alternatively, verify that we don't get a "command not found" error
-        let has_command_not_found = task
-            .log
-            .iter()
-            .any(|e| e.message.contains("command not found") || e.message.contains("exit code 127"));
+        let has_command_not_found = task.log.iter().any(|e| {
+            e.message.contains("command not found") || e.message.contains("exit code 127")
+        });
 
         // We should either see smart-verify logs or no "command not found" errors
-        assert!(has_smart_verify_indication || !has_command_not_found,
+        assert!(
+            has_smart_verify_indication || !has_command_not_found,
             "Expected smart verify routing or no 'command not found' errors. Logs: {:?}",
-            task.log);
+            task.log
+        );
     }
 
     #[test]

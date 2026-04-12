@@ -2450,13 +2450,17 @@ fn render_iteration_navigator(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     // Create styled spans for the navigator
     let left_arrow_style = if can_go_prev {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
     let right_arrow_style = if can_go_next {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -3219,34 +3223,34 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // this message and the previous one, insert a visual separator.
         if let Some(threshold) = &session_gap_threshold
             && msg_idx > 0
-                && let (Some(prev_ts), Some(cur_ts)) = (
-                    app.chat.messages[msg_idx - 1].msg_timestamp.as_deref(),
-                    msg.msg_timestamp.as_deref(),
-                )
-                    && let (Ok(prev_dt), Ok(cur_dt)) = (
-                        chrono::DateTime::parse_from_rfc3339(prev_ts),
-                        chrono::DateTime::parse_from_rfc3339(cur_ts),
-                    ) {
-                        let gap = cur_dt.signed_duration_since(prev_dt);
-                        if gap > *threshold {
-                            let local_dt = cur_dt.with_timezone(&chrono::Local);
-                            let label = local_dt.format("%B %-d, %Y · %-I:%M %p").to_string();
-                            let dashes_total = content_width.saturating_sub(label.len() + 2);
-                            let left = dashes_total / 2;
-                            let right = dashes_total - left;
-                            let divider_text =
-                                format!("{} {} {}", "─".repeat(left), label, "─".repeat(right),);
-                            rendered_lines.push(Line::from(""));
-                            line_to_message.push(None);
-                            rendered_lines.push(Line::from(Span::styled(
-                                divider_text,
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                            line_to_message.push(None);
-                            rendered_lines.push(Line::from(""));
-                            line_to_message.push(None);
-                        }
-                    }
+            && let (Some(prev_ts), Some(cur_ts)) = (
+                app.chat.messages[msg_idx - 1].msg_timestamp.as_deref(),
+                msg.msg_timestamp.as_deref(),
+            )
+            && let (Ok(prev_dt), Ok(cur_dt)) = (
+                chrono::DateTime::parse_from_rfc3339(prev_ts),
+                chrono::DateTime::parse_from_rfc3339(cur_ts),
+            )
+        {
+            let gap = cur_dt.signed_duration_since(prev_dt);
+            if gap > *threshold {
+                let local_dt = cur_dt.with_timezone(&chrono::Local);
+                let label = local_dt.format("%B %-d, %Y · %-I:%M %p").to_string();
+                let dashes_total = content_width.saturating_sub(label.len() + 2);
+                let left = dashes_total / 2;
+                let right = dashes_total - left;
+                let divider_text = format!("{} {} {}", "─".repeat(left), label, "─".repeat(right),);
+                rendered_lines.push(Line::from(""));
+                line_to_message.push(None);
+                rendered_lines.push(Line::from(Span::styled(
+                    divider_text,
+                    Style::default().fg(Color::DarkGray),
+                )));
+                line_to_message.push(None);
+                rendered_lines.push(Line::from(""));
+                line_to_message.push(None);
+            }
+        }
 
         let is_coordinator = msg.role == super::state::ChatRole::Coordinator;
         let is_user = msg.role == super::state::ChatRole::User;
@@ -3396,15 +3400,14 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     ));
                 }
                 // Append read-at annotation for sent messages.
-                if is_sent_message
-                    && let Some(read_at) = &msg.read_at {
-                        let now = chrono::Utc::now();
-                        let rel = format_relative_time(read_at, &now);
-                        spans.push(Span::styled(
-                            format!("  read {}", rel),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                    }
+                if is_sent_message && let Some(read_at) = &msg.read_at {
+                    let now = chrono::Utc::now();
+                    let rel = format_relative_time(read_at, &now);
+                    spans.push(Span::styled(
+                        format!("  read {}", rel),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
                 // Append timestamp for all messages.
                 if let Some(ts) = &msg.msg_timestamp {
                     let now = chrono::Utc::now();
@@ -4266,7 +4269,9 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let delimiter_line = delimiter_char.repeat(delimiter_width);
         composed_lines.push(Line::from(Span::styled(
             delimiter_line,
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         )));
     }
 
@@ -4376,14 +4381,12 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut visible: Vec<Line> = composed_lines[scroll..end].to_vec();
 
     // Prepend header with iteration context
-    let header_line = Line::from(vec![
-        Span::styled(
-            create_log_tab_header(app),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let header_line = Line::from(vec![Span::styled(
+        create_log_tab_header(app),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]);
     visible.insert(0, header_line);
     visible.insert(1, Line::from(""));
 
@@ -8181,10 +8184,7 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
         // Show pause reason if available
         if let Some(ref reason) = health.pause_reason {
             let reason_display = if reason.len() > 40 {
-                format!(
-                    "{}...",
-                    &reason[..reason.floor_char_boundary(37)]
-                )
+                format!("{}...", &reason[..reason.floor_char_boundary(37)])
             } else {
                 reason.clone()
             };

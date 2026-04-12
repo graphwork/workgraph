@@ -93,7 +93,8 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     );
 
     // Create config with crash detection settings
-    let config_content = format!("[agent]
+    let config_content = format!(
+        "[agent]
 reaper_grace_seconds = 1
 heartbeat_timeout = 3
 
@@ -104,7 +105,8 @@ poll_interval = 1
 [agency]
 auto_assign = false
 auto_evaluate = false
-");
+"
+    );
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 
     let executors_dir = wg_dir.join("executors");
@@ -333,7 +335,8 @@ fn test_crash_scenarios_sigkill_cleanup() {
         if let Some(registry) = read_registry(&wg_dir)
             && let Some(agents) = registry["agents"].as_object()
             && let Some(entry) = agents.values().find(|a| {
-                a["task_id"].as_str() == Some("sigkill-task") && a["status"].as_str() != Some("dead")
+                a["task_id"].as_str() == Some("sigkill-task")
+                    && a["status"].as_str() != Some("dead")
             })
         {
             agent_pid = entry["pid"].as_u64().unwrap() as i32;
@@ -379,20 +382,21 @@ fn test_crash_scenarios_sigkill_cleanup() {
     // Verify the task eventually returns to "open" or gets re-assigned
     let task_handled = wait_for(Duration::from_secs(10), 300, || {
         let status = task_status(&wg_dir, "sigkill-task");
-        status == "open" || (status == "in-progress" && {
-            // Check if it's a different agent
-            if let Some(reg) = read_registry(&wg_dir)
-                && let Some(agents) = reg["agents"].as_object()
-            {
-                agents.values().any(|a| {
-                    a["task_id"].as_str() == Some("sigkill-task")
-                        && a["id"].as_str() != Some(&agent_id)
-                        && a["status"].as_str() != Some("dead")
-                })
-            } else {
-                false
-            }
-        })
+        status == "open"
+            || (status == "in-progress" && {
+                // Check if it's a different agent
+                if let Some(reg) = read_registry(&wg_dir)
+                    && let Some(agents) = reg["agents"].as_object()
+                {
+                    agents.values().any(|a| {
+                        a["task_id"].as_str() == Some("sigkill-task")
+                            && a["id"].as_str() != Some(&agent_id)
+                            && a["status"].as_str() != Some("dead")
+                    })
+                } else {
+                    false
+                }
+            })
     });
 
     assert!(
@@ -449,7 +453,7 @@ fn test_crash_scenarios_sigterm_cleanup() {
         &wg_dir,
         "sigterm-task",
         "SIGTERM Test Task",
-        "trap 'echo \"Received SIGTERM, exiting gracefully\"; exit 0' TERM; sleep 300 & wait $!"
+        "trap 'echo \"Received SIGTERM, exiting gracefully\"; exit 0' TERM; sleep 300 & wait $!",
     );
     notify_graph_changed(&wg_dir);
 
@@ -470,7 +474,8 @@ fn test_crash_scenarios_sigterm_cleanup() {
         if let Some(registry) = read_registry(&wg_dir)
             && let Some(agents) = registry["agents"].as_object()
             && let Some(entry) = agents.values().find(|a| {
-                a["task_id"].as_str() == Some("sigterm-task") && a["status"].as_str() != Some("dead")
+                a["task_id"].as_str() == Some("sigterm-task")
+                    && a["status"].as_str() != Some("dead")
             })
         {
             agent_pid = entry["pid"].as_u64().unwrap() as i32;
@@ -576,7 +581,7 @@ auto_evaluate = false
         &wg_dir,
         "timeout-task",
         "Timeout Test Task",
-        "sleep 300" // Long sleep without heartbeat updates
+        "sleep 300", // Long sleep without heartbeat updates
     );
     notify_graph_changed(&wg_dir);
 
@@ -596,7 +601,8 @@ auto_evaluate = false
         if let Some(registry) = read_registry(&wg_dir)
             && let Some(agents) = registry["agents"].as_object()
             && let Some(entry) = agents.values().find(|a| {
-                a["task_id"].as_str() == Some("timeout-task") && a["status"].as_str() != Some("dead")
+                a["task_id"].as_str() == Some("timeout-task")
+                    && a["status"].as_str() != Some("dead")
             })
         {
             agent_id = entry["id"].as_str().unwrap().to_string();
@@ -681,14 +687,16 @@ fn test_crash_scenarios_multiple_agent_crash() {
             &wg_dir,
             task_id,
             &format!("Multi Crash Task {}", i + 1),
-            "sleep 300"
+            "sleep 300",
         );
     }
     notify_graph_changed(&wg_dir);
 
     // Wait for all tasks to be picked up
     let all_picked_up = wait_for(Duration::from_secs(15), 200, || {
-        task_ids.iter().all(|task_id| task_status(&wg_dir, task_id) == "in-progress")
+        task_ids
+            .iter()
+            .all(|task_id| task_status(&wg_dir, task_id) == "in-progress")
     });
     assert!(all_picked_up, "Not all tasks were picked up by agents");
 
@@ -847,7 +855,16 @@ working_dir = "/nonexistent/directory"
     // If service started, test spawn failure handling
     if wait_for_service_ready(&wg_dir, Duration::from_secs(5)) {
         // Add a task WITHOUT exec command so it uses the default executor (invalid)
-        wg_ok(&wg_dir, &["add", "Spawn Failure Test", "--id", "spawn-fail-task", "--immediate"]);
+        wg_ok(
+            &wg_dir,
+            &[
+                "add",
+                "Spawn Failure Test",
+                "--id",
+                "spawn-fail-task",
+                "--immediate",
+            ],
+        );
         notify_graph_changed(&wg_dir);
 
         // Wait and verify the task doesn't get stuck in "in-progress" with a dead agent
@@ -898,15 +915,24 @@ fn test_crash_scenarios_infrastructure() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     assert!(wg_dir.exists(), "Workgraph directory should be created");
-    assert!(wg_dir.join("config.toml").exists(), "Config should be created");
+    assert!(
+        wg_dir.join("config.toml").exists(),
+        "Config should be created"
+    );
 
     // Verify we can create tasks in the test environment
-    let output = wg_cmd(&wg_dir, &["add", "test-task", "--id", "test", "--immediate"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["add", "test-task", "--id", "test", "--immediate"],
+    );
     assert!(output.status.success(), "Should be able to add tasks");
 
     // Verify we can check task status
     let status_output = wg_cmd(&wg_dir, &["show", "test", "--json"]);
-    assert!(status_output.status.success(), "Should be able to query task status");
+    assert!(
+        status_output.status.success(),
+        "Should be able to query task status"
+    );
 
     // This confirms that the crash scenario test infrastructure is working
     // and the individual crash scenario tests can be run when needed

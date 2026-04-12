@@ -8,14 +8,16 @@ fn test_verify() {
     assert_eq!(corrected, Some("cargo test".to_string()));
 
     // Test other malformed commands
-    let corrected2 = workgraph::verify_lint::auto_correct_verify_command("cargo build succeeds without errors");
+    let corrected2 =
+        workgraph::verify_lint::auto_correct_verify_command("cargo build succeeds without errors");
     assert_eq!(corrected2, Some("cargo build".to_string()));
 
     // Test valid commands are left unchanged
     let unchanged = workgraph::verify_lint::auto_correct_verify_command("cargo test");
     assert_eq!(unchanged, None);
 
-    let unchanged2 = workgraph::verify_lint::auto_correct_verify_command("cargo test specific_test");
+    let unchanged2 =
+        workgraph::verify_lint::auto_correct_verify_command("cargo test specific_test");
     assert_eq!(unchanged2, None);
 }
 
@@ -40,7 +42,12 @@ fn test_verify_pattern_stripping() {
 
     for (input, expected) in test_cases {
         let result = workgraph::verify_lint::auto_correct_verify_command(input);
-        assert_eq!(result, expected.map(String::from), "Failed for input: {}", input);
+        assert_eq!(
+            result,
+            expected.map(String::from),
+            "Failed for input: {}",
+            input
+        );
     }
 }
 
@@ -72,6 +79,10 @@ fn test_verify_bash_syntax_validation() {
 
     for case in valid_cases {
         let result = auto_correct_verify_command(case);
-        assert_eq!(result, None, "Valid command '{}' should not be corrected", case);
+        assert_eq!(
+            result, None,
+            "Valid command '{}' should not be corrected",
+            case
+        );
     }
 }

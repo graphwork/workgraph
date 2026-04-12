@@ -43,9 +43,10 @@ pub fn parse_cron_expression(expr: &str) -> Result<Schedule, CronError> {
             expr.to_string()
         }
         _ => {
-            return Err(CronError::InvalidExpression(
-                format!("Expected 5 or 6 fields, got {}", parts.len())
-            ));
+            return Err(CronError::InvalidExpression(format!(
+                "Expected 5 or 6 fields, got {}",
+                parts.len()
+            )));
         }
     };
 
@@ -268,25 +269,25 @@ mod tests {
     #[test]
     fn cron_parsing() {
         // Test various cron expressions (6-field format with seconds)
-        let result = parse_cron_expression("0 0 2 * * *");  // Daily at 2 AM
+        let result = parse_cron_expression("0 0 2 * * *"); // Daily at 2 AM
         if result.is_err() {
             println!("Debug: Error parsing '0 0 2 * * *': {:?}", result);
         }
         assert!(result.is_ok());
 
-        let result = parse_cron_expression("0 */5 * * * *");  // Every 5 minutes
+        let result = parse_cron_expression("0 */5 * * * *"); // Every 5 minutes
         if result.is_err() {
             println!("Debug: Error parsing '0 */5 * * * *': {:?}", result);
         }
         assert!(result.is_ok());
 
-        let result = parse_cron_expression("0 0 12 * * 1-5");  // Weekdays at noon
+        let result = parse_cron_expression("0 0 12 * * 1-5"); // Weekdays at noon
         if result.is_err() {
             println!("Debug: Error parsing '0 0 12 * * 1-5': {:?}", result);
         }
         assert!(result.is_ok());
 
-        let result = parse_cron_expression("0 30 14 1 * *");  // 2:30 PM on 1st day of month
+        let result = parse_cron_expression("0 30 14 1 * *"); // 2:30 PM on 1st day of month
         if result.is_err() {
             println!("Debug: Error parsing '0 30 14 1 * *': {:?}", result);
         }

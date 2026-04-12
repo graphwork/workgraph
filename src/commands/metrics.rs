@@ -36,18 +36,39 @@ pub fn run(_dir: &Path, json: bool) -> Result<()> {
         // Timing statistics
         if metrics.timing.timed_operations > 0 {
             println!("Timing Statistics:");
-            println!("  ⏱️  Average Duration: {:.1}ms", metrics.timing.avg_cleanup_duration_ms);
-            println!("  ⚡ Fastest:          {}ms", metrics.timing.min_cleanup_duration_ms);
-            println!("  🐌 Slowest:          {}ms", metrics.timing.max_cleanup_duration_ms);
+            println!(
+                "  ⏱️  Average Duration: {:.1}ms",
+                metrics.timing.avg_cleanup_duration_ms
+            );
+            println!(
+                "  ⚡ Fastest:          {}ms",
+                metrics.timing.min_cleanup_duration_ms
+            );
+            println!(
+                "  🐌 Slowest:          {}ms",
+                metrics.timing.max_cleanup_duration_ms
+            );
             println!("  🔢 Total Operations: {}", metrics.timing.timed_operations);
             println!();
 
             // Resource recovery
             println!("Resource Recovery:");
-            println!("  📁 Worktrees Removed: {}", metrics.timing.resource_stats.worktrees_removed);
-            println!("  🔗 Symlinks Cleaned:  {}", metrics.timing.resource_stats.symlinks_cleaned);
-            println!("  📂 Directories:       {}", metrics.timing.resource_stats.directories_removed);
-            println!("  🌳 Branches Pruned:   {}", metrics.timing.resource_stats.branches_pruned);
+            println!(
+                "  📁 Worktrees Removed: {}",
+                metrics.timing.resource_stats.worktrees_removed
+            );
+            println!(
+                "  🔗 Symlinks Cleaned:  {}",
+                metrics.timing.resource_stats.symlinks_cleaned
+            );
+            println!(
+                "  📂 Directories:       {}",
+                metrics.timing.resource_stats.directories_removed
+            );
+            println!(
+                "  🌳 Branches Pruned:   {}",
+                metrics.timing.resource_stats.branches_pruned
+            );
 
             let bytes = metrics.timing.resource_stats.disk_space_recovered_bytes;
             if bytes > 0 {

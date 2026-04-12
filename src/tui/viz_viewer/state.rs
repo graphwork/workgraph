@@ -1052,8 +1052,7 @@ impl ChatState {
 }
 
 /// State for in-chat search (/ key when chat tab is focused).
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ChatSearchState {
     /// The current search query.
     pub query: String,
@@ -1075,7 +1074,6 @@ pub struct ChatSearchMatch {
     #[allow(dead_code)]
     pub match_len: usize,
 }
-
 
 impl Default for ChatState {
     fn default() -> Self {
@@ -1273,15 +1271,16 @@ fn save_chat_history_with_skip(
 
     // If there are unloaded older messages in the file, preserve them.
     if skipped_count > 0
-        && let Ok(data) = std::fs::read_to_string(&path) {
-            let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-            // Take the first `skipped_count` lines (the unloaded portion).
-            let preserve_count = skipped_count.min(lines.len());
-            for line in &lines[..preserve_count] {
-                buf.push_str(line);
-                buf.push('\n');
-            }
+        && let Ok(data) = std::fs::read_to_string(&path)
+    {
+        let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Take the first `skipped_count` lines (the unloaded portion).
+        let preserve_count = skipped_count.min(lines.len());
+        for line in &lines[..preserve_count] {
+            buf.push_str(line);
+            buf.push('\n');
         }
+    }
 
     // Append current in-memory messages (skip SentMessage entries — they were
     // interleaved from task message queues and don't belong in the coordinator chat).
@@ -2283,7 +2282,6 @@ pub struct HistoryBrowserState {
     /// Preview scroll offset within the expanded preview.
     pub preview_scroll: usize,
 }
-
 
 impl HistoryBrowserState {
     /// Load segments from disk for the given coordinator.
@@ -9686,7 +9684,9 @@ impl VizApp {
 
         // Show notification if provider auto-pause just triggered
         if new_provider_auto_pause && !self.service_health.prev_provider_auto_pause {
-            let reason = self.service_health.pause_reason
+            let reason = self
+                .service_health
+                .pause_reason
                 .as_deref()
                 .unwrap_or("Provider health issue");
             let msg = format!("⚠ Service auto-paused: {} - Press Ctrl+R to resume", reason);
@@ -10341,23 +10341,24 @@ impl VizApp {
             .join(self.active_coordinator_id.to_string())
             .join("archive");
         if archive_dir.exists()
-            && let Ok(entries) = std::fs::read_dir(&archive_dir) {
-                let mut tui_archives: Vec<std::path::PathBuf> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|n| n.starts_with("chat-history-") && n.ends_with(".jsonl"))
-                            .unwrap_or(false)
-                    })
-                    .collect();
-                tui_archives.sort();
-                for path in &tui_archives {
-                    let result = load_jsonl_tail(path, usize::MAX);
-                    archive_messages.extend(result.messages);
-                }
+            && let Ok(entries) = std::fs::read_dir(&archive_dir)
+        {
+            let mut tui_archives: Vec<std::path::PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("chat-history-") && n.ends_with(".jsonl"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            tui_archives.sort();
+            for path in &tui_archives {
+                let result = load_jsonl_tail(path, usize::MAX);
+                archive_messages.extend(result.messages);
             }
+        }
 
         // Sort archive messages by timestamp, then prepend to current messages.
         archive_messages.sort_by(|a, b| {
@@ -10454,9 +10455,10 @@ impl VizApp {
         // so we retire by count rather than matching by ID. Coordinator processes
         // requests in FIFO order, so one response batch retires one request.
         if !self.chat.pending_request_ids.is_empty()
-            && let Some(first) = self.chat.pending_request_ids.iter().next().cloned() {
-                self.chat.pending_request_ids.remove(&first);
-            }
+            && let Some(first) = self.chat.pending_request_ids.iter().next().cloned()
+        {
+            self.chat.pending_request_ids.remove(&first);
+        }
         // If all requests are now answered, clear streaming state.
         if self.chat.pending_request_ids.is_empty() {
             self.chat.awaiting_since = None;
@@ -10939,9 +10941,9 @@ impl VizApp {
         if self.chat.outbox_cursor == 0
             && let Ok(msgs) =
                 workgraph::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
-            {
-                self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
-            }
+        {
+            self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
+        }
 
         // Always reset to Normal when switching coordinators so arrow-key
         // navigation doesn't get stuck in input mode. The user must explicitly
@@ -11058,9 +11060,10 @@ impl VizApp {
         // Only switch to the user's coordinator if no valid focus was restored
         // from tui-state.json (i.e., still on the default coordinator 0).
         if self.active_coordinator_id == 0
-            && let Some(cid) = existing_coord {
-                self.active_coordinator_id = cid;
-            }
+            && let Some(cid) = existing_coord
+        {
+            self.active_coordinator_id = cid;
+        }
     }
 
     /// Create a new coordinator session via IPC and switch to it.

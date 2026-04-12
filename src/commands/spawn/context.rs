@@ -578,9 +578,10 @@ pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
     let custom_path = workgraph_dir.join("wg-guide.md");
     if custom_path.exists()
         && let Ok(content) = std::fs::read_to_string(&custom_path)
-            && !content.trim().is_empty() {
-                return content;
-            }
+        && !content.trim().is_empty()
+    {
+        return content;
+    }
     workgraph::service::executor::DEFAULT_WG_GUIDE.to_string()
 }
 
@@ -591,19 +592,20 @@ pub(crate) fn classify_model_tier(model: &str) -> KnowledgeTier {
     // Tier 1: Essential (8KB) - 32K context window models
     if model_lower.contains("minimax")
         || model_lower.contains("qwen-2.5")
-        || model_lower.contains("qwen2.5") {
+        || model_lower.contains("qwen2.5")
+    {
         KnowledgeTier::Essential
     }
     // Tier 2: Core (16KB) - 64K context window models
-    else if model_lower.contains("deepseek")
-        || model_lower.contains("claude-haiku") {
+    else if model_lower.contains("deepseek") || model_lower.contains("claude-haiku") {
         KnowledgeTier::Core
     }
     // Tier 3: Full (40KB) - 128K+ context window models
     else if model_lower.contains("llama-3.1")
         || model_lower.contains("llama3.1")
         || model_lower.contains("claude-sonnet")
-        || model_lower.contains("claude-opus") {
+        || model_lower.contains("claude-opus")
+    {
         KnowledgeTier::Full
     }
     // Conservative default for unknown models
@@ -640,7 +642,11 @@ fn is_telegram_configured(workgraph_dir: &Path) -> bool {
 }
 
 /// Build tiered workgraph knowledge guide based on model capabilities
-pub(crate) fn build_tiered_guide(workgraph_dir: &Path, tier: KnowledgeTier, _model: &str) -> String {
+pub(crate) fn build_tiered_guide(
+    workgraph_dir: &Path,
+    tier: KnowledgeTier,
+    _model: &str,
+) -> String {
     // Check for custom override first
     let custom_path = workgraph_dir.join("wg-guide.md");
     if custom_path.exists() {
@@ -663,7 +669,8 @@ fn build_essential_guide(workgraph_dir: &Path) -> String {
     let claude_md = read_claude_md_content(workgraph_dir);
     let memory_md = read_memory_md(workgraph_dir);
 
-    format!(r#"# Workgraph Agent Guide (Essential)
+    format!(
+        r#"# Workgraph Agent Guide (Essential)
 
 **You are an AI agent working on one task in a workgraph project.** Other agents work on other tasks concurrently.
 
@@ -777,8 +784,8 @@ wg add "Subtask" --after $WG_TASK_ID
 {}
 
 {}"#,
-    extract_project_instructions(&claude_md),
-    extract_project_context(&memory_md)
+        extract_project_instructions(&claude_md),
+        extract_project_context(&memory_md)
     )
 }
 
@@ -787,7 +794,8 @@ fn build_core_guide(workgraph_dir: &Path) -> String {
     // For now, build on essential guide with additional content
     let essential = build_essential_guide(workgraph_dir);
 
-    format!("{}\n\n{}\n\n{}",
+    format!(
+        "{}\n\n{}\n\n{}",
         essential,
         build_agent_communication_section(),
         build_graph_patterns_section()
@@ -799,7 +807,8 @@ fn build_full_guide(workgraph_dir: &Path) -> String {
     // For now, build on core guide with additional content
     let core = build_core_guide(workgraph_dir);
 
-    format!("{}\n\n{}\n\n{}",
+    format!(
+        "{}\n\n{}\n\n{}",
         core,
         build_agency_system_section(),
         build_advanced_patterns_section()
@@ -831,7 +840,10 @@ fn read_memory_md(workgraph_dir: &Path) -> String {
     }
 
     // Fallback - try relative to workgraph dir
-    let memory_path = project_root.join(".claude").join("memory").join("MEMORY.md");
+    let memory_path = project_root
+        .join(".claude")
+        .join("memory")
+        .join("MEMORY.md");
     std::fs::read_to_string(&memory_path).unwrap_or_default()
 }
 
@@ -868,15 +880,20 @@ fn extract_project_context(memory_md: &str) -> String {
 
     // Extract key project facts - limit to essential info for Tier 1
     if memory_md.contains("Workgraph") {
-        context.push_str("**Project:** Workgraph - task coordination graph for humans and AI agents\n");
+        context.push_str(
+            "**Project:** Workgraph - task coordination graph for humans and AI agents\n",
+        );
     }
 
     if memory_md.contains("Rust") {
-        context.push_str("**Language:** Rust (use `cargo build` and `cargo test` for validation)\n");
+        context
+            .push_str("**Language:** Rust (use `cargo build` and `cargo test` for validation)\n");
     }
 
     if memory_md.contains("graph.jsonl") {
-        context.push_str("**Core files:** `.workgraph/graph.jsonl` (task storage), `src/` (implementation)\n");
+        context.push_str(
+            "**Core files:** `.workgraph/graph.jsonl` (task storage), `src/` (implementation)\n",
+        );
     }
 
     context
@@ -896,7 +913,8 @@ wg msg send $WG_TASK_ID "Acknowledged - implementing your suggestion"
 ### Coordination Patterns
 - **Sequential handoff:** Use `--after` to pass work from one agent to another
 - **Parallel collaboration:** Multiple agents work on parts, integrator combines results
-- **Iterative refinement:** Use cycles with `--max-iterations` for review/improve loops"#.to_string()
+- **Iterative refinement:** Use cycles with `--max-iterations` for review/improve loops"#
+        .to_string()
 }
 
 /// Build graph patterns section for Tier 2+
@@ -958,7 +976,8 @@ wg evaluate run $WG_TASK_ID --criteria "correctness,completeness,efficiency"
 The system learns from performance:
 ```bash
 wg evolve run  # Analyzes task outcomes and improves agent assignments
-```"#.to_string()
+```"#
+        .to_string()
 }
 
 /// Build advanced patterns section for Tier 3+
@@ -985,7 +1004,8 @@ Build resilient workflows:
 wg add 'Backup strategy' --after main-task
 wg add 'Fallback implementation' --after main-task
 wg add 'Choose best result' --after backup-strategy,fallback-implementation
-```"#.to_string()
+```"#
+        .to_string()
 }
 
 /// Resolve the effective exec_mode for a task using the priority hierarchy:

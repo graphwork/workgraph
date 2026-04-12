@@ -883,7 +883,7 @@ fn needs_rotation(path: &Path, config: &Config) -> bool {
     if let Ok(file) = fs::File::open(path) {
         let count = BufReader::new(file)
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(Result::ok)
             .filter(|l| !l.trim().is_empty())
             .count();
         if count >= config.chat.max_messages {

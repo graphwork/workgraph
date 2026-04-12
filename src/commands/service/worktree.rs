@@ -7,13 +7,13 @@
 #![allow(dead_code)]
 //! - Age-based pruning of stale worktrees
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, Condvar};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use workgraph::config::ResourceManagementConfig;
@@ -61,7 +61,8 @@ where
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("Operation {} failed with no error details", operation_name)))
+    Err(last_error
+        .unwrap_or_else(|| anyhow!("Operation {} failed with no error details", operation_name)))
 }
 
 /// Calculate the total size of a directory in bytes for metrics tracking.
@@ -90,7 +91,10 @@ fn calculate_directory_size(dir: &Path) -> Result<u64> {
     }
 
     visit_dir(dir, &mut total_size).unwrap_or_else(|_| {
-        eprintln!("[metrics] Warning: Failed to calculate directory size for {:?}", dir);
+        eprintln!(
+            "[metrics] Warning: Failed to calculate directory size for {:?}",
+            dir
+        );
     });
 
     Ok(total_size)
@@ -110,16 +114,26 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     if symlink_path.exists() {
         match fs::remove_file(&symlink_path) {
             Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-                eprintln!("[worktree] Permission denied removing .workgraph symlink, attempting permission fix");
+                eprintln!(
+                    "[worktree] Permission denied removing .workgraph symlink, attempting permission fix"
+                );
                 if let Err(fallback_err) = fix_permissions_and_remove_file(&symlink_path) {
-                    cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?} even after permission fix: {}", symlink_path, fallback_err));
+                    cleanup_errors.push(format!(
+                        "Failed to remove .workgraph symlink {:?} even after permission fix: {}",
+                        symlink_path, fallback_err
+                    ));
                 } else {
-                    eprintln!("[worktree] Successfully removed .workgraph symlink after permission fix");
+                    eprintln!(
+                        "[worktree] Successfully removed .workgraph symlink after permission fix"
+                    );
                     resources.symlinks_cleaned += 1;
                 }
             }
             Err(e) => {
-                cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?}: {}", symlink_path, e));
+                cleanup_errors.push(format!(
+                    "Failed to remove .workgraph symlink {:?}: {}",
+                    symlink_path, e
+                ));
             }
             Ok(()) => {
                 resources.symlinks_cleaned += 1;
@@ -132,16 +146,26 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     if target_dir.exists() {
         match fs::remove_dir_all(&target_dir) {
             Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-                eprintln!("[worktree] Permission denied removing target directory, attempting permission fix");
+                eprintln!(
+                    "[worktree] Permission denied removing target directory, attempting permission fix"
+                );
                 if let Err(fallback_err) = fix_permissions_and_remove_dir(&target_dir) {
-                    cleanup_errors.push(format!("Failed to remove target directory {:?} even after permission fix: {}", target_dir, fallback_err));
+                    cleanup_errors.push(format!(
+                        "Failed to remove target directory {:?} even after permission fix: {}",
+                        target_dir, fallback_err
+                    ));
                 } else {
-                    eprintln!("[worktree] Successfully removed target directory after permission fix");
+                    eprintln!(
+                        "[worktree] Successfully removed target directory after permission fix"
+                    );
                     resources.directories_removed += 1;
                 }
             }
             Err(e) => {
-                cleanup_errors.push(format!("Failed to remove target directory {:?}: {}", target_dir, e));
+                cleanup_errors.push(format!(
+                    "Failed to remove target directory {:?}: {}",
+                    target_dir, e
+                ));
             }
             Ok(()) => {
                 resources.directories_removed += 1;
@@ -174,7 +198,11 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        cleanup_errors.push(format!("Git branch delete failed for '{}': {}", branch, stderr.trim()));
+        cleanup_errors.push(format!(
+            "Git branch delete failed for '{}': {}",
+            branch,
+            stderr.trim()
+        ));
     } else {
         resources.branches_pruned += 1;
     }
@@ -195,7 +223,10 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     timer.complete(success, resources);
 
     if !success {
-        return Err(anyhow!("Worktree removal completed with errors:\n{}", cleanup_errors.join("\n")));
+        return Err(anyhow!(
+            "Worktree removal completed with errors:\n{}",
+            cleanup_errors.join("\n")
+        ));
     }
 
     Ok(())
@@ -212,7 +243,10 @@ pub fn verify_worktree_cleanup(
 
     // Check if the worktree directory still exists
     if worktree_path.exists() {
-        verification_errors.push(format!("Worktree directory still exists: {:?}", worktree_path));
+        verification_errors.push(format!(
+            "Worktree directory still exists: {:?}",
+            worktree_path
+        ));
 
         // List remaining contents for troubleshooting
         if let Ok(entries) = fs::read_dir(worktree_path) {
@@ -250,7 +284,8 @@ pub fn verify_worktree_cleanup(
         for line in text.lines() {
             if let Some(path) = line.strip_prefix("worktree ") {
                 if path == worktree_str.as_ref() {
-                    verification_errors.push(format!("Stale worktree entry found in git: {}", path));
+                    verification_errors
+                        .push(format!("Stale worktree entry found in git: {}", path));
                     break;
                 }
             }
@@ -260,7 +295,10 @@ pub fn verify_worktree_cleanup(
     // Check for .workgraph symlink
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
-        verification_errors.push(format!(".workgraph symlink still exists: {:?}", symlink_path));
+        verification_errors.push(format!(
+            ".workgraph symlink still exists: {:?}",
+            symlink_path
+        ));
     }
 
     // Check for target directory
@@ -272,7 +310,10 @@ pub fn verify_worktree_cleanup(
     if verification_errors.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("Worktree cleanup verification failed:\n{}", verification_errors.join("\n")))
+        Err(anyhow!(
+            "Worktree cleanup verification failed:\n{}",
+            verification_errors.join("\n")
+        ))
     }
 }
 
@@ -291,10 +332,16 @@ pub fn remove_worktree_verified(
     if config.cleanup_verification {
         match verify_worktree_cleanup(worktree_path, branch, project_root) {
             Ok(()) => {
-                eprintln!("[worktree] Cleanup verification passed for {:?}", worktree_path);
+                eprintln!(
+                    "[worktree] Cleanup verification passed for {:?}",
+                    worktree_path
+                );
             }
             Err(e) => {
-                eprintln!("[worktree] Cleanup verification failed for {:?}: {}", worktree_path, e);
+                eprintln!(
+                    "[worktree] Cleanup verification failed for {:?}: {}",
+                    worktree_path, e
+                );
 
                 // Attempt additional cleanup for any remaining artifacts
                 attempt_force_cleanup(worktree_path)?;
@@ -343,12 +390,23 @@ fn attempt_force_cleanup(worktree_path: &Path) -> Result<()> {
         // Finally, remove the directory itself with permission handling
         match fs::remove_dir_all(worktree_path) {
             Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-                eprintln!("[worktree] Permission denied during force cleanup, attempting permission fix");
-                fix_permissions_and_remove_dir(worktree_path)
-                    .with_context(|| format!("Failed to force-remove worktree directory {:?} even after permission fix", worktree_path))?;
+                eprintln!(
+                    "[worktree] Permission denied during force cleanup, attempting permission fix"
+                );
+                fix_permissions_and_remove_dir(worktree_path).with_context(|| {
+                    format!(
+                        "Failed to force-remove worktree directory {:?} even after permission fix",
+                        worktree_path
+                    )
+                })?;
             }
             Err(e) => {
-                return Err(e).with_context(|| format!("Failed to force-remove worktree directory {:?}", worktree_path));
+                return Err(e).with_context(|| {
+                    format!(
+                        "Failed to force-remove worktree directory {:?}",
+                        worktree_path
+                    )
+                });
             }
             Ok(()) => {}
         }
@@ -410,12 +468,18 @@ pub fn cleanup_dead_agent_worktree_with_config(
 ) {
     use workgraph::metrics::record_dead_agent_cleanup;
 
-    eprintln!("[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})", agent_id, worktree_path, branch);
+    eprintln!(
+        "[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})",
+        agent_id, worktree_path, branch
+    );
 
     // Recover commits before removing
     let commit_count = recover_commits(project_root, branch, agent_id);
     if commit_count > 0 {
-        eprintln!("[worktree] Recovered {} commits from dead agent {}", commit_count, agent_id);
+        eprintln!(
+            "[worktree] Recovered {} commits from dead agent {}",
+            commit_count, agent_id
+        );
         // If commit recovery creates a recovery branch, track it
         record_recovery_branch();
     }
@@ -434,7 +498,10 @@ pub fn cleanup_dead_agent_worktree_with_config(
 
     match cleanup_result {
         Ok(()) => {
-            eprintln!("[worktree] Successfully cleaned up worktree for dead agent {}", agent_id);
+            eprintln!(
+                "[worktree] Successfully cleaned up worktree for dead agent {}",
+                agent_id
+            );
             record_dead_agent_cleanup();
         }
         Err(e) => {
@@ -448,7 +515,10 @@ pub fn cleanup_dead_agent_worktree_with_config(
 
             // Try a final fallback: manual directory removal if the worktree path still exists
             if worktree_path.exists() {
-                eprintln!("[worktree] Attempting fallback: force removal of directory {:?}", worktree_path);
+                eprintln!(
+                    "[worktree] Attempting fallback: force removal of directory {:?}",
+                    worktree_path
+                );
                 if let Err(fallback_err) = fs::remove_dir_all(worktree_path) {
                     eprintln!("[worktree] Fallback also failed: {}", fallback_err);
                 } else {
@@ -544,7 +614,10 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
                 // Use the enhanced cleanup function with retry logic
                 cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
             } else {
-                eprintln!("[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup", name);
+                eprintln!(
+                    "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
+                    name
+                );
 
                 // No branch found — use fallback cleanup with error reporting
                 let mut cleanup_errors = Vec::new();
@@ -575,16 +648,22 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
                 match output {
                     Ok(output) if !output.status.success() => {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+                        cleanup_errors
+                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
                     }
                     Err(e) => {
-                        cleanup_errors.push(format!("Failed to execute git worktree remove: {}", e));
+                        cleanup_errors
+                            .push(format!("Failed to execute git worktree remove: {}", e));
                     }
                     _ => {} // Success case
                 }
 
                 if !cleanup_errors.is_empty() {
-                    eprintln!("[worktree] Warnings during manual cleanup of {}: {}", name, cleanup_errors.join("; "));
+                    eprintln!(
+                        "[worktree] Warnings during manual cleanup of {}: {}",
+                        name,
+                        cleanup_errors.join("; ")
+                    );
                 }
             }
 
@@ -674,7 +753,10 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
                 // Use the enhanced cleanup function with retry logic
                 cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
             } else {
-                eprintln!("[worktree] No git branch found for stale worktree {}, attempting manual cleanup", name);
+                eprintln!(
+                    "[worktree] No git branch found for stale worktree {}, attempting manual cleanup",
+                    name
+                );
 
                 // Use fallback cleanup with error reporting (same as orphaned cleanup)
                 let mut cleanup_errors = Vec::new();
@@ -702,16 +784,22 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
                 match output {
                     Ok(output) if !output.status.success() => {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+                        cleanup_errors
+                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
                     }
                     Err(e) => {
-                        cleanup_errors.push(format!("Failed to execute git worktree remove: {}", e));
+                        cleanup_errors
+                            .push(format!("Failed to execute git worktree remove: {}", e));
                     }
                     _ => {} // Success case
                 }
 
                 if !cleanup_errors.is_empty() {
-                    eprintln!("[worktree] Warnings during manual cleanup of stale {}: {}", name, cleanup_errors.join("; "));
+                    eprintln!(
+                        "[worktree] Warnings during manual cleanup of stale {}: {}",
+                        name,
+                        cleanup_errors.join("; ")
+                    );
                 }
             }
 
@@ -734,7 +822,11 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
 #[allow(dead_code)]
 fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
     let output = Command::new("git")
-        .args(["branch", "-r", "--format=%(refname:short) %(committerdate:unix)"])
+        .args([
+            "branch",
+            "-r",
+            "--format=%(refname:short) %(committerdate:unix)",
+        ])
         .current_dir(project_root)
         .output()
         .context("Failed to list remote branches")?;
@@ -764,7 +856,11 @@ fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
 
     // Also check local recovery branches
     let output = Command::new("git")
-        .args(["for-each-ref", "--format=%(refname:short) %(committerdate:unix)", "refs/heads/recover/**"])
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short) %(committerdate:unix)",
+            "refs/heads/recover/**",
+        ])
         .current_dir(project_root)
         .output()
         .context("Failed to list local recovery branches")?;
@@ -822,7 +918,10 @@ fn prune_recovery_branches(
                 );
 
                 if let Err(e) = delete_recovery_branch(project_root, branch) {
-                    eprintln!("[recovery] Failed to delete aged recovery branch {}: {}", branch, e);
+                    eprintln!(
+                        "[recovery] Failed to delete aged recovery branch {}: {}",
+                        branch, e
+                    );
                 } else {
                     pruned_count += 1;
                 }
@@ -834,7 +933,9 @@ fn prune_recovery_branches(
     if config.recovery_branch_max_count > 0 {
         // Get fresh list after age-based pruning
         let remaining_branches = get_recovery_branches(project_root)?;
-        let excess_count = remaining_branches.len().saturating_sub(config.recovery_branch_max_count as usize);
+        let excess_count = remaining_branches
+            .len()
+            .saturating_sub(config.recovery_branch_max_count as usize);
 
         if excess_count > 0 {
             eprintln!(
@@ -845,7 +946,10 @@ fn prune_recovery_branches(
             // Prune oldest branches first
             for (branch, _) in remaining_branches.iter().take(excess_count) {
                 if let Err(e) = delete_recovery_branch(project_root, branch) {
-                    eprintln!("[recovery] Failed to delete excess recovery branch {}: {}", branch, e);
+                    eprintln!(
+                        "[recovery] Failed to delete excess recovery branch {}: {}",
+                        branch, e
+                    );
                 } else {
                     pruned_count += 1;
                 }
@@ -874,7 +978,11 @@ fn delete_recovery_branch(project_root: &Path, branch: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Only log as warning if branch doesn't exist locally
         if !stderr.contains("not found") {
-            eprintln!("[recovery] Warning: Failed to delete local recovery branch {}: {}", branch, stderr.trim());
+            eprintln!(
+                "[recovery] Warning: Failed to delete local recovery branch {}: {}",
+                branch,
+                stderr.trim()
+            );
         }
     }
 
@@ -889,7 +997,11 @@ fn delete_recovery_branch(project_root: &Path, branch: &str) -> Result<()> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Only log as warning for actual errors, not "branch not found"
             if !stderr.contains("not found") && !stderr.contains("does not exist") {
-                eprintln!("[recovery] Warning: Failed to delete remote recovery branch {}: {}", branch, stderr.trim());
+                eprintln!(
+                    "[recovery] Warning: Failed to delete remote recovery branch {}: {}",
+                    branch,
+                    stderr.trim()
+                );
             }
         }
     }
@@ -952,14 +1064,36 @@ pub enum CleanupJobType {
 impl std::fmt::Display for CleanupJobType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CleanupJobType::DeadAgent { project_root, agent_id, .. } => {
-                write!(f, "DeadAgent(project: {}, agent: {})", project_root.display(), agent_id)
+            CleanupJobType::DeadAgent {
+                project_root,
+                agent_id,
+                ..
+            } => {
+                write!(
+                    f,
+                    "DeadAgent(project: {}, agent: {})",
+                    project_root.display(),
+                    agent_id
+                )
             }
-            CleanupJobType::OrphanedWorktree { project_root, agent_id, .. } => {
-                write!(f, "OrphanedWorktree(project: {}, agent: {})", project_root.display(), agent_id)
+            CleanupJobType::OrphanedWorktree {
+                project_root,
+                agent_id,
+                ..
+            } => {
+                write!(
+                    f,
+                    "OrphanedWorktree(project: {}, agent: {})",
+                    project_root.display(),
+                    agent_id
+                )
             }
             CleanupJobType::RecoveryBranchPrune { project_root } => {
-                write!(f, "RecoveryBranchPrune(project: {})", project_root.display())
+                write!(
+                    f,
+                    "RecoveryBranchPrune(project: {})",
+                    project_root.display()
+                )
             }
         }
     }
@@ -1019,9 +1153,11 @@ impl CleanupQueue {
         }
 
         // Insert job in priority order (higher priority first)
-        let insert_pos = inner.queue.iter().position(|existing| {
-            existing.priority < job.priority
-        }).unwrap_or(inner.queue.len());
+        let insert_pos = inner
+            .queue
+            .iter()
+            .position(|existing| existing.priority < job.priority)
+            .unwrap_or(inner.queue.len());
 
         inner.queue.insert(insert_pos, job);
         self.not_empty.notify_one();
@@ -1130,7 +1266,10 @@ impl CleanupWorker {
                 ref worktree_path,
                 ref agent_id,
             } => {
-                eprintln!("[cleanup] Processing orphaned worktree cleanup: {}", agent_id);
+                eprintln!(
+                    "[cleanup] Processing orphaned worktree cleanup: {}",
+                    agent_id
+                );
 
                 // Try to find the branch for this worktree
                 if let Some(branch) = find_branch_for_worktree(project_root, worktree_path) {
@@ -1143,15 +1282,16 @@ impl CleanupWorker {
                     );
                 } else {
                     // Fallback to manual cleanup
-                    eprintln!("[cleanup] No branch found for orphaned worktree {}, using manual cleanup", agent_id);
+                    eprintln!(
+                        "[cleanup] No branch found for orphaned worktree {}, using manual cleanup",
+                        agent_id
+                    );
                     if let Err(e) = attempt_force_cleanup(worktree_path) {
                         eprintln!("[cleanup] Manual cleanup failed for {}: {}", agent_id, e);
                     }
                 }
             }
-            CleanupJobType::RecoveryBranchPrune {
-                ref project_root,
-            } => {
+            CleanupJobType::RecoveryBranchPrune { ref project_root } => {
                 eprintln!("[cleanup] Processing recovery branch pruning");
                 if let Err(e) = prune_recovery_branches(project_root, &self.config) {
                     eprintln!("[cleanup] Recovery branch pruning failed: {}", e);
@@ -1211,9 +1351,7 @@ pub fn enqueue_recovery_prune(
     priority: CleanupPriority,
 ) -> Result<()> {
     let job = CleanupJob {
-        job_type: CleanupJobType::RecoveryBranchPrune {
-            project_root,
-        },
+        job_type: CleanupJobType::RecoveryBranchPrune { project_root },
         priority,
     };
     queue.enqueue(job)
@@ -1441,7 +1579,12 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(call_count, MAX_RETRIES + 1);
-        assert!(result.unwrap_err().to_string().contains("persistent failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("persistent failure")
+        );
     }
 
     #[test]
@@ -1537,7 +1680,8 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let (wt_path, branch) = create_test_worktree(&project, "agent-unverified", "task-unverified");
+        let (wt_path, branch) =
+            create_test_worktree(&project, "agent-unverified", "task-unverified");
 
         let config = ResourceManagementConfig {
             cleanup_verification: false,
@@ -1643,11 +1787,8 @@ mod tests {
         assert_eq!(queue.len(), 2);
 
         // Test enqueue_recovery_prune
-        let result = enqueue_recovery_prune(
-            &queue,
-            PathBuf::from("/project"),
-            CleanupPriority::Low,
-        );
+        let result =
+            enqueue_recovery_prune(&queue, PathBuf::from("/project"), CleanupPriority::Low);
         assert!(result.is_ok());
         assert_eq!(queue.len(), 3);
     }
@@ -1694,8 +1835,9 @@ fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to fix file permissions for {:?}", file_path))?;
 
         // Retry removal after permission fix
-        fs::remove_file(file_path)
-            .with_context(|| format!("Failed to remove file {:?} after permission fix", file_path))?;
+        fs::remove_file(file_path).with_context(|| {
+            format!("Failed to remove file {:?} after permission fix", file_path)
+        })?;
     }
 
     Ok(())
@@ -1740,8 +1882,12 @@ fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
         .with_context(|| format!("Failed to fix directory permissions for {:?}", dir_path))?;
 
     // Retry removal after permission fix
-    fs::remove_dir_all(dir_path)
-        .with_context(|| format!("Failed to remove directory {:?} after permission fix", dir_path))?;
+    fs::remove_dir_all(dir_path).with_context(|| {
+        format!(
+            "Failed to remove directory {:?} after permission fix",
+            dir_path
+        )
+    })?;
 
     Ok(())
 }
@@ -1749,12 +1895,20 @@ fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
 /// Fallback implementations for non-Unix systems
 #[cfg(not(unix))]
 fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
-    fs::remove_file(file_path)
-        .with_context(|| format!("Failed to remove file {:?} (permission fix not available on this platform)", file_path))
+    fs::remove_file(file_path).with_context(|| {
+        format!(
+            "Failed to remove file {:?} (permission fix not available on this platform)",
+            file_path
+        )
+    })
 }
 
 #[cfg(not(unix))]
 fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
-    fs::remove_dir_all(dir_path)
-        .with_context(|| format!("Failed to remove directory {:?} (permission fix not available on this platform)", dir_path))
+    fs::remove_dir_all(dir_path).with_context(|| {
+        format!(
+            "Failed to remove directory {:?} (permission fix not available on this platform)",
+            dir_path
+        )
+    })
 }

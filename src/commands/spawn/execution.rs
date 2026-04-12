@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use workgraph::agency;
-use workgraph::config::{Config, EndpointConfig, CapBehavior};
+use workgraph::config::{CapBehavior, Config, EndpointConfig};
 use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
@@ -143,13 +143,14 @@ pub(crate) fn spawn_agent_inner(
     let mut failed_deps_lines = Vec::new();
     for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id)
-            && dep_task.status == Status::Failed {
-                let reason = dep_task.failure_reason.as_deref().unwrap_or("unknown");
-                failed_deps_lines.push(format!(
-                    "- {}: \"{}\" — Reason: {}",
-                    dep_id, dep_task.title, reason
-                ));
-            }
+            && dep_task.status == Status::Failed
+        {
+            let reason = dep_task.failure_reason.as_deref().unwrap_or("unknown");
+            failed_deps_lines.push(format!(
+                "- {}: \"{}\" — Reason: {}",
+                dep_id, dep_task.title, reason
+            ));
+        }
     }
     if !failed_deps_lines.is_empty() {
         vars.has_failed_deps = true;
@@ -356,7 +357,9 @@ pub(crate) fn spawn_agent_inner(
                     vars.model,
                     scope,
                     resolved_exec_mode.as_str(),
-                    task.agent.as_deref().unwrap_or("Default (no specific agent assigned)")
+                    task.agent
+                        .as_deref()
+                        .unwrap_or("Default (no specific agent assigned)")
                 );
                 let _ = file.write_all(debug_info.as_bytes());
             }
@@ -1516,15 +1519,18 @@ fn check_openrouter_cost_caps(
     task_id: &str,
     model: Option<&str>,
 ) -> Result<()> {
-    use workgraph::executor::native::openai_client::{fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir};
     use crate::commands::service::CoordinatorState;
+    use workgraph::executor::native::openai_client::{
+        fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir,
+    };
 
     let openrouter_config = &config.openrouter;
 
     // Early exit if no cost caps are configured
     if openrouter_config.cost_cap_global_usd.is_none()
         && openrouter_config.cost_cap_session_usd.is_none()
-        && openrouter_config.cost_cap_task_usd.is_none() {
+        && openrouter_config.cost_cap_task_usd.is_none()
+    {
         return Ok(());
     }
 
@@ -1540,14 +1546,18 @@ fn check_openrouter_cost_caps(
     let service_dir = workgraph_dir.join(".workgraph/service");
 
     // Load current coordinator state for session cost tracking
-    let mut coordinator_state = CoordinatorState::load_for(&service_dir, 0)
-        .unwrap_or_default();
+    let mut coordinator_state = CoordinatorState::load_for(&service_dir, 0).unwrap_or_default();
 
     // Check if we should refresh key status
-    if coordinator_state.cost_tracking.should_check_key_status(openrouter_config.key_status_check_interval_minutes) {
+    if coordinator_state
+        .cost_tracking
+        .should_check_key_status(openrouter_config.key_status_check_interval_minutes)
+    {
         match fetch_openrouter_key_status_blocking(&api_key, None) {
             Ok(key_status) => {
-                coordinator_state.cost_tracking.update_key_status(key_status);
+                coordinator_state
+                    .cost_tracking
+                    .update_key_status(key_status);
                 // Save updated state
                 let _ = coordinator_state.save_for(&service_dir, 0);
             }
@@ -1563,8 +1573,10 @@ fn check_openrouter_cost_caps(
         if coordinator_state.cost_tracking.session_cost_usd >= session_cap {
             return handle_cost_cap_violation(
                 &openrouter_config.cap_behavior,
-                &format!("Session cost cap of ${:.2} exceeded (current: ${:.2})",
-                    session_cap, coordinator_state.cost_tracking.session_cost_usd),
+                &format!(
+                    "Session cost cap of ${:.2} exceeded (current: ${:.2})",
+                    session_cap, coordinator_state.cost_tracking.session_cost_usd
+                ),
                 openrouter_config.fallback_model.as_deref(),
                 task_id,
                 model,
@@ -1580,8 +1592,10 @@ fn check_openrouter_cost_caps(
         if key_status.usage >= global_cap {
             return handle_cost_cap_violation(
                 &openrouter_config.cap_behavior,
-                &format!("Global cost cap of ${:.2} exceeded (current: ${:.2})",
-                    global_cap, key_status.usage),
+                &format!(
+                    "Global cost cap of ${:.2} exceeded (current: ${:.2})",
+                    global_cap, key_status.usage
+                ),
                 openrouter_config.fallback_model.as_deref(),
                 task_id,
                 model,
@@ -1624,7 +1638,10 @@ fn handle_cost_cap_violation(
                 );
                 Ok(())
             } else {
-                anyhow::bail!("Cost cap exceeded: {} (no fallback model configured)", message);
+                anyhow::bail!(
+                    "Cost cap exceeded: {} (no fallback model configured)",
+                    message
+                );
             }
         }
         CapBehavior::Escalate => {

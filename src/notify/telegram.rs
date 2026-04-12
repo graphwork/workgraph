@@ -71,7 +71,11 @@ impl TelegramChannel {
     }
 
     /// Send a request to the Telegram Bot API and return the result.
-    pub async fn api_call(&self, method: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn api_call(
+        &self,
+        method: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let resp = self
             .client
             .post(self.api_url(method))

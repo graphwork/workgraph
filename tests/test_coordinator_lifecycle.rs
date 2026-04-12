@@ -85,13 +85,28 @@ fn test_coordinator_id_allocation_skips_archived() {
     // - coordinator-0 (archived)
     // - coordinator-1 (abandoned but has coordinator-loop tag)
     // - coordinator-2 (active)
-    assert_eq!(next_id, 3, "Should allocate coordinator-3, skipping archived/abandoned/active coordinators");
+    assert_eq!(
+        next_id, 3,
+        "Should allocate coordinator-3, skipping archived/abandoned/active coordinators"
+    );
 
     // Verify that each previous ID is correctly identified as unavailable
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-0"), "Archived coordinator should not be available");
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-1"), "Abandoned coordinator with coordinator-loop should not be available");
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-2"), "Active coordinator should not be available");
-    assert!(is_coordinator_slot_available(&graph, ".coordinator-3"), "Empty slot should be available");
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-0"),
+        "Archived coordinator should not be available"
+    );
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-1"),
+        "Abandoned coordinator with coordinator-loop should not be available"
+    );
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-2"),
+        "Active coordinator should not be available"
+    );
+    assert!(
+        is_coordinator_slot_available(&graph, ".coordinator-3"),
+        "Empty slot should be available"
+    );
 }
 
 /// Test that archiving a coordinator properly sets tags and status
@@ -128,9 +143,19 @@ fn test_coordinator_archiving_sets_correct_state() {
     let final_graph = parser::load_graph(&dir.join("graph.jsonl")).unwrap();
     let archived_task = final_graph.get_task(".coordinator-5").unwrap();
 
-    assert_eq!(archived_task.status, Status::Done, "Archived coordinator should have Done status");
-    assert!(archived_task.tags.contains(&"archived".to_string()), "Archived coordinator should have 'archived' tag");
-    assert!(!archived_task.tags.contains(&"coordinator-loop".to_string()), "Archived coordinator should not have 'coordinator-loop' tag");
+    assert_eq!(
+        archived_task.status,
+        Status::Done,
+        "Archived coordinator should have Done status"
+    );
+    assert!(
+        archived_task.tags.contains(&"archived".to_string()),
+        "Archived coordinator should have 'archived' tag"
+    );
+    assert!(
+        !archived_task.tags.contains(&"coordinator-loop".to_string()),
+        "Archived coordinator should not have 'coordinator-loop' tag"
+    );
 }
 
 /// Test context isolation: new coordinators have fresh state
@@ -146,14 +171,12 @@ fn test_coordinator_context_isolation() {
         title: "Old Coordinator".to_string(),
         status: Status::Done,
         tags: vec!["archived".to_string()],
-        log: vec![
-            workgraph::graph::LogEntry {
-                timestamp: "2026-04-11T10:00:00Z".to_string(),
-                actor: Some("daemon".to_string()),
-                user: Some("test".to_string()),
-                message: "Old coordinator chat history".to_string(),
-            }
-        ],
+        log: vec![workgraph::graph::LogEntry {
+            timestamp: "2026-04-11T10:00:00Z".to_string(),
+            actor: Some("daemon".to_string()),
+            user: Some("test".to_string()),
+            message: "Old coordinator chat history".to_string(),
+        }],
         created_at: Some("2026-04-11T10:00:00Z".to_string()),
         ..Default::default()
     };
@@ -165,14 +188,12 @@ fn test_coordinator_context_isolation() {
         title: "New Coordinator".to_string(),
         status: Status::InProgress,
         tags: vec!["coordinator-loop".to_string()],
-        log: vec![
-            workgraph::graph::LogEntry {
-                timestamp: "2026-04-11T12:00:00Z".to_string(),
-                actor: Some("daemon".to_string()),
-                user: Some("test".to_string()),
-                message: "New coordinator created".to_string(),
-            }
-        ],
+        log: vec![workgraph::graph::LogEntry {
+            timestamp: "2026-04-11T12:00:00Z".to_string(),
+            actor: Some("daemon".to_string()),
+            user: Some("test".to_string()),
+            message: "New coordinator created".to_string(),
+        }],
         created_at: Some("2026-04-11T12:00:00Z".to_string()),
         ..Default::default()
     };
@@ -183,17 +204,26 @@ fn test_coordinator_context_isolation() {
     let new_task = graph.get_task(".coordinator-11").unwrap();
 
     // Different timestamps ensure fresh state
-    assert_ne!(old_task.created_at, new_task.created_at, "New coordinator should have different creation time");
+    assert_ne!(
+        old_task.created_at, new_task.created_at,
+        "New coordinator should have different creation time"
+    );
 
     // Different log content ensures no context leakage
     assert_eq!(old_task.log.len(), 1);
     assert_eq!(new_task.log.len(), 1);
     assert!(old_task.log[0].message.contains("Old coordinator"));
     assert!(new_task.log[0].message.contains("New coordinator"));
-    assert_ne!(old_task.log[0].message, new_task.log[0].message, "Log messages should be different");
+    assert_ne!(
+        old_task.log[0].message, new_task.log[0].message,
+        "Log messages should be different"
+    );
 
     // Different IDs ensure no state file collision
-    assert_ne!(old_task.id, new_task.id, "Coordinator IDs should be different");
+    assert_ne!(
+        old_task.id, new_task.id,
+        "Coordinator IDs should be different"
+    );
 }
 
 /// Test the full archive-then-create flow
@@ -209,14 +239,12 @@ fn test_archive_then_create_flow() {
         title: "Initial Coordinator".to_string(),
         status: Status::InProgress,
         tags: vec!["coordinator-loop".to_string()],
-        log: vec![
-            workgraph::graph::LogEntry {
-                timestamp: "2026-04-11T10:00:00Z".to_string(),
-                actor: Some("daemon".to_string()),
-                user: Some("test".to_string()),
-                message: "Initial coordinator created".to_string(),
-            }
-        ],
+        log: vec![workgraph::graph::LogEntry {
+            timestamp: "2026-04-11T10:00:00Z".to_string(),
+            actor: Some("daemon".to_string()),
+            user: Some("test".to_string()),
+            message: "Initial coordinator created".to_string(),
+        }],
         created_at: Some("2026-04-11T10:00:00Z".to_string()),
         ..Default::default()
     };
@@ -280,7 +308,10 @@ fn test_archive_then_create_flow() {
         next_id_after_archive += 1;
     }
 
-    assert_eq!(next_id_after_archive, 1, "After archiving coordinator-0, next available ID should be 1 (skipping archived coordinator-0)");
+    assert_eq!(
+        next_id_after_archive, 1,
+        "After archiving coordinator-0, next available ID should be 1 (skipping archived coordinator-0)"
+    );
 
     // Verify coordinator-0 is properly archived
     let archived_task = archived_graph.get_task(".coordinator-0").unwrap();
@@ -360,12 +391,30 @@ fn test_no_id_reuse_with_gaps() {
     }
 
     // Should get ID 1 (the first gap), NOT reusing archived coordinator-0 or coordinator-2
-    assert_eq!(next_id, 1, "Should allocate ID 1 (first available gap), not reuse archived IDs");
+    assert_eq!(
+        next_id, 1,
+        "Should allocate ID 1 (first available gap), not reuse archived IDs"
+    );
 
     // Verify why each ID was rejected
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-0"), "coordinator-0 is archived");
-    assert!(is_coordinator_slot_available(&graph, ".coordinator-1"), "coordinator-1 should be available");
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-2"), "coordinator-2 is archived");
-    assert!(is_coordinator_slot_available(&graph, ".coordinator-3"), "coordinator-3 should be available");
-    assert!(!is_coordinator_slot_available(&graph, ".coordinator-4"), "coordinator-4 is active");
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-0"),
+        "coordinator-0 is archived"
+    );
+    assert!(
+        is_coordinator_slot_available(&graph, ".coordinator-1"),
+        "coordinator-1 should be available"
+    );
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-2"),
+        "coordinator-2 is archived"
+    );
+    assert!(
+        is_coordinator_slot_available(&graph, ".coordinator-3"),
+        "coordinator-3 should be available"
+    );
+    assert!(
+        !is_coordinator_slot_available(&graph, ".coordinator-4"),
+        "coordinator-4 is active"
+    );
 }

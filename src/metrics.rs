@@ -3,10 +3,10 @@
 //! This module provides centralized tracking of cleanup operations, timing statistics,
 //! and recovery branch management for observability and debugging purposes.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Global metrics collector for cleanup operations.
 static CLEANUP_METRICS: CleanupMetrics = CleanupMetrics::new();
@@ -128,7 +128,8 @@ impl CleanupMetrics {
 
     /// Record dead agent cleanup.
     pub fn record_dead_agent_cleanup(&self) {
-        self.dead_agent_cleanup_count.fetch_add(1, Ordering::Relaxed);
+        self.dead_agent_cleanup_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record cleanup timing and resource recovery statistics.
@@ -138,7 +139,8 @@ impl CleanupMetrics {
         if let Ok(mut timing) = self.timing_stats.lock() {
             timing.timed_operations += 1;
             timing.total_cleanup_time_ms += duration_ms;
-            timing.avg_cleanup_duration_ms = timing.total_cleanup_time_ms as f64 / timing.timed_operations as f64;
+            timing.avg_cleanup_duration_ms =
+                timing.total_cleanup_time_ms as f64 / timing.timed_operations as f64;
 
             if timing.min_cleanup_duration_ms == 0 || duration_ms < timing.min_cleanup_duration_ms {
                 timing.min_cleanup_duration_ms = duration_ms;
@@ -152,7 +154,8 @@ impl CleanupMetrics {
             timing.resource_stats.symlinks_cleaned += resources.symlinks_cleaned;
             timing.resource_stats.directories_removed += resources.directories_removed;
             timing.resource_stats.branches_pruned += resources.branches_pruned;
-            timing.resource_stats.disk_space_recovered_bytes += resources.disk_space_recovered_bytes;
+            timing.resource_stats.disk_space_recovered_bytes +=
+                resources.disk_space_recovered_bytes;
         }
     }
 
@@ -167,7 +170,9 @@ impl CleanupMetrics {
             0.0
         };
 
-        let timing = self.timing_stats.lock()
+        let timing = self
+            .timing_stats
+            .lock()
             .map(|stats| stats.clone())
             .unwrap_or_default();
 
@@ -226,7 +231,8 @@ impl CleanupTimer {
     pub fn complete(self, success: bool, resources: ResourceRecoveryStats) {
         let duration = self.start.elapsed();
 
-        eprintln!("[metrics] Cleanup '{}' completed in {}ms (success: {}, resources: {} worktrees, {} bytes recovered)",
+        eprintln!(
+            "[metrics] Cleanup '{}' completed in {}ms (success: {}, resources: {} worktrees, {} bytes recovered)",
             self.operation_type,
             duration.as_millis(),
             success,
@@ -246,7 +252,6 @@ impl CleanupTimer {
 }
 
 /// Global functions for accessing the metrics collector.
-
 /// Record a successful cleanup operation.
 pub fn record_cleanup_success() {
     CLEANUP_METRICS.record_cleanup_success();
@@ -260,8 +265,12 @@ pub fn record_cleanup_failure() {
 /// Record recovery branch creation.
 pub fn record_recovery_branch() {
     CLEANUP_METRICS.record_recovery_branch();
-    eprintln!("[metrics] Recovery branch created (total: {})",
-        CLEANUP_METRICS.recovery_branch_count.load(Ordering::Relaxed));
+    eprintln!(
+        "[metrics] Recovery branch created (total: {})",
+        CLEANUP_METRICS
+            .recovery_branch_count
+            .load(Ordering::Relaxed)
+    );
 }
 
 /// Record orphaned worktree cleanup.
@@ -283,15 +292,23 @@ pub fn get_metrics_snapshot() -> MetricsSnapshot {
 pub fn log_metrics_summary() {
     let metrics = get_metrics_snapshot();
     eprintln!("[metrics] === Cleanup Metrics Summary ===");
-    eprintln!("[metrics] Success: {} | Failure: {} | Success Rate: {:.1}%",
-        metrics.cleanup_success, metrics.cleanup_failure, metrics.success_rate_percent);
-    eprintln!("[metrics] Recovery Branches: {} | Orphaned: {} | Dead Agents: {}",
-        metrics.recovery_branches, metrics.orphaned_cleanups, metrics.dead_agent_cleanups);
-    eprintln!("[metrics] Avg Cleanup Time: {:.1}ms | Total Operations: {}",
-        metrics.timing.avg_cleanup_duration_ms, metrics.timing.timed_operations);
-    eprintln!("[metrics] Resources Recovered: {} worktrees, {} bytes",
+    eprintln!(
+        "[metrics] Success: {} | Failure: {} | Success Rate: {:.1}%",
+        metrics.cleanup_success, metrics.cleanup_failure, metrics.success_rate_percent
+    );
+    eprintln!(
+        "[metrics] Recovery Branches: {} | Orphaned: {} | Dead Agents: {}",
+        metrics.recovery_branches, metrics.orphaned_cleanups, metrics.dead_agent_cleanups
+    );
+    eprintln!(
+        "[metrics] Avg Cleanup Time: {:.1}ms | Total Operations: {}",
+        metrics.timing.avg_cleanup_duration_ms, metrics.timing.timed_operations
+    );
+    eprintln!(
+        "[metrics] Resources Recovered: {} worktrees, {} bytes",
         metrics.timing.resource_stats.worktrees_removed,
-        metrics.timing.resource_stats.disk_space_recovered_bytes);
+        metrics.timing.resource_stats.disk_space_recovered_bytes
+    );
 }
 
 #[cfg(test)]
@@ -375,7 +392,10 @@ mod tests {
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.timing.resource_stats.worktrees_removed, 3);
-        assert_eq!(snapshot.timing.resource_stats.disk_space_recovered_bytes, 3072);
+        assert_eq!(
+            snapshot.timing.resource_stats.disk_space_recovered_bytes,
+            3072
+        );
         assert_eq!(snapshot.timing.avg_cleanup_duration_ms, 150.0);
     }
 }

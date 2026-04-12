@@ -246,7 +246,10 @@ pub fn run_ask(
 
     println!("Sending message and waiting for reply...");
     println!("Message: {}", formatted_message);
-    println!("Timeout: {} seconds, polling every {} seconds", timeout_seconds, interval_seconds);
+    println!(
+        "Timeout: {} seconds, polling every {} seconds",
+        timeout_seconds, interval_seconds
+    );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
@@ -254,7 +257,10 @@ pub fn run_ask(
         let channel = TelegramChannel::new(config);
 
         // Send the message first
-        match channel.send_text(&effective_chat_id, &formatted_message).await {
+        match channel
+            .send_text(&effective_chat_id, &formatted_message)
+            .await
+        {
             Ok(msg_id) => {
                 println!("Message sent (ID: {})", msg_id.0);
             }
@@ -420,7 +426,9 @@ async fn poll_once(
 fn load_last_update_id() -> Result<i64> {
     let state_file = get_state_file_path()?;
     let content = std::fs::read_to_string(state_file)?;
-    let id: i64 = content.trim().parse()
+    let id: i64 = content
+        .trim()
+        .parse()
         .context("Invalid update_id format in state file")?;
     Ok(id)
 }

@@ -99,7 +99,7 @@ impl ProviderHealthStatus {
 }
 
 /// Global provider health tracker
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderHealth {
     /// Health status per provider/executor
     pub providers: HashMap<String, ProviderHealthStatus>,
@@ -113,17 +113,6 @@ pub struct ProviderHealth {
     pub auto_resume_at: Option<String>,
 }
 
-impl Default for ProviderHealth {
-    fn default() -> Self {
-        Self {
-            providers: HashMap::new(),
-            service_paused: false,
-            pause_reason: None,
-            paused_at: None,
-            auto_resume_at: None,
-        }
-    }
-}
 
 impl ProviderHealth {
     /// Load provider health from disk
@@ -150,8 +139,8 @@ impl ProviderHealth {
         }
 
         let path = provider_health_path(dir);
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize provider health")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize provider health")?;
         fs::write(&path, content)
             .with_context(|| format!("Failed to write provider health to {:?}", path))?;
         Ok(())
@@ -287,7 +276,7 @@ pub fn classify_error(exit_code: Option<i32>, stderr: &str) -> ProviderErrorKind
             0 => return ProviderErrorKind::FatalTask, // Success but marked as failure - weird state
             124 => return ProviderErrorKind::FatalTask, // Hard timeout - task complexity issue
             143 => return ProviderErrorKind::Transient, // SIGTERM - likely coordinator shutdown
-            _ => {} // Continue to stderr analysis
+            _ => {}                                   // Continue to stderr analysis
         }
     }
 

@@ -1,10 +1,10 @@
 use anyhow::Result;
-use tempfile::TempDir;
 use std::path::Path;
+use tempfile::TempDir;
 
-use workgraph::parser::load_graph;
 use workgraph::config::CoordinatorConfig;
-use workgraph::graph::{WorkGraph, Task, Status, Priority, parse_delay, Node};
+use workgraph::graph::{Node, Priority, Status, Task, WorkGraph, parse_delay};
+use workgraph::parser::load_graph;
 
 /// Helper to load a workgraph from a directory (mimics load_workgraph)
 fn load_workgraph(dir: &Path) -> Result<(WorkGraph, std::path::PathBuf)> {
@@ -115,7 +115,6 @@ fn test_verify_timeout_field_storage() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn test_verify_timeout_parsing() -> Result<()> {
     // Test valid duration parsing
@@ -157,7 +156,6 @@ fn test_verify_timeout_skipped_when_none() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn test_verify_timeout_integration() -> Result<()> {
     // Integration test: create a task with verify_timeout through WorkGraph
@@ -166,7 +164,8 @@ fn test_verify_timeout_integration() -> Result<()> {
     let task = create_task_with_timeout("integration-test", Some("42m".to_string()));
     graph.add_node(Node::Task(task));
 
-    let retrieved_task = graph.get_task("integration-test")
+    let retrieved_task = graph
+        .get_task("integration-test")
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
     assert_eq!(retrieved_task.verify_timeout, Some("42m".to_string()));
@@ -188,13 +187,23 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
 
     // Create a task with verify timeout using CLI
     let output = std::process::Command::new("wg")
-        .args(&["add", "Test CLI verify timeout", "--verify-timeout", "1337s", "--verify", "echo test"])
+        .args(&[
+            "add",
+            "Test CLI verify timeout",
+            "--verify-timeout",
+            "1337s",
+            "--verify",
+            "echo test",
+        ])
         .current_dir(project_root)
         .output()?;
 
     // Should succeed
     if !output.status.success() {
-        eprintln!("CLI add failed: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!(
+            "CLI add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         anyhow::bail!("CLI add command failed");
     }
 
@@ -202,7 +211,8 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
     let (graph, _path) = load_workgraph(project_root)?;
 
     // Find the task (it should be auto-generated ID)
-    let task = graph.tasks()
+    let task = graph
+        .tasks()
         .find(|t| t.title == "Test CLI verify timeout")
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
@@ -234,7 +244,8 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
     let (graph, _) = load_workgraph(project_root)?;
 
     // Verify timeout persisted
-    let task = graph.tasks()
+    let task = graph
+        .tasks()
         .find(|t| t.title == "Serialization test")
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
@@ -254,12 +265,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
         .output()?;
 
     // Test different duration formats
-    let test_cases = vec![
-        ("30s", "30s"),
-        ("5m", "5m"),
-        ("2h", "2h"),
-        ("1d", "1d"),
-    ];
+    let test_cases = vec![("30s", "30s"), ("5m", "5m"), ("2h", "2h"), ("1d", "1d")];
 
     for (timeout, expected) in test_cases {
         let title = format!("Test timeout {}", timeout);
@@ -270,40 +276,52 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
             .output()?;
 
         if !output.status.success() {
-            eprintln!("Failed for timeout {}: {}", timeout, String::from_utf8_lossy(&output.stderr));
+            eprintln!(
+                "Failed for timeout {}: {}",
+                timeout,
+                String::from_utf8_lossy(&output.stderr)
+            );
             continue;
         }
 
         let (graph, _) = load_workgraph(project_root)?;
-        let task = graph.tasks()
-            .find(|t| t.title == title);
+        let task = graph.tasks().find(|t| t.title == title);
 
         if let Some(task) = task {
-            assert_eq!(task.verify_timeout, Some(expected.to_string()),
-                      "Failed for timeout format: {}", timeout);
+            assert_eq!(
+                task.verify_timeout,
+                Some(expected.to_string()),
+                "Failed for timeout format: {}",
+                timeout
+            );
         }
     }
 
     Ok(())
 }
 
-
 /// INTEGRATION TESTS FOR ALL THREE VERIFY TIMEOUT IMPROVEMENTS
 
-#[test]  
+#[test]
 fn test_all_three_features_integration() -> Result<()> {
     // Comprehensive integration test exercising all three verify timeout improvements
     let coordinator_config = create_coordinator_config();
-    
+
     // Test that all features can be enabled together
-    assert!(coordinator_config.verify_triage_enabled, "Triage should be enabled");
-    assert_eq!(coordinator_config.max_concurrent_verifies, 3, "Concurrent verifies configured");
-    
+    assert!(
+        coordinator_config.verify_triage_enabled,
+        "Triage should be enabled"
+    );
+    assert_eq!(
+        coordinator_config.max_concurrent_verifies, 3,
+        "Concurrent verifies configured"
+    );
+
     println!("✓ All three verify timeout improvements integrated successfully:");
-    println!("  1. Isolated cargo target dirs prevent file lock contention"); 
+    println!("  1. Isolated cargo target dirs prevent file lock contention");
     println!("  2. Triage-based timeout distinguishes hangs from lock waits");
     println!("  3. Scoped verify optimizes test commands for speed");
-    
+
     Ok(())
 }
 
@@ -315,14 +333,17 @@ fn test_backward_compatibility_integration() -> Result<()> {
         .args(&["init"])
         .current_dir(temp_dir.path())
         .output()?;
-    
+
     // Legacy commands should still work
     let output = std::process::Command::new("wg")
         .args(&["add", "Legacy test", "--verify", "cargo test"])
         .current_dir(temp_dir.path())
         .output()?;
-        
-    assert!(output.status.success(), "Legacy verify commands should work");
+
+    assert!(
+        output.status.success(),
+        "Legacy verify commands should work"
+    );
     println!("✓ Backward compatibility maintained");
     Ok(())
 }

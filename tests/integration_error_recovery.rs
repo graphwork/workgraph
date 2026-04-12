@@ -46,7 +46,6 @@ impl ErrorInjectingProvider {
             captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
-
 }
 
 fn make_text_response(text: &str) -> MessagesResponse {

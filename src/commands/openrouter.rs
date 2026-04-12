@@ -1,20 +1,24 @@
 //! OpenRouter cost monitoring and management commands.
 
-use std::path::Path;
-use anyhow::Result;
-use workgraph::config::Config;
-use workgraph::executor::native::openai_client::{fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir};
-use crate::commands::service::CoordinatorState;
 use crate::cli::OpenRouterCommands;
+use crate::commands::service::CoordinatorState;
+use anyhow::Result;
+use std::path::Path;
+use workgraph::config::Config;
+use workgraph::executor::native::openai_client::{
+    fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir,
+};
 
 /// Run an OpenRouter subcommand.
 pub fn run(dir: &Path, command: &OpenRouterCommands, json: bool) -> Result<()> {
     match command {
         OpenRouterCommands::Status => run_status(dir, json),
         OpenRouterCommands::Session => run_session(dir, json),
-        OpenRouterCommands::SetLimit { global, session, task } => {
-            run_set_limit(dir, *global, *session, *task)
-        },
+        OpenRouterCommands::SetLimit {
+            global,
+            session,
+            task,
+        } => run_set_limit(dir, *global, *session, *task),
     }
 }
 
@@ -43,7 +47,10 @@ fn run_status(dir: &Path, json: bool) -> Result<()> {
 
         // Show warnings if approaching limits
         if key_status.is_above_threshold(config.openrouter.warn_at_usage_percent as f64) {
-            println!("\n⚠️  Warning: Usage above {}% threshold", config.openrouter.warn_at_usage_percent);
+            println!(
+                "\n⚠️  Warning: Usage above {}% threshold",
+                config.openrouter.warn_at_usage_percent
+            );
         }
 
         // Show cost cap configuration
@@ -74,8 +81,7 @@ fn run_session(dir: &Path, json: bool) -> Result<()> {
     let service_dir = dir.join(".workgraph/service");
 
     // Load coordinator state
-    let coord_state = CoordinatorState::load_for(&service_dir, 0)
-        .unwrap_or_default();
+    let coord_state = CoordinatorState::load_for(&service_dir, 0).unwrap_or_default();
 
     let cost_tracking = &coord_state.cost_tracking;
 
@@ -90,18 +96,28 @@ fn run_session(dir: &Path, json: bool) -> Result<()> {
     } else {
         println!("Current Session:");
         println!("  Session Cost: ${:.2}", cost_tracking.session_cost_usd);
-        println!("  Session Start: {}", cost_tracking.session_start.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "  Session Start: {}",
+            cost_tracking.session_start.format("%Y-%m-%d %H:%M:%S UTC")
+        );
 
         if let Some(last_check) = cost_tracking.last_key_check {
-            println!("  Last Key Check: {}", last_check.format("%Y-%m-%d %H:%M:%S UTC"));
+            println!(
+                "  Last Key Check: {}",
+                last_check.format("%Y-%m-%d %H:%M:%S UTC")
+            );
         } else {
             println!("  Last Key Check: Never");
         }
 
         if let Some(key_status) = &cost_tracking.key_status {
             println!("\nCached Key Status:");
-            println!("  Usage: ${:.2}/${:.2} ({:.1}%)",
-                key_status.usage, key_status.limit, key_status.usage_percentage());
+            println!(
+                "  Usage: ${:.2}/${:.2} ({:.1}%)",
+                key_status.usage,
+                key_status.limit,
+                key_status.usage_percentage()
+            );
         }
     }
 
@@ -109,7 +125,12 @@ fn run_session(dir: &Path, json: bool) -> Result<()> {
 }
 
 /// Set cost cap limits.
-fn run_set_limit(_dir: &Path, global: Option<f64>, session: Option<f64>, task: Option<f64>) -> Result<()> {
+fn run_set_limit(
+    _dir: &Path,
+    global: Option<f64>,
+    session: Option<f64>,
+    task: Option<f64>,
+) -> Result<()> {
     println!("Note: Cost cap configuration is currently managed via config.toml");
     println!("Add the following to your .workgraph/config.toml file:");
     println!();

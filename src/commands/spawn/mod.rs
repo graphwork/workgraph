@@ -202,7 +202,10 @@ mod tests {
             .output()
             .unwrap();
         if !add_output.status.success() {
-            return Err(format!("git add failed: {}", String::from_utf8_lossy(&add_output.stderr)));
+            return Err(format!(
+                "git add failed: {}",
+                String::from_utf8_lossy(&add_output.stderr)
+            ));
         }
 
         let commit_output = std::process::Command::new("git")
@@ -211,7 +214,10 @@ mod tests {
             .output()
             .unwrap();
         if !commit_output.status.success() {
-            return Err(format!("git commit failed: {}", String::from_utf8_lossy(&commit_output.stderr)));
+            return Err(format!(
+                "git commit failed: {}",
+                String::from_utf8_lossy(&commit_output.stderr)
+            ));
         }
         Ok(())
     }
@@ -246,12 +252,24 @@ mod tests {
 
         // Set safe directory for this specific project directory only
         let _safe_dir_output = std::process::Command::new("git")
-            .args(["config", "--global", "--add", "safe.directory", &project_root.to_string_lossy()])
+            .args([
+                "config",
+                "--global",
+                "--add",
+                "safe.directory",
+                &project_root.to_string_lossy(),
+            ])
             .output()
             .unwrap();
         // Also add the final location where the test will run
         let _safe_dir_output2 = std::process::Command::new("git")
-            .args(["config", "--global", "--add", "safe.directory", &dir.to_string_lossy()])
+            .args([
+                "config",
+                "--global",
+                "--add",
+                "safe.directory",
+                &dir.to_string_lossy(),
+            ])
             .output()
             .unwrap();
 
@@ -452,7 +470,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -487,7 +505,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -515,7 +533,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script was created in agents directory
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -543,7 +561,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script detects if task already done by agent
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -568,7 +586,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script preserves exit code
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -591,7 +609,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script appends to output file
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -617,7 +635,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         // Check wrapper script suppresses wg command errors
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
@@ -665,7 +683,7 @@ mod tests {
         // Spawn with explicit timeout
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", Some("5m"), None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", Some("5m"), None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -700,7 +718,7 @@ mod tests {
         // Default config has agent_timeout = "30m", no explicit timeout
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -725,7 +743,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", Some("10m"), None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", Some("10m"), None, false).unwrap();
 
         let metadata_path = agent_output_dir(&workgraph_dir, "agent-1").join("metadata.json");
         let metadata: serde_json::Value =
@@ -748,7 +766,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -776,7 +794,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -799,7 +817,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -827,7 +845,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,"t1", "shell", None, None, false).unwrap();
+        run(&workgraph_dir, "t1", "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -849,7 +867,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -883,7 +901,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,"t1", "shell", None, None, false).unwrap();
+        run(&workgraph_dir, "t1", "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
@@ -906,7 +924,7 @@ mod tests {
 
         // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir,&task_id, "shell", None, None, false).unwrap();
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();

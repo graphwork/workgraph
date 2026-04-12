@@ -1,4 +1,4 @@
-use workgraph::graph::{Status, WorkGraph, CycleAnalysis, Node};
+use workgraph::graph::{CycleAnalysis, Node, Status, WorkGraph};
 use workgraph::query::ready_tasks_cycle_aware;
 
 // Helper function to create a task
@@ -41,17 +41,31 @@ fn test_unconfigured_cycle_auto_breakin() {
 
     // Verify that a cycle was detected
     assert!(!cycle_analysis.cycles.is_empty(), "Should detect the cycle");
-    assert_eq!(cycle_analysis.cycles.len(), 1, "Should be exactly one cycle");
+    assert_eq!(
+        cycle_analysis.cycles.len(),
+        1,
+        "Should be exactly one cycle"
+    );
 
     // Get ready tasks - with auto-break-in, at least one should be ready despite the cycle
     let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
-    assert!(!ready_tasks.is_empty(), "Auto-break-in should make at least one task ready");
-    assert_eq!(ready_tasks.len(), 1, "Exactly one task should be selected for auto-break-in");
+    assert!(
+        !ready_tasks.is_empty(),
+        "Auto-break-in should make at least one task ready"
+    );
+    assert_eq!(
+        ready_tasks.len(),
+        1,
+        "Exactly one task should be selected for auto-break-in"
+    );
 
     // The break-in task should be deterministic (e.g., alphabetically first)
     let break_in_task = &ready_tasks[0];
-    assert_eq!(break_in_task.id, "a", "Task 'a' should be selected for break-in (alphabetically first)");
+    assert_eq!(
+        break_in_task.id, "a",
+        "Task 'a' should be selected for break-in (alphabetically first)"
+    );
 }
 
 /// Test that configured cycles are NOT affected by auto-break-in logic
@@ -94,7 +108,10 @@ fn test_configured_cycle_unaffected() {
 
     // Find the ready task - should be the cycle header
     let ready_task = ready_tasks.iter().find(|t| t.cycle_config.is_some());
-    assert!(ready_task.is_some(), "The task with cycle_config should be ready");
+    assert!(
+        ready_task.is_some(),
+        "The task with cycle_config should be ready"
+    );
 }
 
 /// Test mixed scenario: some cycles configured, some not
@@ -142,15 +159,25 @@ fn test_mixed_configured_unconfigured_cycles() {
     let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
     // Should have ready tasks from both cycles
-    assert_eq!(ready_tasks.len(), 2, "Should have one ready task from each cycle");
+    assert_eq!(
+        ready_tasks.len(),
+        2,
+        "Should have one ready task from each cycle"
+    );
 
     // One should be the configured cycle header (task A)
     let configured_ready = ready_tasks.iter().find(|t| t.cycle_config.is_some());
-    assert!(configured_ready.is_some(), "Configured cycle header should be ready");
+    assert!(
+        configured_ready.is_some(),
+        "Configured cycle header should be ready"
+    );
 
     // One should be the auto-break-in task from unconfigured cycle (task X, alphabetically first)
     let unconfigured_ready = ready_tasks.iter().find(|t| t.id == "x");
-    assert!(unconfigured_ready.is_some(), "Auto-break-in task should be ready");
+    assert!(
+        unconfigured_ready.is_some(),
+        "Auto-break-in task should be ready"
+    );
 }
 
 // Tests for edit command cycle guards would go here,

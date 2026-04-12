@@ -348,5 +348,4 @@ mod tests {
             "Retry should clear converged tag"
         );
     }
-
 }

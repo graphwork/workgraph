@@ -1,7 +1,7 @@
-use std::process::Command;
 use std::path::Path;
-use std::thread;
+use std::process::Command;
 use std::sync::Arc;
+use std::thread;
 use tempfile::TempDir;
 
 fn init_git_repo(path: &Path) {
@@ -35,7 +35,11 @@ fn init_git_repo(path: &Path) {
 }
 
 // Create a worktree using git commands directly
-fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> Result<std::path::PathBuf, String> {
+fn create_test_worktree(
+    project_root: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<std::path::PathBuf, String> {
     let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -52,7 +56,8 @@ fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> R
 
     // Ensure parent directory exists
     if let Some(parent) = worktree_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent dir: {}", e))?;
     }
 
     // Create worktree from HEAD
@@ -73,7 +78,11 @@ fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> R
 }
 
 // Remove worktree using git commands directly
-fn remove_test_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<(), String> {
+fn remove_test_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
     // Force-remove the worktree
     let _ = Command::new("git")
         .args(["worktree", "remove", "--force"])
@@ -128,7 +137,10 @@ fn test_concurrent_worktree_creation_head_reference() {
                 Ok(worktree_path) => {
                     // Verify worktree was created successfully
                     assert!(worktree_path.exists(), "Worktree path should exist");
-                    assert!(worktree_path.join("file.txt").exists(), "Source files should be checked out");
+                    assert!(
+                        worktree_path.join("file.txt").exists(),
+                        "Source files should be checked out"
+                    );
 
                     // Verify we can run git commands in the worktree and HEAD reference works
                     let git_status = Command::new("git")
@@ -137,7 +149,10 @@ fn test_concurrent_worktree_creation_head_reference() {
                         .output()
                         .expect("git status should work in worktree");
 
-                    assert!(git_status.status.success(), "git status should succeed in worktree");
+                    assert!(
+                        git_status.status.success(),
+                        "git status should succeed in worktree"
+                    );
 
                     // Verify HEAD reference is accessible
                     let git_head = Command::new("git")
@@ -147,7 +162,10 @@ fn test_concurrent_worktree_creation_head_reference() {
                         .expect("git rev-parse HEAD should work");
 
                     assert!(git_head.status.success(), "HEAD should be accessible");
-                    assert!(!git_head.stdout.is_empty(), "HEAD should return a commit hash");
+                    assert!(
+                        !git_head.stdout.is_empty(),
+                        "HEAD should return a commit hash"
+                    );
 
                     // Cleanup
                     let branch = format!("wg/{}/{}", agent_id, task_id);
@@ -155,7 +173,7 @@ fn test_concurrent_worktree_creation_head_reference() {
 
                     Ok(())
                 }
-                Err(e) => Err(format!("Agent {}: Failed to create worktree: {}", i, e))
+                Err(e) => Err(format!("Agent {}: Failed to create worktree: {}", i, e)),
             }
         });
 
@@ -203,18 +221,27 @@ fn test_head_reference_under_rapid_agent_turnover() {
             .output()
             .expect("git rev-parse HEAD should work");
 
-        assert!(git_rev_parse.status.success(),
-                "HEAD should be accessible in cycle {}", cycle);
-        assert!(!git_rev_parse.stdout.is_empty(),
-                "HEAD should return a commit hash in cycle {}", cycle);
+        assert!(
+            git_rev_parse.status.success(),
+            "HEAD should be accessible in cycle {}",
+            cycle
+        );
+        assert!(
+            !git_rev_parse.stdout.is_empty(),
+            "HEAD should return a commit hash in cycle {}",
+            cycle
+        );
 
         // Immediately remove worktree
         let branch = format!("wg/{}/{}", agent_id, task_id);
         remove_test_worktree(&project, &worktree_path, &branch)
             .expect("Worktree removal should succeed");
 
-        assert!(!worktree_path.exists(),
-                "Worktree should be cleaned up in cycle {}", cycle);
+        assert!(
+            !worktree_path.exists(),
+            "Worktree should be cleaned up in cycle {}",
+            cycle
+        );
     }
 }
 
@@ -281,17 +308,23 @@ fn test_worktree_creation_with_git_operations_in_progress() {
                         .output()
                         .expect("git log should work");
 
-                    assert!(git_log.status.success(),
-                            "git log should succeed for agent {}", i);
-                    assert!(!git_log.stdout.is_empty(),
-                            "git log should return commits for agent {}", i);
+                    assert!(
+                        git_log.status.success(),
+                        "git log should succeed for agent {}",
+                        i
+                    );
+                    assert!(
+                        !git_log.stdout.is_empty(),
+                        "git log should return commits for agent {}",
+                        i
+                    );
 
                     // Cleanup
                     let branch = format!("wg/{}/{}", agent_id, task_id);
                     remove_test_worktree(&*project_clone, &worktree_path, &branch).unwrap();
                     Ok(())
                 }
-                Err(e) => Err(format!("Agent {}: {}", i, e))
+                Err(e) => Err(format!("Agent {}: {}", i, e)),
             }
         });
 
@@ -300,7 +333,10 @@ fn test_worktree_creation_with_git_operations_in_progress() {
 
     // Wait for worktree operations
     for handle in handles {
-        handle.join().unwrap().expect("Worktree operations should succeed");
+        handle
+            .join()
+            .unwrap()
+            .expect("Worktree operations should succeed");
     }
 
     // Wait for background operations

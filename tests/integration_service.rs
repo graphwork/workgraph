@@ -340,7 +340,9 @@ fn coordinator_ticks(wg_dir: &Path) -> u64 {
 #[ignore = "Flaky timing-sensitive test - use --include-ignored only in controlled environments"]
 fn test_auto_pickup_via_graph_changed() {
     if should_skip_timing_tests() {
-        eprintln!("Skipping test_auto_pickup_via_graph_changed: unsuitable environment for timing-sensitive tests");
+        eprintln!(
+            "Skipping test_auto_pickup_via_graph_changed: unsuitable environment for timing-sensitive tests"
+        );
         return;
     }
 
@@ -442,7 +444,9 @@ fn test_auto_pickup_via_graph_changed() {
 #[ignore = "Flaky timing-sensitive test - use --include-ignored only in controlled environments"]
 fn test_fallback_poll_pickup() {
     if should_skip_timing_tests() {
-        eprintln!("Skipping test_fallback_poll_pickup: unsuitable environment for timing-sensitive tests");
+        eprintln!(
+            "Skipping test_fallback_poll_pickup: unsuitable environment for timing-sensitive tests"
+        );
         return;
     }
 

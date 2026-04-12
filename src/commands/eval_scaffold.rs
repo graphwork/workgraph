@@ -50,7 +50,11 @@ pub fn is_pipeline_eligible_system_task(task_id: &str) -> bool {
 /// - .assign-* tasks: inherit parent priority (they gate the parent)
 /// - .evaluate-* and .flip-* tasks: parent priority minus one level
 /// - Defaults to Normal if parent priority cannot be determined
-fn calculate_auto_priority(graph: &WorkGraph, parent_task_id: &str, scaffolding_type: &str) -> Priority {
+fn calculate_auto_priority(
+    graph: &WorkGraph,
+    parent_task_id: &str,
+    scaffolding_type: &str,
+) -> Priority {
     let parent_task = match graph.get_task(parent_task_id) {
         Some(task) => task,
         None => return Priority::Normal, // Default fallback

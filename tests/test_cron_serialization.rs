@@ -1,5 +1,5 @@
 use serde_json;
-use workgraph::graph::{Task, Status, Priority, Node};
+use workgraph::graph::{Node, Priority, Status, Task};
 
 #[test]
 fn test_cron_task_serialization() {
@@ -79,10 +79,22 @@ fn test_cron_task_serialization() {
     // Test serialization
     let json = serde_json::to_string(&Node::Task(task)).unwrap();
     println!("Serialization successful");
-    println!("JSON contains cron_schedule: {}", json.contains("\"cron_schedule\":\"0 2 * * *\""));
-    println!("JSON contains cron_enabled: {}", json.contains("\"cron_enabled\":true"));
-    println!("JSON contains last_cron_fire: {}", json.contains("\"last_cron_fire\":\"2026-04-12T02:00:00Z\""));
-    println!("JSON contains next_cron_fire: {}", json.contains("\"next_cron_fire\":\"2026-04-13T02:00:00Z\""));
+    println!(
+        "JSON contains cron_schedule: {}",
+        json.contains("\"cron_schedule\":\"0 2 * * *\"")
+    );
+    println!(
+        "JSON contains cron_enabled: {}",
+        json.contains("\"cron_enabled\":true")
+    );
+    println!(
+        "JSON contains last_cron_fire: {}",
+        json.contains("\"last_cron_fire\":\"2026-04-12T02:00:00Z\"")
+    );
+    println!(
+        "JSON contains next_cron_fire: {}",
+        json.contains("\"next_cron_fire\":\"2026-04-13T02:00:00Z\"")
+    );
 
     // Test deserialization
     let deserialized: Node = serde_json::from_str(&json).unwrap();

@@ -1471,7 +1471,8 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 // Special behavior for '2' key (Log tab): toggle view mode if already active
-                if d == '2' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log {
+                if d == '2' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log
+                {
                     app.toggle_log_view();
                 } else {
                     app.right_panel_visible = true;
@@ -2095,10 +2096,12 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Task tabs: '[' browses to older iteration
-        KeyCode::Char('[') if matches!(
-            app.right_panel_tab,
-            RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
-        ) => {
+        KeyCode::Char('[')
+            if matches!(
+                app.right_panel_tab,
+                RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
+            ) =>
+        {
             if app.iteration_prev() {
                 handle_iteration_change(app);
                 let total = app.iteration_archives.len() + 1;
@@ -2110,10 +2113,12 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
         // Task tabs: ']' browses to newer iteration
-        KeyCode::Char(']') if matches!(
-            app.right_panel_tab,
-            RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
-        ) => {
+        KeyCode::Char(']')
+            if matches!(
+                app.right_panel_tab,
+                RightPanelTab::Detail | RightPanelTab::Log | RightPanelTab::Messages
+            ) =>
+        {
             if app.iteration_next() {
                 handle_iteration_change(app);
                 let total = app.iteration_archives.len() + 1;

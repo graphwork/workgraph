@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
+use workgraph::cron::{calculate_next_fire, parse_cron_expression};
 use workgraph::graph::{CycleConfig, Estimate, Node, Priority, Status, Task, parse_delay};
-use workgraph::cron::{parse_cron_expression, calculate_next_fire};
 use workgraph::parser::modify_graph;
 
 use super::graph_path;
@@ -84,7 +84,7 @@ pub fn parse_priority(priority_str: Option<&str>) -> Priority {
                 eprintln!("Warning: Invalid priority '{}', using Normal", s);
                 Priority::Normal
             }
-        }
+        },
         None => Priority::Normal,
     }
 }
@@ -819,7 +819,11 @@ fn add_task_directly(
                     (Some(cron_expr.to_string()), true, next_fire_str)
                 }
                 Err(e) => {
-                    error = Some(anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e));
+                    error = Some(anyhow::anyhow!(
+                        "Invalid cron expression '{}': {}",
+                        cron_expr,
+                        e
+                    ));
                     return false;
                 }
             }

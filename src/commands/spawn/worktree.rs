@@ -177,7 +177,10 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         // Verify temp directory itself doesn't have .git
-        assert!(!temp.path().join(".git").exists(), "Temp directory should not have .git");
+        assert!(
+            !temp.path().join(".git").exists(),
+            "Temp directory should not have .git"
+        );
 
         // Test worktree creation - this may succeed or fail depending on whether
         // Git finds a parent repository in the test environment

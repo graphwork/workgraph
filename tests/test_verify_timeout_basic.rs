@@ -32,7 +32,10 @@ fn test_verify_timeout_cli_basic() -> Result<()> {
         .output()?;
 
     if !init_output.status.success() {
-        eprintln!("Init failed: {}", String::from_utf8_lossy(&init_output.stderr));
+        eprintln!(
+            "Init failed: {}",
+            String::from_utf8_lossy(&init_output.stderr)
+        );
         return Ok(()); // Skip test if can't initialize
     }
 

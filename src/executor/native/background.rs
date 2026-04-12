@@ -398,7 +398,7 @@ impl JobStore {
         let file = File::open(&job.log_path)?;
         let reader = BufReader::new(file);
 
-        let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
         let count = lines.unwrap_or(all_lines.len());
 
         if count >= all_lines.len() {

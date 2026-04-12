@@ -233,13 +233,14 @@ pub fn run_interactive(
     let mut failed_deps_lines = Vec::new();
     for dep_id in &task.after {
         if let Some(dep_task) = graph.get_task(dep_id)
-            && dep_task.status == Status::Failed {
-                let reason = dep_task.failure_reason.as_deref().unwrap_or("unknown");
-                failed_deps_lines.push(format!(
-                    "- {}: \"{}\" — Reason: {}",
-                    dep_id, dep_task.title, reason
-                ));
-            }
+            && dep_task.status == Status::Failed
+        {
+            let reason = dep_task.failure_reason.as_deref().unwrap_or("unknown");
+            failed_deps_lines.push(format!(
+                "- {}: \"{}\" — Reason: {}",
+                dep_id, dep_task.title, reason
+            ));
+        }
     }
     if !failed_deps_lines.is_empty() {
         vars.has_failed_deps = true;

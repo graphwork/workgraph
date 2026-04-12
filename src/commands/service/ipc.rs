@@ -10,7 +10,7 @@ use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
-use workgraph::cron::{parse_cron_expression, calculate_next_fire};
+use workgraph::cron::{calculate_next_fire, parse_cron_expression};
 use workgraph::graph::{Node, Priority, Status, Task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::registry::AgentRegistry;
@@ -978,7 +978,10 @@ fn handle_add_task(
                 (Some(cron_expr.to_string()), true, next_fire_str)
             }
             Err(e) => {
-                return IpcResponse::error(&format!("Invalid cron expression '{}': {}", cron_expr, e));
+                return IpcResponse::error(&format!(
+                    "Invalid cron expression '{}': {}",
+                    cron_expr, e
+                ));
             }
         }
     } else {
@@ -1171,7 +1174,6 @@ fn append_chat_inbox(
     }
 }
 
-
 /// Find the next fresh coordinator ID by scanning both existing coordinator tasks
 /// and existing chat history files. Returns max(existing_ids) + 1 to ensure
 /// the new coordinator has never existed before and has no chat history files.
@@ -1195,7 +1197,7 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
 
             // Look for chat-history-{id}.jsonl files
             if name_str.starts_with("chat-history-") && name_str.ends_with(".jsonl") {
-                let id_part = &name_str[13..name_str.len()-6]; // Remove "chat-history-" and ".jsonl"
+                let id_part = &name_str[13..name_str.len() - 6]; // Remove "chat-history-" and ".jsonl"
                 if let Ok(id) = id_part.parse::<u32>() {
                     max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
                 }

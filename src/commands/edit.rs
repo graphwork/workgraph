@@ -2,9 +2,9 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use workgraph::cycle::{EdgeAddResult, check_edge_addition};
 use workgraph::graph::{CycleConfig, parse_delay};
 use workgraph::parser::modify_graph;
-use workgraph::cycle::{check_edge_addition, EdgeAddResult};
 
 use super::graph_path;
 
@@ -63,9 +63,10 @@ pub fn run(
 
     // Validate model uses provider:model format
     if let Some(m) = model
-        && let Err(e) = workgraph::config::parse_model_spec_strict(m) {
-            anyhow::bail!("Invalid --model format: {}", e);
-        }
+        && let Err(e) = workgraph::config::parse_model_spec_strict(m)
+    {
+        anyhow::bail!("Invalid --model format: {}", e);
+    }
 
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
@@ -848,7 +849,7 @@ mod tests {
             None,
             None,
             None,
-            true, // allow_phantom: dep2 doesn't exist in test graph
+            true,  // allow_phantom: dep2 doesn't exist in test graph
             false, // allow_cycle: tests should not allow cycles by default
         );
         assert!(result.is_ok());
@@ -1553,9 +1554,9 @@ mod tests {
 
     #[test]
     fn test_cycle_detection_blocks_unconfigured_cycle() {
-        use tempfile::TempDir;
-        use workgraph::graph::{Task, Node, WorkGraph, Status};
         use crate::commands::graph_path;
+        use tempfile::TempDir;
+        use workgraph::graph::{Node, Status, Task, WorkGraph};
         use workgraph::parser::save_graph;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1618,9 +1619,9 @@ mod tests {
 
     #[test]
     fn test_cycle_detection_allows_with_flag() {
+        use crate::commands::{graph_path, load_graph};
         use tempfile::TempDir;
-        use workgraph::graph::{Task, Node, WorkGraph, Status};
-        use crate::commands::{load_graph, graph_path};
+        use workgraph::graph::{Node, Status, Task, WorkGraph};
         use workgraph::parser::save_graph;
 
         let temp_dir = TempDir::new().unwrap();

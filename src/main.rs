@@ -531,13 +531,20 @@ fn main() -> Result<()> {
         Commands::Cleanup { subcmd } => {
             let args = commands::cleanup::CleanupArgs { subcmd };
             commands::cleanup::run(args)
-        },
+        }
         Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
         Commands::List {
             status,
             paused,
             tags,
-        } => commands::list::run(&workgraph_dir, status.as_deref(), paused, &tags, None, cli.json),
+        } => commands::list::run(
+            &workgraph_dir,
+            status.as_deref(),
+            paused,
+            &tags,
+            None,
+            cli.json,
+        ),
         Commands::Viz {
             focus,
             all,
@@ -2240,16 +2247,14 @@ fn main() -> Result<()> {
                 timeout,
                 interval,
                 chat_id,
-                task_id
-            } => {
-                commands::telegram::run_ask(
-                    &message,
-                    chat_id.as_deref(),
-                    timeout,
-                    interval,
-                    task_id.as_deref()
-                )
-            }
+                task_id,
+            } => commands::telegram::run_ask(
+                &message,
+                chat_id.as_deref(),
+                timeout,
+                interval,
+                task_id.as_deref(),
+            ),
         },
         Commands::Endpoints { command } | Commands::Endpoint { command } => match command {
             EndpointsCommands::List => commands::endpoints::run_list(&workgraph_dir, cli.json),
@@ -2475,10 +2480,9 @@ fn main() -> Result<()> {
         },
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
-        },
-        // cli::Commands::Reprioritize { id, priority } => {
-        //     commands::reprioritize::run(&workgraph_dir, &id, &priority)
-        // },
+        } // cli::Commands::Reprioritize { id, priority } => {
+          //     commands::reprioritize::run(&workgraph_dir, &id, &priority)
+          // },
     }
 }
 

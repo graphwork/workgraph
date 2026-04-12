@@ -79,7 +79,11 @@ max_recovery_branches = 10
 }
 
 /// Create a test worktree using git commands
-fn create_test_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
+fn create_test_worktree(
+    project_root: &Path,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<PathBuf, String> {
     let worktree_dir = project_root.join(WORKTREES_DIR).join(agent_id);
     let branch = format!("wg/{}/{}", agent_id, task_id);
 
@@ -122,12 +126,15 @@ fn read_agent_metadata(agent_dir: &Path) -> Result<serde_json::Value, String> {
     let content = fs::read_to_string(&metadata_path)
         .map_err(|e| format!("Failed to read metadata: {}", e))?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse metadata JSON: {}", e))
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse metadata JSON: {}", e))
 }
 
 /// Simulate cleanup operations with error handling
-fn simulate_cleanup_with_error_handling(project_root: &Path, agent_id: &str, worktree_path: &Path) -> Result<(), String> {
+fn simulate_cleanup_with_error_handling(
+    project_root: &Path,
+    agent_id: &str,
+    worktree_path: &Path,
+) -> Result<(), String> {
     // Check if worktree exists
     if !worktree_path.exists() {
         return Ok(()); // Already cleaned
@@ -188,7 +195,10 @@ fn test_edge_cases_malformed_metadata() {
 
     let result1 = read_agent_metadata(&agent1_dir);
     assert!(result1.is_err(), "Invalid JSON should be detected");
-    assert!(result1.unwrap_err().contains("parse"), "Error should mention parsing");
+    assert!(
+        result1.unwrap_err().contains("parse"),
+        "Error should mention parsing"
+    );
 
     // Test case 2: Missing required fields
     let agent2_dir = agents_dir.join("agent-missing-fields");
@@ -197,10 +207,17 @@ fn test_edge_cases_malformed_metadata() {
         "agent_id": "agent-missing-fields",
         // Missing: task_id, worktree_path, pid, started_at
     });
-    fs::write(agent2_dir.join("metadata.json"), incomplete_metadata.to_string()).unwrap();
+    fs::write(
+        agent2_dir.join("metadata.json"),
+        incomplete_metadata.to_string(),
+    )
+    .unwrap();
 
     let result2 = read_agent_metadata(&agent2_dir);
-    assert!(result2.is_ok(), "Valid JSON should parse even if fields are missing");
+    assert!(
+        result2.is_ok(),
+        "Valid JSON should parse even if fields are missing"
+    );
 
     // Test case 3: Wrong data types
     let agent3_dir = agents_dir.join("agent-wrong-types");
@@ -257,7 +274,10 @@ fn test_edge_cases_missing_metadata_file() {
 
     let result = read_agent_metadata(&agent_dir);
     assert!(result.is_err(), "Missing metadata file should be detected");
-    assert!(result.unwrap_err().contains("read"), "Error should mention file reading");
+    assert!(
+        result.unwrap_err().contains("read"),
+        "Error should mention file reading"
+    );
 }
 
 // ── Missing Worktree Directory Tests ─────────────────────────────────────────
@@ -286,12 +306,18 @@ fn test_edge_cases_missing_worktree() {
     fs::write(agent_dir.join("metadata.json"), metadata.to_string()).unwrap();
 
     // Verify metadata exists but worktree doesn't
-    assert!(agent_dir.join("metadata.json").exists(), "Metadata should exist");
+    assert!(
+        agent_dir.join("metadata.json").exists(),
+        "Metadata should exist"
+    );
     assert!(!missing_worktree_path.exists(), "Worktree should not exist");
 
     // Attempt cleanup (should succeed gracefully)
     let result = simulate_cleanup_with_error_handling(&project, agent_id, &missing_worktree_path);
-    assert!(result.is_ok(), "Cleanup should handle missing worktree gracefully");
+    assert!(
+        result.is_ok(),
+        "Cleanup should handle missing worktree gracefully"
+    );
 }
 
 #[test]
@@ -314,13 +340,22 @@ fn test_partially_missing_worktree_structure() {
 
     // Worktree exists but is corrupted (original file missing)
     assert!(worktree_path.exists(), "Worktree directory should exist");
-    assert!(!worktree_path.join("file.txt").exists(), "Original file should be missing");
-    assert!(corrupted_dir.exists(), "Corrupted subdirectory should exist");
+    assert!(
+        !worktree_path.join("file.txt").exists(),
+        "Original file should be missing"
+    );
+    assert!(
+        corrupted_dir.exists(),
+        "Corrupted subdirectory should exist"
+    );
 
     // Attempt cleanup (should handle corruption gracefully)
     let result = simulate_cleanup_with_error_handling(&project, agent_id, &worktree_path);
     // Result may succeed or fail depending on git state, but should not panic
-    assert!(result.is_ok() || result.is_err(), "Cleanup should not panic on corrupted worktree");
+    assert!(
+        result.is_ok() || result.is_err(),
+        "Cleanup should not panic on corrupted worktree"
+    );
 }
 
 // ── Permission Denied Tests ──────────────────────────────────────────────────
@@ -356,8 +391,11 @@ fn test_edge_cases_permission_denied() {
     // The result may succeed or fail depending on system behavior
     // The important thing is it doesn't panic and provides useful error info
     if let Err(err) = result {
-        assert!(err.contains("target") || err.contains("permission") || err.contains("Failed"),
-            "Error should be descriptive: {}", err);
+        assert!(
+            err.contains("target") || err.contains("permission") || err.contains("Failed"),
+            "Error should be descriptive: {}",
+            err
+        );
     }
 }
 
@@ -395,10 +433,16 @@ fn test_permission_denied_metadata_access() {
     restore_perms.set_mode(0o644); // Restore read permissions
     fs::set_permissions(&metadata_path, restore_perms).unwrap();
 
-    assert!(result.is_err(), "Should fail to read metadata without permissions");
+    assert!(
+        result.is_err(),
+        "Should fail to read metadata without permissions"
+    );
     let error_msg = result.unwrap_err();
-    assert!(error_msg.contains("read") || error_msg.contains("permission"),
-        "Error should mention read/permission issue: {}", error_msg);
+    assert!(
+        error_msg.contains("read") || error_msg.contains("permission"),
+        "Error should mention read/permission issue: {}",
+        error_msg
+    );
 }
 
 // ── Corrupted Git Metadata Tests ─────────────────────────────────────────────
@@ -454,11 +498,17 @@ fn test_dangling_worktree_references() {
     fs::remove_dir_all(&worktree_path).unwrap();
 
     // Verify worktree is gone but git might still reference it
-    assert!(!worktree_path.exists(), "Worktree directory should be removed");
+    assert!(
+        !worktree_path.exists(),
+        "Worktree directory should be removed"
+    );
 
     // Attempt cleanup (should handle dangling references)
     let result = simulate_cleanup_with_error_handling(&project, agent_id, &worktree_path);
-    assert!(result.is_ok(), "Cleanup should handle dangling references gracefully");
+    assert!(
+        result.is_ok(),
+        "Cleanup should handle dangling references gracefully"
+    );
 
     // Verify git prune works
     let prune_output = Command::new("git")
@@ -466,7 +516,10 @@ fn test_dangling_worktree_references() {
         .current_dir(&project)
         .output()
         .unwrap();
-    assert!(prune_output.status.success(), "Git worktree prune should succeed");
+    assert!(
+        prune_output.status.success(),
+        "Git worktree prune should succeed"
+    );
 }
 
 // ── Symlink Handling Tests ───────────────────────────────────────────────────
@@ -517,7 +570,10 @@ fn test_symlink_cleanup_edge_cases() {
     // Test case 4: Directory instead of symlink
     fs::create_dir_all(&wg_symlink).unwrap();
     fs::write(wg_symlink.join("file.txt"), "content").unwrap();
-    assert!(wg_symlink.exists() && wg_symlink.is_dir(), "Directory should exist");
+    assert!(
+        wg_symlink.exists() && wg_symlink.is_dir(),
+        "Directory should exist"
+    );
 
     // Cleanup should handle directories (though this is unexpected)
     fs::remove_dir_all(&wg_symlink).unwrap();
@@ -547,8 +603,14 @@ fn test_recursive_symlink_handling() {
         std::os::unix::fs::symlink("link2", &symlink1).unwrap();
         std::os::unix::fs::symlink("link1", &symlink2).unwrap();
 
-        assert!(symlink1.symlink_metadata().is_ok(), "Symlink1 metadata should exist");
-        assert!(symlink2.symlink_metadata().is_ok(), "Symlink2 metadata should exist");
+        assert!(
+            symlink1.symlink_metadata().is_ok(),
+            "Symlink1 metadata should exist"
+        );
+        assert!(
+            symlink2.symlink_metadata().is_ok(),
+            "Symlink2 metadata should exist"
+        );
 
         // Cleanup should handle recursive structures without infinite loops
         let cleanup_result = fs::remove_dir_all(&nested_dir);
@@ -594,7 +656,10 @@ fn test_target_directory_cleanup_edge_cases() {
     let cleanup_duration = cleanup_start.elapsed();
 
     assert!(result.is_ok(), "Large target cleanup should succeed");
-    assert!(cleanup_duration.as_secs() < 10, "Cleanup should complete in reasonable time");
+    assert!(
+        cleanup_duration.as_secs() < 10,
+        "Cleanup should complete in reasonable time"
+    );
 
     // Test case 2: Target with readonly files
     let target_dir2 = worktree_path.join("target2");
@@ -655,7 +720,10 @@ fn test_target_directory_with_active_processes() {
     }
 
     // Cleanup should eventually succeed (files weren't actually locked in this test)
-    assert!(cleanup_succeeded, "Target cleanup should eventually succeed");
+    assert!(
+        cleanup_succeeded,
+        "Target cleanup should eventually succeed"
+    );
 }
 
 // ── Integration Tests ────────────────────────────────────────────────────────
@@ -687,7 +755,7 @@ fn test_comprehensive_edge_case_integration() {
         match scenario {
             "malformed-metadata" => {
                 fs::write(agent_dir.join("metadata.json"), "{ corrupted json").unwrap();
-            },
+            }
             "missing-worktree" => {
                 let metadata = serde_json::json!({
                     "agent_id": agent_id,
@@ -697,7 +765,7 @@ fn test_comprehensive_edge_case_integration() {
                 });
                 fs::write(agent_dir.join("metadata.json"), metadata.to_string()).unwrap();
                 // Don't create actual worktree
-            },
+            }
             "permission-issues" => {
                 let worktree_path = create_test_worktree(&project, agent_id, "task").unwrap();
                 let metadata = serde_json::json!({
@@ -716,7 +784,7 @@ fn test_comprehensive_edge_case_integration() {
                 fs::set_permissions(&target_dir, perms).unwrap();
 
                 agent_setups.push((agent_id.to_string(), worktree_path));
-            },
+            }
             "corrupted-git" => {
                 let worktree_path = create_test_worktree(&project, agent_id, "task").unwrap();
                 let metadata = serde_json::json!({
@@ -734,7 +802,7 @@ fn test_comprehensive_edge_case_integration() {
                 }
 
                 agent_setups.push((agent_id.to_string(), worktree_path));
-            },
+            }
             "symlink-problems" => {
                 let worktree_path = create_test_worktree(&project, agent_id, "task").unwrap();
                 let metadata = serde_json::json!({
@@ -753,7 +821,7 @@ fn test_comprehensive_edge_case_integration() {
                 }
 
                 agent_setups.push((agent_id.to_string(), worktree_path));
-            },
+            }
             _ => {}
         }
     }
@@ -767,7 +835,8 @@ fn test_comprehensive_edge_case_integration() {
         let metadata_result = read_agent_metadata(&agent_dir);
 
         // Then try cleanup regardless of metadata status
-        let cleanup_result = simulate_cleanup_with_error_handling(&project, &agent_id, &worktree_path);
+        let cleanup_result =
+            simulate_cleanup_with_error_handling(&project, &agent_id, &worktree_path);
 
         cleanup_results.push((agent_id, metadata_result.is_ok(), cleanup_result.is_ok()));
 
@@ -784,13 +853,22 @@ fn test_comprehensive_edge_case_integration() {
 
     // Verify that edge cases were handled (didn't cause panics)
     for (agent_id, metadata_ok, cleanup_ok) in cleanup_results {
-        println!("Agent {}: metadata_ok={}, cleanup_ok={}", agent_id, metadata_ok, cleanup_ok);
+        println!(
+            "Agent {}: metadata_ok={}, cleanup_ok={}",
+            agent_id, metadata_ok, cleanup_ok
+        );
         // The important thing is no panics occurred and we got deterministic results
     }
 
     // Verify system is still in a consistent state
-    assert!(project.join(".workgraph").exists(), "Project .workgraph should still exist");
-    assert!(project.join(".git").exists(), "Git repository should still be functional");
+    assert!(
+        project.join(".workgraph").exists(),
+        "Project .workgraph should still exist"
+    );
+    assert!(
+        project.join(".git").exists(),
+        "Git repository should still be functional"
+    );
 }
 
 #[cfg(test)]

@@ -42,7 +42,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use chrono::{DateTime, Utc};
 
-
 use workgraph::agency;
 use workgraph::config::Config;
 use workgraph::parser::load_graph;
@@ -401,8 +400,6 @@ impl Default for SessionCostTracking {
 }
 
 impl SessionCostTracking {
-
-
     /// Check if key status should be refreshed based on interval
     pub fn should_check_key_status(&self, interval_minutes: u32) -> bool {
         if let Some(last_check) = self.last_key_check {
@@ -414,7 +411,10 @@ impl SessionCostTracking {
     }
 
     /// Update the cached key status
-    pub fn update_key_status(&mut self, status: workgraph::executor::native::openai_client::OpenRouterKeyStatus) {
+    pub fn update_key_status(
+        &mut self,
+        status: workgraph::executor::native::openai_client::OpenRouterKeyStatus,
+    ) {
         self.last_key_check = Some(chrono::Utc::now());
         self.key_status = Some(status);
     }
@@ -1673,12 +1673,13 @@ fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &Daem
     // Time gate: check if enough time has elapsed since the last fetch.
     {
         if let Ok(Some(existing)) = workgraph::model_benchmarks::BenchmarkRegistry::load(dir)
-            && let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at) {
-                let age = chrono::Utc::now().signed_duration_since(fetched);
-                if age.num_seconds() < interval as i64 {
-                    return; // Not yet time
-                }
+            && let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at)
+        {
+            let age = chrono::Utc::now().signed_duration_since(fetched);
+            if age.num_seconds() < interval as i64 {
+                return; // Not yet time
             }
+        }
         // If no existing registry or unparseable date, proceed (initial population).
     }
 
@@ -3058,7 +3059,10 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
 
             provider_health.resume_service();
             if let Err(e) = provider_health.save(dir) {
-                eprintln!("[resume] Warning: failed to save provider health state: {}", e);
+                eprintln!(
+                    "[resume] Warning: failed to save provider health state: {}",
+                    e
+                );
             }
 
             if !json && (was_paused || !paused_providers.is_empty()) {
@@ -3071,7 +3075,10 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
             }
         }
         Err(e) => {
-            eprintln!("[resume] Warning: failed to load provider health state: {}", e);
+            eprintln!(
+                "[resume] Warning: failed to load provider health state: {}",
+                e
+            );
         }
     }
 
@@ -3844,14 +3851,13 @@ mod tests {
 
         let graph = load_graph(&gp).unwrap();
         // Coordinator tasks should NOT be abandoned (TUI needs them for discovery)
-        assert_eq!(graph.get_task(".coordinator-0").unwrap().status, Status::Open);
+        assert_eq!(
+            graph.get_task(".coordinator-0").unwrap().status,
+            Status::Open
+        );
 
         // Other legacy tasks should still be abandoned
-        for id in [
-            ".archive-0",
-            ".registry-refresh-0",
-            ".user-erik-0",
-        ] {
+        for id in [".archive-0", ".registry-refresh-0", ".user-erik-0"] {
             assert_eq!(graph.get_task(id).unwrap().status, Status::Abandoned);
         }
         // .compact-0 should NOT be abandoned — it's now handled by native compaction

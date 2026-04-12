@@ -392,9 +392,10 @@ pub fn ready_tasks_cycle_aware<'a>(
         }
 
         // Check if any cycle member is already ready (existing logic handles it)
-        let has_ready_member = cycle.members.iter().any(|member_id| {
-            ready_tasks.iter().any(|t| &t.id == member_id)
-        });
+        let has_ready_member = cycle
+            .members
+            .iter()
+            .any(|member_id| ready_tasks.iter().any(|t| &t.id == member_id));
 
         if has_ready_member {
             continue;
@@ -2252,17 +2253,31 @@ mod tests {
 
         // Verify that a cycle was detected
         assert!(!cycle_analysis.cycles.is_empty(), "Should detect the cycle");
-        assert_eq!(cycle_analysis.cycles.len(), 1, "Should be exactly one cycle");
+        assert_eq!(
+            cycle_analysis.cycles.len(),
+            1,
+            "Should be exactly one cycle"
+        );
 
         // Get ready tasks - with auto-break-in, at least one should be ready despite the cycle
         let ready_tasks = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
-        assert!(!ready_tasks.is_empty(), "Auto-break-in should make at least one task ready");
-        assert_eq!(ready_tasks.len(), 1, "Exactly one task should be selected for auto-break-in");
+        assert!(
+            !ready_tasks.is_empty(),
+            "Auto-break-in should make at least one task ready"
+        );
+        assert_eq!(
+            ready_tasks.len(),
+            1,
+            "Exactly one task should be selected for auto-break-in"
+        );
 
         // The break-in task should be deterministic (alphabetically first)
         let break_in_task = &ready_tasks[0];
-        assert_eq!(break_in_task.id, "a", "Task 'a' should be selected for break-in (alphabetically first)");
+        assert_eq!(
+            break_in_task.id, "a",
+            "Task 'a' should be selected for break-in (alphabetically first)"
+        );
     }
 
     #[test]
@@ -2315,7 +2330,14 @@ mod tests {
 
         // Find the ready task - should be the cycle header
         let ready_task = ready_tasks.iter().find(|t| t.cycle_config.is_some());
-        assert!(ready_task.is_some(), "The task with cycle_config should be ready");
-        assert_eq!(ready_task.unwrap().id, "a", "Task 'a' (with cycle_config) should be ready");
+        assert!(
+            ready_task.is_some(),
+            "The task with cycle_config should be ready"
+        );
+        assert_eq!(
+            ready_task.unwrap().id,
+            "a",
+            "Task 'a' (with cycle_config) should be ready"
+        );
     }
 }

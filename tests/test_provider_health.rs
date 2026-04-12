@@ -16,7 +16,10 @@ fn test_provider_health_error_classification() {
         ProviderErrorKind::FatalProvider
     );
     assert_eq!(
-        classify_error(Some(1), "Access denied (HTTP 403): Insufficient permissions"),
+        classify_error(
+            Some(1),
+            "Access denied (HTTP 403): Insufficient permissions"
+        ),
         ProviderErrorKind::FatalProvider
     );
 
@@ -301,7 +304,6 @@ fn test_provider_health_config_integration() {
     assert_eq!(config.coordinator.provider_failure_cooldown, "10m");
 }
 
-
 /// End-to-end integration test for provider health pipeline
 /// Tests: error simulation → auto-pause → state persistence → resume functionality
 #[test]
@@ -325,8 +327,14 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Step 2: Test provider ID extraction for different executors
     assert_eq!(extract_provider_id("claude", None), "claude");
-    assert_eq!(extract_provider_id("native", Some("gpt-4-turbo")), "native:openai");
-    assert_eq!(extract_provider_id("native", Some("claude-3-sonnet")), "native:anthropic");
+    assert_eq!(
+        extract_provider_id("native", Some("gpt-4-turbo")),
+        "native:openai"
+    );
+    assert_eq!(
+        extract_provider_id("native", Some("claude-3-sonnet")),
+        "native:anthropic"
+    );
 
     // Step 3: Simulate provider failures and test auto-pause behavior
     let mut provider_health = ProviderHealth::default();
@@ -356,7 +364,13 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     assert_eq!(paused_providers, vec![provider_id]);
     assert!(provider_health.service_paused);
     assert!(provider_health.pause_reason.is_some());
-    assert!(provider_health.providers.get(provider_id).unwrap().is_paused);
+    assert!(
+        provider_health
+            .providers
+            .get(provider_id)
+            .unwrap()
+            .is_paused
+    );
 
     // Step 5: Test state persistence
     provider_health.save(&temp_dir.path())?;
@@ -403,23 +417,51 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Test "fallback" behavior - only provider paused, not service
     let mut fallback_health = ProviderHealth::default();
-    fallback_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Auth failure".to_string());
-    fallback_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Auth failure".to_string());
+    fallback_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Auth failure".to_string(),
+    );
+    fallback_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Auth failure".to_string(),
+    );
 
     let paused = fallback_health.check_and_apply_pauses(2, "fallback");
     assert_eq!(paused, vec![provider_id]);
     assert!(!fallback_health.service_paused); // Service not globally paused in fallback
-    assert!(fallback_health.providers.get(provider_id).unwrap().is_paused); // But provider is paused
+    assert!(
+        fallback_health
+            .providers
+            .get(provider_id)
+            .unwrap()
+            .is_paused
+    ); // But provider is paused
 
     // Test "continue" behavior - nothing actually paused
     let mut continue_health = ProviderHealth::default();
-    continue_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Auth failure".to_string());
-    continue_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Auth failure".to_string());
+    continue_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Auth failure".to_string(),
+    );
+    continue_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Auth failure".to_string(),
+    );
 
     let paused = continue_health.check_and_apply_pauses(2, "continue");
     assert_eq!(paused, vec![provider_id]); // Still reported as would-be paused
     assert!(!continue_health.service_paused);
-    assert!(!continue_health.providers.get(provider_id).unwrap().is_paused); // Not actually paused
+    assert!(
+        !continue_health
+            .providers
+            .get(provider_id)
+            .unwrap()
+            .is_paused
+    ); // Not actually paused
 
     // Step 8: Test transient errors don't trigger pause
     let mut transient_health = ProviderHealth::default();
@@ -437,8 +479,16 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Step 9: Test success resets failure count
     let mut reset_health = ProviderHealth::default();
-    reset_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Error 1".to_string());
-    reset_health.record_failure(provider_id, ProviderErrorKind::FatalProvider, "Error 2".to_string());
+    reset_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Error 1".to_string(),
+    );
+    reset_health.record_failure(
+        provider_id,
+        ProviderErrorKind::FatalProvider,
+        "Error 2".to_string(),
+    );
 
     let provider = reset_health.get_or_create_provider(provider_id);
     assert_eq!(provider.consecutive_failures, 2);
@@ -451,7 +501,11 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Step 10: Test service status summary
     let mut status_health = ProviderHealth::default();
-    assert!(status_health.get_status_summary().contains("all providers healthy"));
+    assert!(
+        status_health
+            .get_status_summary()
+            .contains("all providers healthy")
+    );
 
     status_health.service_paused = true;
     status_health.pause_reason = Some("Provider 'claude' failed 3 consecutive times".to_string());
