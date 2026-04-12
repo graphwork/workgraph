@@ -445,25 +445,46 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         };
 
         let metadata_path = agent_dir.join("metadata.json");
-        if let Ok(metadata_str) = fs::read_to_string(&metadata_path)
-            && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str)
-            && let (Some(wt_path_str), Some(wt_branch)) = (
-                metadata.get("worktree_path").and_then(|v| v.as_str()),
-                metadata.get("worktree_branch").and_then(|v| v.as_str()),
-            )
-        {
-            let wt_path = Path::new(wt_path_str);
-            if wt_path.exists() {
+        match validate_and_parse_agent_metadata(&metadata_path, agent_id) {
+            Ok(Some((wt_path_str, wt_branch))) => {
+                let wt_path = Path::new(&wt_path_str);
+                if wt_path.exists() {
+                    eprintln!(
+                        "[triage] Cleaning up worktree for dead agent {}: {:?}",
+                        agent_id, wt_path
+                    );
+                    super::worktree::cleanup_dead_agent_worktree(
+                        project_root,
+                        wt_path,
+                        &wt_branch,
+                        agent_id,
+                    );
+                } else {
+                    eprintln!(
+                        "[triage] Worktree path {:?} from metadata no longer exists for agent {}",
+                        wt_path, agent_id
+                    );
+                }
+            }
+            Ok(None) => {
                 eprintln!(
-                    "[triage] Cleaning up worktree for dead agent {}: {:?}",
-                    agent_id, wt_path
+                    "[triage] No valid worktree metadata found for dead agent {}, skipping worktree cleanup",
+                    agent_id
                 );
-                super::worktree::cleanup_dead_agent_worktree(
-                    project_root,
-                    wt_path,
-                    wt_branch,
-                    agent_id,
+            }
+            Err(e) => {
+                eprintln!(
+                    "[triage] Failed to parse metadata for dead agent {}: {}",
+                    agent_id, e
                 );
+
+                // Attempt fallback cleanup by scanning for agent worktrees
+                if let Err(fallback_err) = attempt_fallback_worktree_cleanup(project_root, agent_id) {
+                    eprintln!(
+                        "[triage] Fallback worktree cleanup also failed for agent {}: {}",
+                        agent_id, fallback_err
+                    );
+                }
             }
         }
     }
@@ -942,6 +963,175 @@ fn apply_triage_verdict(
             });
         }
     }
+}
+
+/// Validates and parses agent metadata.json file with enhanced error handling.
+/// Returns Ok(Some((worktree_path, worktree_branch))) on success,
+/// Ok(None) if no valid worktree metadata is found, or Err for validation errors.
+fn validate_and_parse_agent_metadata(
+    metadata_path: &Path,
+    agent_id: &str,
+) -> Result<Option<(String, String)>> {
+    // Check if metadata file exists
+    if !metadata_path.exists() {
+        eprintln!(
+            "[triage] No metadata.json found for agent {} at {:?}",
+            agent_id, metadata_path
+        );
+        return Ok(None);
+    }
+
+    // Read metadata file with detailed error context
+    let metadata_str = fs::read_to_string(metadata_path).with_context(|| {
+        format!(
+            "Failed to read metadata.json for agent {} at {:?}",
+            agent_id, metadata_path
+        )
+    })?;
+
+    // Validate that the file is not empty
+    if metadata_str.trim().is_empty() {
+        eprintln!(
+            "[triage] metadata.json for agent {} is empty at {:?}",
+            agent_id, metadata_path
+        );
+        return Ok(None);
+    }
+
+    // Parse JSON with enhanced error reporting
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_str).with_context(|| {
+        format!(
+            "Failed to parse metadata.json for agent {} at {:?}. Content: {}",
+            agent_id,
+            metadata_path,
+            metadata_str.chars().take(200).collect::<String>() + "..."
+        )
+    })?;
+
+    // Validate required fields exist and are valid
+    let wt_path_str = metadata
+        .get("worktree_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let wt_branch = metadata
+        .get("worktree_branch")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    match (wt_path_str, wt_branch) {
+        (Some(path), Some(branch)) if !path.trim().is_empty() && !branch.trim().is_empty() => {
+            eprintln!(
+                "[triage] Successfully parsed metadata for agent {}: worktree={}, branch={}",
+                agent_id, path, branch
+            );
+            Ok(Some((path, branch)))
+        }
+        (path_opt, branch_opt) => {
+            eprintln!(
+                "[triage] Invalid or missing worktree metadata for agent {}: path={:?}, branch={:?}",
+                agent_id, path_opt, branch_opt
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Attempts fallback worktree cleanup when metadata.json is invalid or missing.
+/// Scans the .wg-worktrees directory for directories matching the agent ID pattern.
+fn attempt_fallback_worktree_cleanup(project_root: &Path, agent_id: &str) -> Result<()> {
+    let worktrees_dir = project_root.join(super::worktree::WORKTREES_DIR);
+
+    if !worktrees_dir.exists() {
+        return Ok(());
+    }
+
+    eprintln!(
+        "[triage] Attempting fallback worktree cleanup for agent {} by scanning {:?}",
+        agent_id, worktrees_dir
+    );
+
+    let mut found_worktree = false;
+
+    for entry in fs::read_dir(&worktrees_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Look for directories that match this agent
+        if name == agent_id {
+            found_worktree = true;
+            let wt_path = entry.path();
+
+            eprintln!(
+                "[triage] Found orphaned worktree directory for agent {}: {:?}",
+                agent_id, wt_path
+            );
+
+            // Try to find the git branch for this worktree
+            let branch = super::worktree::find_branch_for_worktree(project_root, &wt_path);
+
+            if let Some(branch) = branch {
+                eprintln!(
+                    "[triage] Found git branch {} for fallback cleanup of agent {}",
+                    branch, agent_id
+                );
+                super::worktree::cleanup_dead_agent_worktree(
+                    project_root,
+                    &wt_path,
+                    &branch,
+                    agent_id,
+                );
+            } else {
+                eprintln!(
+                    "[triage] No git branch found for agent {} worktree, attempting manual removal",
+                    agent_id
+                );
+
+                // Manual cleanup without git branch information
+                let mut cleanup_errors = Vec::new();
+
+                // Remove .workgraph symlink
+                let symlink_path = wt_path.join(".workgraph");
+                if symlink_path.exists() {
+                    if let Err(e) = fs::remove_file(&symlink_path) {
+                        cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
+                    }
+                }
+
+                // Remove target directory
+                let target_dir = wt_path.join("target");
+                if target_dir.exists() {
+                    if let Err(e) = fs::remove_dir_all(&target_dir) {
+                        cleanup_errors.push(format!("Failed to remove target directory: {}", e));
+                    }
+                }
+
+                // Remove the worktree directory itself
+                if let Err(e) = fs::remove_dir_all(&wt_path) {
+                    cleanup_errors.push(format!("Failed to remove worktree directory: {}", e));
+                }
+
+                if !cleanup_errors.is_empty() {
+                    eprintln!(
+                        "[triage] Warnings during fallback cleanup of agent {}: {}",
+                        agent_id,
+                        cleanup_errors.join("; ")
+                    );
+                } else {
+                    eprintln!("[triage] Successfully completed fallback cleanup for agent {}", agent_id);
+                }
+            }
+        }
+    }
+
+    if !found_worktree {
+        eprintln!(
+            "[triage] No orphaned worktree directory found for agent {} in fallback cleanup",
+            agent_id
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1686,5 +1876,101 @@ mod tests {
                 .any(|l| l.message.contains("escalated to premium-class")),
             "Log should mention tier escalation"
         );
+    }
+
+    #[test]
+    fn test_validate_metadata_valid_file() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("metadata.json");
+
+        let metadata_content = r#"{
+            "worktree_path": "/path/to/worktree",
+            "worktree_branch": "wg/agent-123/task-456",
+            "other_field": "value"
+        }"#;
+
+        fs::write(&metadata_path, metadata_content).unwrap();
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123").unwrap();
+        assert!(result.is_some());
+
+        let (path, branch) = result.unwrap();
+        assert_eq!(path, "/path/to/worktree");
+        assert_eq!(branch, "wg/agent-123/task-456");
+    }
+
+    #[test]
+    fn test_validate_metadata_missing_file() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("nonexistent.json");
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_validate_metadata_invalid_json() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("metadata.json");
+
+        fs::write(&metadata_path, "invalid json content").unwrap();
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse metadata.json"));
+    }
+
+    #[test]
+    fn test_validate_metadata_missing_fields() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("metadata.json");
+
+        let metadata_content = r#"{
+            "some_other_field": "value"
+        }"#;
+
+        fs::write(&metadata_path, metadata_content).unwrap();
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_validate_metadata_empty_fields() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("metadata.json");
+
+        let metadata_content = r#"{
+            "worktree_path": "",
+            "worktree_branch": "   "
+        }"#;
+
+        fs::write(&metadata_path, metadata_content).unwrap();
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_validate_metadata_empty_file() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("metadata.json");
+
+        fs::write(&metadata_path, "").unwrap();
+
+        let result = validate_and_parse_agent_metadata(&metadata_path, "agent-123").unwrap();
+        assert!(result.is_none());
     }
 }

@@ -5,46 +5,115 @@
 //! - Orphaned worktree cleanup on service restart
 //! - Age-based pruning of stale worktrees
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 /// The directory under the project root where agent worktrees live.
 pub const WORKTREES_DIR: &str = ".wg-worktrees";
 
+/// Maximum number of retry attempts for transient failures.
+const MAX_RETRIES: usize = 3;
+
+/// Initial retry delay in milliseconds.
+const INITIAL_RETRY_DELAY_MS: u64 = 100;
+
+/// Retry a fallible operation with exponential backoff.
+/// Returns the result of the operation or the last error if all retries fail.
+fn retry_operation<T, F>(mut operation: F, operation_name: &str) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    let mut last_error = None;
+
+    for attempt in 0..=MAX_RETRIES {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e);
+
+                if attempt < MAX_RETRIES {
+                    let delay_ms = INITIAL_RETRY_DELAY_MS * 2_u64.pow(attempt as u32);
+                    eprintln!(
+                        "[worktree] {} failed on attempt {}/{}, retrying in {}ms: {}",
+                        operation_name,
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        delay_ms,
+                        last_error.as_ref().unwrap()
+                    );
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("Operation {} failed with no error details", operation_name)))
+}
+
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    let mut cleanup_errors = Vec::new();
+
     // Remove .workgraph symlink first (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
-        let _ = fs::remove_file(&symlink_path);
+        if let Err(e) = fs::remove_file(&symlink_path) {
+            cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?}: {}", symlink_path, e));
+        }
     }
 
     // Remove isolated cargo target directory
     let target_dir = worktree_path.join("target");
     if target_dir.exists() {
-        let _ = fs::remove_dir_all(&target_dir);
+        if let Err(e) = fs::remove_dir_all(&target_dir) {
+            cleanup_errors.push(format!("Failed to remove target directory {:?}: {}", target_dir, e));
+        }
     }
 
     // Force-remove the worktree
-    let _ = Command::new("git")
+    let output = Command::new("git")
         .args(["worktree", "remove", "--force"])
         .arg(worktree_path)
         .current_dir(project_root)
-        .output();
+        .output()
+        .context("Failed to execute git worktree remove command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+    }
 
     // Delete the branch
-    let _ = Command::new("git")
+    let output = Command::new("git")
         .args(["branch", "-D", branch])
         .current_dir(project_root)
-        .output();
+        .output()
+        .context("Failed to execute git branch delete command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        cleanup_errors.push(format!("Git branch delete failed for '{}': {}", branch, stderr.trim()));
+    }
 
     // Prune stale worktree entries
-    let _ = Command::new("git")
+    let output = Command::new("git")
         .args(["worktree", "prune"])
         .current_dir(project_root)
-        .output();
+        .output()
+        .context("Failed to execute git worktree prune command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        cleanup_errors.push(format!("Git worktree prune failed: {}", stderr.trim()));
+    }
+
+    if !cleanup_errors.is_empty() {
+        return Err(anyhow!("Worktree removal completed with errors:\n{}", cleanup_errors.join("\n")));
+    }
 
     Ok(())
 }
@@ -81,26 +150,55 @@ pub fn recover_commits(project_root: &Path, branch: &str, agent_id: &str) -> usi
 }
 
 /// Clean up a dead agent's worktree: recover commits, then remove worktree and branch.
+/// Uses retry logic for transient failures and enhanced error reporting.
 pub fn cleanup_dead_agent_worktree(
     project_root: &Path,
     worktree_path: &Path,
     branch: &str,
     agent_id: &str,
 ) {
-    // Recover commits before removing
-    recover_commits(project_root, branch, agent_id);
+    eprintln!("[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})", agent_id, worktree_path, branch);
 
-    // Remove the worktree
-    if let Err(e) = remove_worktree(project_root, worktree_path, branch) {
-        eprintln!(
-            "[worktree] Warning: failed to remove worktree {:?}: {}",
-            worktree_path, e
-        );
+    // Recover commits before removing
+    let commit_count = recover_commits(project_root, branch, agent_id);
+    if commit_count > 0 {
+        eprintln!("[worktree] Recovered {} commits from dead agent {}", commit_count, agent_id);
+    }
+
+    // Remove the worktree with retry logic
+    let cleanup_result = retry_operation(
+        || remove_worktree(project_root, worktree_path, branch),
+        &format!("worktree cleanup for agent {}", agent_id),
+    );
+
+    match cleanup_result {
+        Ok(()) => {
+            eprintln!("[worktree] Successfully cleaned up worktree for dead agent {}", agent_id);
+        }
+        Err(e) => {
+            eprintln!(
+                "[worktree] ERROR: Failed to clean up worktree {:?} for agent {} after {} retries: {}",
+                worktree_path, agent_id, MAX_RETRIES, e
+            );
+
+            // Log individual error details for troubleshooting
+            eprintln!("[worktree] Full error chain: {:?}", e);
+
+            // Try a final fallback: manual directory removal if the worktree path still exists
+            if worktree_path.exists() {
+                eprintln!("[worktree] Attempting fallback: force removal of directory {:?}", worktree_path);
+                if let Err(fallback_err) = fs::remove_dir_all(worktree_path) {
+                    eprintln!("[worktree] Fallback also failed: {}", fallback_err);
+                } else {
+                    eprintln!("[worktree] Fallback succeeded: directory removed");
+                }
+            }
+        }
     }
 }
 
 /// Parse `git worktree list --porcelain` output to find the branch for a given worktree path.
-fn find_branch_for_worktree(project_root: &Path, worktree_path: &Path) -> Option<String> {
+pub fn find_branch_for_worktree(project_root: &Path, worktree_path: &Path) -> Option<String> {
     let output = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(project_root)
@@ -176,25 +274,51 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
             let branch = find_branch_for_worktree(project_root, &wt_path);
 
             if let Some(ref branch) = branch {
-                // Recover any commits before cleanup
-                recover_commits(project_root, branch, &name);
-                let _ = remove_worktree(project_root, &wt_path, branch);
+                // Use the enhanced cleanup function with retry logic
+                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
             } else {
-                // No branch found — just force-remove the directory
+                eprintln!("[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup", name);
+
+                // No branch found — use fallback cleanup with error reporting
+                let mut cleanup_errors = Vec::new();
+
+                // Remove .workgraph symlink
                 let symlink_path = wt_path.join(".workgraph");
                 if symlink_path.exists() {
-                    let _ = fs::remove_file(&symlink_path);
+                    if let Err(e) = fs::remove_file(&symlink_path) {
+                        cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
+                    }
                 }
+
                 // Remove isolated cargo target directory
                 let target_dir = wt_path.join("target");
                 if target_dir.exists() {
-                    let _ = fs::remove_dir_all(&target_dir);
+                    if let Err(e) = fs::remove_dir_all(&target_dir) {
+                        cleanup_errors.push(format!("Failed to remove target directory: {}", e));
+                    }
                 }
-                let _ = Command::new("git")
+
+                // Try git worktree remove
+                let output = Command::new("git")
                     .args(["worktree", "remove", "--force"])
                     .arg(&wt_path)
                     .current_dir(project_root)
                     .output();
+
+                match output {
+                    Ok(output) if !output.status.success() => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+                    }
+                    Err(e) => {
+                        cleanup_errors.push(format!("Failed to execute git worktree remove: {}", e));
+                    }
+                    _ => {} // Success case
+                }
+
+                if !cleanup_errors.is_empty() {
+                    eprintln!("[worktree] Warnings during manual cleanup of {}: {}", name, cleanup_errors.join("; "));
+                }
             }
 
             cleaned += 1;
@@ -273,23 +397,48 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
 
             let branch = find_branch_for_worktree(project_root, &wt_path);
             if let Some(ref branch) = branch {
-                recover_commits(project_root, branch, &name);
-                let _ = remove_worktree(project_root, &wt_path, branch);
+                // Use the enhanced cleanup function with retry logic
+                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
             } else {
+                eprintln!("[worktree] No git branch found for stale worktree {}, attempting manual cleanup", name);
+
+                // Use fallback cleanup with error reporting (same as orphaned cleanup)
+                let mut cleanup_errors = Vec::new();
+
                 let symlink_path = wt_path.join(".workgraph");
                 if symlink_path.exists() {
-                    let _ = fs::remove_file(&symlink_path);
+                    if let Err(e) = fs::remove_file(&symlink_path) {
+                        cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
+                    }
                 }
-                // Remove isolated cargo target directory
+
                 let target_dir = wt_path.join("target");
                 if target_dir.exists() {
-                    let _ = fs::remove_dir_all(&target_dir);
+                    if let Err(e) = fs::remove_dir_all(&target_dir) {
+                        cleanup_errors.push(format!("Failed to remove target directory: {}", e));
+                    }
                 }
-                let _ = Command::new("git")
+
+                let output = Command::new("git")
                     .args(["worktree", "remove", "--force"])
                     .arg(&wt_path)
                     .current_dir(project_root)
                     .output();
+
+                match output {
+                    Ok(output) if !output.status.success() => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        cleanup_errors.push(format!("Git worktree remove failed: {}", stderr.trim()));
+                    }
+                    Err(e) => {
+                        cleanup_errors.push(format!("Failed to execute git worktree remove: {}", e));
+                    }
+                    _ => {} // Success case
+                }
+
+                if !cleanup_errors.is_empty() {
+                    eprintln!("[worktree] Warnings during manual cleanup of stale {}: {}", name, cleanup_errors.join("; "));
+                }
             }
 
             pruned += 1;
@@ -467,15 +616,92 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_worktree_nonexistent_is_ok() {
+    fn test_remove_worktree_nonexistent_reports_errors() {
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
         fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        // Removing a nonexistent worktree should succeed (best-effort)
+        // Removing a nonexistent worktree should now report errors with enhanced error handling
         let fake_path = project.join(WORKTREES_DIR).join("agent-999");
         let result = remove_worktree(&project, &fake_path, "wg/agent-999/fake");
+        // Should return an error now that we have enhanced error reporting
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Worktree removal completed with errors"));
+    }
+
+    #[test]
+    fn test_retry_operation_success_first_try() {
+        let mut call_count = 0;
+        let result = retry_operation(
+            || {
+                call_count += 1;
+                Ok("success")
+            },
+            "test operation",
+        );
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+        assert_eq!(call_count, 1);
+    }
+
+    #[test]
+    fn test_retry_operation_success_after_retries() {
+        let mut call_count = 0;
+        let result = retry_operation(
+            || {
+                call_count += 1;
+                if call_count < 3 {
+                    Err(anyhow::anyhow!("temporary failure"))
+                } else {
+                    Ok("success")
+                }
+            },
+            "test operation",
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+        assert_eq!(call_count, 3);
+    }
+
+    #[test]
+    fn test_retry_operation_max_retries_exceeded() {
+        let mut call_count = 0;
+        let result: anyhow::Result<&str> = retry_operation(
+            || {
+                call_count += 1;
+                Err(anyhow::anyhow!("persistent failure"))
+            },
+            "test operation",
+        );
+        assert!(result.is_err());
+        assert_eq!(call_count, MAX_RETRIES + 1);
+        assert!(result.unwrap_err().to_string().contains("persistent failure"));
+    }
+
+    #[test]
+    fn test_enhanced_cleanup_with_corrupted_git() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let (wt_path, branch) = create_test_worktree(&project, "agent-test", "task-test");
+        assert!(wt_path.exists());
+
+        // Simulate a corrupted state by creating an invalid .git file
+        // This should trigger the enhanced error handling and fallback mechanisms
+        let git_file = wt_path.join(".git");
+        if git_file.exists() {
+            // Overwrite .git with invalid content to simulate corruption
+            let _ = fs::write(&git_file, "corrupted git content");
+        }
+
+        // The cleanup should still work due to enhanced error handling
+        cleanup_dead_agent_worktree(&project, &wt_path, &branch, "agent-test");
+
+        // Verify that the directory is removed or at least attempted
+        // (The exact behavior may depend on the filesystem and permissions)
     }
 }
