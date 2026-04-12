@@ -416,6 +416,14 @@ wg msg read <task-id> --agent $WG_AGENT_ID
 wg msg poll <task-id> --agent $WG_AGENT_ID
 ```
 
+**The `--agent` flag and cursor semantics:**
+
+`wg msg read` uses a per-agent read cursor. Each agent has an independent position in the message stream — reading advances *that agent's* cursor without affecting other readers. The `--agent` flag defaults to the `WG_AGENT_ID` environment variable (set automatically for spawned agents), or `"user"` when unset. This means:
+
+- Multiple agents can read the same task's messages independently
+- Each agent only sees messages posted *after* its last read
+- `wg msg poll` checks for new messages without advancing the cursor (useful for conditional logic)
+
 **When to send messages:**
 - You discover your work affects another in-progress task
 - You find a bug or pattern relevant to another agent's work
@@ -424,6 +432,35 @@ wg msg poll <task-id> --agent $WG_AGENT_ID
 **Messages are persistent** — they survive agent restarts and are visible to future agents who work on the same task.
 
 **Workflow expectation:** Agents should check for messages at task start, at natural breakpoints during work, and before marking a task done. Unreplied messages at completion time indicate incomplete work.
+
+### 4.1.4 Human-in-the-Loop via User Boards
+
+For scenarios requiring human input or approval, use **user boards** (`wg user`) — per-user conversation spaces that persist across sessions:
+
+```bash
+# Initialize a user board (creates .user-<NAME> task)
+wg user init                        # defaults to current user ($WG_USER)
+wg user init --name alice           # explicit user name
+
+# List all user boards
+wg user list
+
+# Archive and rotate a board
+wg user archive                     # archives current board, creates successor
+```
+
+User boards provide a dedicated channel for human-agent communication. Agents can send messages to the user's board, and the user can respond asynchronously.
+
+**Alternative: `wg wait --until human-input`**
+
+When an agent needs to pause until a human responds, use `wg wait` instead of polling:
+
+```bash
+# Park the task until a human posts a message
+wg wait <task-id> --until "human-input" --checkpoint "Waiting for approval on design"
+```
+
+The coordinator evaluates waiting conditions each tick and automatically resumes the task when a human message arrives. This is more efficient than polling `wg msg read` in a loop and frees the agent slot for other work while waiting.
 
 ### 4.2 After Code Changes: Rebuild
 

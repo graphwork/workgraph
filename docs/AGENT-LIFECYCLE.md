@@ -612,7 +612,17 @@ The comprehensive audits reveal that workgraph's agent lifecycle management exce
 
 The workgraph implementation meets or exceeds these industry standards with additional sophisticated features like auto-triage and commit recovery.
 
-## 10. Configuration and Tuning
+## 10. Coordinator Persistence
+
+Coordinator tasks are preserved across service restarts. When the daemon restarts, it discovers existing coordinator tasks (tagged `coordinator-loop`) and reuses them rather than creating new coordinator sessions. This ensures:
+
+- TUI coordinator tabs remain stable across restarts
+- Chat history and coordinator state are retained
+- No orphaned coordinator tasks accumulate
+
+The cleanup on startup only removes truly legacy tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`). This was fixed in commit `cd8b3c07` to prevent the previous behavior where every restart created duplicate coordinators.
+
+## 11. Configuration and Tuning
 
 ### Operational Parameters
 

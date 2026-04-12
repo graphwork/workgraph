@@ -239,7 +239,10 @@ wg service create-coordinator --name foo   # create a named coordinator session
 wg service stop-coordinator <ID>           # stop a coordinator session (kill agent, reset to Open)
 wg service archive-coordinator <ID>        # archive a coordinator session (mark as Done)
 wg service delete-coordinator <ID>         # delete a coordinator session
+wg service interrupt-coordinator <ID>      # interrupt current generation (SIGINT, preserves context)
 ```
+
+`interrupt-coordinator` sends SIGINT to the coordinator's active LLM generation without killing the agent process. This is useful for redirecting a coordinator that's producing unwanted output — the agent preserves its context and can be given new instructions via `wg chat`.
 
 Target a specific coordinator from `wg chat`:
 
@@ -252,6 +255,16 @@ Configure the maximum concurrent coordinators:
 ```bash
 wg config --max-coordinators 2
 ```
+
+### Coordinator Persistence
+
+Coordinator tasks are preserved across service restarts. When the daemon stops and restarts, existing coordinator tasks (tagged `coordinator-loop`) are discovered and reused rather than creating new ones. This means:
+
+- The TUI continues to show the same coordinator sessions after a restart
+- Coordinator chat history and state are retained
+- No duplicate coordinator tasks accumulate over time
+
+Previously, service restarts would create fresh coordinator tasks each time, leaving orphaned old ones. The fix (commit `cd8b3c07`) ensures only truly legacy tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`) are cleaned up on startup.
 
 ### `wg service install`
 
@@ -596,3 +609,18 @@ wg service status    # shows recent errors
 | Config changes not taking effect | `wg service reload` |
 | Daemon won't start | Check for existing daemon with `wg service status` |
 | Agents not picking up identity | Ensure task has `agent` field set via `wg assign` or auto-assign |
+
+## Manual Cleanup Commands
+
+For edge-case recovery when automatic cleanup isn't sufficient:
+
+```bash
+wg cleanup orphaned              # clean up orphaned worktrees with no agent metadata
+wg cleanup recovery-branches     # clean up old recovery branches (recover/<agent>/<task>)
+wg cleanup nightly               # comprehensive nightly cleanup (task hygiene + maintenance)
+```
+
+These commands complement the automatic cleanup performed by the coordinator on each tick. Use them when:
+- The service was killed without graceful shutdown
+- Worktrees accumulate from interrupted development sessions
+- Recovery branches pile up after many agent deaths
