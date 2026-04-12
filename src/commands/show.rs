@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::graph::{
-    CycleConfig, LogEntry, LoopGuard, Status, Task, TokenUsage, format_tokens,
+    CycleConfig, LogEntry, LoopGuard, Priority, Status, Task, TokenUsage, format_tokens,
     parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
@@ -32,6 +32,7 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: Status,
+    priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,6 +324,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         title: task.title.clone(),
         description: task.description.clone(),
         status: task.status,
+        priority: task.priority,
         assigned: task.assigned.clone(),
         hours: task.estimate.as_ref().and_then(|e| e.hours),
         cost: task.estimate.as_ref().and_then(|e| e.cost),
@@ -804,6 +806,7 @@ mod tests {
             title: "Test Task".to_string(),
             description: Some("Test description".to_string()),
             status: Status::InProgress,
+            priority: Priority::Normal,
             assigned: Some("agent-1".to_string()),
             hours: Some(2.0),
             cost: Some(200.0),

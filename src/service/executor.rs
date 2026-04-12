@@ -1444,6 +1444,7 @@ mod tests {
             title: title.to_string(),
             description: Some("Test description".to_string()),
             status: crate::graph::Status::Open,
+            priority: crate::graph::Priority::default(),
             assigned: None,
             estimate: None,
             before: vec![],

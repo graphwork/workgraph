@@ -13355,8 +13355,8 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                             // Bash commands get a distinct "$ " prefix so they're easily visible
                             // in the log view (matching the convention users expect from terminals).
                             match detail {
-                                Some(d) => format!("$ {}\n{}", d, d),
-                                None => "$ (command)\n$ (command)".to_string(),
+                                Some(d) => format!("$ {}", d),
+                                None => "$ (command)".to_string(),
                             }
                         } else {
                             match detail {
