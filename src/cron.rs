@@ -14,8 +14,11 @@ pub enum CronError {
 
 /// Parse a cron expression string into a Schedule
 ///
+/// Supports both 5-field ("min hour day month dow") and 6-field ("sec min hour day month dow") formats.
+/// 5-field expressions are automatically converted to 6-field by prepending "0" for seconds.
+///
 /// # Arguments
-/// * `expr` - A cron expression string (6-field format: "sec min hour day month dow", e.g., "0 0 2 * * *")
+/// * `expr` - A cron expression string (5 or 6 field format)
 ///
 /// # Returns
 /// * `Result<Schedule, CronError>` - The parsed schedule or an error
@@ -24,10 +27,29 @@ pub enum CronError {
 /// ```
 /// use workgraph::cron::parse_cron_expression;
 ///
-/// let schedule = parse_cron_expression("0 0 2 * * *").unwrap(); // Daily at 2 AM
+/// let schedule1 = parse_cron_expression("0 2 * * *").unwrap();    // 5-field: daily at 2 AM
+/// let schedule2 = parse_cron_expression("0 0 2 * * *").unwrap();  // 6-field: daily at 2 AM
 /// ```
 pub fn parse_cron_expression(expr: &str) -> Result<Schedule, CronError> {
-    Schedule::from_str(expr).map_err(CronError::ParseError)
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+
+    let expr_to_parse = match parts.len() {
+        5 => {
+            // 5-field format: prepend "0" for seconds
+            format!("0 {}", expr)
+        }
+        6 => {
+            // 6-field format: use as-is
+            expr.to_string()
+        }
+        _ => {
+            return Err(CronError::InvalidExpression(
+                format!("Expected 5 or 6 fields, got {}", parts.len())
+            ));
+        }
+    };
+
+    Schedule::from_str(&expr_to_parse).map_err(CronError::ParseError)
 }
 
 /// Calculate the next fire time for a cron schedule from a given datetime

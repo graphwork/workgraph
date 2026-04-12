@@ -336,6 +336,7 @@ fn main() -> Result<()> {
             independent,
             propagation,
             retry_strategy,
+            cron,
         } => {
             // Determine effective paused/unplaced state:
             // - --paused always pauses (user-managed draft, skips placement)
@@ -370,6 +371,7 @@ fn main() -> Result<()> {
                     provider.as_deref(),
                     verify.as_deref(),
                     verify_timeout.as_deref(),
+                    cron.as_deref(),
                 )
             } else {
                 commands::add::run(
@@ -411,6 +413,7 @@ fn main() -> Result<()> {
                     independent,
                     parse_iteration_config(propagation.as_deref(), retry_strategy.as_deref()),
                     None, // priority - not yet exposed in CLI
+                    cron.as_deref(),
                 )
             }
         }

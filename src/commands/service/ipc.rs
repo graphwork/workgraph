@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
+use workgraph::cron::{parse_cron_expression, calculate_next_fire};
 use workgraph::graph::{Node, Priority, Status, Task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::registry::AgentRegistry;
@@ -96,6 +97,9 @@ pub enum IpcRequest {
         /// Who requested this (for provenance)
         #[serde(default)]
         origin: Option<String>,
+        /// Cron schedule expression (6-field format: "sec min hour day month dow")
+        #[serde(default)]
+        cron: Option<String>,
     },
     /// Query a task's status (cross-repo query)
     QueryTask { task_id: String },
@@ -379,6 +383,7 @@ fn handle_request(
             verify,
             verify_timeout,
             origin,
+            cron,
         } => {
             logger.info(&format!(
                 "IPC AddTask: title='{}', origin={:?}",
@@ -396,6 +401,7 @@ fn handle_request(
                 model.as_deref(),
                 verify.as_deref(),
                 verify_timeout.as_deref(),
+                cron.as_deref(),
                 origin.as_deref(),
             );
             if resp.ok {
@@ -903,6 +909,7 @@ fn handle_add_task(
     model: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
+    cron: Option<&str>,
     origin: Option<&str>,
 ) -> IpcResponse {
     let graph_path = graph_path(dir);
@@ -958,6 +965,24 @@ fn handle_add_task(
                 })
             }
         }
+    };
+
+    // Handle cron scheduling
+    let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(cron_expr) = cron {
+        // Validate the cron expression
+        match parse_cron_expression(cron_expr) {
+            Ok(schedule) => {
+                // Calculate next fire time from now
+                let next_fire = calculate_next_fire(&schedule, chrono::Utc::now());
+                let next_fire_str = next_fire.map(|dt| dt.to_rfc3339());
+                (Some(cron_expr.to_string()), true, next_fire_str)
+            }
+            Err(e) => {
+                return IpcResponse::error(&format!("Invalid cron expression '{}': {}", cron_expr, e));
+            }
+        }
+    } else {
+        (None, false, None)
     };
 
     let task = Task {
@@ -1026,10 +1051,10 @@ fn handle_add_task(
         iteration_anchor: None,
         iteration_parent: None,
         iteration_config: None,
-        cron_schedule: None,
-        cron_enabled: false,
+        cron_schedule,
+        cron_enabled,
         last_cron_fire: None,
-        next_cron_fire: None,
+        next_cron_fire,
     };
 
     // Save atomically via modify_graph
@@ -2046,6 +2071,7 @@ poll_interval = 120
             None,
             None, // verify
             None, // verify_timeout
+            None, // cron
             None, // origin
         );
         assert!(resp.ok, "Adding internal task should succeed");
@@ -2067,6 +2093,7 @@ poll_interval = 120
             None,
             None, // verify
             None, // verify_timeout
+            None, // cron
             None, // origin
         );
         assert!(resp.ok, "Adding regular task should succeed");

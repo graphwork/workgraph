@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{CycleConfig, Estimate, Node, Priority, Status, Task, parse_delay};
+use workgraph::cron::{parse_cron_expression, calculate_next_fire};
 use workgraph::parser::modify_graph;
 
 use super::graph_path;
@@ -191,6 +192,7 @@ pub fn run(
     independent: bool,
     iteration_config: Option<workgraph::agency::IterationConfig>,
     priority: Option<&str>,
+    cron: Option<&str>,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -440,6 +442,25 @@ pub fn run(
         }
     }
 
+    // Handle cron scheduling
+    let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(cron_expr) = cron {
+        // Validate the cron expression
+        match parse_cron_expression(cron_expr) {
+            Ok(schedule) => {
+                // Calculate next fire time from now
+                let next_fire = calculate_next_fire(&schedule, Utc::now());
+                let next_fire_str = next_fire.map(|dt| dt.to_rfc3339());
+                (Some(cron_expr.to_string()), true, next_fire_str)
+            }
+            Err(e) => {
+                error = Some(anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e));
+                return false;
+            }
+        }
+    } else {
+        (None, false, None)
+    };
+
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
@@ -506,10 +527,10 @@ pub fn run(
         iteration_anchor: None,
         iteration_parent: None,
         iteration_config,
-        cron_schedule: None,
-        cron_enabled: false,
+        cron_schedule,
+        cron_enabled,
         last_cron_fire: None,
-        next_cron_fire: None,
+        next_cron_fire,
     };
 
     // Add task to graph
@@ -632,6 +653,7 @@ pub fn run_remote(
     provider: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
+    cron: Option<&str>,
 ) -> Result<()> {
     use workgraph::federation::{check_peer_service, resolve_peer};
 
@@ -690,6 +712,7 @@ pub fn run_remote(
             verify: verify.map(String::from),
             verify_timeout: verify_timeout.map(String::from),
             origin: Some(origin),
+            cron: cron.map(String::from),
         };
 
         let response = super::service::send_request(&resolved.workgraph_dir, &request)?;
@@ -726,6 +749,7 @@ pub fn run_remote(
             provider,
             verify,
             verify_timeout,
+            cron,
             &origin,
         )?;
         println!(
@@ -752,6 +776,7 @@ fn add_task_directly(
     provider: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
+    cron: Option<&str>,
     origin: &str,
 ) -> Result<String> {
     use workgraph::graph::{Node, Status, Task};
@@ -781,6 +806,25 @@ fn add_task_directly(
                 id.to_string()
             }
             None => generate_id(title, graph),
+        };
+
+        // Handle cron scheduling
+        let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(cron_expr) = cron {
+            // Validate the cron expression
+            match parse_cron_expression(cron_expr) {
+                Ok(schedule) => {
+                    // Calculate next fire time from now
+                    let next_fire = calculate_next_fire(&schedule, chrono::Utc::now());
+                    let next_fire_str = next_fire.map(|dt| dt.to_rfc3339());
+                    (Some(cron_expr.to_string()), true, next_fire_str)
+                }
+                Err(e) => {
+                    error = Some(anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e));
+                    return false;
+                }
+            }
+        } else {
+            (None, false, None)
         };
 
         let task = Task {
@@ -849,10 +893,10 @@ fn add_task_directly(
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
-            cron_schedule: None,
-            cron_enabled: false,
+            cron_schedule,
+            cron_enabled,
             last_cron_fire: None,
-            next_cron_fire: None,
+            next_cron_fire,
         };
 
         graph.add_node(Node::Task(task));
@@ -1330,6 +1374,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1383,6 +1428,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1436,6 +1482,7 @@ mod tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         );
         assert!(result.is_err());
         assert!(
@@ -1496,6 +1543,7 @@ mod tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         );
         assert!(result.is_err());
         assert!(
@@ -1553,6 +1601,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_ok());
     }
@@ -1606,6 +1655,7 @@ mod tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         );
         assert!(result.is_ok());
     }
@@ -1663,6 +1713,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_ok());
 
@@ -1790,6 +1841,7 @@ mod tests {
             false, // independent
             None,  // iteration_config
             None,  // priority
+            None,  // cron
         );
         assert!(result.is_ok(), "wg add --exec should succeed: {:?}", result);
 
@@ -1850,6 +1902,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_ok());
 
@@ -1910,6 +1963,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         );
         assert!(result.is_ok());
 

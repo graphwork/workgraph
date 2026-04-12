@@ -194,6 +194,10 @@ pub enum Commands {
         /// Retry strategy: same-model, upgrade-model, or escalate-to-human
         #[arg(long = "retry-strategy")]
         retry_strategy: Option<String>,
+
+        /// Cron schedule expression (6-field format: "sec min hour day month dow")
+        #[arg(long)]
+        cron: Option<String>,
     },
 
     /// Edit an existing task
