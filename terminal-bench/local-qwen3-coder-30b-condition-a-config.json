@@ -1,0 +1,38 @@
+{
+    "job_name": "local-qwen3-coder-30b-condition-A",
+    "jobs_dir": "results/local-qwen3-coder-30b-condition-A",
+    "n_attempts": 1,
+    "timeout_multiplier": 3.0,
+    "debug": false,
+    "n_concurrent_trials": 1,
+    "quiet": false,
+    "retry": {
+        "max_retries": 2,
+        "exclude_exceptions": [
+            "VerifierTimeoutError",
+            "AgentTimeoutError",
+            "VerifierOutputParseError",
+            "RewardFileNotFoundError",
+            "RewardFileEmptyError"
+        ]
+    },
+    "environment": {
+        "type": "docker"
+    },
+    "agents": [
+        {
+            "import_path": "wg.adapter:ConditionAAgent",
+            "model_name": "ollama:qwen3-coder:30b-a3b-q8_0",
+            "kwargs": {
+                "max_turns": 50,
+                "temperature": 0.0
+            }
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0"
+        }
+    ]
+}
