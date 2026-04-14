@@ -835,25 +835,42 @@ fn cleanup_git(
         }
     }
 
-    // Prune worktree references
+    // Prune worktree references — only when no agents are alive.
+    // Global prune can remove metadata for live agents' worktrees if their
+    // directory is temporarily absent (e.g., during cargo target rebuild).
     if args.execute {
-        let output = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(project_root)
-            .output()
-            .context("Failed to execute git worktree prune")?;
-
-        if output.status.success() {
-            println!("✓ Git worktree pruning completed");
-            summary.git_operations += 1;
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let error_msg = format!("Git worktree prune failed: {}", stderr.trim());
-            if args.force {
-                eprintln!("⚠ {}", error_msg);
-                summary.errors.push(error_msg);
+        let has_live_agents = {
+            let wg_dir = project_root.join(".workgraph");
+            if let Ok(registry) = workgraph::service::registry::AgentRegistry::load(&wg_dir) {
+                registry.agents.values().any(|a| {
+                    a.is_alive() && crate::commands::is_process_alive(a.pid)
+                })
             } else {
-                return Err(anyhow!(error_msg));
+                false
+            }
+        };
+
+        if has_live_agents {
+            println!("⚠ Skipping git worktree prune — live agents detected");
+        } else {
+            let output = Command::new("git")
+                .args(["worktree", "prune"])
+                .current_dir(project_root)
+                .output()
+                .context("Failed to execute git worktree prune")?;
+
+            if output.status.success() {
+                println!("✓ Git worktree pruning completed");
+                summary.git_operations += 1;
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let error_msg = format!("Git worktree prune failed: {}", stderr.trim());
+                if args.force {
+                    eprintln!("⚠ {}", error_msg);
+                    summary.errors.push(error_msg);
+                } else {
+                    return Err(anyhow!(error_msg));
+                }
             }
         }
     }

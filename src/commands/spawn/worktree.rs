@@ -8,6 +8,28 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Lockfile name placed in each worktree to prevent premature cleanup.
+/// Contains the wrapper script PID, which matches the PID in the agent registry.
+/// Cleanup routines check this file and verify the PID is alive before removing.
+pub const WG_LOCKFILE: &str = ".wg-lock";
+
+/// Check if a worktree has a lockfile whose PID is still alive.
+/// Returns true if the lockfile exists and its PID corresponds to a running process.
+pub fn is_worktree_locked(worktree_path: &Path) -> bool {
+    let lockfile = worktree_path.join(WG_LOCKFILE);
+    match std::fs::read_to_string(&lockfile) {
+        Ok(content) => {
+            if let Some(pid_str) = content.lines().next() {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    return crate::commands::is_process_alive(pid);
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 /// Worktree paths and metadata for an isolated agent workspace.
 pub struct WorktreeInfo {
     /// Absolute path to the worktree directory
@@ -79,6 +101,10 @@ pub fn create_worktree(
 
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    // Remove the lockfile first
+    let lockfile_path = worktree_path.join(WG_LOCKFILE);
+    let _ = std::fs::remove_file(&lockfile_path);
+
     // Remove the symlink first (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {

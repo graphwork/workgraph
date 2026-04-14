@@ -107,6 +107,10 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     // Calculate disk space before cleanup for metrics
     let initial_size = calculate_directory_size(worktree_path).unwrap_or(0);
 
+    // Remove the lockfile
+    let lockfile_path = worktree_path.join(crate::commands::spawn::worktree::WG_LOCKFILE);
+    let _ = fs::remove_file(&lockfile_path);
+
     // Remove .workgraph symlink first (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
@@ -404,6 +408,67 @@ fn attempt_force_cleanup(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Salvage uncommitted changes in a dead agent's worktree by committing them
+/// to the worktree branch. This prevents data loss when an agent crashes with
+/// uncommitted work.
+fn salvage_uncommitted_work(worktree_path: &Path, branch: &str, agent_id: &str) {
+    if !worktree_path.exists() || !worktree_path.join(".git").exists() {
+        return;
+    }
+
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output();
+
+    let has_changes = match status {
+        Ok(output) if output.status.success() => {
+            !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        }
+        _ => false,
+    };
+
+    if !has_changes {
+        return;
+    }
+
+    eprintln!(
+        "[worktree] Salvaging uncommitted work from dead agent {} on branch {}",
+        agent_id, branch
+    );
+
+    let add_result = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(worktree_path)
+        .output();
+
+    if add_result.is_err() {
+        eprintln!("[worktree] Failed to stage uncommitted changes for {}", agent_id);
+        return;
+    }
+
+    let msg = format!("salvage: uncommitted work from dead agent {}", agent_id);
+    let commit_result = Command::new("git")
+        .args(["commit", "-m", &msg, "--no-verify"])
+        .current_dir(worktree_path)
+        .output();
+
+    match commit_result {
+        Ok(output) if output.status.success() => {
+            eprintln!(
+                "[worktree] Salvaged uncommitted work from {} into commit on {}",
+                agent_id, branch
+            );
+        }
+        _ => {
+            eprintln!(
+                "[worktree] Failed to commit salvaged work for {} (may have been empty after staging)",
+                agent_id
+            );
+        }
+    }
+}
+
 /// Check for recoverable commits on a dead agent's worktree branch.
 /// If commits exist, creates a recovery branch at `recover/<agent-id>/<task-id>`.
 /// Returns the number of commits found.
@@ -461,6 +526,9 @@ pub fn cleanup_dead_agent_worktree_with_config(
         "[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})",
         agent_id, worktree_path, branch
     );
+
+    // Salvage uncommitted work before removing
+    salvage_uncommitted_work(worktree_path, branch, agent_id);
 
     // Recover commits before removing
     let commit_count = recover_commits(project_root, branch, agent_id);
@@ -585,80 +653,94 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
             continue;
         }
 
-        // Check if this agent is alive
+        // Check if this agent is alive via registry
         let is_alive = registry
             .agents
             .get(&name)
             .map(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
             .unwrap_or(false);
 
-        if !is_alive {
-            let wt_path = entry.path();
-            eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
+        if is_alive {
+            continue;
+        }
 
-            // Try to find the branch from git porcelain output
-            let branch = find_branch_for_worktree(project_root, &wt_path);
+        // Belt-and-suspenders: also check the lockfile PID.
+        // Even if the registry says dead, a live lockfile PID means the agent is running.
+        let wt_path = entry.path();
+        if crate::commands::spawn::worktree::is_worktree_locked(&wt_path) {
+            eprintln!(
+                "[worktree] Skipping worktree {} — lockfile PID still alive (registry stale?)",
+                name
+            );
+            continue;
+        }
 
-            if let Some(ref branch) = branch {
-                // Use the enhanced cleanup function with retry logic
-                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
-            } else {
-                eprintln!(
-                    "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
-                    name
-                );
+        eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
 
-                // No branch found — use fallback cleanup with error reporting
-                let mut cleanup_errors = Vec::new();
+        // Try to find the branch from git porcelain output
+        let branch = find_branch_for_worktree(project_root, &wt_path);
 
-                // Remove .workgraph symlink
-                let symlink_path = wt_path.join(".workgraph");
-                if symlink_path.exists()
-                    && let Err(e) = fs::remove_file(&symlink_path)
-                {
-                    cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
-                }
+        if let Some(ref branch) = branch {
+            cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
+        } else {
+            eprintln!(
+                "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
+                name
+            );
 
-                // Remove isolated cargo target directory
-                let target_dir = wt_path.join("target");
-                if target_dir.exists()
-                    && let Err(e) = fs::remove_dir_all(&target_dir)
-                {
-                    cleanup_errors.push(format!("Failed to remove target directory: {}", e));
-                }
+            let mut cleanup_errors = Vec::new();
 
-                // Try git worktree remove
-                let output = Command::new("git")
-                    .args(["worktree", "remove", "--force"])
-                    .arg(&wt_path)
-                    .current_dir(project_root)
-                    .output();
+            // Remove lockfile
+            let lockfile_path = wt_path.join(crate::commands::spawn::worktree::WG_LOCKFILE);
+            let _ = fs::remove_file(&lockfile_path);
 
-                match output {
-                    Ok(output) if !output.status.success() => {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors
-                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
-                    }
-                    Err(e) => {
-                        cleanup_errors
-                            .push(format!("Failed to execute git worktree remove: {}", e));
-                    }
-                    _ => {} // Success case
-                }
-
-                if !cleanup_errors.is_empty() {
-                    eprintln!(
-                        "[worktree] Warnings during manual cleanup of {}: {}",
-                        name,
-                        cleanup_errors.join("; ")
-                    );
-                }
+            // Remove .workgraph symlink
+            let symlink_path = wt_path.join(".workgraph");
+            if symlink_path.exists()
+                && let Err(e) = fs::remove_file(&symlink_path)
+            {
+                cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
             }
 
-            cleaned += 1;
-            record_orphaned_cleanup();
+            // Remove isolated cargo target directory
+            let target_dir = wt_path.join("target");
+            if target_dir.exists()
+                && let Err(e) = fs::remove_dir_all(&target_dir)
+            {
+                cleanup_errors.push(format!("Failed to remove target directory: {}", e));
+            }
+
+            // Try git worktree remove
+            let output = Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&wt_path)
+                .current_dir(project_root)
+                .output();
+
+            match output {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    cleanup_errors
+                        .push(format!("Git worktree remove failed: {}", stderr.trim()));
+                }
+                Err(e) => {
+                    cleanup_errors
+                        .push(format!("Failed to execute git worktree remove: {}", e));
+                }
+                _ => {}
+            }
+
+            if !cleanup_errors.is_empty() {
+                eprintln!(
+                    "[worktree] Warnings during manual cleanup of {}: {}",
+                    name,
+                    cleanup_errors.join("; ")
+                );
+            }
         }
+
+        cleaned += 1;
+        record_orphaned_cleanup();
     }
 
     // NOTE: We intentionally do NOT run `git worktree prune` here.
@@ -699,7 +781,7 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
             continue;
         }
 
-        // Skip alive agents
+        // Skip alive agents (registry check)
         let is_alive = registry
             .agents
             .get(&name)
@@ -707,6 +789,11 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
             .unwrap_or(false);
 
         if is_alive {
+            continue;
+        }
+
+        // Belt-and-suspenders: also check the lockfile PID
+        if crate::commands::spawn::worktree::is_worktree_locked(&entry.path()) {
             continue;
         }
 
@@ -1868,6 +1955,90 @@ mod tests {
 
         // Live agent's worktree MUST survive
         assert!(live_wt.exists(), "live agent worktree must NOT be removed");
+    }
+
+    #[test]
+    fn test_lockfile_protects_worktree_from_cleanup() {
+        use workgraph::service::registry::AgentRegistry;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Create a worktree that is NOT in the registry
+        // but HAS a lockfile with our (alive) PID.
+        let (locked_wt, _locked_branch) =
+            create_test_worktree(&project, "agent-300", "task-locked");
+
+        let lockfile = locked_wt.join(crate::commands::spawn::worktree::WG_LOCKFILE);
+        fs::write(&lockfile, format!("{}\n", std::process::id())).unwrap();
+
+        assert!(locked_wt.exists());
+        assert!(lockfile.exists());
+
+        // Create a truly dead worktree (no lockfile, not in registry)
+        let (dead_wt, _dead_branch) =
+            create_test_worktree(&project, "agent-400", "task-dead");
+
+        // Empty registry — neither agent is registered
+        let registry = AgentRegistry::default();
+        registry.save(&wg_dir).unwrap();
+
+        let cleaned = cleanup_orphaned_worktrees(&wg_dir).unwrap();
+
+        // Locked worktree MUST survive
+        assert!(
+            locked_wt.exists(),
+            "worktree with live lockfile must NOT be removed"
+        );
+
+        // Unlocked worktree should be cleaned
+        assert_eq!(cleaned, 1, "should clean exactly 1 unprotected worktree");
+        assert!(
+            !dead_wt.exists(),
+            "unprotected dead worktree should be removed"
+        );
+    }
+
+    #[test]
+    fn test_lockfile_check_returns_false_for_dead_pid() {
+        let temp = TempDir::new().unwrap();
+        let wt_path = temp.path();
+
+        let lockfile = wt_path.join(crate::commands::spawn::worktree::WG_LOCKFILE);
+        fs::write(&lockfile, "999999999\n").unwrap();
+
+        assert!(
+            !crate::commands::spawn::worktree::is_worktree_locked(wt_path),
+            "lockfile with dead PID should return false"
+        );
+    }
+
+    #[test]
+    fn test_lockfile_check_returns_true_for_live_pid() {
+        let temp = TempDir::new().unwrap();
+        let wt_path = temp.path();
+
+        let lockfile = wt_path.join(crate::commands::spawn::worktree::WG_LOCKFILE);
+        fs::write(&lockfile, format!("{}\n", std::process::id())).unwrap();
+
+        assert!(
+            crate::commands::spawn::worktree::is_worktree_locked(wt_path),
+            "lockfile with live PID should return true"
+        );
+    }
+
+    #[test]
+    fn test_lockfile_check_returns_false_when_missing() {
+        let temp = TempDir::new().unwrap();
+        assert!(
+            !crate::commands::spawn::worktree::is_worktree_locked(temp.path()),
+            "missing lockfile should return false"
+        );
     }
 }
 

@@ -1169,6 +1169,12 @@ OUTPUT_FILE={escaped_output_file}
 # Allow nested Claude Code sessions (spawned agents are independent)
 unset CLAUDECODE
 unset CLAUDE_CODE_ENTRYPOINT
+
+# Write lockfile to protect this worktree from premature cleanup.
+# The PID ($$) matches the registry entry; cleanup checks it before removing.
+if [ -n "$WG_WORKTREE_PATH" ]; then
+    echo "$$" > "$WG_WORKTREE_PATH/.wg-lock"
+fi
 {timeout_note}
 {debug_env_vars}
 {stream_init}
@@ -1261,6 +1267,7 @@ Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
     fi
 
     # Always clean up the worktree, regardless of task outcome
+    rm -f "$WG_WORKTREE_PATH/.wg-lock" 2>/dev/null
     rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
