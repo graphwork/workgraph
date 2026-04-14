@@ -3485,9 +3485,16 @@ fn spawn_agents_for_ready_tasks(
             if let Some(model) = effective_model_for_detect
                 && requires_native_executor(model, config)
             {
+                // Log the model's context_window so operators can see what
+                // compaction_threshold the native coordinator will enforce.
+                let spec = workgraph::config::parse_model_spec(model);
+                let context_window = config
+                    .registry_lookup(&spec.model_id)
+                    .map(|e| e.context_window)
+                    .unwrap_or(0);
                 eprintln!(
-                    "[coordinator] Model '{}' is non-Anthropic, switching executor from claude to native",
-                    model
+                    "[coordinator] Model '{}' is non-Anthropic (context_window={}), switching executor from claude to native",
+                    model, context_window
                 );
                 effective_executor = "native".to_string();
             }
