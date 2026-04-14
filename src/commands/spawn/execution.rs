@@ -1260,11 +1260,15 @@ Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
         fi
     fi
 
-    # Always clean up the worktree, regardless of task outcome
-    rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
-    git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
-    git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
-    echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
+    # Only clean up the worktree on success; preserve on failure for debugging/retry
+    if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
+        rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
+        git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
+        git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
+        echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
+    else
+        echo "[wrapper] TASK_STATUS_FINAL is '$TASK_STATUS_FINAL' (failed or non-success) — skip cleanup, preserving worktree at $WG_WORKTREE_PATH for debugging" >> "$OUTPUT_FILE"
+    fi
 fi
 
 exit $EXIT_CODE
