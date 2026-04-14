@@ -229,6 +229,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -272,6 +273,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -315,6 +317,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
     }

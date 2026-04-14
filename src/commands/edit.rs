@@ -681,6 +681,7 @@ mod tests {
             None,  // iteration_config
             None,  // priority
             None,  // cron
+            false, // subtask
         )?;
 
         Ok(())
@@ -732,6 +733,7 @@ mod tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )?;
 
         crate::commands::add::run(
@@ -774,6 +776,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )?;
 
         Ok(())

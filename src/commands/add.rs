@@ -193,10 +193,23 @@ pub fn run(
     iteration_config: Option<workgraph::agency::IterationConfig>,
     priority: Option<&str>,
     cron: Option<&str>,
+    subtask: bool,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
     }
+
+    // Validate --subtask: requires WG_TASK_ID (must be called from within an agent context)
+    let subtask_parent_id = if subtask {
+        let parent_id = std::env::var("WG_TASK_ID")
+            .map_err(|_| anyhow::anyhow!(
+                "--subtask requires an active task context (WG_TASK_ID must be set). \
+                 This flag is designed for agents to delegate blocking child tasks."
+            ))?;
+        Some(parent_id)
+    } else {
+        None
+    };
 
     // Validate visibility
     match visibility {
@@ -370,7 +383,13 @@ pub fn run(
     let max_depth = guardrails.max_task_depth;
 
     let _graph = modify_graph(&path, |graph| {
-    let effective_after = default_parent_after(graph, after);
+    // For --subtask, don't add implicit --after on the parent (child must be immediately ready).
+    // The parent→child relationship is expressed via the parent's wait condition, not via after edges.
+    let effective_after = if subtask {
+        after.to_vec()
+    } else {
+        default_parent_after(graph, after)
+    };
 
     // 2. Task depth limit (enforced when --after is specified)
     if !effective_after.is_empty() {
@@ -519,7 +538,7 @@ pub fn run(
         tried_models: vec![],
         superseded_by: vec![],
         supersedes: None,
-        unplaced: no_place,
+        unplaced: no_place || subtask,
         place_near: place_near.to_vec(),
         place_before: place_before.to_vec(),
         independent,
@@ -615,7 +634,82 @@ pub fn run(
         config.log.rotation_threshold,
     );
 
-    if paused {
+    // --subtask: set wait condition on parent task so it blocks until child completes
+    if let Some(ref parent_id) = subtask_parent_id {
+        let child_id = task_id.clone();
+        let parent_id = parent_id.clone();
+        let mut wait_error: Option<anyhow::Error> = None;
+
+        modify_graph(&path, |graph| {
+            let parent = match graph.get_task(&parent_id) {
+                Some(t) => t,
+                None => {
+                    wait_error = Some(anyhow::anyhow!(
+                        "Parent task '{}' not found (WG_TASK_ID is stale?)", parent_id
+                    ));
+                    return false;
+                }
+            };
+
+            if parent.status != Status::InProgress {
+                wait_error = Some(anyhow::anyhow!(
+                    "Cannot set subtask wait on parent '{}': status is '{}', expected 'in-progress'",
+                    parent_id, parent.status
+                ));
+                return false;
+            }
+
+            let parent = graph.get_task_mut(&parent_id).expect("verified above");
+            parent.status = Status::Waiting;
+            parent.wait_condition = Some(workgraph::graph::WaitSpec::Any(vec![
+                workgraph::graph::WaitCondition::TaskStatus {
+                    task_id: child_id.clone(),
+                    status: Status::Done,
+                },
+                workgraph::graph::WaitCondition::TaskStatus {
+                    task_id: child_id.clone(),
+                    status: Status::Failed,
+                },
+            ]));
+            parent.log.push(workgraph::graph::LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: parent.assigned.clone(),
+                user: Some(workgraph::current_user()),
+                message: format!(
+                    "Agent parked. Waiting for subtask '{}' to complete.",
+                    child_id
+                ),
+            });
+
+            true
+        })
+        .context("Failed to set subtask wait condition on parent")?;
+
+        if let Some(e) = wait_error {
+            return Err(e);
+        }
+
+        // Update agent status to Parked if there's an assigned agent
+        if let Ok(mut registry) =
+            workgraph::service::registry::AgentRegistry::load_locked(dir)
+        {
+            for agent in registry.registry.agents.values_mut() {
+                if agent.task_id == parent_id && agent.is_alive() {
+                    agent.status = workgraph::service::registry::AgentStatus::Parked;
+                    if agent.completed_at.is_none() {
+                        agent.completed_at = Some(Utc::now().to_rfc3339());
+                    }
+                }
+            }
+            let _ = registry.save();
+        }
+
+        super::notify_graph_changed(dir);
+
+        println!("Added subtask: {} ({})", title, task_id);
+        println!("  Parent '{}' is now waiting for subtask to complete.", parent_id);
+        println!("  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes.");
+    } else if paused {
         println!("Added task (draft): {} ({})", title, task_id);
         println!(
             "  Task is paused (draft mode). When ready, run: wg publish {}",
@@ -624,7 +718,7 @@ pub fn run(
     } else {
         println!("Added task: {} ({})", title, task_id);
     }
-    if id.is_none() {
+    if id.is_none() && subtask_parent_id.is_none() {
         println!("  Use --after {} to depend on this task", task_id);
     }
     super::print_service_hint(dir);
@@ -1379,6 +1473,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1433,6 +1528,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1487,6 +1583,7 @@ mod tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_err());
         assert!(
@@ -1548,6 +1645,7 @@ mod tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_err());
         assert!(
@@ -1606,6 +1704,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_ok());
     }
@@ -1660,6 +1759,7 @@ mod tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_ok());
     }
@@ -1718,6 +1818,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_ok());
 
@@ -1846,6 +1947,7 @@ mod tests {
             None,  // iteration_config
             None,  // priority
             None,  // cron
+            false, // subtask
         );
         assert!(result.is_ok(), "wg add --exec should succeed: {:?}", result);
 
@@ -1907,6 +2009,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_ok());
 
@@ -1968,6 +2071,7 @@ mod tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         );
         assert!(result.is_ok());
 
@@ -2015,5 +2119,225 @@ mod tests {
         unsafe { std::env::remove_var("WG_TASK_ID") };
 
         assert_eq!(result, vec!["explicit-parent".to_string()]);
+    }
+
+    // ---- subtask tests ----
+
+    #[test]
+    fn subtask_requires_wg_task_id() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        let path = super::graph_path(dir_path);
+        save_graph(&WorkGraph::new(), &path).unwrap();
+
+        unsafe { std::env::remove_var("WG_TASK_ID") };
+
+        let result = run(
+            dir_path,
+            "Child task",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            true, // subtask
+        );
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("WG_TASK_ID"),
+            "Should fail when WG_TASK_ID not set"
+        );
+    }
+
+    #[test]
+    fn subtask_creates_child_and_sets_wait_condition() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        let path = super::graph_path(dir_path);
+
+        let mut parent = stub_task("parent-task");
+        parent.status = Status::InProgress;
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(parent));
+        save_graph(&graph, &path).unwrap();
+
+        unsafe { std::env::set_var("WG_TASK_ID", "parent-task") };
+
+        let result = run(
+            dir_path,
+            "Research subtask",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            true, // subtask
+        );
+
+        unsafe { std::env::remove_var("WG_TASK_ID") };
+
+        assert!(result.is_ok(), "subtask creation should succeed: {:?}", result);
+
+        let graph = load_graph(&path).unwrap();
+
+        let child = graph.get_task("research-subtask").unwrap();
+        assert_eq!(child.status, Status::Open);
+        assert!(child.after.is_empty());
+        assert!(child.unplaced);
+
+        let parent = graph.get_task("parent-task").unwrap();
+        assert_eq!(parent.status, Status::Waiting);
+        assert!(parent.wait_condition.is_some());
+
+        use workgraph::graph::{WaitCondition, WaitSpec};
+        match parent.wait_condition.as_ref().unwrap() {
+            WaitSpec::Any(conditions) => {
+                assert_eq!(conditions.len(), 2);
+                assert!(conditions.contains(&WaitCondition::TaskStatus {
+                    task_id: "research-subtask".to_string(),
+                    status: Status::Done,
+                }));
+                assert!(conditions.contains(&WaitCondition::TaskStatus {
+                    task_id: "research-subtask".to_string(),
+                    status: Status::Failed,
+                }));
+            }
+            other => panic!("Expected WaitSpec::Any, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn subtask_fails_if_parent_not_in_progress() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        let path = super::graph_path(dir_path);
+
+        let parent = stub_task("parent-task");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(parent));
+        save_graph(&graph, &path).unwrap();
+
+        unsafe { std::env::set_var("WG_TASK_ID", "parent-task") };
+
+        let result = run(
+            dir_path,
+            "Child task",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            true, // subtask
+        );
+
+        unsafe { std::env::remove_var("WG_TASK_ID") };
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("in-progress"),
+            "Should fail when parent is not in-progress"
+        );
     }
 }

@@ -198,6 +198,10 @@ pub enum Commands {
         /// Cron schedule expression (6-field format: "sec min hour day month dow")
         #[arg(long)]
         cron: Option<String>,
+
+        /// Create as a blocking subtask: child is created, parent waits for child to complete
+        #[arg(long)]
+        subtask: bool,
     },
 
     /// Edit an existing task

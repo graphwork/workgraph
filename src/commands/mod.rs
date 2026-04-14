@@ -272,6 +272,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -324,6 +325,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -410,6 +412,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -469,6 +472,7 @@ mod provenance_coverage_tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -522,6 +526,7 @@ mod provenance_coverage_tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -575,6 +580,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -628,6 +634,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -684,6 +691,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -742,6 +750,7 @@ mod provenance_coverage_tests {
             None, // iteration_config
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
 
@@ -800,6 +809,7 @@ mod provenance_coverage_tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
         super::done::run(dir, "prov-archive", false, false).unwrap();
@@ -855,6 +865,7 @@ mod provenance_coverage_tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
@@ -913,6 +924,7 @@ mod provenance_coverage_tests {
             None,
             None, // priority
             None, // cron
+            false, // subtask
         )
         .unwrap();
         // edit

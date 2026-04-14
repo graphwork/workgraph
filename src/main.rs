@@ -337,6 +337,7 @@ fn main() -> Result<()> {
             propagation,
             retry_strategy,
             cron,
+            subtask,
         } => {
             // Determine effective paused/unplaced state:
             // - --paused always pauses (user-managed draft, skips placement)
@@ -414,6 +415,7 @@ fn main() -> Result<()> {
                     parse_iteration_config(propagation.as_deref(), retry_strategy.as_deref()),
                     None, // priority - not yet exposed in CLI
                     cron.as_deref(),
+                    subtask,
                 )
             }
         }

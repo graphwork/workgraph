@@ -421,6 +421,24 @@ fn build_resume_delta(graph: &workgraph::graph::WorkGraph, task: &Task, dir: &Pa
                         delta.push_str(&format!("  artifact: {}\n", art));
                     }
                 }
+                // Include recent log entries from completed subtasks for result context
+                let recent_logs: Vec<_> = dep
+                    .log
+                    .iter()
+                    .rev()
+                    .take(3)
+                    .collect();
+                if !recent_logs.is_empty() {
+                    for log in recent_logs.iter().rev() {
+                        delta.push_str(&format!("  log: {}\n", log.message));
+                    }
+                }
+                // Include failure reason if the subtask failed
+                if dep.status == Status::Failed {
+                    if let Some(ref reason) = dep.failure_reason {
+                        delta.push_str(&format!("  failure_reason: {}\n", reason));
+                    }
+                }
             }
         }
     }
