@@ -328,9 +328,9 @@ fn test_context_budget_default_uses_200k() {
 
 #[test]
 fn test_context_pressure_exactly_at_80_percent() {
-    // Window: 1000 tokens (<64k → small tier: compact=0.65, hard=0.85).
+    // Window: 1000 tokens, output_budget=0 (<64k → small tier: compact=0.65, hard=0.85).
     // 80% = 800 tokens = 3200 chars. 0.65 < 0.80 < 0.85 → EmergencyCompaction.
-    let budget = ContextBudget::with_window_size(1000);
+    let budget = ContextBudget::with_window_and_output(1000, 0);
     let msgs = vec![workgraph::executor::native::client::Message {
         role: workgraph::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
@@ -346,7 +346,7 @@ fn test_context_pressure_exactly_at_80_percent() {
 #[test]
 fn test_context_pressure_at_79_9_percent() {
     // 79.9% should be EmergencyCompaction (above 0.65 compact threshold for small window)
-    let budget = ContextBudget::with_window_size(1000);
+    let budget = ContextBudget::with_window_and_output(1000, 0);
     // 79.9% of 1000 = 799 tokens = 3196 chars
     let msgs = vec![workgraph::executor::native::client::Message {
         role: workgraph::executor::native::client::Role::User,
@@ -458,13 +458,17 @@ fn test_context_pressure_well_below_thresholds() {
 
 #[test]
 fn test_context_budget_small_window_32k() {
-    // Simulate Qwen3-32B with 32K context window
+    // Simulate Qwen3-32B with 32K context window, 8K output budget (32k/4)
     let budget = ContextBudget::with_window_size(32_000);
-    // 80% of 32000 = 25600 tokens = 102400 chars (now triggers EmergencyCompaction, above 75%)
+    // effective input = 32000 - 8000 = 24000 tokens
+    assert_eq!(budget.output_budget, 8000);
+    assert_eq!(budget.effective_input_budget(), 24_000);
+
+    // 16000 tokens = 64000 chars → 16000/24000 = 66.7% → EmergencyCompaction (> 0.65)
     let msgs = vec![workgraph::executor::native::client::Message {
         role: workgraph::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
-            text: "x".repeat(102_400),
+            text: "x".repeat(64_000),
         }],
     }];
     assert_eq!(
@@ -1046,8 +1050,8 @@ fn test_estimate_tokens_empty_content() {
 #[test]
 fn test_pressure_with_multiple_small_messages() {
     // Verify that many small messages accumulate correctly
-    let budget = ContextBudget::with_window_size(1000);
-    // 20 messages of 160 chars each = 3200 chars = 800 tokens = 80% (now EmergencyCompaction, above 75%)
+    let budget = ContextBudget::with_window_and_output(1000, 0);
+    // 20 messages of 160 chars each = 3200 chars = 800 tokens = 80% → EmergencyCompaction (above 0.65)
     let msgs: Vec<_> = (0..20)
         .map(|i| workgraph::executor::native::client::Message {
             role: if i % 2 == 0 {

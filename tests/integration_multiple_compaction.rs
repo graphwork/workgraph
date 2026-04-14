@@ -478,52 +478,53 @@ fn test_context_budget_openai_model_windows() {
             desc
         );
 
-        // At 50% capacity: should be Ok (always below any warning threshold)
-        let half_chars = (*context_window as f64 * 0.50 * budget.chars_per_token) as usize;
+        let effective = budget.effective_input_budget() as f64;
+
+        // At 50% of effective input budget: should be Ok
+        let half_chars = (effective * 0.50 * budget.chars_per_token) as usize;
         let msgs_ok = vec![make_text_message(Role::User, half_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_ok),
             ContextPressureAction::Ok,
-            "{} ({}): 50% should be Ok",
+            "{} ({}): 50% effective should be Ok",
             desc,
             model_name
         );
 
-        // Just above warning_threshold: should be Warning
+        // Just above warning_threshold of effective budget: should be Warning
         let warn_pct = budget.warning_threshold + 0.02;
-        let warn_chars = (*context_window as f64 * warn_pct * budget.chars_per_token) as usize;
+        let warn_chars = (effective * warn_pct * budget.chars_per_token) as usize;
         let msgs_warn = vec![make_text_message(Role::User, warn_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_warn),
             ContextPressureAction::Warning,
-            "{} ({}): {:.0}% should be Warning",
+            "{} ({}): {:.0}% effective should be Warning",
             desc,
             model_name,
             warn_pct * 100.0
         );
 
-        // Just above compact_threshold: should be EmergencyCompaction
+        // Just above compact_threshold of effective budget: should be EmergencyCompaction
         let compact_pct = budget.compact_threshold + 0.02;
-        let compact_chars =
-            (*context_window as f64 * compact_pct * budget.chars_per_token) as usize;
+        let compact_chars = (effective * compact_pct * budget.chars_per_token) as usize;
         let msgs_compact = vec![make_text_message(Role::User, compact_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_compact),
             ContextPressureAction::EmergencyCompaction,
-            "{} ({}): {:.0}% should be EmergencyCompaction",
+            "{} ({}): {:.0}% effective should be EmergencyCompaction",
             desc,
             model_name,
             compact_pct * 100.0
         );
 
-        // Just above hard_limit: should be CleanExit
+        // Just above hard_limit of effective budget: should be CleanExit
         let exit_pct = budget.hard_limit + 0.02;
-        let exit_chars = (*context_window as f64 * exit_pct * budget.chars_per_token) as usize;
+        let exit_chars = (effective * exit_pct * budget.chars_per_token) as usize;
         let msgs_exit = vec![make_text_message(Role::User, exit_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_exit),
             ContextPressureAction::CleanExit,
-            "{} ({}): {:.0}% should be CleanExit",
+            "{} ({}): {:.0}% effective should be CleanExit",
             desc,
             model_name,
             exit_pct * 100.0
@@ -547,25 +548,26 @@ fn test_context_pressure_small_vs_large_window() {
         large.warning_threshold
     );
 
-    // 10k chars ≈ 2500 tokens
-    let msgs = vec![make_text_message(Role::User, 10_000)];
+    // Small model: 8k window, output_budget=2000, effective=6000
+    assert_eq!(small.output_budget, 2000);
+    assert_eq!(small.effective_input_budget(), 6_000);
 
-    // Small model: 2500/8000 = 31.25% → Ok
+    // 10k chars ≈ 2500 tokens → 2500/6000 = 41.7% → Ok
+    let msgs = vec![make_text_message(Role::User, 10_000)];
     assert_eq!(small.check_pressure(&msgs), ContextPressureAction::Ok);
 
-    // With more content: 24k chars ≈ 6000 tokens
-    let msgs_bigger = vec![make_text_message(Role::User, 24_000)];
-    // Small model: 6000/8000 = 75% → EmergencyCompaction (compact_threshold=0.65 for <64k)
+    // 16k chars ≈ 4000 tokens → 4000/6000 = 66.7% → EmergencyCompaction (>0.65)
+    let msgs_compact = vec![make_text_message(Role::User, 16_000)];
     assert_eq!(
-        small.check_pressure(&msgs_bigger),
+        small.check_pressure(&msgs_compact),
         ContextPressureAction::EmergencyCompaction,
-        "Small model should need compaction at 24k chars"
+        "Small model should need compaction at 16k chars (effective 66.7%)"
     );
-    // Large model: 6000/200000 = 3% → Ok
+    // Large model: 4000/183616 = 2.2% → Ok
     assert_eq!(
-        large.check_pressure(&msgs_bigger),
+        large.check_pressure(&msgs_compact),
         ContextPressureAction::Ok,
-        "Large model should be fine at 24k chars"
+        "Large model should be fine at 16k chars"
     );
 }
 
@@ -858,29 +860,23 @@ fn test_emergency_compaction_mixed_content() {
 
     let compacted = ContextBudget::emergency_compact(messages.clone(), 4);
 
-    // Recent messages should be preserved
-    assert_eq!(
-        compacted.len(),
+    // Phase 2 drops oldest messages from the non-recent section
+    assert!(
+        compacted.len() < messages.len(),
+        "emergency_compact should reduce message count: {} → {}",
         messages.len(),
-        "emergency_compact should not remove messages, only strip content"
+        compacted.len()
     );
 
-    // The large tool result in the old section should be stripped
-    let tool_result_msg = &compacted[2];
-    match &tool_result_msg.content[0] {
-        ContentBlock::ToolResult { content, .. } => {
-            assert!(
-                content.len() < 5000,
-                "Large tool result should be stripped, got {} bytes",
-                content.len()
-            );
-        }
-        _ => panic!("Expected ToolResult in position 2"),
-    }
-
-    // Last message should be unchanged
+    // Recent messages should be preserved (last 4)
     let last_text = extract_text(compacted.last().unwrap());
     assert_eq!(last_text, "Tests pass!");
+
+    // First surviving message should be User
+    assert_eq!(
+        compacted[0].role, Role::User,
+        "First message after compaction should be User"
+    );
 }
 
 // ---------------------------------------------------------------------------

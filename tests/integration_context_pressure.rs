@@ -45,6 +45,7 @@ fn test_context_pressure_warning() {
     // 90% threshold = 900 tokens = 3600 chars.
     let budget = ContextBudget {
         window_size: 1000,
+        output_budget: 0,
         chars_per_token: 4.0,
         warning_threshold: 0.80,
         compact_threshold: 0.90,
@@ -94,6 +95,7 @@ fn test_context_pressure_warning() {
 fn test_context_pressure_compaction() {
     let budget = ContextBudget {
         window_size: 1000,
+        output_budget: 0,
         chars_per_token: 4.0,
         warning_threshold: 0.80,
         compact_threshold: 0.90,
@@ -155,31 +157,27 @@ fn test_context_pressure_compaction() {
 
     let compacted = ContextBudget::emergency_compact(messages.clone(), 2);
 
+    // Phase 2 drops oldest messages from the non-recent section
+    assert!(
+        compacted.len() < messages.len(),
+        "Emergency compaction should reduce message count: {} → {}",
+        messages.len(),
+        compacted.len()
+    );
+
     // Recent messages preserved
-    assert_eq!(compacted.len(), messages.len());
     let last = &compacted[compacted.len() - 1];
     match &last.content[0] {
         ContentBlock::Text { text } => assert_eq!(text, "Thanks!"),
         _ => panic!("Expected text in last message"),
     }
 
-    // Old large tool result should be replaced with a summary
-    let old_tool_result = &compacted[1];
-    match &old_tool_result.content[0] {
-        ContentBlock::ToolResult { content, .. } => {
-            assert!(
-                content.len() < 5000,
-                "Large tool result should have been compacted, but is {} bytes",
-                content.len()
-            );
-            assert!(
-                content.contains("Tool result removed") || content.contains("bytes"),
-                "Compacted tool result should mention removal: {}",
-                content
-            );
-        }
-        _ => panic!("Expected tool result in compacted message"),
-    }
+    // First surviving message should be User (API requirement)
+    assert_eq!(
+        compacted[0].role,
+        workgraph::executor::native::client::Role::User,
+        "First message after compaction should be User"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +190,7 @@ fn test_context_pressure_compaction() {
 fn test_context_pressure_clean_exit() {
     let budget = ContextBudget {
         window_size: 1000,
+        output_budget: 0,
         chars_per_token: 4.0,
         warning_threshold: 0.80,
         compact_threshold: 0.90,

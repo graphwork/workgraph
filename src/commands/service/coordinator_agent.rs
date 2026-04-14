@@ -1660,13 +1660,17 @@ fn native_coordinator_loop(
         }
     };
 
-    // Build context budget from the provider's context window so compaction
-    // respects the model's actual limit (e.g. 32k for qwen3-coder-30b) instead
-    // of only the global compaction_token_threshold.
-    let context_budget = ContextBudget::with_window_size(client.context_window());
+    // Build context budget from the provider's context window and output reservation
+    // so compaction respects the model's actual limit (e.g. 32k for qwen3-coder-30b).
+    let context_budget = ContextBudget::with_window_and_output(
+        client.context_window(),
+        client.max_tokens() as usize,
+    );
     logger.info(&format!(
-        "Native coordinator: context budget window_size={}, compact_threshold={:.0}%, hard_limit={:.0}%",
+        "Native coordinator: context budget window_size={}, output_budget={}, effective_input={}, compact_threshold={:.0}%, hard_limit={:.0}%",
         context_budget.window_size,
+        context_budget.output_budget,
+        context_budget.effective_input_budget(),
         context_budget.compact_threshold * 100.0,
         context_budget.hard_limit * 100.0,
     ));

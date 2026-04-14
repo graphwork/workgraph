@@ -716,6 +716,8 @@ pub enum ContextPressureAction {
 pub struct ContextBudget {
     /// Total context window size in tokens (from provider config).
     pub window_size: usize,
+    /// Tokens reserved for output (max_tokens / max_completion_tokens).
+    pub output_budget: usize,
     /// Rough chars-per-token estimate (default 4.0).
     pub chars_per_token: f64,
     /// Fraction at which to inject a warning (default 0.70).
@@ -730,6 +732,7 @@ impl Default for ContextBudget {
     fn default() -> Self {
         Self {
             window_size: 200_000,
+            output_budget: 16_384,
             chars_per_token: 4.0,
             warning_threshold: 0.70,
             compact_threshold: 0.75,
@@ -739,14 +742,28 @@ impl Default for ContextBudget {
 }
 
 impl ContextBudget {
-    /// Create a ContextBudget with a specific window size and dynamic thresholds.
+    /// Create a ContextBudget with a specific window size, using a default
+    /// output budget of 25% of the window (matching the OpenAI client cap).
     ///
     /// Smaller context windows get tighter (earlier) thresholds since there's less
     /// room to recover from pressure:
     /// - Small  (< 64k):  warning=0.55, compact=0.65, hard_limit=0.85
     /// - Medium (64k–128k): warning=0.60, compact=0.70, hard_limit=0.90
     /// - Large  (≥ 128k):  warning=0.70, compact=0.75, hard_limit=0.95
+    ///
+    /// Thresholds are applied against the *effective input budget*
+    /// (window_size - output_budget), not the total context window.
     pub fn with_window_size(window_size: usize) -> Self {
+        let default_output = (window_size / 4).min(16_384);
+        Self::with_window_and_output(window_size, default_output)
+    }
+
+    /// Create a ContextBudget with explicit window size and output token reservation.
+    ///
+    /// All pressure thresholds are applied against the effective input budget
+    /// (window_size - output_budget), so a 32k window with 8k output budget
+    /// treats 24k as the 100% mark for input tokens.
+    pub fn with_window_and_output(window_size: usize, output_budget: usize) -> Self {
         let (warning, compact, hard) = if window_size < 64_000 {
             (0.55, 0.65, 0.85)
         } else if window_size < 128_000 {
@@ -756,11 +773,17 @@ impl ContextBudget {
         };
         Self {
             window_size,
+            output_budget,
             chars_per_token: 4.0,
             warning_threshold: warning,
             compact_threshold: compact,
             hard_limit: hard,
         }
+    }
+
+    /// The effective input budget: total window minus output reservation.
+    pub fn effective_input_budget(&self) -> usize {
+        self.window_size.saturating_sub(self.output_budget)
     }
 
     /// Estimate the current token count from a list of messages.
@@ -785,9 +808,16 @@ impl ContextBudget {
     }
 
     /// Check context pressure and return the appropriate action.
+    ///
+    /// Pressure is measured against the effective input budget
+    /// (window_size - output_budget), not the total context window.
     pub fn check_pressure(&self, messages: &[Message]) -> ContextPressureAction {
         let tokens = self.estimate_tokens(messages);
-        let ratio = tokens as f64 / self.window_size as f64;
+        let effective = self.effective_input_budget();
+        if effective == 0 {
+            return ContextPressureAction::CleanExit;
+        }
+        let ratio = tokens as f64 / effective as f64;
 
         if ratio >= self.hard_limit {
             ContextPressureAction::CleanExit
@@ -800,19 +830,30 @@ impl ContextBudget {
         }
     }
 
-    /// Build the warning message injected at 80% threshold.
+    /// Build the warning message injected when approaching the input budget.
     pub fn warning_message(&self, messages: &[Message]) -> String {
         let tokens = self.estimate_tokens(messages);
-        let pct = (tokens as f64 / self.window_size as f64) * 100.0;
+        let effective = self.effective_input_budget();
+        let pct = if effective > 0 {
+            (tokens as f64 / effective as f64) * 100.0
+        } else {
+            100.0
+        };
         format!(
-            "⚠️ CONTEXT PRESSURE WARNING: You're at {:.0}% context capacity ({} / {} estimated tokens). \
+            "⚠️ CONTEXT PRESSURE WARNING: You're at {:.0}% effective input capacity \
+             ({} input tokens, {} reserved for output, {} total window). \
              Consider logging progress via `wg log` and completing the current subtask.",
-            pct, tokens, self.window_size
+            pct, tokens, self.output_budget, self.window_size
         )
     }
 
-    /// Perform emergency compaction: drop tool results from turns older than
-    /// the last `keep_recent` messages, replacing them with summaries.
+    /// Perform emergency compaction: strip large tool results from older
+    /// messages, then drop the oldest messages if that wasn't enough.
+    ///
+    /// Phase 1: Replace large tool results (>200 bytes) with short summaries
+    ///          in messages older than `keep_recent`.
+    /// Phase 2: Drop the oldest messages (preserving role alternation and
+    ///          the most recent `keep_recent`) to ensure real reduction.
     pub fn emergency_compact(messages: Vec<Message>, keep_recent: usize) -> Vec<Message> {
         if messages.len() <= keep_recent {
             return messages;
@@ -821,7 +862,7 @@ impl ContextBudget {
 
         let mut compacted = Vec::new();
 
-        // Compact older messages: strip large tool results
+        // Phase 1: strip large tool results from older messages
         for msg in &messages[..split] {
             let mut new_content = Vec::new();
             for block in &msg.content {
@@ -831,7 +872,6 @@ impl ContextBudget {
                         content,
                         is_error,
                     } => {
-                        // Replace large tool results with a short summary
                         let summary = if content.len() > 200 {
                             format!(
                                 "[Tool result removed. Size: {} bytes. Preview: {}...]",
@@ -858,6 +898,35 @@ impl ContextBudget {
 
         // Keep recent messages verbatim
         compacted.extend_from_slice(&messages[split..]);
+
+        // Phase 2: drop oldest messages from the non-recent section to
+        // achieve real token reduction (not just tool-result stripping).
+        if compacted.len() > keep_recent + 2 {
+            let old_count = compacted.len() - keep_recent;
+            let mut drop_count = old_count / 2;
+
+            if drop_count > 0 {
+                // Adjust drop count so the first remaining message is User
+                // (required by most chat APIs). Since the input alternates
+                // roles, dropping an even/odd count from the front determines
+                // whether the first survivor keeps its original role.
+                let first_is_user = compacted[0].role == Role::User;
+                if first_is_user && drop_count % 2 != 0 {
+                    drop_count -= 1;
+                } else if !first_is_user && drop_count % 2 == 0 {
+                    if drop_count + 1 < old_count {
+                        drop_count += 1;
+                    } else {
+                        drop_count = drop_count.saturating_sub(1);
+                    }
+                }
+
+                if drop_count > 0 {
+                    compacted.drain(..drop_count);
+                }
+            }
+        }
+
         compacted
     }
 }

@@ -189,8 +189,11 @@ impl AgentLoop {
         // Derive .streaming path from output_log directory
         let streaming_file_path = output_log.parent().map(|p| p.join(".streaming"));
 
-        // Build context budget from the provider's context window
-        let context_budget = ContextBudget::with_window_size(client.context_window());
+        // Build context budget from the provider's context window and output reservation
+        let context_budget = ContextBudget::with_window_and_output(
+            client.context_window(),
+            client.max_tokens() as usize,
+        );
 
         Self {
             client,
