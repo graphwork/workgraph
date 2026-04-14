@@ -54,23 +54,29 @@ fn test_bundle_toml_roundtrip() {
 }
 
 #[test]
-fn test_ensure_default_bundles_creates_three_files() {
+fn test_ensure_default_bundles_creates_four_files() {
     let tmp = TempDir::new().unwrap();
     ensure_default_bundles(tmp.path()).unwrap();
 
     let bundles_dir = tmp.path().join("bundles");
     assert!(bundles_dir.join("bare.toml").exists());
+    assert!(bundles_dir.join("shell.toml").exists());
     assert!(bundles_dir.join("research.toml").exists());
     assert!(bundles_dir.join("implementer.toml").exists());
 
     // All should parse correctly
     let bare = Bundle::load(&bundles_dir.join("bare.toml")).unwrap();
+    let shell = Bundle::load(&bundles_dir.join("shell.toml")).unwrap();
     let research = Bundle::load(&bundles_dir.join("research.toml")).unwrap();
     let implementer = Bundle::load(&bundles_dir.join("implementer.toml")).unwrap();
 
     assert_eq!(bare.name, "bare");
     assert!(!bare.allows_all());
     assert!(bare.tools.contains(&"wg_done".to_string()));
+
+    assert_eq!(shell.name, "shell");
+    assert!(!shell.allows_all());
+    assert!(shell.tools.contains(&"bash".to_string()));
 
     assert_eq!(research.name, "research");
     assert!(!research.allows_all());
@@ -84,8 +90,11 @@ fn test_ensure_default_bundles_creates_three_files() {
 fn test_exec_mode_bundle_mapping() {
     let tmp = TempDir::new().unwrap();
 
-    // shell → None
-    assert!(resolve_bundle("shell", tmp.path()).is_none());
+    // shell → shell bundle
+    let shell = resolve_bundle("shell", tmp.path()).unwrap();
+    assert_eq!(shell.name, "shell");
+    assert!(shell.tools.contains(&"bash".to_string()));
+    assert!(shell.tools.contains(&"wg_show".to_string()));
 
     // bare → bare bundle
     let bare = resolve_bundle("bare", tmp.path()).unwrap();
@@ -200,10 +209,11 @@ fn test_load_all_bundles_from_dir() {
     ensure_default_bundles(tmp.path()).unwrap();
 
     let bundles = load_all_bundles(tmp.path());
-    assert_eq!(bundles.len(), 3);
+    assert_eq!(bundles.len(), 4);
 
     let names: Vec<&str> = bundles.iter().map(|b| b.name.as_str()).collect();
     assert!(names.contains(&"bare"));
+    assert!(names.contains(&"shell"));
     assert!(names.contains(&"research"));
     assert!(names.contains(&"implementer"));
 }
