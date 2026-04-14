@@ -257,6 +257,7 @@ pub(crate) fn discover_test_files(project_root: &Path) -> Vec<String> {
 ///
 /// Selects the most appropriate test runner based on the file types found.
 /// Returns `None` if no test files were discovered.
+#[allow(dead_code)]
 pub(crate) fn build_auto_verify_command(test_files: &[String]) -> Option<String> {
     if test_files.is_empty() {
         return None;
@@ -712,7 +713,7 @@ Fanout is a tool, not a default. Assess complexity first, then decide.
 ### Pipeline (Sequential Steps)
 When work must proceed in order:
 ```bash
-wg add 'Step 1: Parse input' --after $WG_TASK_ID --verify 'cargo test test_parse'
+wg add 'Step 1: Parse input' --after $WG_TASK_ID
 wg add 'Step 2: Transform data' --after step-1-parse-input
 wg add 'Step 3: Write output' --after step-2-transform-data
 ```
@@ -731,8 +732,7 @@ wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module
 ### Iterate-Until-Pass (Refinement Loop)
 When work requires multiple passes:
 ```bash
-wg add 'Refine implementation' --after $WG_TASK_ID --max-iterations 3 \
-  --verify 'cargo test && performance_benchmark'
+wg add 'Refine implementation' --after $WG_TASK_ID --max-iterations 3
 ```
 Use `wg done --converged` when work has stabilized.
 
@@ -748,7 +748,7 @@ Every **code task** description MUST include:
 - [ ] <any additional acceptance criteria>
 ```
 
-Use `--verify "command"` for machine-checkable criteria.
+Verification is handled by the FLIP/eval pipeline.
 
 ## Core Commands
 
@@ -939,7 +939,7 @@ wg add 'Final check' --after fix-issues
 Use status-based dependencies:
 ```bash
 wg add 'Deploy to staging' --after tests-pass
-wg add 'Deploy to prod' --after deploy-to-staging --verify 'health_check_passes'
+wg add 'Deploy to prod' --after deploy-to-staging
 ```
 
 ### Complex Fan-Out
@@ -1000,7 +1000,7 @@ wg func apply "testing-pipeline" --input target=new-feature
 Handle long-running processes:
 ```bash
 wg add 'Monitor deployment' --after deploy --max-iterations 24 \
-  --verify 'uptime > 99%' --cycle-delay 3600  # Check hourly
+  --cycle-delay 3600  # Check hourly
 ```
 
 ### Error Recovery Patterns

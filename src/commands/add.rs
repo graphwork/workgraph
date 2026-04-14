@@ -361,8 +361,9 @@ pub fn run(
         None
     };
 
-    // Validate verify command (warn about descriptive text)
+    // Deprecation warning for --verify
     if let Some(v) = verify {
+        eprintln!("Note: --verify is deprecated. Consider using the FLIP/eval pipeline for task verification.");
         workgraph::verify_lint::print_warnings(v);
     }
 
@@ -775,8 +776,9 @@ pub fn run_remote(
     }
     let model = resolved_model_str.as_deref();
 
-    // Validate verify command (warn about descriptive text)
+    // Deprecation warning for --verify
     if let Some(v) = verify {
+        eprintln!("Note: --verify is deprecated. Consider using the FLIP/eval pipeline for task verification.");
         workgraph::verify_lint::print_warnings(v);
     }
 

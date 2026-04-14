@@ -15,9 +15,8 @@ use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVar
 use workgraph::service::registry::AgentRegistry;
 
 use super::context::{
-    build_auto_verify_command, build_previous_attempt_context, build_scope_context,
-    build_task_context, discover_test_files, format_test_discovery_context, resolve_task_exec_mode,
-    resolve_task_scope,
+    build_previous_attempt_context, build_scope_context, build_task_context, discover_test_files,
+    format_test_discovery_context, resolve_task_exec_mode, resolve_task_scope,
 };
 use super::worktree;
 use super::{
@@ -158,7 +157,7 @@ pub(crate) fn spawn_agent_inner(
     }
 
     // Pre-task test discovery: scan for test files and inject into agent context.
-    // Also auto-populate --verify gate when no explicit verify is set.
+    // Note: auto-verify gate population is deprecated (FLIP/eval pipeline handles verification).
     let auto_verify_command: Option<String> = if config.coordinator.auto_test_discovery {
         let project_root = dir
             .canonicalize()
@@ -172,29 +171,10 @@ pub(crate) fn spawn_agent_inner(
                     test_files.len(),
                     task_id
                 );
-                // Inject discovered tests into scope context for prompt
                 scope_ctx.discovered_tests = format_test_discovery_context(&test_files);
-                // Auto-set verify if task has no explicit --verify gate
-                if vars.task_verify.is_none() {
-                    if let Some(cmd) = build_auto_verify_command(&test_files) {
-                        eprintln!(
-                            "[spawn] Auto-verify: setting verify gate for '{}': {}",
-                            task_id, cmd
-                        );
-                        vars.task_verify = Some(cmd.clone());
-                        Some(cmd)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
             }
-        } else {
-            None
         }
+        None
     } else {
         None
     };
@@ -640,17 +620,8 @@ pub(crate) fn spawn_agent_inner(
             });
         }
 
-        // Persist auto-discovered verify gate to the graph so `wg done` enforces it
-        if let Some(ref verify_cmd) = auto_verify_clone
-            && task.verify.is_none() {
-                task.verify = Some(verify_cmd.clone());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("spawn".to_string()),
-                    user: None,
-                    message: format!("Auto-verify: set --verify gate from test discovery: {}", verify_cmd),
-                });
-            }
+        // Auto-verify gate population removed — FLIP/eval pipeline handles verification.
+        let _ = auto_verify_clone;
 
         // Create .assign-* audit trail if missing (defense-in-depth).
         let assign_task_id = format!(".assign-{}", task_id_str);

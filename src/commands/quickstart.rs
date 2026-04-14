@@ -207,16 +207,16 @@ TASK STATE COMMANDS
     wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
     wg rm-dep <task> <dependency>      # Remove a dependency edge
 
-VALIDATION (--verify gate)
+VALIDATION (FLIP/eval pipeline)
 ─────────────────────────────────────────
-  Tasks created with --verify have an extra gate before completion:
+  Task verification is handled by the FLIP/eval pipeline, which evaluates
+  work products in a clean context for quality, completeness, and correctness.
 
-  wg add "Task" --verify "cargo test passes"  # Set validation criteria
-  wg done <task-id>           # Moves to pending-validation (not done yet!)
-  wg approve <task-id>        # Approve → transitions to Done
+  wg done <task-id>           # Marks task complete
+  wg approve <task-id>        # Approve a task in pending-validation
   wg reject <task-id> --reason "Tests failing"  # Reject → reopens task
 
-  After max rejections, the task transitions to Failed instead of reopening.
+  Note: --verify is deprecated. Use the FLIP/eval pipeline instead.
 
 MESSAGING
 ─────────────────────────────────────────
@@ -672,11 +672,10 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Tasks with --verify have a pending-validation gate before completion.",
-            "create": "wg add \"task\" --verify \"cargo test passes\"",
+            "description": "Task verification is handled by the FLIP/eval pipeline. --verify is deprecated.",
             "approve": "wg approve <task-id>",
             "reject": "wg reject <task-id> --reason \"reason\"",
-            "note": "After max rejections, the task transitions to Failed instead of reopening."
+            "note": "FLIP/eval evaluates work products for quality, completeness, and correctness."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",
@@ -1279,7 +1278,7 @@ mod tests {
             "MANUAL MODE",
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
-            "VALIDATION (--verify gate)",
+            "VALIDATION (FLIP/eval pipeline)",
             "MESSAGING",
             "CONTEXT & ARTIFACTS",
             "CYCLES",

@@ -52,12 +52,11 @@ Everything gets dispatched through `wg add` and `wg service start`.
 
 ### Task description requirements
 
-Every **code task** description MUST include a `## Validation` section with concrete test criteria. Use `--verify` to attach machine-checkable criteria that agents see as a hard gate.
+Every **code task** description MUST include a `## Validation` section with concrete test criteria. Verification is handled by the FLIP/eval pipeline, not inline verify gates.
 
 Template:
 ```
 wg add "Implement feature X" --after <dep> \
-  --verify "cargo test test_feature_x passes" \
   -d "## Description
 <what to implement>
 
