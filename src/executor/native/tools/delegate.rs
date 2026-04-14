@@ -180,7 +180,7 @@ impl Tool for DelegateTool {
 ///
 /// Creates a registry with standard tools (excluding `delegate` to prevent recursion),
 /// then filters by the exec_mode bundle.
-pub(crate) fn build_child_registry(
+pub fn build_child_registry(
     workgraph_dir: &Path,
     working_dir: &Path,
     exec_mode: &str,
