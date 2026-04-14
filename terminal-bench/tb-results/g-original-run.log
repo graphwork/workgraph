@@ -1,0 +1,122 @@
+Endpoint OK: qwen3-coder-30b at http://lambda01:30000/v1
+
+Condition A (baseline): 7/10 (70%)
+
+================================================================================
+Running: G-original (always decompose)
+  Tasks (10): ['cobol-modernization', 'constraints-scheduling', 'multi-source-data-merger', 'algorithm', 'ml', 'fix-code-vulnerability', 'configure-git-webserver', 'debugging', 'data-processing', 'file-ops']
+  Max agents: 4
+  Smart fanout: False
+================================================================================
+
+
+--- [1/10] cobol-modernization (hard, timeout=1200s) ---
+  [retest-g-original-cobol-modernization] Starting in /tmp/tb-retest-g-cobol-modernization-46vduz4r (timeout=1200s)...
+  [retest-g-original-cobol-modernization] Service started, polling for quiescence...
+  [retest-g-original-cobol-modernization] Completed: timeout in 1202.8s (reward=0.0, verify=FAIL)
+  Running: 0/1 passed | subtasks=21 agents=23 turns=487 failure=context_overflow
+
+--- [2/10] constraints-scheduling (hard, timeout=1200s) ---
+  [retest-g-original-constraints-scheduling] Starting in /tmp/tb-retest-g-constraints-scheduling-i140ml8k (timeout=1200s)...
+  [retest-g-original-constraints-scheduling] Service started, polling for quiescence...
+  [retest-g-original-constraints-scheduling] Completed: timeout in 1202.8s (reward=1.0, verify=PASS)
+  Running: 1/2 passed | subtasks=49 agents=44 turns=1057 failure=None
+
+--- [3/10] multi-source-data-merger (hard, timeout=1200s) ---
+  [retest-g-original-multi-source-data-merger] Starting in /tmp/tb-retest-g-multi-source-data-merger-a8l5pf8w (timeout=1200s)...
+  [retest-g-original-multi-source-data-merger] Service started, polling for quiescence...
+  [retest-g-original-multi-source-data-merger] Completed: timeout in 1203.1s (reward=1.0, verify=PASS)
+  Running: 2/3 passed | subtasks=23 agents=21 turns=607 failure=None
+
+--- [4/10] algorithm (hard, timeout=1200s) ---
+  [retest-g-original-algorithm] Starting in /tmp/tb-retest-g-algorithm-1q5xw4z8 (timeout=1200s)...
+  [retest-g-original-algorithm] Service started, polling for quiescence...
+  [retest-g-original-algorithm] Completed: done in 175.5s (reward=1.0, verify=PASS)
+  Running: 3/4 passed | subtasks=3 agents=3 turns=21 failure=None
+
+--- [5/10] ml (hard, timeout=1200s) ---
+  [retest-g-original-ml] Starting in /tmp/tb-retest-g-ml-93hvspfy (timeout=1200s)...
+  [retest-g-original-ml] Service started, polling for quiescence...
+  [retest-g-original-ml] Completed: timeout in 1203.7s (reward=1.0, verify=PASS)
+  Running: 4/5 passed | subtasks=19 agents=17 turns=357 failure=None
+
+--- [6/10] fix-code-vulnerability (hard, timeout=1200s) ---
+  [retest-g-original-fix-code-vulnerability] Starting in /tmp/tb-retest-g-fix-code-vulnerability-dq4cocuq (timeout=1200s)...
+  [retest-g-original-fix-code-vulnerability] Service started, polling for quiescence...
+  [retest-g-original-fix-code-vulnerability] Completed: timeout in 1202.8s (reward=1.0, verify=PASS)
+  Running: 5/6 passed | subtasks=24 agents=20 turns=593 failure=None
+
+--- [7/10] configure-git-webserver (hard, timeout=1200s) ---
+  [retest-g-original-configure-git-webserver] Starting in /tmp/tb-retest-g-configure-git-webserver-8y91kdb1 (timeout=1200s)...
+  [retest-g-original-configure-git-webserver] Service started, polling for quiescence...
+  [retest-g-original-configure-git-webserver] Completed: timeout in 1202.9s (reward=0.0, verify=FAIL)
+  Running: 5/7 passed | subtasks=33 agents=15 turns=559 failure=rate_limit
+
+--- [8/10] debugging (medium, timeout=900s) ---
+  [retest-g-original-debugging] Starting in /tmp/tb-retest-g-debugging-63vhlt54 (timeout=900s)...
+  [retest-g-original-debugging] Service started, polling for quiescence...
+  [retest-g-original-debugging] Completed: done in 702.6s (reward=1.0, verify=PASS)
+  Running: 6/8 passed | subtasks=6 agents=6 turns=159 failure=None
+
+--- [9/10] data-processing (medium, timeout=900s) ---
+  [retest-g-original-data-processing] Starting in /tmp/tb-retest-g-data-processing-hxcbbh7b (timeout=900s)...
+  [retest-g-original-data-processing] Service started, polling for quiescence...
+  [retest-g-original-data-processing] Completed: timeout in 902.4s (reward=1.0, verify=PASS)
+  Running: 7/9 passed | subtasks=18 agents=17 turns=483 failure=None
+
+--- [10/10] file-ops (easy, timeout=600s) ---
+  [retest-g-original-file-ops] Starting in /tmp/tb-retest-g-file-ops-a4_7w9jr (timeout=600s)...
+  [retest-g-original-file-ops] Service started, polling for quiescence...
+  [retest-g-original-file-ops] Completed: timeout in 601.2s (reward=0.0, verify=FAIL)
+  Running: 7/10 passed | subtasks=15 agents=9 turns=208 failure=rate_limit
+
+  G-original (always decompose) complete: 7/10 passed (70%), median=1204s, decomposed=10/10
+  Results: /home/erik/workgraph/terminal-bench/tb-results/retest-g-original/summary.json
+
+Comparison report: /home/erik/workgraph/terminal-bench/tb-results/comparison-report.md
+Comparison data: /home/erik/workgraph/terminal-bench/tb-results/comparison-data.json
+
+================================================================================
+# TB Retest: Smart Fanout G vs Original G vs A
+
+**Date:** 2026-04-14 05:53 UTC
+**Model:** local:qwen3-coder-30b
+**Endpoint:** http://lambda01:30000/v1
+**Context window:** 32768 tokens
+**Task count:** 10
+**Tasks:** cobol-modernization, constraints-scheduling, multi-source-data-merger, algorithm, ml, fix-code-vulnerability, configure-git-webserver, debugging, data-processing, file-ops
+
+## Summary Comparison
+
+| Metric | Condition A | Condition G-orig | Condition G-smart |
+|--------|------------|------------------|-------------------|
+| Pass rate | 70% (7/10) | 70% (7/10) | — (—/—) |
+| Median time (s) | 51.98 | 1203.75 | — |
+| Decomposition rate | 0% | 100% | — |
+| Avg subtasks/trial | 1.0 | 21.1 | — |
+| Max agents | 1 | 4 | — |
+
+## Per-Task Head-to-Head
+
+| Task | Diff | A | G-orig | G-smart | A time | G-orig time | G-smart time | G-smart subtasks | G-smart decision |
+|------|------|---|--------|---------|--------|-------------|--------------|------------------|------------------|
+| cobol-modernization | hard | FAIL | FAIL | — | 0s | 1204s | — | — |  |
+| constraints-scheduling | hard | FAIL | PASS | — | 0s | 1204s | — | — |  |
+| multi-source-data-merger | hard | FAIL | PASS | — | 0s | 1204s | — | — |  |
+| algorithm | hard | PASS | PASS | — | 0s | 176s | — | — |  |
+| ml | hard | PASS | PASS | — | 0s | 1205s | — | — |  |
+| fix-code-vulnerability | hard | PASS | PASS | — | 0s | 1204s | — | — |  |
+| configure-git-webserver | hard | PASS | FAIL | — | 0s | 1213s | — | — |  |
+| debugging | medium | PASS | PASS | — | 22s | 705s | — | — |  |
+| data-processing | medium | PASS | PASS | — | 52s | 903s | — | — |  |
+| file-ops | easy | PASS | FAIL | — | 82s | 602s | — | — |  |
+
+## Failure Mode Breakdown
+
+**A:** {'context_overflow': 3, 'success': 7}
+
+**G-original:** {'context_overflow': 1, 'success': 7, 'rate_limit': 2}
+
+## Analysis & Verdict
+
+================================================================================

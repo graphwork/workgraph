@@ -1,0 +1,157 @@
+Endpoint OK: qwen3-coder-30b at http://lambda01:30000/v1
+
+Condition A (baseline): 7/10 (70%)
+
+================================================================================
+Running: G-smart (try-first fanout)
+  Tasks (10): ['cobol-modernization', 'constraints-scheduling', 'multi-source-data-merger', 'algorithm', 'ml', 'fix-code-vulnerability', 'configure-git-webserver', 'debugging', 'data-processing', 'file-ops']
+  Max agents: 4
+  Smart fanout: True
+================================================================================
+
+
+--- [1/10] cobol-modernization (hard, timeout=2400s) ---
+  [retest-g-smart-cobol-modernization] Starting in /tmp/tb-retest-g-smart-cobol-modernization-yksb5_3k (timeout=2400s)...
+  [retest-g-smart-cobol-modernization] Service started, polling for quiescence...
+  [retest-g-smart-cobol-modernization] Completed: done in 201.0s (reward=0.0, verify=FAIL)
+  Running: 0/1 passed | subtasks=1 agents=3 turns=16 failure=status_done
+
+--- [2/10] constraints-scheduling (hard, timeout=2400s) ---
+  [retest-g-smart-constraints-scheduling] Starting in /tmp/tb-retest-g-smart-constraints-scheduling-o30xrtxk (timeout=2400s)...
+  [retest-g-smart-constraints-scheduling] Service started, polling for quiescence...
+  [retest-g-smart-constraints-scheduling] Completed: failed in 277.1s (reward=0.0, verify=FAIL)
+  Running: 0/2 passed | subtasks=1 agents=1 turns=14 failure=wrong_answer
+
+--- [3/10] multi-source-data-merger (hard, timeout=2400s) ---
+  [retest-g-smart-multi-source-data-merger] Starting in /tmp/tb-retest-g-smart-multi-source-data-merger-xrk2lkxc (timeout=2400s)...
+  [retest-g-smart-multi-source-data-merger] Service started, polling for quiescence...
+  [retest-g-smart-multi-source-data-merger] Completed: done in 176.6s (reward=1.0, verify=PASS)
+  Running: 1/3 passed | subtasks=1 agents=1 turns=17 failure=None
+
+--- [4/10] algorithm (hard, timeout=2400s) ---
+  [retest-g-smart-algorithm] Starting in /tmp/tb-retest-g-smart-algorithm-alr0ss6c (timeout=2400s)...
+  [retest-g-smart-algorithm] Service started, polling for quiescence...
+  [retest-g-smart-algorithm] Completed: done in 161.4s (reward=1.0, verify=PASS)
+  Running: 2/4 passed | subtasks=1 agents=1 turns=12 failure=None  decision=FANOUT_DECISION: direct — The task is a single logical unit 
+
+--- [5/10] ml (hard, timeout=2400s) ---
+  [retest-g-smart-ml] Starting in /tmp/tb-retest-g-smart-ml-wnndu5uh (timeout=2400s)...
+  [retest-g-smart-ml] Service started, polling for quiescence...
+  [retest-g-smart-ml] Completed: done in 40.3s (reward=1.0, verify=PASS)
+  Running: 3/5 passed | subtasks=1 agents=1 turns=3 failure=None  decision=FANOUT_DECISION: direct — Task is a single logical unit of w
+
+--- [6/10] fix-code-vulnerability (hard, timeout=2400s) ---
+  [retest-g-smart-fix-code-vulnerability] Starting in /tmp/tb-retest-g-smart-fix-code-vulnerability-w1tc60f9 (timeout=2400s)...
+  [retest-g-smart-fix-code-vulnerability] Service started, polling for quiescence...
+  [retest-g-smart-fix-code-vulnerability] Completed: timeout in 2401.5s (reward=1.0, verify=PASS)
+  Running: 4/6 passed | subtasks=18 agents=12 turns=504 failure=None
+
+--- [7/10] configure-git-webserver (hard, timeout=2400s) ---
+  [retest-g-smart-configure-git-webserver] Starting in /tmp/tb-retest-g-smart-configure-git-webserver-imfuedfm (timeout=2400s)...
+  [retest-g-smart-configure-git-webserver] Service started, polling for quiescence...
+  [retest-g-smart-configure-git-webserver] Completed: done in 50.1s (reward=1.0, verify=PASS)
+  Running: 5/7 passed | subtasks=1 agents=1 turns=41 failure=None  decision=FANOUT_DECISION: direct — The task is a single logical unit 
+
+--- [8/10] debugging (medium, timeout=1200s) ---
+  [retest-g-smart-debugging] Starting in /tmp/tb-retest-g-smart-debugging-nywvdhv2 (timeout=1200s)...
+  [retest-g-smart-debugging] Service started, polling for quiescence...
+  [retest-g-smart-debugging] Completed: done in 30.1s (reward=1.0, verify=PASS)
+  Running: 6/8 passed | subtasks=1 agents=1 turns=13 failure=None  decision=FANOUT_DECISION: direct — The task is straightforward with o
+
+--- [9/10] data-processing (medium, timeout=1200s) ---
+  [retest-g-smart-data-processing] Starting in /tmp/tb-retest-g-smart-data-processing-2vhecogb (timeout=1200s)...
+  [retest-g-smart-data-processing] Service started, polling for quiescence...
+  [retest-g-smart-data-processing] Completed: done in 70.2s (reward=1.0, verify=PASS)
+  Running: 7/9 passed | subtasks=1 agents=1 turns=16 failure=None
+
+--- [10/10] file-ops (easy, timeout=600s) ---
+  [retest-g-smart-file-ops] Starting in /tmp/tb-retest-g-smart-file-ops-1grj80z_ (timeout=600s)...
+  [retest-g-smart-file-ops] Service started, polling for quiescence...
+  [retest-g-smart-file-ops] Completed: done in 15.0s (reward=0.0, verify=FAIL)
+  Running: 7/10 passed | subtasks=1 agents=1 turns=15 failure=status_done  decision=FANOUT_DECISION: direct — The instruction is under 300 words
+
+  G-smart (try-first fanout) complete: 7/10 passed (70%), median=163s, decomposed=1/10
+  Results: /home/erik/workgraph/terminal-bench/tb-results/retest-g-smart/summary.json
+
+Comparison report: /home/erik/workgraph/terminal-bench/tb-results/comparison-report.md
+Comparison data: /home/erik/workgraph/terminal-bench/tb-results/comparison-data.json
+
+================================================================================
+# TB Retest: Smart Fanout G vs Original G vs A
+
+**Date:** 2026-04-14 06:51 UTC
+**Model:** local:qwen3-coder-30b
+**Endpoint:** http://lambda01:30000/v1
+**Context window:** 32768 tokens
+**Task count:** 10
+**Tasks:** cobol-modernization, constraints-scheduling, multi-source-data-merger, algorithm, ml, fix-code-vulnerability, configure-git-webserver, debugging, data-processing, file-ops
+
+## Summary Comparison
+
+| Metric | Condition A | Condition G-orig | Condition G-smart |
+|--------|------------|------------------|-------------------|
+| Pass rate | 70% (7/10) | — (—/—) | 70% (7/10) |
+| Median time (s) | 51.98 | — | 163.02 |
+| Decomposition rate | 0% | — | 10% |
+| Avg subtasks/trial | 1.0 | — | 2.7 |
+| Max agents | 1 | — | 4 |
+
+## Per-Task Head-to-Head
+
+| Task | Diff | A | G-orig | G-smart | A time | G-orig time | G-smart time | G-smart subtasks | G-smart decision |
+|------|------|---|--------|---------|--------|-------------|--------------|------------------|------------------|
+| cobol-modernization | hard | FAIL | — | FAIL | 0s | — | 202s | 1 |  |
+| constraints-scheduling | hard | FAIL | — | FAIL | 0s | — | 279s | 1 |  |
+| multi-source-data-merger | hard | FAIL | — | PASS | 0s | — | 179s | 1 |  |
+| algorithm | hard | PASS | — | PASS | 0s | — | 163s | 1 | direct |
+| ml | hard | PASS | — | PASS | 0s | — | 43s | 1 | direct |
+| fix-code-vulnerability | hard | PASS | — | PASS | 0s | — | 2403s | 18 |  |
+| configure-git-webserver | hard | PASS | — | PASS | 0s | — | 51s | 1 | direct |
+| debugging | medium | PASS | — | PASS | 22s | — | 31s | 1 | direct |
+| data-processing | medium | PASS | — | PASS | 52s | — | 71s | 1 |  |
+| file-ops | easy | PASS | — | FAIL | 82s | — | 16s | 1 | direct |
+
+## Failure Mode Breakdown
+
+**A:** {'context_overflow': 3, 'success': 7}
+
+**G-smart:** {'status_done': 2, 'wrong_answer': 1, 'success': 7}
+
+## G-smart Fanout Decisions (detailed)
+
+**cobol-modernization** (reward=0.0):
+  - No FANOUT_DECISION logged
+
+**constraints-scheduling** (reward=0.0):
+  - No FANOUT_DECISION logged
+
+**multi-source-data-merger** (reward=1.0):
+  - No FANOUT_DECISION logged
+
+**algorithm** (reward=1.0):
+  - Initial: FANOUT_DECISION: direct — The task is a single logical unit of work (implementing a key-value store with transaction support) and touches only one file (/tmp/kvstore.py). It's under 300 words.
+
+**ml** (reward=1.0):
+  - Initial: FANOUT_DECISION: direct — Task is a single logical unit of work with clear requirements, touching only one file (/tmp/kmeans.py)
+
+**fix-code-vulnerability** (reward=1.0):
+  - No FANOUT_DECISION logged
+
+**configure-git-webserver** (reward=1.0):
+  - Initial: FANOUT_DECISION: direct — The task is a single logical unit of work involving setting up a git server with post-receive hooks and HTTP serving, touching a few files but not requiring decomposition.
+
+**debugging** (reward=1.0):
+  - Initial: FANOUT_DECISION: direct — The task is straightforward with only one file to modify and 3 specific bugs to fix
+
+**data-processing** (reward=1.0):
+  - No FANOUT_DECISION logged
+
+**file-ops** (reward=0.0):
+  - Initial: FANOUT_DECISION: direct — The instruction is under 300 words and involves creating a specific file structure with 6 files total, which is manageable in a single implementation approach.
+
+## Analysis & Verdict
+
+- **G-smart vs A delta:** +0%
+
+- **G-smart overhead vs A:** +111s median
+================================================================================

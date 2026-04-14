@@ -1,0 +1,1274 @@
+{
+  "timestamp": "2026-04-14T06:51:34.237817+00:00",
+  "model": "local:qwen3-coder-30b",
+  "context_window": 32768,
+  "tasks": [
+    "cobol-modernization",
+    "constraints-scheduling",
+    "multi-source-data-merger",
+    "algorithm",
+    "ml",
+    "fix-code-vulnerability",
+    "configure-git-webserver",
+    "debugging",
+    "data-processing",
+    "file-ops"
+  ],
+  "condition_a": {
+    "run_id": "condition-a-baseline",
+    "condition": "a",
+    "label": "A (baseline, single agent)",
+    "model": "local:qwen3-coder-30b",
+    "total_trials": 10,
+    "passed": 7,
+    "pass_rate": 0.7,
+    "median_time_s": 51.98,
+    "decomposed_trials": 0,
+    "decomposition_rate": 0,
+    "total_subtasks_created": 10,
+    "avg_subtasks_per_trial": 1.0,
+    "trials": [
+      {
+        "trial_id": "condition-a-cobol-modernization",
+        "task": "cobol-modernization",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "failed",
+        "elapsed_s": 0,
+        "reward": 0.0,
+        "failure_mode": "context_overflow",
+        "metrics": {
+          "total_turns": 34,
+          "max_input_tokens_single_turn": 16246,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-constraints-scheduling",
+        "task": "constraints-scheduling",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "failed",
+        "elapsed_s": 0,
+        "reward": 0.0,
+        "failure_mode": "context_overflow",
+        "metrics": {
+          "total_turns": 25,
+          "max_input_tokens_single_turn": 16300,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-multi-source-data-merger",
+        "task": "multi-source-data-merger",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "failed",
+        "elapsed_s": 0,
+        "reward": 0.0,
+        "failure_mode": "context_overflow",
+        "metrics": {
+          "total_turns": 24,
+          "max_input_tokens_single_turn": 16144,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-algorithm",
+        "task": "algorithm",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 0,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 6,
+          "max_input_tokens_single_turn": 4359,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-ml",
+        "task": "ml",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 0,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 14,
+          "max_input_tokens_single_turn": 9897,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-fix-code-vulnerability",
+        "task": "fix-code-vulnerability",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 0,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 17,
+          "max_input_tokens_single_turn": 13934,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-configure-git-webserver",
+        "task": "configure-git-webserver",
+        "difficulty": "hard",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 0,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 51,
+          "max_input_tokens_single_turn": 11627,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-debugging",
+        "task": "debugging",
+        "difficulty": "medium",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 21.82,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 11,
+          "max_input_tokens_single_turn": 5340,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-data-processing",
+        "task": "data-processing",
+        "difficulty": "medium",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 51.98,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 8,
+          "max_input_tokens_single_turn": 5579,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      },
+      {
+        "trial_id": "condition-a-file-ops",
+        "task": "file-ops",
+        "difficulty": "easy",
+        "condition": "a",
+        "condition_label": "A (baseline, single agent)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 1,
+        "status": "done",
+        "elapsed_s": 82.26,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_turns": 22,
+          "max_input_tokens_single_turn": 5678,
+          "num_agents_spawned": 1
+        },
+        "subtask_counts": {
+          "user_tasks": 1
+        }
+      }
+    ]
+  },
+  "condition_g_original": {
+    "run_id": "retest-g-original",
+    "condition": "g",
+    "label": "G-original (always decompose)",
+    "model": "local:qwen3-coder-30b",
+    "context_window": 32768,
+    "max_agents": 4,
+    "smart_fanout": false,
+    "timestamp": "2026-04-14T05:53:35.379684+00:00",
+    "total_trials": 10,
+    "passed": 7,
+    "pass_rate": 0.7,
+    "median_time_s": 1203.75,
+    "total_wall_clock_s": 9621.39,
+    "decomposed_trials": 10,
+    "decomposition_rate": 1.0,
+    "total_subtasks_created": 211,
+    "avg_subtasks_per_trial": 21.1,
+    "trials": [
+      {
+        "trial_id": "retest-g-original-cobol-modernization",
+        "task": "cobol-modernization",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "timeout",
+        "elapsed_s": 1203.75,
+        "reward": 0.0,
+        "failure_mode": "context_overflow",
+        "metrics": {
+          "total_input_tokens": 5991702,
+          "total_output_tokens": 84569,
+          "total_turns": 487,
+          "num_agents_spawned": 23,
+          "max_input_tokens_single_turn": 16363,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 40,
+          "user_tasks": 21,
+          "internal_tasks": 19,
+          "done_tasks": 5,
+          "failed_tasks": 13,
+          "task_ids": [
+            "implement-python-payroll-processing-logic-fixed",
+            "fix-correct-payroll-processing-logic-parsing",
+            "implement-python-payroll-test-suite",
+            "fix-correct-payroll-processing-logic-parsing-2",
+            "fix-cobol-modernization",
+            "implement-context-reduction-strategy-for-cobol-mod",
+            "implement-context-reduction-strategy-for-cobol-mod-2",
+            "implement-python-payroll-processing-logic",
+            "document-root-cause-analysis-cobol-modernization-c",
+            "run-tests-and-verify-fixed-version",
+            "fix-correct-payroll-test-suite-expectations",
+            "implement-context-reduction-strategies-for-cobol-m",
+            "implement-cobol-modernization-payroll-processing-l",
+            "run-tests-and-verify",
+            "investigate-cobol-modernization-root-cause-context",
+            "fix-implement-proper-context-reduction-for-cobol-m",
+            "research-root-cause-of-cobol-modernization-failure",
+            "tb-cobol-modernization",
+            "fix-correct-payroll-py-field-position-parsing-2",
+            "implement-python-payroll-test-suite-fixed",
+            "fix-correct-payroll-py-field-position-parsing"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-constraints-scheduling",
+        "task": "constraints-scheduling",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done_after_timeout",
+        "elapsed_s": 1203.92,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 13688580,
+          "total_output_tokens": 155984,
+          "total_turns": 1057,
+          "num_agents_spawned": 44,
+          "max_input_tokens_single_turn": 16379,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 84,
+          "user_tasks": 49,
+          "internal_tasks": 35,
+          "done_tasks": 29,
+          "failed_tasks": 7,
+          "task_ids": [
+            "fix-test-suite-for-scheduler-correct-import-paths",
+            "implement-test-suite-for-scheduler",
+            "fix-correct-test-function-name-in-test-suite-3",
+            "fix-correct-test-function-name-in-test-suite-4",
+            "fix-correct-test-case-for-import-path-validation-i",
+            "implement-ics-parsing",
+            "run-test-suite-with-validated-import-paths",
+            "fix-correct-date-handling-in-find-slots-py",
+            "investigate-test-environment-setup-issues",
+            "run-tests-and",
+            "tb-constraints-scheduling",
+            "final-verification-of",
+            "fix-correct-test-function-name-in-test-suite-2",
+            "create-validation-tests-for-scheduler-import-verif-2",
+            "create-verification-script-for-scheduler-import-pa",
+            "document-scheduler-component-import-paths",
+            "analyze-resource-constraints-and-timeouts",
+            "fix-correct-date-parsing-in-find-slots-py",
+            "fix-correct-test-function-name-in-test-suite",
+            "implement-test-suite",
+            "implement-actual-scheduler-test-suite-import-valid",
+            "fix-test-suite-for-scheduler",
+            "verify-execution-environment-fix-for-ics-parsing-a",
+            "validate-import-paths-in-test-scheduler-py",
+            "implement-scheduler-import-path-verification-scrip",
+            "execute-scheduler-test-suite-with-import-validatio",
+            "fix-execution-environment-for-ics-parsing-and-slot-2",
+            "research-root-cause-of-execution-environment-failu",
+            "detailed-test-environment-analysis-for-execution-f",
+            "create-validation-tests-for-scheduler-import-verif",
+            "implement-ics-parsing-and-slot-finding-logic",
+            "analyze-python-path-and-import-resolution-problems",
+            "investigate-test-suite",
+            "implement-meeting-scheduling-logic",
+            "synthesize-root-cause-analysis-findings",
+            "fix-execution-environment-for-ics-parsing-and-slot",
+            "research-examine-failed-test-suite-implementation-",
+            "fix-correct-date-parsing-in-find-slots-py-2",
+            "fix-ics-parsing-and-slot-finding-logic",
+            "implement-meeting-scheduling",
+            "final-verification-of-complete-solution",
+            "investigate-missing-dependencies-in-execution-envi",
+            "verify-test-suite-for-scheduler-validate-import-pa",
+            "run-tests-and-verify",
+            "research-root-cause-analysis-of-agent-exited-with-",
+            "retry-implement-ics-parsing-and-slot-finding-logic",
+            "comprehensive-validation-of-scheduler-test-suite-i",
+            "verify-and-recommend-fixes-based-on-root-cause-ana",
+            "document-scheduler-import-path-validation-criteria"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-multi-source-data-merger",
+        "task": "multi-source-data-merger",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done_after_timeout",
+        "elapsed_s": 1203.99,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 7757464,
+          "total_output_tokens": 91821,
+          "total_turns": 607,
+          "num_agents_spawned": 21,
+          "max_input_tokens_single_turn": 16383,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 42,
+          "user_tasks": 23,
+          "internal_tasks": 19,
+          "done_tasks": 11,
+          "failed_tasks": 4,
+          "task_ids": [
+            "step-4-implement-output-generation",
+            "fix-multi-source-data-merger-source-priority-logic-2",
+            "fix-multi-source-data-merger-implementation-issues",
+            "step-1-implement-data-readers",
+            "tb-multi-source-data-merger",
+            "step-2-implement-data-normalization",
+            "implement-fix-correct-source-priority-logic",
+            "run-tests-and-verify-implementation",
+            "implement-multi-source-data-merger",
+            "implement-multi-source-data-merger-correct",
+            "research-root-cause-analysis-for-multi-source-data",
+            "investigate-root-cause-of-implement-multi-source-d",
+            "fix-implement-multi-source-data-merger-3",
+            "fix-implement-multi-source-data-merger-2",
+            "fix-correct-source-priority-logic-in-multi-source-",
+            "verify-multi-source-data-merger-implementation-cor",
+            "run-tests-and-verify-implementation-2",
+            "fix-implement-multi-source-data-merger",
+            "implement-multi-source-data-merger-2",
+            "step-5-integrate-and-test-implementation",
+            "step-3-implement-data-merging-and-conflict-detecti",
+            "fix-correct-source-priority-logic-in-multi-source--2",
+            "fix-multi-source-data-merger-source-priority-logic"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-algorithm",
+        "task": "algorithm",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done",
+        "elapsed_s": 176.31,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 264007,
+          "total_output_tokens": 3396,
+          "total_turns": 21,
+          "num_agents_spawned": 3,
+          "max_input_tokens_single_turn": 15861,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 6,
+          "user_tasks": 3,
+          "internal_tasks": 3,
+          "done_tasks": 3,
+          "failed_tasks": 0,
+          "task_ids": [
+            "run-tests-and-verify-key-value-store-implementatio",
+            "tb-algorithm",
+            "implement-key-value-store-with-transactions"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-ml",
+        "task": "ml",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done_after_timeout",
+        "elapsed_s": 1204.74,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 4580582,
+          "total_output_tokens": 58669,
+          "total_turns": 357,
+          "num_agents_spawned": 17,
+          "max_input_tokens_single_turn": 16379,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 34,
+          "user_tasks": 19,
+          "internal_tasks": 15,
+          "done_tasks": 12,
+          "failed_tasks": 1,
+          "task_ids": [
+            "fix-correct-k-means-output-format-to-include-centr",
+            "implement-k-means-clustering-from-scratch",
+            "investigate-and-fix-k-means-output-format-for-test",
+            "fix-correct-k-means-output-format-for-tests",
+            "investigate-debug-k",
+            "run-tests-and-verify-k-means-implementation-2",
+            "run-tests-and-verify-k-means-implementation",
+            "tb-ml",
+            "fix-k-means-implementation-extra-validation-output",
+            "fix-k-means-implementation-to-produce-correct-outp",
+            "investigate-k-means-output-format-requirements-for",
+            "implement-k-means-clustering-from-scratch-2",
+            "fix-k-means-implementation-output-format",
+            "verify-k-means-implementation",
+            "fix-update-k-means-output-to-include-centroid-and-",
+            "retry-implement-k-means-clustering-from-scratch",
+            "test-run-k-means-with-corrected-output-format",
+            "fix-k-means-output-format-for-tests",
+            "fix-update-k-means-output-to-include-centroid-and--2"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-fix-code-vulnerability",
+        "task": "fix-code-vulnerability",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done_after_timeout",
+        "elapsed_s": 1203.7,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 7665403,
+          "total_output_tokens": 85163,
+          "total_turns": 593,
+          "num_agents_spawned": 20,
+          "max_input_tokens_single_turn": 16378,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 44,
+          "user_tasks": 24,
+          "internal_tasks": 20,
+          "done_tasks": 17,
+          "failed_tasks": 0,
+          "task_ids": [
+            "verify-complete-solution",
+            "final-verification-test",
+            "generate-vulnerability-report-3",
+            "generate-vulnerability-report-2",
+            "final-verification",
+            "implement-security-fixes",
+            "create-security-tests",
+            "implement-fix-xss",
+            "verify-sql-injection-fixes",
+            "create-and-run-security-tests",
+            "fix-vulnerabilities-in-web-application",
+            "implement-fix-command",
+            "generate-vulnerability-report",
+            "implement-fix-sql",
+            "research-vulnerability-analysis",
+            "implement-fix-hardcoded",
+            "create-vulnerability-report",
+            "analyze-vulnerabilities-in-web-application",
+            "verify-all-fixes",
+            "verify-hardcoded-credentials-fix-applied",
+            "tb-fix-code-vulnerability",
+            "implement-fix-insecure",
+            "implement-fix-path",
+            "verify-command-injection-fix"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-configure-git-webserver",
+        "task": "configure-git-webserver",
+        "difficulty": "hard",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "timeout",
+        "elapsed_s": 1212.84,
+        "reward": 0.0,
+        "failure_mode": "rate_limit",
+        "metrics": {
+          "total_input_tokens": 6913332,
+          "total_output_tokens": 61173,
+          "total_turns": 559,
+          "num_agents_spawned": 15,
+          "max_input_tokens_single_turn": 16380,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 48,
+          "user_tasks": 33,
+          "internal_tasks": 15,
+          "done_tasks": 11,
+          "failed_tasks": 5,
+          "task_ids": [
+            "start-http-server",
+            "fix-duplicate-task-issue-in-create-web-root-direct",
+            "create-web-root-directory-2",
+            "analyze-task-creation-logic-for-web-root-directory",
+            "create-web-root-directory-3",
+            "create-web-root-directory",
+            "verify-git-webserver-configuration-2",
+            "tb-configure-git-webserver",
+            "run-deployment-test-workflow-3",
+            "verify-git-webserver-configuration-3",
+            "verify-existing-web-root-directory-task-status",
+            "create-post-receive-hook",
+            "investigate-and-resolve-create-web-root-directory-",
+            "fix-resolve-duplicate-post-receive-hook-task-creat",
+            "verify-post-receive-hook-functionality",
+            "create-bare-git-repository-2",
+            "create-post-receive-hook-4",
+            "start-http-server-3",
+            "review-task-dependencies-for-web-root-directory-wo",
+            "start-http-server-2",
+            "verify-git-webserver-configuration",
+            "investigate-http-server-response-issue",
+            "run-deployment-test-workflow-2",
+            "create-post-receive-hook-2",
+            "create-bare-git-repository",
+            "create-post-receive-hook-5",
+            "start-http-server-4",
+            "create-post-receive-hook-3",
+            "run-deployment-test-workflow",
+            "document-root-cause-analysis-for-duplicate-task-cr",
+            "create-web-root-directory-4",
+            "verify-http-server-functionality",
+            "implement-fix-for-duplicate-web-root-directory-tas"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-debugging",
+        "task": "debugging",
+        "difficulty": "medium",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 900,
+        "status": "done",
+        "elapsed_s": 704.53,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 1839390,
+          "total_output_tokens": 21374,
+          "total_turns": 159,
+          "num_agents_spawned": 6,
+          "max_input_tokens_single_turn": 16278,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 12,
+          "user_tasks": 6,
+          "internal_tasks": 6,
+          "done_tasks": 6,
+          "failed_tasks": 0,
+          "task_ids": [
+            "fix-bug-2-index-increment-in-merge-function",
+            "identify-all-bugs-in-merge-sort-implementation",
+            "fix-bug-3-missing-extend-for-right-array-in-merge",
+            "integrate-fixes-and-verify-all-tests-pass",
+            "tb-debugging",
+            "fix-bug-1-integer-division-in-merge-sort"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-data-processing",
+        "task": "data-processing",
+        "difficulty": "medium",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 900,
+        "status": "done_after_timeout",
+        "elapsed_s": 903.39,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 6436637,
+          "total_output_tokens": 73811,
+          "total_turns": 483,
+          "num_agents_spawned": 17,
+          "max_input_tokens_single_turn": 16378,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 33,
+          "user_tasks": 18,
+          "internal_tasks": 15,
+          "done_tasks": 11,
+          "failed_tasks": 2,
+          "task_ids": [
+            "verify-json-to-csv-processing-2",
+            "verify-json-to-csv-processing",
+            "fix-ensure-json-to-csv-conversion-script-includes-",
+            "fix-json-to-csv-conversion-script-include-all-depa-2",
+            "retry-create-json-to-csv-conversion-script-with-al",
+            "implement-json-to-csv-processing",
+            "fix-json-to-csv-conversion-script-include-all-depa",
+            "verify-json-to-csv-conversion",
+            "implement-json-to-csv-department-summary-conversio",
+            "fix-json-to-csv-conversion-script-include-all-depa-3",
+            "test-and-verify-json-to-csv-conversion-script",
+            "tb-data-processing",
+            "final-verification-of-json-to-csv-conversion",
+            "implement-json-to-csv-conversion",
+            "verify-json-to-csv-conversion-script-includes-all-",
+            "run-tests-and-verify-implementation",
+            "create-json-to-csv-conversion-script",
+            "final-validation-of-implementation"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-original-file-ops",
+        "task": "file-ops",
+        "difficulty": "easy",
+        "condition": "g",
+        "condition_label": "G-original (always decompose)",
+        "smart_fanout": false,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 600,
+        "status": "timeout",
+        "elapsed_s": 602.03,
+        "reward": 0.0,
+        "failure_mode": "rate_limit",
+        "metrics": {
+          "total_input_tokens": 2162411,
+          "total_output_tokens": 16309,
+          "total_turns": 208,
+          "num_agents_spawned": 9,
+          "max_input_tokens_single_turn": 16263,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 24,
+          "user_tasks": 15,
+          "internal_tasks": 9,
+          "done_tasks": 4,
+          "failed_tasks": 1,
+          "task_ids": [
+            "tb-file-ops",
+            "run-tests-and",
+            "create-config-json-file",
+            "implement-the-solution-2",
+            "run-tests-and-verify-2",
+            "create-gitignore-file",
+            "run-tests-and-verify",
+            "run-tests-and-2",
+            "implement-the-solution",
+            "create-readme-md-file",
+            "create-project-directory-structure",
+            "create-test-files",
+            "create-utils-py-file",
+            "implement-the-solution-3",
+            "create-main-py-file"
+          ]
+        },
+        "fanout_decisions": null,
+        "error": null
+      }
+    ]
+  },
+  "condition_g_smart": {
+    "run_id": "retest-g-smart",
+    "condition": "g-smart",
+    "label": "G-smart (try-first fanout)",
+    "model": "local:qwen3-coder-30b",
+    "context_window": 32768,
+    "max_agents": 4,
+    "smart_fanout": true,
+    "timestamp": "2026-04-14T06:51:14.734716+00:00",
+    "total_trials": 10,
+    "passed": 7,
+    "pass_rate": 0.7,
+    "median_time_s": 163.02,
+    "total_wall_clock_s": 3437.37,
+    "decomposed_trials": 1,
+    "decomposition_rate": 0.1,
+    "total_subtasks_created": 27,
+    "avg_subtasks_per_trial": 2.7,
+    "trials": [
+      {
+        "trial_id": "retest-g-smart-cobol-modernization",
+        "task": "cobol-modernization",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done",
+        "elapsed_s": 202.21,
+        "reward": 0.0,
+        "failure_mode": "status_done",
+        "metrics": {
+          "total_input_tokens": 211678,
+          "total_output_tokens": 4019,
+          "total_turns": 16,
+          "num_agents_spawned": 3,
+          "max_input_tokens_single_turn": 16350,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-cobol-modernization"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": null,
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": []
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-constraints-scheduling",
+        "task": "constraints-scheduling",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "failed",
+        "elapsed_s": 278.56,
+        "reward": 0.0,
+        "failure_mode": "wrong_answer",
+        "metrics": {
+          "total_input_tokens": 173757,
+          "total_output_tokens": 6187,
+          "total_turns": 14,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 16343,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 0,
+          "failed_tasks": 1,
+          "task_ids": [
+            "tb-constraints-scheduling"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": null,
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": []
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-multi-source-data-merger",
+        "task": "multi-source-data-merger",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done",
+        "elapsed_s": 178.68,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 209472,
+          "total_output_tokens": 3752,
+          "total_turns": 17,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 14563,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-multi-source-data-merger"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": null,
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": []
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-algorithm",
+        "task": "algorithm",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done",
+        "elapsed_s": 163.02,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 131646,
+          "total_output_tokens": 3800,
+          "total_turns": 12,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 12751,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-algorithm"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work (implementing a key-value store with transaction support) and touches only one file (/tmp/kvstore.py). It's under 300 words.",
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": [
+            "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work (implementing a key-value store with transaction support) and touches only one file (/tmp/kvstore.py). It's under 300 words."
+          ]
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-ml",
+        "task": "ml",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done",
+        "elapsed_s": 42.52,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 27229,
+          "total_output_tokens": 941,
+          "total_turns": 3,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 9676,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-ml"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work with clear requirements, touching only one file (/tmp/kmeans.py)",
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": [
+            "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work with clear requirements, touching only one file (/tmp/kmeans.py)",
+            "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work with clear requirements, touching only one file (/tmp/kmeans.py)"
+          ]
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-fix-code-vulnerability",
+        "task": "fix-code-vulnerability",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done_after_timeout",
+        "elapsed_s": 2402.91,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 6871137,
+          "total_output_tokens": 62475,
+          "total_turns": 504,
+          "num_agents_spawned": 12,
+          "max_input_tokens_single_turn": 16372,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 28,
+          "user_tasks": 18,
+          "internal_tasks": 10,
+          "done_tasks": 10,
+          "failed_tasks": 0,
+          "task_ids": [
+            "verify-security-fixes-6",
+            "verify-security-fixes",
+            "fix-xss-and",
+            "analyze-vulnerability-report",
+            "fix-path-traversal",
+            "verify-security-fixes-8",
+            "verify-security-fixes-3",
+            "test-security-fixes-2",
+            "tb-fix-code-vulnerability",
+            "fix-command-injection",
+            "fix-insecure-deserialization",
+            "fix-hardcoded-credentials",
+            "verify-security-fixes-7",
+            "verify-security-fixes-2",
+            "verify-security-fixes-5",
+            "fix-sql-injection",
+            "test-security-fixes",
+            "verify-security-fixes-4"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": null,
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": []
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-configure-git-webserver",
+        "task": "configure-git-webserver",
+        "difficulty": "hard",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 2400,
+        "status": "done",
+        "elapsed_s": 50.89,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 570732,
+          "total_output_tokens": 2915,
+          "total_turns": 41,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 16211,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-configure-git-webserver"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work involving setting up a git server with post-receive hooks and HTTP serving, touching a few files but not requiring decomposition.",
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": [
+            "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work involving setting up a git server with post-receive hooks and HTTP serving, touching a few files but not requiring decomposition."
+          ]
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-debugging",
+        "task": "debugging",
+        "difficulty": "medium",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done",
+        "elapsed_s": 30.83,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 130979,
+          "total_output_tokens": 1684,
+          "total_turns": 13,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 10945,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-debugging"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": "FANOUT_DECISION: direct \u2014 The task is straightforward with only one file to modify and 3 specific bugs to fix",
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": [
+            "FANOUT_DECISION: direct \u2014 The task is straightforward with only one file to modify and 3 specific bugs to fix"
+          ]
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-data-processing",
+        "task": "data-processing",
+        "difficulty": "medium",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 1200,
+        "status": "done",
+        "elapsed_s": 70.96,
+        "reward": 1.0,
+        "failure_mode": null,
+        "metrics": {
+          "total_input_tokens": 221749,
+          "total_output_tokens": 4340,
+          "total_turns": 16,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 16031,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-data-processing"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": null,
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": []
+        },
+        "error": null
+      },
+      {
+        "trial_id": "retest-g-smart-file-ops",
+        "task": "file-ops",
+        "difficulty": "easy",
+        "condition": "g-smart",
+        "condition_label": "G-smart (try-first fanout)",
+        "smart_fanout": true,
+        "model": "local:qwen3-coder-30b",
+        "max_agents": 4,
+        "timeout_s": 600,
+        "status": "done",
+        "elapsed_s": 16.07,
+        "reward": 0.0,
+        "failure_mode": "status_done",
+        "metrics": {
+          "total_input_tokens": 141262,
+          "total_output_tokens": 951,
+          "total_turns": 15,
+          "num_agents_spawned": 1,
+          "max_input_tokens_single_turn": 10009,
+          "context_truncation_events": 0
+        },
+        "subtask_counts": {
+          "total_tasks": 2,
+          "user_tasks": 1,
+          "internal_tasks": 1,
+          "done_tasks": 1,
+          "failed_tasks": 0,
+          "task_ids": [
+            "tb-file-ops"
+          ]
+        },
+        "fanout_decisions": {
+          "initial_decision": "FANOUT_DECISION: direct \u2014 The instruction is under 300 words and involves creating a specific file structure with 6 files total, which is manageable in a single implementation approach.",
+          "switched": false,
+          "switch_reason": null,
+          "all_entries": [
+            "FANOUT_DECISION: direct \u2014 The instruction is under 300 words and involves creating a specific file structure with 6 files total, which is manageable in a single implementation approach."
+          ]
+        },
+        "error": null
+      }
+    ]
+  }
+}
