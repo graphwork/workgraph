@@ -78,7 +78,9 @@ class TestConditionConfig:
     """Validate CONDITION_CONFIG structure and completeness."""
 
     def test_all_conditions_present(self):
-        assert set(CONDITION_CONFIG.keys()) == {"A", "B", "C", "D", "E", "F"}
+        assert set(CONDITION_CONFIG.keys()) >= {"A", "B", "C", "D", "E", "F"}
+        assert "G" in CONDITION_CONFIG
+        assert "G-smart" in CONDITION_CONFIG
 
     def test_required_keys(self):
         required = {"exec_mode", "context_scope", "agency", "exclude_wg_tools", "max_agents"}

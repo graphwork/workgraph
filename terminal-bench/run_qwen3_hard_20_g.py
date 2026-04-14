@@ -160,6 +160,107 @@ coordinator dispatches worker agents to your tasks automatically.
 
 """
 
+# ---------------------------------------------------------------------------
+# Condition G-smart: try-first meta-prompt (smart fanout calculus)
+# ---------------------------------------------------------------------------
+
+CONDITION_G_SMART_META_PROMPT = """You are solving a programming task. You have two strategies available:
+
+**Strategy 1 — Direct Implementation (default)**
+Implement the solution yourself. This is fastest for most tasks.
+
+**Strategy 2 — Decomposition (only when needed)**
+Break the task into subtasks and let other agents implement them in parallel.
+Only use this if direct implementation won't work.
+
+## Step 1: Triage (spend < 2 minutes here)
+
+Read the task. Scan the working directory (`ls`, `ls tests/`). Then decide:
+
+**Use DIRECT IMPLEMENTATION if ANY of these are true:**
+- The instruction is under ~300 words
+- You need to modify 2 or fewer files
+- The test suite has 5 or fewer tests
+- The task is a single logical unit of work (even if complex)
+- You're not sure → default to direct implementation
+
+**Use DECOMPOSITION only if ALL of these are true:**
+- The instruction is over ~500 words
+- You need to modify 3+ distinct files
+- The work splits into 2-4 independent sub-problems (different files, no ordering)
+- Each sub-problem is substantial enough to benefit from a fresh context window
+
+**Log your decision:**
+```bash
+wg log {seed_task_id} "FANOUT_DECISION: <direct|decompose> — <reason>"
+```
+
+## Context management — CRITICAL
+
+Your context window is only {context_window} tokens. This is SHORT.
+If you choose direct implementation, be aware of context pressure:
+- If you start re-reading files you already read, or losing track of earlier edits
+- Switch to decomposition for the REMAINING work only
+```bash
+wg log {seed_task_id} "FANOUT_SWITCH: direct→decompose — context pressure after N turns"
+```
+
+## If Direct Implementation
+
+Implement the solution. Write code, modify files, run tests.
+
+If tests pass → `wg done {seed_task_id}`
+
+## If Decomposition
+
+1. **Serialize your exploration** — everything you learned during triage goes
+   into the subtask descriptions. File paths, test commands, patterns, edge cases.
+   Workers only see what you write in `wg add -d "..."`.
+
+2. **Create 2-4 focused subtasks** (NEVER more than 4):
+```bash
+wg add "Part 1: <specific scope>" --no-place -d "## What to do
+<concrete instructions>
+
+## Files to modify
+- path/to/file1.py
+
+## How to verify
+Run: <test command>
+
+## Context
+Your context window is only {context_window} tokens.
+
+## IMPORTANT
+Implement directly. Do NOT create subtasks. Do NOT decompose further."
+```
+
+3. **Wire in a verify task**:
+```bash
+wg add "Verify: run full test suite" --after part-1,part-2 --no-place \\
+  -d "Run the test suite: <test command>.
+If ALL tests pass: wg done <your-task-id> --converged
+If tests fail: wg log <your-task-id> 'what failed' then wg done <your-task-id>"
+```
+
+4. **Create the retry loop** (if the task warrants iteration):
+```bash
+wg edit part-1 --add-after verify --max-iterations 3
+```
+
+5. **Mark your seed task done**:
+```bash
+wg done {seed_task_id}
+```
+
+## Hard constraints
+- NEVER create more than 4 subtasks
+- Subtasks must NOT create their own subtasks (1 level max)
+- If two subtasks would modify the same file, merge them or serialize with --after
+- Always include a verify task at the end
+
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -448,7 +549,7 @@ def analyze_daemon_log(wg_dir: str) -> dict:
     return analysis
 
 
-def write_trial_config(wg_dir: str) -> None:
+def write_trial_config(wg_dir: str, worktree_isolation: bool = False) -> None:
     """Write config.toml for a Condition G trial against lambda01 SGLang.
 
     Key differences from Condition A:
@@ -457,11 +558,12 @@ def write_trial_config(wg_dir: str) -> None:
     - coordinator_agent = true (needed for Condition G dispatch)
     - heartbeat_interval = 30 (autonomous coordination)
     """
+    worktree_val = "true" if worktree_isolation else "false"
     config = f"""[coordinator]
 max_agents = {MAX_AGENTS}
 executor = "native"
 model = "{MODEL}"
-worktree_isolation = false
+worktree_isolation = {worktree_val}
 agent_timeout = "40m"
 max_verify_failures = 0
 max_spawn_failures = 0
@@ -492,6 +594,7 @@ context_window = {CONTEXT_WINDOW}
 async def run_trial(
     task_def: dict,
     timeout: float,
+    smart: bool = False,
 ) -> dict:
     """Run a single Condition G trial with per-trial isolation."""
     task_id = task_def["id"]
@@ -534,14 +637,15 @@ async def run_trial(
             return result
 
         # 2. Write config (Condition G specific)
-        write_trial_config(wg_dir)
+        write_trial_config(wg_dir, worktree_isolation=smart)
 
         # 3. Load instruction and build Condition G description
         instruction = load_instruction(task_def)
         root_task_id = f"tb-{task_id}"
 
         # Build the Condition G meta-prompt with seed task ID, verify cmd, and context info
-        meta = CONDITION_G_META_PROMPT.replace("{seed_task_id}", root_task_id)
+        base_prompt = CONDITION_G_SMART_META_PROMPT if smart else CONDITION_G_META_PROMPT
+        meta = base_prompt.replace("{seed_task_id}", root_task_id)
         meta = meta.replace("{max_agents}", str(MAX_AGENTS))
         meta = meta.replace("{context_window}", str(CONTEXT_WINDOW))
 
@@ -679,7 +783,11 @@ async def run_trial(
 # Main
 # ---------------------------------------------------------------------------
 
-async def main(timeout: float, tasks: list[str] | None = None):
+async def main(timeout: float, tasks: list[str] | None = None, smart: bool = False):
+    global RUN_ID, RESULTS_DIR
+    if smart:
+        RUN_ID = "qwen3-hard-20-g-smart"
+        RESULTS_DIR = os.path.join(SCRIPT_DIR, "results", RUN_ID)
     task_names = tasks or ALL_STRESS_TASKS
     total = len(task_names)
 
@@ -698,12 +806,14 @@ async def main(timeout: float, tasks: list[str] | None = None):
         print(f"ERROR: Cannot reach {SGLANG_BASE_URL}: {e}")
         sys.exit(1)
 
-    print(f"\nTB Stress Test: Qwen3-Coder-30B — Hardest Tasks — Condition G")
+    variant = "G-smart (try-first smart fanout)" if smart else "G (always-decompose)"
+    print(f"\nTB Stress Test: Qwen3-Coder-30B — Hardest Tasks — Condition {variant}")
     print(f"  Model: {MODEL}")
     print(f"  Endpoint: {SGLANG_BASE_URL}")
     print(f"  Context window: {CONTEXT_WINDOW} tokens")
     print(f"  Max agents: {MAX_AGENTS}")
     print(f"  Run ID: {RUN_ID}")
+    print(f"  Smart fanout: {smart}")
     print(f"  Tasks ({total}): {task_names}")
     print(f"  Timeout: {timeout}s per trial")
     print(f"  wg binary: {WG_BIN}")
@@ -724,7 +834,7 @@ async def main(timeout: float, tasks: list[str] | None = None):
         print(f"\n--- [{i}/{total}] Task: {task_name} ({task_def['difficulty']}, "
               f"timeout={task_timeout}s) ---")
 
-        result = await run_trial(task_def, task_timeout)
+        result = await run_trial(task_def, task_timeout, smart=smart)
         results.append(result)
 
         # Print running tally with G-specific metrics
@@ -807,7 +917,8 @@ async def main(timeout: float, tasks: list[str] | None = None):
         "serving_engine": "SGLang",
         "gpu": "RTX 6000 Ada 48GB (lambda01)",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "condition": "G (workgraph-assisted, decomposition enabled)",
+        "condition": f"G-smart (try-first smart fanout)" if smart else "G (workgraph-assisted, decomposition enabled)",
+        "smart_fanout": smart,
         "max_agents": MAX_AGENTS,
         "task_selection": "All 18 available local TB tasks, ordered hardest-first (same as Condition A)",
         "total_trials": total_trials,
@@ -978,6 +1089,8 @@ if __name__ == "__main__":
                         help="Run single hard task for quick validation")
     parser.add_argument("--hard-only", action="store_true",
                         help="Only run hard-rated tasks (13 tasks)")
+    parser.add_argument("--smart", action="store_true",
+                        help="Use smart fanout meta-prompt (try-first, decompose-if-needed)")
     args = parser.parse_args()
 
     tasks = args.tasks
@@ -989,5 +1102,6 @@ if __name__ == "__main__":
     summary = asyncio.run(main(
         timeout=args.timeout,
         tasks=tasks,
+        smart=args.smart,
     ))
     sys.exit(0 if summary["passed"] > 0 else 1)

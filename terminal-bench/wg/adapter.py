@@ -145,6 +145,18 @@ CONDITION_CONFIG = {
         "heartbeat_interval": 30,         # Phase 3: 30s autonomous heartbeat
         # Note: coordinator_model removed — was dead config (not wired into config.toml)
     },
+    "G-smart": {
+        "exec_mode": "full",
+        "context_scope": "graph",
+        "agency": None,
+        "exclude_wg_tools": False,
+        "max_agents": 4,                  # Reduced from 8 — most trials use 1-2 agents
+        "autopoietic": True,
+        "smart_fanout": True,             # Use try-first smart meta-prompt
+        "coordinator_agent": True,
+        "heartbeat_interval": 30,
+        "worktree_isolation": True,       # Prevent file conflicts between agents
+    },
 }
 
 
@@ -281,6 +293,11 @@ async def _write_trial_bundle(
         )
         with open(bundle_path, "w") as f:
             f.write(content)
+    elif cfg.get("smart_fanout"):
+        # Smart fanout: agent needs implementation tools (may solve directly)
+        os.makedirs(bundles_dir, exist_ok=True)
+        with open(bundle_path, "w") as f:
+            f.write(SMART_ARCHITECT_BUNDLE_TOML)
     elif cfg.get("autopoietic"):
         os.makedirs(bundles_dir, exist_ok=True)
         with open(bundle_path, "w") as f:
@@ -559,6 +576,118 @@ system_prompt_suffix = ""
 """
 
 
+# ---------------------------------------------------------------------------
+# Condition G: smart fanout meta-prompt (try-first, decompose-if-needed)
+# ---------------------------------------------------------------------------
+
+CONDITION_G_SMART_META_PROMPT = """You are solving a programming task. You have two strategies available:
+
+**Strategy 1 — Direct Implementation (default)**
+Implement the solution yourself. This is fastest for most tasks.
+
+**Strategy 2 — Decomposition (only when needed)**
+Break the task into subtasks and let other agents implement them in parallel.
+Only use this if direct implementation won't work.
+
+## Step 1: Triage (spend < 2 minutes here)
+
+Read the task. Scan the working directory (`ls`, `ls tests/`). Then decide:
+
+**Use DIRECT IMPLEMENTATION if ANY of these are true:**
+- The instruction is under ~300 words
+- You need to modify 2 or fewer files
+- The test suite has 5 or fewer tests
+- The task is a single logical unit of work (even if complex)
+- You're not sure → default to direct implementation
+
+**Use DECOMPOSITION only if ALL of these are true:**
+- The instruction is over ~500 words
+- You need to modify 3+ distinct files
+- The work splits into 2-4 independent sub-problems (different files, no ordering)
+- Each sub-problem is substantial enough to benefit from a fresh context window
+
+**Log your decision:**
+```bash
+wg log {seed_task_id} "FANOUT_DECISION: <direct|decompose> — <reason>"
+```
+
+## If Direct Implementation
+
+Implement the solution. Write code, modify files, run tests.
+
+If tests pass → `wg done {seed_task_id}`
+
+If you notice context pressure during implementation (re-reading files you've
+already read, losing track of earlier changes, tool outputs getting truncated),
+you may switch to decomposition for the REMAINING work. Log:
+```bash
+wg log {seed_task_id} "FANOUT_SWITCH: direct→decompose — context pressure after N turns"
+```
+Then create subtasks for the unfinished portions only.
+
+## If Decomposition
+
+1. **Serialize your exploration** — everything you learned during triage goes
+   into the subtask descriptions. File paths, test commands, patterns, edge cases.
+   Workers only see what you write in `wg add -d "..."`.
+
+2. **Create 2-4 focused subtasks** (NEVER more than 4):
+```bash
+wg add "Part 1: <specific scope>" --no-place -d "## What to do
+<concrete instructions>
+
+## Files to modify
+- path/to/file1.py
+
+## How to verify
+Run: <test command>
+
+## IMPORTANT
+Implement directly. Do NOT create subtasks. Do NOT decompose further."
+```
+
+3. **Wire in a verify task**:
+```bash
+wg add "Verify: run full test suite" --after part-1,part-2 --no-place \\
+  -d "Run the test suite: <test command>.
+If ALL tests pass: wg done <your-task-id> --converged
+If tests fail: wg log <your-task-id> 'what failed' then wg done <your-task-id>"
+```
+
+4. **Create the retry loop** (if the task warrants iteration):
+```bash
+wg edit part-1 --add-after verify --max-iterations 3
+```
+
+5. **Mark your seed task done**:
+```bash
+wg done {seed_task_id}
+```
+
+## Hard constraints
+- NEVER create more than 4 subtasks
+- Subtasks must NOT create their own subtasks (1 level max)
+- If two subtasks would modify the same file, merge them or serialize with --after
+- Always include a verify task at the end
+
+"""
+
+
+# ---------------------------------------------------------------------------
+# Condition G: smart architect bundle TOML
+# The smart fanout agent needs write_file and edit_file since it may
+# implement directly (Strategy 1), unlike the original architect-only bundle.
+# ---------------------------------------------------------------------------
+
+SMART_ARCHITECT_BUNDLE_TOML = """\
+name = "bare"
+description = "Smart fanout agent: tries direct implementation first, decomposes only when needed."
+tools = ["bash", "read_file", "write_file", "edit_file", "glob", "grep", "wg_show", "wg_list", "wg_add", "wg_done", "wg_fail", "wg_log", "wg_artifact", "wg_edit"]
+context_scope = "clean"
+system_prompt_suffix = ""
+"""
+
+
 async def _collect_agent_metrics_from_container(
     environment: BaseEnvironment,
     artifacts_dir: Path | str | None = None,
@@ -659,7 +788,10 @@ async def _run_native_executor(
     # task is auto-deferred by wg done when children are detected, but the
     # architect still needs to know what tests to tell subtasks to run).
     if cfg.get("autopoietic"):
-        meta = CONDITION_G_META_PROMPT.replace("{seed_task_id}", task_id)
+        if cfg.get("smart_fanout"):
+            meta = CONDITION_G_SMART_META_PROMPT.replace("{seed_task_id}", task_id)
+        else:
+            meta = CONDITION_G_META_PROMPT.replace("{seed_task_id}", task_id)
         if verify_cmd:
             meta += (
                 f"\n## Test command\n"
@@ -839,12 +971,13 @@ async def _run_native_executor(
 def _build_config_toml_content(condition: str, model: str) -> str:
     """Return config.toml content string for the given condition."""
     cfg = CONDITION_CONFIG[condition]
+    worktree_iso = "true" if cfg.get("worktree_isolation") else "false"
     lines = [
         "[coordinator]",
         f'max_agents = {cfg["max_agents"]}',
         f'executor = "native"',
         f'model = "{model}"',
-        f'worktree_isolation = false',
+        f'worktree_isolation = {worktree_iso}',
         "max_verify_failures = 0",
         "max_spawn_failures = 0",
     ]
@@ -1648,5 +1781,18 @@ class ConditionGAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "G"
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
+        super().__init__(*args, **kwargs)
+
+
+class ConditionGSmartAgent(WorkgraphAgent):
+    """Condition G-smart: try-first smart fanout — implements directly, decomposes only when needed."""
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-condition-g-smart"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["condition"] = "G-smart"
         kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
