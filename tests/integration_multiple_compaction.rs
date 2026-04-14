@@ -478,7 +478,7 @@ fn test_context_budget_openai_model_windows() {
             desc
         );
 
-        // At 50% capacity: should be Ok
+        // At 50% capacity: should be Ok (always below any warning threshold)
         let half_chars = (*context_window as f64 * 0.50 * budget.chars_per_token) as usize;
         let msgs_ok = vec![make_text_message(Role::User, half_chars)];
         assert_eq!(
@@ -489,47 +489,63 @@ fn test_context_budget_openai_model_windows() {
             model_name
         );
 
-        // At 72% capacity: should be Warning
-        let warn_chars = (*context_window as f64 * 0.72 * budget.chars_per_token) as usize;
+        // Just above warning_threshold: should be Warning
+        let warn_pct = budget.warning_threshold + 0.02;
+        let warn_chars = (*context_window as f64 * warn_pct * budget.chars_per_token) as usize;
         let msgs_warn = vec![make_text_message(Role::User, warn_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_warn),
             ContextPressureAction::Warning,
-            "{} ({}): 72% should be Warning",
+            "{} ({}): {:.0}% should be Warning",
             desc,
-            model_name
+            model_name,
+            warn_pct * 100.0
         );
 
-        // At 80% capacity: should be EmergencyCompaction
-        let compact_chars = (*context_window as f64 * 0.80 * budget.chars_per_token) as usize;
+        // Just above compact_threshold: should be EmergencyCompaction
+        let compact_pct = budget.compact_threshold + 0.02;
+        let compact_chars =
+            (*context_window as f64 * compact_pct * budget.chars_per_token) as usize;
         let msgs_compact = vec![make_text_message(Role::User, compact_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_compact),
             ContextPressureAction::EmergencyCompaction,
-            "{} ({}): 80% should be EmergencyCompaction",
+            "{} ({}): {:.0}% should be EmergencyCompaction",
             desc,
-            model_name
+            model_name,
+            compact_pct * 100.0
         );
 
-        // At 96% capacity: should be CleanExit
-        let exit_chars = (*context_window as f64 * 0.96 * budget.chars_per_token) as usize;
+        // Just above hard_limit: should be CleanExit
+        let exit_pct = budget.hard_limit + 0.02;
+        let exit_chars = (*context_window as f64 * exit_pct * budget.chars_per_token) as usize;
         let msgs_exit = vec![make_text_message(Role::User, exit_chars)];
         assert_eq!(
             budget.check_pressure(&msgs_exit),
             ContextPressureAction::CleanExit,
-            "{} ({}): 96% should be CleanExit",
+            "{} ({}): {:.0}% should be CleanExit",
             desc,
-            model_name
+            model_name,
+            exit_pct * 100.0
         );
     }
 }
 
 /// Test that a small context window (e.g., local 8k model) triggers
-/// compaction much earlier than a large-context model.
+/// compaction much earlier than a large-context model, and that smaller
+/// windows get tighter (earlier) thresholds.
 #[test]
 fn test_context_pressure_small_vs_large_window() {
     let small = ContextBudget::with_window_size(8_000);
     let large = ContextBudget::with_window_size(200_000);
+
+    // Small windows should have lower (tighter) thresholds than large windows
+    assert!(
+        small.warning_threshold < large.warning_threshold,
+        "Small window should warn earlier: {} vs {}",
+        small.warning_threshold,
+        large.warning_threshold
+    );
 
     // 10k chars ≈ 2500 tokens
     let msgs = vec![make_text_message(Role::User, 10_000)];
@@ -539,7 +555,7 @@ fn test_context_pressure_small_vs_large_window() {
 
     // With more content: 24k chars ≈ 6000 tokens
     let msgs_bigger = vec![make_text_message(Role::User, 24_000)];
-    // Small model: 6000/8000 = 75% → EmergencyCompaction
+    // Small model: 6000/8000 = 75% → EmergencyCompaction (compact_threshold=0.65 for <64k)
     assert_eq!(
         small.check_pressure(&msgs_bigger),
         ContextPressureAction::EmergencyCompaction,

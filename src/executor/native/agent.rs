@@ -1273,14 +1273,16 @@ impl AgentLoop {
 
     // ── Context window monitoring ───────────────────────────────────────────
 
-    /// Inject context warnings for OpenRouter models if approaching context limits
+    /// Inject context warnings if approaching context limits.
+    ///
+    /// Uses the dynamically-configured `context_budget` (thresholds scale with
+    /// the model's context window) instead of hardcoded model-name heuristics.
     fn inject_context_warnings(&self, mut messages: Vec<Message>) -> Vec<Message> {
-        let estimated_tokens = self.estimate_message_tokens(&messages);
-        let window_size = self.get_model_context_window();
+        let estimated_tokens = self.context_budget.estimate_tokens(&messages);
+        let window_size = self.context_budget.window_size;
         let usage_pct = estimated_tokens as f64 / window_size as f64;
 
-        // OpenRouter models need earlier warnings than Claude (75% vs 87%)
-        if usage_pct > 0.75 {
+        if usage_pct > self.context_budget.warning_threshold {
             let warning = format!(
                 "<context-warning>\nContext usage at {:.0}% ({}/{}). \
                 Consider: (1) wg log progress, (2) complete current subtask, \
@@ -1298,56 +1300,6 @@ impl AgentLoop {
         }
 
         messages
-    }
-
-    /// Get model-specific context window size
-    fn get_model_context_window(&self) -> usize {
-        let model = self.client.model().to_lowercase();
-
-        if model.contains("minimax") || model.contains("qwen-2.5") || model.contains("qwen2.5") {
-            28_000 // Conservative for 32K models
-        } else if model.contains("deepseek") {
-            56_000 // Conservative for 64K models
-        } else if model.contains("llama-3.1") || model.contains("llama3.1") {
-            120_000 // Conservative for 128K models
-        } else if model.contains("claude") {
-            180_000 // Conservative for 200K models
-        } else {
-            28_000 // Conservative default
-        }
-    }
-
-    /// Estimate token count for a list of messages (rough approximation)
-    fn estimate_message_tokens(&self, messages: &[Message]) -> usize {
-        let mut total = 0;
-
-        for message in messages {
-            for content in &message.content {
-                match content {
-                    ContentBlock::Text { text } => {
-                        // Rough approximation: 4 characters per token on average
-                        total += text.len() / 4;
-                    }
-                    ContentBlock::ToolUse { name, input, .. } => {
-                        total += name.len() / 4;
-                        if let Ok(input_str) = serde_json::to_string(input) {
-                            total += input_str.len() / 4;
-                        }
-                    }
-                    ContentBlock::ToolResult { content, .. } => {
-                        total += content.len() / 4;
-                    }
-                    ContentBlock::Thinking { thinking, .. } => {
-                        total += thinking.len() / 4;
-                    }
-                }
-            }
-        }
-
-        // Add system prompt tokens
-        total += self.system_prompt.len() / 4;
-
-        total
     }
 }
 

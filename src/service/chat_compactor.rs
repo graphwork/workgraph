@@ -4,10 +4,10 @@
 //! the chat history (inbox + outbox) for a single coordinator.
 //!
 //! Produces `.workgraph/chat/<coordinator-id>/context-summary.md` with:
-//! - Key decisions made
-//! - Open threads / pending items
-//! - User preferences expressed
-//! - Recurring topics
+//! - Key decisions made (scaled to model context window)
+//! - Open threads / pending items (scaled to model context window)
+//! - User preferences expressed (scaled to model context window)
+//! - Recurring topics (scaled to model context window)
 //!
 //! Supports incremental compaction: each run builds on the previous summary
 //! plus new messages since the last compaction.
@@ -91,6 +91,48 @@ pub fn should_compact(workgraph_dir: &Path, coordinator_id: u32) -> bool {
     new_count >= threshold
 }
 
+/// Resolve the context window size for the chat compactor's model.
+///
+/// Resolution order: model registry entry → endpoint config → 200k default.
+fn resolve_chat_compactor_context_window(config: &Config) -> u64 {
+    let resolved = config.resolve_model_for_role(DispatchRole::ChatCompactor);
+    if let Some(ref entry) = resolved.registry_entry {
+        if entry.context_window > 0 {
+            return entry.context_window;
+        }
+    }
+    if let Some(ref ep_name) = resolved.endpoint {
+        if let Some(ep) = config.llm_endpoints.find_by_name(ep_name) {
+            if let Some(cw) = ep.context_window {
+                return cw;
+            }
+        }
+    }
+    200_000
+}
+
+/// Compute section token budgets for the chat compactor prompt based on the context window.
+///
+/// Uses 2% of the context window, clamped to [400, 4000], split 42/25/17/17 across
+/// key-decisions / open-threads / user-preferences / recurring-topics.
+fn chat_compactor_section_budgets(context_window: u64) -> (u64, u64, u64, u64) {
+    let total_budget = (context_window as f64 * 0.02).round() as u64;
+    let total_budget = total_budget.clamp(400, 4000);
+    let decisions = (total_budget as f64 * 0.42).round() as u64;
+    let threads = (total_budget as f64 * 0.25).round() as u64;
+    let preferences = (total_budget as f64 * 0.17).round() as u64;
+    let recurring = total_budget
+        .saturating_sub(decisions)
+        .saturating_sub(threads)
+        .saturating_sub(preferences);
+    (
+        decisions.max(150),
+        threads.max(100),
+        preferences.max(75),
+        recurring.max(75),
+    )
+}
+
 /// Run chat compaction for a specific coordinator.
 ///
 /// Reads all chat history (or new messages since last compaction for incremental mode),
@@ -128,8 +170,11 @@ pub fn run_chat_compaction(workgraph_dir: &Path, coordinator_id: u32) -> Result<
     new_messages.extend(new_outbox.clone());
     new_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
+    // Resolve context window for dynamic budget scaling
+    let context_window = resolve_chat_compactor_context_window(&config);
+
     // Build the prompt
-    let prompt = build_chat_compactor_prompt(&previous_summary, &new_messages);
+    let prompt = build_chat_compactor_prompt(&previous_summary, &new_messages, context_window);
 
     // Call the LLM
     let result = super::llm::run_lightweight_llm_call(
@@ -199,7 +244,11 @@ fn format_messages_for_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Build the LLM prompt for chat compaction.
-fn build_chat_compactor_prompt(previous_summary: &str, new_messages: &[ChatMessage]) -> String {
+fn build_chat_compactor_prompt(
+    previous_summary: &str,
+    new_messages: &[ChatMessage],
+    context_window: u64,
+) -> String {
     let mut prompt = String::from(
         "You are a conversation compactor for a workgraph coordinator. \
          Your job is to produce a concise context summary that captures the essential \
@@ -223,29 +272,33 @@ fn build_chat_compactor_prompt(previous_summary: &str, new_messages: &[ChatMessa
 
     prompt.push_str(&format_messages_for_prompt(messages_to_include));
 
-    prompt.push_str(
+    let (decisions_budget, threads_budget, prefs_budget, recurring_budget) =
+        chat_compactor_section_budgets(context_window);
+
+    prompt.push_str(&format!(
         "\n\n## Output Format\n\n\
          Produce a markdown document with EXACTLY these four sections. \
          The document should be self-contained — a coordinator reading only this \
          document should be able to resume the conversation without losing context.\n\n\
-         ### 1. Key Decisions (~750 tokens)\n\
+         ### 1. Key Decisions (~{} tokens)\n\
          Bullet list of decisions made during the conversation: what was agreed, \
          what approach was chosen, what was rejected and why. Include task IDs and \
          specific details where relevant.\n\n\
-         ### 2. Open Threads (~450 tokens)\n\
+         ### 2. Open Threads (~{} tokens)\n\
          Items that are still in progress or unresolved: pending questions, \
          tasks that were discussed but not completed, topics that need follow-up.\n\n\
-         ### 3. User Preferences (~300 tokens)\n\
+         ### 3. User Preferences (~{} tokens)\n\
          Communication style, tool preferences, workflow habits, or explicit \
          instructions the user has given about how they want to work.\n\n\
-         ### 4. Recurring Topics (~300 tokens)\n\
+         ### 4. Recurring Topics (~{} tokens)\n\
          Themes, goals, or concerns that come up repeatedly. Patterns in what \
          the user asks about or works on.\n\n\
          IMPORTANT: Output ONLY the context summary document. No preamble, no explanation. \
          Start directly with '# Conversation Context Summary'. \
          If building on a previous summary, incorporate its content — do not lose information. \
          Update or revise previous entries as needed based on new messages.",
-    );
+        decisions_budget, threads_budget, prefs_budget, recurring_budget,
+    ));
 
     prompt
 }
@@ -348,7 +401,7 @@ mod tests {
             user: None,
         }];
 
-        let prompt = build_chat_compactor_prompt("", &messages);
+        let prompt = build_chat_compactor_prompt("", &messages, 200_000);
         assert!(prompt.contains("## Conversation Messages"));
         assert!(!prompt.contains("## Previous Summary"));
         assert!(prompt.contains("Key Decisions"));
@@ -370,8 +423,11 @@ mod tests {
             user: None,
         }];
 
-        let prompt =
-            build_chat_compactor_prompt("# Previous context\nSome decisions were made.", &messages);
+        let prompt = build_chat_compactor_prompt(
+            "# Previous context\nSome decisions were made.",
+            &messages,
+            200_000,
+        );
         assert!(prompt.contains("## Previous Summary"));
         assert!(prompt.contains("Previous context"));
         assert!(prompt.contains("## New Messages Since Last Compaction"));
@@ -391,5 +447,33 @@ mod tests {
             chat::append_inbox(&dir, &format!("msg {}", i), &format!("req-{}", i)).unwrap();
         }
         assert!(!should_compact(&dir, 0));
+    }
+
+    #[test]
+    fn test_chat_compactor_budgets_default_200k() {
+        let (decisions, threads, prefs, recurring) = chat_compactor_section_budgets(200_000);
+        // 200k * 0.02 = 4000 (at the cap)
+        assert_eq!(decisions + threads + prefs + recurring, 4000);
+        assert!(decisions > threads);
+    }
+
+    #[test]
+    fn test_chat_compactor_budgets_small_window() {
+        let (decisions, threads, prefs, recurring) = chat_compactor_section_budgets(16_000);
+        // 16k * 0.02 = 320 → clamped to 400, then section minimums apply
+        assert!(decisions >= 150);
+        assert!(threads >= 100);
+        assert!(prefs >= 75);
+        assert!(recurring >= 75);
+        // Total may exceed 400 slightly due to section floor clamping
+        let total = decisions + threads + prefs + recurring;
+        assert!(total >= 400 && total <= 500);
+    }
+
+    #[test]
+    fn test_chat_compactor_budgets_very_large_window() {
+        let (decisions, threads, prefs, recurring) = chat_compactor_section_budgets(1_000_000);
+        // 1M * 0.02 = 20000 → clamped to 4000
+        assert_eq!(decisions + threads + prefs + recurring, 4000);
     }
 }

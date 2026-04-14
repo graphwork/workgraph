@@ -305,12 +305,19 @@ fn make_agent(provider: Box<dyn Provider>, dir: &std::path::Path) -> AgentLoop {
 
 #[test]
 fn test_context_budget_from_provider_context_window() {
-    // ContextBudget should be constructible from provider's context window
+    // ContextBudget should be constructible from provider's context window.
+    // 32k is a "small" window (<64k), so thresholds are tighter.
     let budget = ContextBudget::with_window_size(32_000);
     assert_eq!(budget.window_size, 32_000);
-    assert!((budget.warning_threshold - 0.70).abs() < f64::EPSILON);
-    assert!((budget.compact_threshold - 0.75).abs() < f64::EPSILON);
-    assert!((budget.hard_limit - 0.95).abs() < f64::EPSILON);
+    assert!((budget.warning_threshold - 0.55).abs() < f64::EPSILON);
+    assert!((budget.compact_threshold - 0.65).abs() < f64::EPSILON);
+    assert!((budget.hard_limit - 0.85).abs() < f64::EPSILON);
+
+    // Large windows (>=128k) get the widest thresholds
+    let large = ContextBudget::with_window_size(200_000);
+    assert!((large.warning_threshold - 0.70).abs() < f64::EPSILON);
+    assert!((large.compact_threshold - 0.75).abs() < f64::EPSILON);
+    assert!((large.hard_limit - 0.95).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -321,8 +328,8 @@ fn test_context_budget_default_uses_200k() {
 
 #[test]
 fn test_context_pressure_exactly_at_80_percent() {
-    // Window: 1000 tokens. 80% = 800 tokens = 3200 chars (at 4 chars/token).
-    // This is above 75% (emergency compaction), so it triggers EmergencyCompaction.
+    // Window: 1000 tokens (<64k → small tier: compact=0.65, hard=0.85).
+    // 80% = 800 tokens = 3200 chars. 0.65 < 0.80 < 0.85 → EmergencyCompaction.
     let budget = ContextBudget::with_window_size(1000);
     let msgs = vec![workgraph::executor::native::client::Message {
         role: workgraph::executor::native::client::Role::User,
@@ -338,7 +345,7 @@ fn test_context_pressure_exactly_at_80_percent() {
 
 #[test]
 fn test_context_pressure_at_79_9_percent() {
-    // 79.9% should be EmergencyCompaction (above 75%)
+    // 79.9% should be EmergencyCompaction (above 0.65 compact threshold for small window)
     let budget = ContextBudget::with_window_size(1000);
     // 79.9% of 1000 = 799 tokens = 3196 chars
     let msgs = vec![workgraph::executor::native::client::Message {
@@ -355,6 +362,8 @@ fn test_context_pressure_at_79_9_percent() {
 
 #[test]
 fn test_context_pressure_at_90_percent() {
+    // 1000-token window is "small" (<64k), so hard_limit=0.85.
+    // 90% > 0.85 → CleanExit.
     let budget = ContextBudget::with_window_size(1000);
     // 90% = 900 tokens = 3600 chars
     let msgs = vec![workgraph::executor::native::client::Message {
@@ -365,13 +374,14 @@ fn test_context_pressure_at_90_percent() {
     }];
     assert_eq!(
         budget.check_pressure(&msgs),
-        ContextPressureAction::EmergencyCompaction
+        ContextPressureAction::CleanExit
     );
 }
 
 #[test]
 fn test_context_pressure_at_89_9_percent() {
-    // 89.9% should be EmergencyCompaction (above 75%)
+    // 1000-token window is "small" (<64k), so hard_limit=0.85.
+    // 89.9% > 0.85 → CleanExit.
     let budget = ContextBudget::with_window_size(1000);
     // 89.9% of 1000 = 899 tokens = 3596 chars
     let msgs = vec![workgraph::executor::native::client::Message {
@@ -382,7 +392,7 @@ fn test_context_pressure_at_89_9_percent() {
     }];
     assert_eq!(
         budget.check_pressure(&msgs),
-        ContextPressureAction::EmergencyCompaction
+        ContextPressureAction::CleanExit
     );
 }
 
@@ -765,29 +775,42 @@ async fn test_agent_loop_recovers_from_400_context() {
     assert_eq!(call_count.load(Ordering::SeqCst), 2);
 }
 
-/// When context is at warning level (70-75%), the agent should inject
-/// a warning into the conversation that the model can see.
+/// When context is at warning level (70-75% for large windows), the agent
+/// should inject a warning into the conversation that the model can see.
 #[tokio::test]
 async fn test_agent_loop_injects_warning_at_72_percent() {
     let dir = TempDir::new().unwrap();
 
-    // Context window: 400 tokens = 1600 chars.
-    // 72% = 1152 chars (within warning range 70-75%).
+    // Context window: 200k tokens (large tier, warning=0.70, compact=0.75).
+    // We need ~72% = 144k tokens = 576k chars.
     //
     // Flow:
-    // 1. Initial user message: 600 chars = 150 tokens (37.5%)
-    // 2. Turn 1: model returns ToolUse → tool executes → tool result added
-    //    After turn 1: 600 (initial) + ~108 (assistant tool_use + tool result) = ~708 chars = 177 tokens (44%)
-    // 3. Turn 1 response text of 450 chars → total ~1158 chars = 289 tokens = 72.25% → Warning!
-    //    Warning injected into last user message (tool result message)
-    // 4. Turn 2 API call should see the warning
+    // 1. Initial user message: 480k chars = 120k tokens (60%)
+    // 2. Turn 1: model returns text + ToolUse → tool executes → tool result added
+    //    Assistant text: 48k chars = 12k tokens
+    //    After turn 1: ~528k chars + overhead = ~132k tokens ≈ 66%
+    // 3. Add tool_use overhead (~160 chars) + tool result (~18 chars) → ~528178 chars
+    //    = ~132044 tokens ≈ 66% → still below 70% warning
+    //    But the combined with response: 480k + 48k + overhead = ~528k chars ≈ 132k tokens ≈ 66%
+    //    Need more: second response text pushes total
+    //
+    // Actually let's simplify: initial 500k chars (125k tokens, 62.5%) +
+    // assistant returns 40k chars (10k tokens), total ~135k tokens = 67.5% < 70%
+    // The model response of 40k chars is appended, pushing it into range after processing.
+    //
+    // After full turn 1: 500k (initial) + 40k (text) + ~200 (tool overhead) = 540.2k chars
+    // = 135050 tokens = 67.5%
+    // Hmm, still not enough. Let's use bigger assistant response.
+    //
+    // Actually: 480k (init) + 100k (text) + ~200 (tool overhead) = 580.2k chars
+    // = 145050 tokens = 72.5% → Warning!
     let responses = vec![
-        // Turn 1: tool use + text that pushes us into warning range (70-75%)
+        // Turn 1: text + tool use that pushes us into warning range (70-75%)
         MessagesResponse {
             id: "msg_1".to_string(),
             content: vec![
                 ContentBlock::Text {
-                    text: "y".repeat(500), // 500 chars - together with initial 600+40+18 = 1158 chars = 72.4%
+                    text: "y".repeat(100_000), // 100k chars = 25k tokens
                 },
                 ContentBlock::ToolUse {
                     id: "tu-1".to_string(),
@@ -809,15 +832,14 @@ async fn test_agent_loop_injects_warning_at_72_percent() {
         },
     ];
 
-    let provider = InspectingProvider::new(400, responses);
+    let provider = InspectingProvider::new(200_000, responses);
     let seen_messages = Arc::clone(&provider.seen_messages);
     let mut agent = make_agent(Box::new(provider), dir.path());
 
-    // 400 tokens = 1600 chars. 72% = 1152 chars.
-    // After turn 1: 600 (initial) + 450 (assistant text) + ~40 (tool_use) + ~18 (tool result) = ~1108 chars
-    // = ~277 tokens = 69.25% → still below warning
-    // But the Turn 1 response has 450 chars of text which brings it to ~1158 chars = ~289 tokens = 72.25% → Warning!
-    let result = agent.run(&"x".repeat(600)).await;
+    // 200k window, large tier: warning at 70%, compact at 75%.
+    // Initial: 480k chars = 120k tokens = 60%.
+    // After turn 1: 480k + 100k + ~200 (tool overhead) = ~580.2k chars = ~145050 tokens = ~72.5% → Warning!
+    let result = agent.run(&"x".repeat(480_000)).await;
     assert!(result.is_ok(), "Agent should complete: {:?}", result);
 
     // Check the messages the provider saw on the second call (after warning injection)
@@ -1058,10 +1080,10 @@ fn test_no_hardcoded_context_budget() {
         }],
     }];
 
-    // 30000/32000 = 93.75% → EmergencyCompaction on small window
+    // 30000/32000 = 93.75% → CleanExit on small window (hard_limit=0.85 for <64k)
     assert_eq!(
         small.check_pressure(&msgs),
-        ContextPressureAction::EmergencyCompaction
+        ContextPressureAction::CleanExit
     );
 
     // 30000/200000 = 15% → Ok on large window

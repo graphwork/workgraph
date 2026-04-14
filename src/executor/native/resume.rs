@@ -739,11 +739,27 @@ impl Default for ContextBudget {
 }
 
 impl ContextBudget {
-    /// Create a ContextBudget with a specific window size, using default thresholds.
+    /// Create a ContextBudget with a specific window size and dynamic thresholds.
+    ///
+    /// Smaller context windows get tighter (earlier) thresholds since there's less
+    /// room to recover from pressure:
+    /// - Small  (< 64k):  warning=0.55, compact=0.65, hard_limit=0.85
+    /// - Medium (64k–128k): warning=0.60, compact=0.70, hard_limit=0.90
+    /// - Large  (≥ 128k):  warning=0.70, compact=0.75, hard_limit=0.95
     pub fn with_window_size(window_size: usize) -> Self {
+        let (warning, compact, hard) = if window_size < 64_000 {
+            (0.55, 0.65, 0.85)
+        } else if window_size < 128_000 {
+            (0.60, 0.70, 0.90)
+        } else {
+            (0.70, 0.75, 0.95)
+        };
         Self {
             window_size,
-            ..Default::default()
+            chars_per_token: 4.0,
+            warning_threshold: warning,
+            compact_threshold: compact,
+            hard_limit: hard,
         }
     }
 
@@ -1247,5 +1263,49 @@ mod tests {
         let journal_output_multi = "     1\tfn main() {\n     2\t    println!(\"hi\");\n     3\t}";
         let current_multi = "fn main() {\n    println!(\"hi\");\n}";
         assert!(!content_differs(journal_output_multi, current_multi));
+    }
+
+    #[test]
+    fn test_dynamic_thresholds_small_window() {
+        let budget = ContextBudget::with_window_size(32_000);
+        assert!((budget.warning_threshold - 0.55).abs() < 1e-10);
+        assert!((budget.compact_threshold - 0.65).abs() < 1e-10);
+        assert!((budget.hard_limit - 0.85).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dynamic_thresholds_medium_window() {
+        let budget = ContextBudget::with_window_size(100_000);
+        assert!((budget.warning_threshold - 0.60).abs() < 1e-10);
+        assert!((budget.compact_threshold - 0.70).abs() < 1e-10);
+        assert!((budget.hard_limit - 0.90).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dynamic_thresholds_large_window() {
+        let budget = ContextBudget::with_window_size(200_000);
+        assert!((budget.warning_threshold - 0.70).abs() < 1e-10);
+        assert!((budget.compact_threshold - 0.75).abs() < 1e-10);
+        assert!((budget.hard_limit - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dynamic_thresholds_boundary_64k() {
+        // Exactly 64k should be medium tier
+        let budget = ContextBudget::with_window_size(64_000);
+        assert!((budget.warning_threshold - 0.60).abs() < 1e-10);
+        // Just below 64k should be small tier
+        let budget_small = ContextBudget::with_window_size(63_999);
+        assert!((budget_small.warning_threshold - 0.55).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dynamic_thresholds_boundary_128k() {
+        // Exactly 128k should be large tier
+        let budget = ContextBudget::with_window_size(128_000);
+        assert!((budget.warning_threshold - 0.70).abs() < 1e-10);
+        // Just below 128k should be medium tier
+        let budget_med = ContextBudget::with_window_size(127_999);
+        assert!((budget_med.warning_threshold - 0.60).abs() < 1e-10);
     }
 }

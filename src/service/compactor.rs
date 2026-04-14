@@ -1,9 +1,9 @@
 //! Compactor: distills workgraph state into a 3-layer context artifact.
 //!
 //! Produces `.workgraph/compactor/context.md` with:
-//! - Rolling Narrative (~2000 tokens)
-//! - Persistent Facts (~500 tokens)
-//! - Evaluation Digest (~500 tokens)
+//! - Rolling Narrative (scaled to model context window)
+//! - Persistent Facts (scaled to model context window)
+//! - Evaluation Digest (scaled to model context window)
 //!
 //! Triggered by: graph lifecycle (`.compact-0` becomes ready when coordinator
 //! marks done and cycle edge reactivates it), or manual `wg compact`.
@@ -119,6 +119,39 @@ fn count_ops(workgraph_dir: &Path) -> usize {
     }
 }
 
+/// Resolve the context window size for the compactor's model.
+///
+/// Resolution order: model registry entry → endpoint config → 200k default.
+fn resolve_compactor_context_window(config: &Config) -> u64 {
+    let resolved = config.resolve_model_for_role(DispatchRole::Compactor);
+    if let Some(ref entry) = resolved.registry_entry {
+        if entry.context_window > 0 {
+            return entry.context_window;
+        }
+    }
+    if let Some(ref ep_name) = resolved.endpoint {
+        if let Some(ep) = config.llm_endpoints.find_by_name(ep_name) {
+            if let Some(cw) = ep.context_window {
+                return cw;
+            }
+        }
+    }
+    200_000
+}
+
+/// Compute section token budgets for the compactor prompt based on the context window.
+///
+/// Uses 3% of the context window, clamped to [500, 6000], split 67/17/17 across
+/// narrative / facts / evaluation sections.
+fn compactor_section_budgets(context_window: u64) -> (u64, u64, u64) {
+    let total_budget = (context_window as f64 * 0.03).round() as u64;
+    let total_budget = total_budget.clamp(500, 6000);
+    let narrative = (total_budget as f64 * 0.67).round() as u64;
+    let facts = (total_budget as f64 * 0.17).round() as u64;
+    let evaluation = total_budget.saturating_sub(narrative).saturating_sub(facts);
+    (narrative.max(300), facts.max(100), evaluation.max(100))
+}
+
 /// Run compaction: gather graph state, call LLM, write context.md.
 ///
 /// This is the main entry point for both `wg compact` and coordinator-triggered compaction.
@@ -137,8 +170,11 @@ pub fn run_compaction(workgraph_dir: &Path) -> Result<PathBuf> {
     // Gather the input data for the LLM
     let snapshot = build_graph_snapshot(&graph, workgraph_dir);
 
+    // Resolve context window for dynamic budget scaling
+    let context_window = resolve_compactor_context_window(&config);
+
     // Build the prompt
-    let prompt = build_compactor_prompt(&snapshot);
+    let prompt = build_compactor_prompt(&snapshot, context_window);
 
     // Track duration of the LLM call
     let call_start = std::time::Instant::now();
@@ -322,7 +358,7 @@ fn build_evaluation_digest(workgraph_dir: &Path) -> String {
     }
 }
 
-fn build_compactor_prompt(snapshot: &GraphSnapshot) -> String {
+fn build_compactor_prompt(snapshot: &GraphSnapshot, context_window: u64) -> String {
     let c = &snapshot.status_counts;
 
     let mut prompt = format!(
@@ -392,23 +428,26 @@ fn build_compactor_prompt(snapshot: &GraphSnapshot) -> String {
         prompt.push_str("\n\n");
     }
 
-    prompt.push_str(
+    let (narrative_budget, facts_budget, eval_budget) = compactor_section_budgets(context_window);
+
+    prompt.push_str(&format!(
         "## Output Format\n\n\
          Produce a markdown document with EXACTLY these three sections:\n\n\
-         ### 1. Rolling Narrative (~2000 tokens)\n\
+         ### 1. Rolling Narrative (~{} tokens)\n\
          A coherent narrative of what the project has accomplished, what is currently happening, \
          and what remains. Focus on the story arc: what problems were identified, how they were \
          addressed, what patterns emerged. Write in present/past tense. Include task IDs where relevant.\n\n\
-         ### 2. Persistent Facts (~500 tokens)\n\
+         ### 2. Persistent Facts (~{} tokens)\n\
          Bullet list of stable facts about the project: architecture decisions, conventions adopted, \
          key file paths, integration points, recurring patterns. These facts should remain useful \
          across many sessions.\n\n\
-         ### 3. Evaluation Digest (~500 tokens)\n\
+         ### 3. Evaluation Digest (~{} tokens)\n\
          Summary of evaluation outcomes: which tasks scored well, which struggled, any patterns \
          in agent performance. If no evaluations exist, note that and suggest what to evaluate.\n\n\
          IMPORTANT: Output ONLY the context document. No preamble, no explanation. \
-         Start directly with '# Project Context'."
-    );
+         Start directly with '# Project Context'.",
+        narrative_budget, facts_budget, eval_budget,
+    ));
 
     prompt
 }
@@ -611,13 +650,61 @@ mod tests {
             evaluation_digest: "No evaluations recorded yet.".into(),
         };
 
-        let prompt = build_compactor_prompt(&snapshot);
+        let prompt = build_compactor_prompt(&snapshot, 200_000);
         assert!(prompt.contains("Total tasks: 10"));
         assert!(prompt.contains("Rolling Narrative"));
         assert!(prompt.contains("Persistent Facts"));
         assert!(prompt.contains("Evaluation Digest"));
         assert!(prompt.contains("[task-1] First task"));
         assert!(prompt.contains("[task-2] Active task"));
+    }
+
+    #[test]
+    fn test_compactor_section_budgets_default_200k() {
+        let (narrative, facts, eval) = compactor_section_budgets(200_000);
+        // 200k * 0.03 = 6000 (at the cap)
+        assert_eq!(narrative + facts + eval, 6000);
+        assert!(narrative > facts);
+        assert!(narrative > eval);
+    }
+
+    #[test]
+    fn test_compactor_section_budgets_small_window() {
+        let (narrative, facts, eval) = compactor_section_budgets(16_000);
+        // 16k * 0.03 = 480 → clamped to 500, then section minimums apply
+        assert!(narrative >= 300);
+        assert!(facts >= 100);
+        assert!(eval >= 100);
+        // Total may exceed 500 slightly due to section floor clamping
+        assert!(narrative + facts + eval >= 500);
+        assert!(narrative + facts + eval <= 600);
+    }
+
+    #[test]
+    fn test_compactor_section_budgets_medium_window() {
+        let (narrative, facts, eval) = compactor_section_budgets(64_000);
+        // 64k * 0.03 = 1920
+        let total = narrative + facts + eval;
+        assert!(total >= 1900 && total <= 1950);
+    }
+
+    #[test]
+    fn test_compactor_section_budgets_very_large_window() {
+        let (narrative, facts, eval) = compactor_section_budgets(1_000_000);
+        // 1M * 0.03 = 30000 → clamped to 6000
+        assert_eq!(narrative + facts + eval, 6000);
+    }
+
+    #[test]
+    fn test_compactor_section_budgets_floor_clamp() {
+        let (narrative, facts, eval) = compactor_section_budgets(1_000);
+        // 1k * 0.03 = 30 → clamped to 500, then section minimums apply
+        assert!(narrative >= 300);
+        assert!(facts >= 100);
+        assert!(eval >= 100);
+        // Total may exceed 500 slightly due to section floor clamping
+        assert!(narrative + facts + eval >= 500);
+        assert!(narrative + facts + eval <= 600);
     }
 
     #[test]
