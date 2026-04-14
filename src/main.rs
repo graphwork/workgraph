@@ -2454,6 +2454,20 @@ fn main() -> Result<()> {
                 global,
             ),
         },
+        Commands::Nex {
+            model,
+            endpoint,
+            system_prompt,
+            message,
+            max_turns,
+        } => commands::nex::run(
+            &workgraph_dir,
+            model.as_deref(),
+            endpoint.as_deref(),
+            system_prompt.as_deref(),
+            message.as_deref(),
+            max_turns,
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

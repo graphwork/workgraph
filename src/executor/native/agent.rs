@@ -1301,6 +1301,380 @@ impl AgentLoop {
 
         messages
     }
+
+    /// Run an interactive multi-turn REPL.
+    ///
+    /// Like `run()`, but instead of exiting on `EndTurn`, prints the assistant's
+    /// text and reads the next user message from stdin. Streams tokens to stdout
+    /// as they arrive. The loop exits when the user sends EOF (Ctrl-D) or types
+    /// /quit or /exit.
+    pub async fn run_interactive(
+        &mut self,
+        initial_message: Option<&str>,
+    ) -> Result<AgentResult> {
+        use std::io::{BufRead, Write as IoWrite};
+
+        let mut messages: Vec<Message> = Vec::new();
+        let mut total_usage = Usage::default();
+        let mut tool_calls = Vec::new();
+        let mut turns: usize = 0;
+        let mut consecutive_server_errors: u32 = 0;
+        const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
+
+        let first_input = if let Some(msg) = initial_message {
+            msg.to_string()
+        } else {
+            eprint!("\x1b[1;36m>\x1b[0m ");
+            std::io::stderr().flush().ok();
+            let mut line = String::new();
+            match std::io::stdin().lock().read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    return Ok(AgentResult {
+                        final_text: String::new(),
+                        turns: 0,
+                        total_usage,
+                        tool_calls,
+                    });
+                }
+                Ok(_) => {}
+            }
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                return Ok(AgentResult {
+                    final_text: String::new(),
+                    turns: 0,
+                    total_usage,
+                    tool_calls,
+                });
+            }
+            trimmed
+        };
+
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: first_input,
+            }],
+        });
+
+        loop {
+            if turns >= self.max_turns {
+                eprintln!(
+                    "\n\x1b[33m[nex] Max turns ({}) reached.\x1b[0m",
+                    self.max_turns
+                );
+                break;
+            }
+
+            let request = MessagesRequest {
+                model: self.client.model().to_string(),
+                max_tokens: self.client.max_tokens(),
+                system: Some(self.system_prompt.clone()),
+                messages: messages.clone(),
+                tools: if self.supports_tools {
+                    self.tools.definitions()
+                } else {
+                    vec![]
+                },
+                stream: false,
+            };
+
+            let on_text = |text: String| {
+                eprint!("{}", text);
+                let _ = std::io::stderr().flush();
+            };
+
+            let response = match self.client.send_streaming(&request, &on_text).await {
+                Ok(resp) => {
+                    consecutive_server_errors = 0;
+                    resp
+                }
+                Err(e) => {
+                    if super::openai_client::is_context_too_long(&e) {
+                        eprintln!("\n\x1b[33m[nex] Context too long — compacting...\x1b[0m");
+                        let pre = messages.len();
+                        messages = ContextBudget::emergency_compact(messages, 5);
+                        eprintln!(
+                            "\x1b[33m[nex] Compacted {} -> {} messages\x1b[0m",
+                            pre,
+                            messages.len()
+                        );
+                        continue;
+                    }
+                    if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
+                        if api_err.status == 401 || api_err.status == 403 {
+                            return Err(e);
+                        }
+                        if super::openai_client::is_retryable_status(api_err.status) {
+                            consecutive_server_errors += 1;
+                            if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                                return Err(e);
+                            }
+                            eprintln!(
+                                "\n\x1b[33m[nex] API error {} — retrying ({}/{})\x1b[0m",
+                                api_err.status,
+                                consecutive_server_errors,
+                                MAX_CONSECUTIVE_SERVER_ERRORS
+                            );
+                            continue;
+                        }
+                    }
+                    if is_timeout_error(&e) {
+                        consecutive_server_errors += 1;
+                        if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                            return Err(e);
+                        }
+                        eprintln!("\n\x1b[33m[nex] Request timed out — retrying\x1b[0m");
+                        continue;
+                    }
+                    return Err(e).context("API request failed");
+                }
+            };
+
+            total_usage.add(&response.usage);
+            turns += 1;
+
+            messages.push(Message {
+                role: Role::Assistant,
+                content: response.content.clone(),
+            });
+
+            match response.stop_reason {
+                Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
+                    let has_text = response
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+                    if has_text {
+                        eprintln!();
+                    }
+
+                    eprint!("\n\x1b[1;36m>\x1b[0m ");
+                    std::io::stderr().flush().ok();
+                    let mut line = String::new();
+                    match std::io::stdin().lock().read_line(&mut line) {
+                        Ok(0) => {
+                            eprintln!();
+                            break;
+                        }
+                        Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let trimmed = line.trim().to_string();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if trimmed == "/quit" || trimmed == "/exit" {
+                        break;
+                    }
+
+                    messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::Text { text: trimmed }],
+                    });
+                }
+                Some(StopReason::ToolUse) => {
+                    let tool_use_blocks: Vec<_> = response
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                Some((id.clone(), name.clone(), input.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    for (_, name, input) in &tool_use_blocks {
+                        let input_summary = if let Some(cmd) =
+                            input.get("command").and_then(|v| v.as_str())
+                        {
+                            format!("command={}", truncate_for_display(cmd, 80))
+                        } else if let Some(path) =
+                            input.get("file_path").and_then(|v| v.as_str())
+                        {
+                            format!("path={}", path)
+                        } else if let Some(pat) =
+                            input.get("pattern").and_then(|v| v.as_str())
+                        {
+                            format!("pattern={}", truncate_for_display(pat, 60))
+                        } else {
+                            let s = input.to_string();
+                            truncate_for_display(&s, 80).to_string()
+                        };
+                        eprintln!("\x1b[2m  > {}({})\x1b[0m", name, input_summary);
+                    }
+
+                    let mut parse_error_results = Vec::new();
+                    let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
+
+                    for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
+                        if input.get("__parse_error").is_some() {
+                            let error_msg = input
+                                .get("__parse_error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown parse error");
+                            let raw_args = input
+                                .get("__raw_arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            parse_error_results.push((
+                                i,
+                                id.clone(),
+                                name.clone(),
+                                input.clone(),
+                                super::tools::ToolOutput {
+                                    content: format!(
+                                        "ERROR: Tool arguments JSON parse failed: {}. Raw: {}",
+                                        error_msg, raw_args
+                                    ),
+                                    is_error: true,
+                                },
+                            ));
+                        } else {
+                            batch_calls.push((
+                                i,
+                                id.clone(),
+                                super::tools::ToolCall {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                },
+                            ));
+                        }
+                    }
+
+                    let calls_only: Vec<_> =
+                        batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
+                    let batch_results = self
+                        .tools
+                        .execute_batch(
+                            &calls_only,
+                            super::tools::DEFAULT_MAX_CONCURRENT_TOOLS,
+                        )
+                        .await;
+
+                    let mut all_results: Vec<(
+                        usize,
+                        String,
+                        String,
+                        serde_json::Value,
+                        super::tools::ToolOutput,
+                        u64,
+                    )> = Vec::with_capacity(tool_use_blocks.len());
+
+                    for (orig_idx, id, name, input, output) in parse_error_results {
+                        all_results.push((orig_idx, id, name, input, output, 0));
+                    }
+                    for (batch_idx, batch_result) in batch_results.into_iter().enumerate() {
+                        let (orig_idx, id, _) = &batch_calls[batch_idx];
+                        let input = tool_use_blocks[*orig_idx].2.clone();
+                        all_results.push((
+                            *orig_idx,
+                            id.clone(),
+                            batch_result.name,
+                            input,
+                            batch_result.output,
+                            batch_result.duration_ms,
+                        ));
+                    }
+                    all_results.sort_by_key(|(idx, _, _, _, _, _)| *idx);
+
+                    let mut results = Vec::new();
+                    for (_, id, name, input, output, _) in &all_results {
+                        if output.is_error {
+                            eprintln!(
+                                "\x1b[2m  x {} error: {}\x1b[0m",
+                                name,
+                                truncate_for_display(&output.content, 100)
+                            );
+                        } else {
+                            eprintln!(
+                                "\x1b[2m  + {} ({} chars)\x1b[0m",
+                                name,
+                                output.content.len()
+                            );
+                        }
+
+                        tool_calls.push(ToolCallRecord {
+                            name: name.clone(),
+                            input: input.clone(),
+                            output: output.content.clone(),
+                            is_error: output.is_error,
+                        });
+
+                        results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: output.content.clone(),
+                            is_error: output.is_error,
+                        });
+                    }
+
+                    messages.push(Message {
+                        role: Role::User,
+                        content: results,
+                    });
+                }
+                Some(StopReason::MaxTokens) => {
+                    messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::Text {
+                            text: "Your response was truncated. Please continue.".to_string(),
+                        }],
+                    });
+                }
+            }
+
+            match self.context_budget.check_pressure(&messages) {
+                ContextPressureAction::Ok | ContextPressureAction::Warning => {}
+                ContextPressureAction::EmergencyCompaction => {
+                    let pre = messages.len();
+                    messages = ContextBudget::emergency_compact(messages, 5);
+                    eprintln!(
+                        "\x1b[33m[nex] Context pressure — compacted {} -> {} messages\x1b[0m",
+                        pre,
+                        messages.len()
+                    );
+                }
+                ContextPressureAction::CleanExit => {
+                    eprintln!(
+                        "\x1b[33m[nex] Context limit reached. Please start a new session.\x1b[0m"
+                    );
+                    break;
+                }
+            }
+        }
+
+        let final_text = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+
+        Ok(AgentResult {
+            final_text,
+            turns,
+            total_usage,
+            tool_calls,
+        })
+    }
+}
+
+fn truncate_for_display(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }
 
 /// Check whether an error is a request timeout.

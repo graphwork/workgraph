@@ -1757,6 +1757,28 @@ pub enum Commands {
         command: KeyCommands,
     },
 
+    /// Interactive agentic REPL — coding assistant powered by any model
+    Nex {
+        /// Model to use (e.g., openrouter:qwen/qwen3-coder, ollama:llama3.2, sonnet)
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+
+        /// Named endpoint from config (e.g., openrouter, local)
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
+
+        /// Custom system prompt
+        #[arg(long)]
+        system_prompt: Option<String>,
+
+        /// Initial message (skip the first prompt)
+        message: Option<String>,
+
+        /// Maximum conversation turns
+        #[arg(long, default_value = "200")]
+        max_turns: usize,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -3686,6 +3708,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Models { .. } => "models",
         Commands::Model { .. } => "model",
         Commands::Key { .. } => "key",
+        Commands::Nex { .. } => "nex",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",

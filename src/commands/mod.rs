@@ -67,6 +67,7 @@ pub mod model_cmd;
 pub mod models;
 pub mod msg;
 pub mod native_exec;
+pub mod nex;
 pub mod next;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
