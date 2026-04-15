@@ -981,7 +981,7 @@ impl OpenAiClient {
         } else {
             String::new()
         };
-        
+
         // Use standard logging instead of eprintln to avoid console clutter
         log::info!(
             "[openai-client] Stream complete: {} chunks, {} text chars, {} tool calls{}",
@@ -1143,7 +1143,7 @@ impl OpenAiClient {
         } else {
             String::new()
         };
-        
+
         // Use standard logging instead of eprintln to avoid console clutter
         log::info!(
             "[openai-client] Stream complete: {} chunks, {} text chars, {} tool calls{}",
