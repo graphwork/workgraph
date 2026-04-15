@@ -148,13 +148,59 @@ pub fn load_resume_data(
 
 /// Reconstruct `Vec<Message>` from journal entries.
 ///
-/// Extracts Message entries (user/assistant), skipping Init, ToolExecution,
-/// Compaction, and End entries. ToolExecution is metadata — the actual tool
-/// results appear in the subsequent User message as ToolResult content blocks.
+/// Reconstruct the message list from journal entries with
+/// compaction-aware semantics.
+///
+/// **L4: resume-from-partial-compaction.** If the journal contains one or
+/// more `Compaction` entries, this function uses the LATEST compaction's
+/// `compacted_through_seq` to drop all superseded entries and replaces
+/// them with a single synthetic `PRIOR CONVERSATION SUMMARY` user message.
+/// This makes `wg service restart` / agent resume correctly preserve the
+/// context-pressure savings from prior compactions — otherwise on resume
+/// we'd re-hydrate the full pre-compaction history and defeat the point.
+///
+/// Entries kept: all `Message` entries with `seq > latest_compaction.seq`.
+/// Entries dropped: `Init`, `ToolExecution`, `End`, any `Message` with
+/// `seq ≤ latest_compaction.compacted_through_seq`, and older `Compaction`
+/// entries (only the latest summary is emitted).
 fn reconstruct_messages(entries: &[JournalEntry]) -> Vec<Message> {
+    // Find the latest Compaction entry (by seq). Its compacted_through_seq
+    // marks the cutoff — everything up to and including that seq has
+    // already been summarized and should NOT be re-hydrated.
+    let latest_compaction = entries.iter().rev().find_map(|e| match &e.kind {
+        JournalEntryKind::Compaction {
+            compacted_through_seq,
+            summary,
+            ..
+        } => Some((*compacted_through_seq, summary.clone())),
+        _ => None,
+    });
+
+    let cutoff_seq = latest_compaction.as_ref().map(|(seq, _)| *seq);
+
     let mut messages = Vec::new();
 
+    // If we had a compaction, emit its summary as the first synthetic
+    // user message — this replaces all the compacted entries.
+    if let Some((_, summary)) = &latest_compaction {
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "[Resume: Prior conversation was compacted. Summary of earlier work:]\n{}",
+                    summary
+                ),
+            }],
+        });
+    }
+
     for entry in entries {
+        // Drop entries superseded by the latest compaction.
+        if let Some(cutoff) = cutoff_seq
+            && entry.seq <= cutoff
+        {
+            continue;
+        }
         match &entry.kind {
             JournalEntryKind::Message { role, content, .. } => {
                 messages.push(Message {
@@ -162,18 +208,9 @@ fn reconstruct_messages(entries: &[JournalEntry]) -> Vec<Message> {
                     content: content.clone(),
                 });
             }
-            JournalEntryKind::Compaction { summary, .. } => {
-                // A prior compaction: inject the summary as a user message
-                messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Text {
-                        text: format!(
-                            "[Resume: Prior conversation was compacted. Summary of earlier work:]\n{}",
-                            summary
-                        ),
-                    }],
-                });
-            }
+            // Later Compaction entries (beyond the latest one we already
+            // emitted above) shouldn't exist in practice; skip defensively.
+            JournalEntryKind::Compaction { .. } => {}
             // Init, ToolExecution, End — skip
             _ => {}
         }
@@ -1142,6 +1179,244 @@ mod tests {
         assert_eq!(messages[1].role, Role::Assistant);
         assert_eq!(messages[2].role, Role::User);
         assert_eq!(messages[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_reconstruct_messages_respects_compaction_cutoff() {
+        // L4: journal has 4 messages, then a Compaction entry superseding
+        // messages up to seq 4 (seq 1 = Init, seq 2,3,4 = first 3 messages),
+        // then 2 more messages after the compaction.
+        //
+        // Expected reconstruct output:
+        // [synthetic "PRIOR CONVERSATION SUMMARY" user message,
+        //  message 5, message 6]
+        // Total = 3 messages. The first 3 original messages are DROPPED
+        // because the compaction superseded them.
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conversation.jsonl");
+        let mut journal = Journal::open(&path).unwrap();
+
+        // seq 1
+        journal
+            .append(JournalEntryKind::Init {
+                model: "m".to_string(),
+                provider: "p".to_string(),
+                system_prompt: "s".to_string(),
+                tools: vec![],
+                task_id: None,
+            })
+            .unwrap();
+        // seq 2..=4
+        for text in ["first user msg", "first asst msg", "second user msg"] {
+            let role = if text.contains("user") {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            journal
+                .append(JournalEntryKind::Message {
+                    role,
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                })
+                .unwrap();
+        }
+        // seq 5: compaction superseding everything ≤ seq 4
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 4,
+                summary: "User asked question, assistant answered.".to_string(),
+                original_message_count: 3,
+                original_token_count: 42,
+            })
+            .unwrap();
+        // seq 6, 7: post-compaction messages
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "post-compact user".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "post-compact asst".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+
+        let entries = Journal::read_all(&path).unwrap();
+        let messages = reconstruct_messages(&entries);
+
+        // Expect: [synthetic summary, post-compact user, post-compact asst]
+        assert_eq!(
+            messages.len(),
+            3,
+            "expected synthetic summary + 2 post-compact messages, got {}",
+            messages.len()
+        );
+        // First message = synthetic summary
+        assert_eq!(messages[0].role, Role::User);
+        let first_text = messages[0]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(first_text.contains("Prior conversation was compacted"));
+        assert!(first_text.contains("User asked question, assistant answered."));
+        // Second + third = post-compaction messages, verbatim
+        assert_eq!(messages[1].role, Role::User);
+        let msg1_text = messages[1]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(msg1_text, "post-compact user");
+        assert_eq!(messages[2].role, Role::Assistant);
+
+        // Critically: the pre-compaction messages should NOT appear anywhere.
+        for msg in &messages {
+            for block in &msg.content {
+                if let ContentBlock::Text { text } = block {
+                    assert!(
+                        !text.contains("first user msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                    assert!(
+                        !text.contains("first asst msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                    assert!(
+                        !text.contains("second user msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_messages_respects_latest_compaction_when_multiple() {
+        // L4: journal has two Compaction entries. Only the LATEST one's
+        // cutoff should apply — and only its summary should be emitted.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conversation.jsonl");
+        let mut journal = Journal::open(&path).unwrap();
+
+        journal
+            .append(JournalEntryKind::Init {
+                model: "m".to_string(),
+                provider: "p".to_string(),
+                system_prompt: "s".to_string(),
+                tools: vec![],
+                task_id: None,
+            })
+            .unwrap();
+        // seq 2: message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "very early message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        // seq 3: first compaction
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 2,
+                summary: "FIRST SUMMARY".to_string(),
+                original_message_count: 1,
+                original_token_count: 10,
+            })
+            .unwrap();
+        // seq 4: message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "middle message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        // seq 5: second compaction
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 4,
+                summary: "SECOND SUMMARY".to_string(),
+                original_message_count: 2,
+                original_token_count: 20,
+            })
+            .unwrap();
+        // seq 6: final message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "latest message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+
+        let entries = Journal::read_all(&path).unwrap();
+        let messages = reconstruct_messages(&entries);
+
+        // Expect: [SECOND SUMMARY, "latest message"]
+        assert_eq!(messages.len(), 2);
+        let summary_text = messages[0]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(summary_text.contains("SECOND SUMMARY"));
+        assert!(
+            !summary_text.contains("FIRST SUMMARY"),
+            "older compaction summary should have been superseded"
+        );
+        let last_text = messages[1]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(last_text, "latest message");
     }
 
     #[test]

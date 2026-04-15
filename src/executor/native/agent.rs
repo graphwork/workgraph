@@ -1237,10 +1237,15 @@ impl AgentLoop {
                         consecutive_noop_compactions,
                     );
 
-                    // Journal the compaction event
+                    // Journal the compaction event. `compacted_through_seq`
+                    // records the seq of the last journal entry this
+                    // compaction supersedes — on resume, reconstruct_messages
+                    // drops entries with seq ≤ this value and substitutes
+                    // `summary` in their place.
                     if let Some(ref mut j) = journal {
+                        let compacted_through_seq = j.seq();
                         let _ = j.append(JournalEntryKind::Compaction {
-                            compacted_through_seq: 0,
+                            compacted_through_seq,
                             summary: format!(
                                 "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
                                 tier_name, pre_tokens, post_tokens, pre_count, post_count
