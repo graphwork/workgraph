@@ -392,7 +392,7 @@ impl Tool for WebSearchTool {
         }
 
         // Build a single reqwest client and clone it into each future.
-        // reqwest::Client is Arc-wrapped internally, so cloning is
+        // rquest::Client is Arc-wrapped internally, so cloning is
         // cheap and the underlying connection pool is shared.
         let client = match build_client() {
             Ok(c) => c,
@@ -550,15 +550,21 @@ fn normalize_url(url: &str) -> String {
     trimmed.to_string()
 }
 
-fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn build_client() -> Result<rquest::Client, String> {
+    // Present as current Chrome. rquest emulates not just the
+    // User-Agent but the full TLS (JA3/JA4) fingerprint, HTTP/2
+    // frame ordering, and client-hints headers — so servers using
+    // TLS fingerprinting to distinguish scripts from browsers see
+    // us as Chrome, not as rustls.
+    rquest::Client::builder()
+        .emulation(rquest_util::Emulation::Chrome136)
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
 
 async fn dispatch(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     backend: Backend,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
@@ -578,7 +584,7 @@ async fn dispatch(
 // ─── Backend: Google News RSS ───────────────────────────────────────────
 
 async fn search_google_news(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     let url = format!(
@@ -689,7 +695,7 @@ fn extract_tag_text(html: &str, tag: &str) -> Option<String> {
 // ─── Backend: Wikipedia OpenSearch ──────────────────────────────────────
 
 async fn search_wikipedia(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     let url = format!(
@@ -747,7 +753,7 @@ async fn search_wikipedia(
 // ─── Backend: Hacker News Algolia ───────────────────────────────────────
 
 async fn search_hacker_news(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     let url = format!(
@@ -806,7 +812,7 @@ async fn search_hacker_news(
 
 // ─── Backend: GitHub search ─────────────────────────────────────────────
 
-async fn search_github(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+async fn search_github(client: &rquest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
     // GitHub search API: public endpoint, no auth needed, 60/hour
     // unauthenticated per IP. Caps at per_page=100 but we take
     // MAX_RESULTS. Stars-descending sort so we favor maintained
@@ -874,7 +880,7 @@ async fn search_github(client: &reqwest::Client, query: &str) -> Result<Vec<Sear
 // ─── Backend: Stack Exchange search (Stack Overflow) ───────────────────
 
 async fn search_stack_exchange(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     // Stack Exchange API: 300 requests/day no-key per IP, more than
@@ -955,7 +961,7 @@ async fn search_stack_exchange(
 // ─── Backend: crates.io ────────────────────────────────────────────────
 
 async fn search_crates_io(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     // crates.io search: documented rate limits (we're nowhere close),
@@ -1017,7 +1023,7 @@ async fn search_crates_io(
 
 // ─── Backend: arxiv ────────────────────────────────────────────────────
 
-async fn search_arxiv(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+async fn search_arxiv(client: &rquest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
     // arxiv API: 1 request per 3 seconds per their FAQ. We rate-limit
     // to 3.5s in Backend::min_interval so we're safely over their
     // floor. Returns Atom XML with <entry> blocks.
@@ -1126,8 +1132,12 @@ fn parse_arxiv_atom(body: &str) -> Vec<SearchResult> {
 /// launch lazily on first use and keep the browser alive for the rest
 /// of the process lifetime — spawning Chrome per query would add ~2-3s
 /// latency to every call, which defeats the point.
-struct BrowserHandle {
-    browser: chromiumoxide::Browser,
+///
+/// Public within the crate so `web_fetch` can borrow the same
+/// handle for its fallback path — one browser shared across all
+/// backends that need one.
+pub(crate) struct BrowserHandle {
+    pub(crate) browser: chromiumoxide::Browser,
     /// Chromiumoxide requires us to drive the event loop via a task
     /// that consumes messages from the handler stream. This handle
     /// keeps that task alive for the lifetime of BrowserHandle.
@@ -1135,6 +1145,14 @@ struct BrowserHandle {
 }
 
 static BROWSER_CELL: OnceLock<Arc<TokioMutex<Option<BrowserHandle>>>> = OnceLock::new();
+
+/// Accessor for `web_fetch` to reuse the same browser handle the
+/// `web_search` Browser backend uses. Lazily initializes if neither
+/// tool has touched the browser yet this session.
+pub(crate) async fn get_or_launch_browser_for_fetch()
+-> Result<Arc<TokioMutex<Option<BrowserHandle>>>, String> {
+    get_or_launch_browser().await
+}
 
 /// Get (or lazily initialize) the shared browser handle. On first call
 /// this spawns a Chrome process with stealth flags; subsequent calls
@@ -1288,7 +1306,7 @@ async fn search_browser_chrome(query: &str) -> Result<Vec<SearchResult>, String>
 // ─── Backend: DuckDuckGo HTML (reqwest-based, deprecated) ───────────────
 
 async fn search_ddg_html(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
     let request = client
@@ -1415,7 +1433,7 @@ fn extract_ddg_redirect(url: &str) -> Option<String> {
 // ─── HTTP helper ────────────────────────────────────────────────────────
 
 async fn http_get_text(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     url: &str,
     user_agent: Option<&str>,
 ) -> Result<String, String> {
@@ -1436,8 +1454,8 @@ async fn http_get_text(
     // either way (caller shouldn't block on our behalf), but we log
     // the header value into the error so the circuit breaker or a
     // downstream human can see it.
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+    if status == rquest::StatusCode::TOO_MANY_REQUESTS
+        || status == rquest::StatusCode::SERVICE_UNAVAILABLE
     {
         let retry_after = resp
             .headers()
