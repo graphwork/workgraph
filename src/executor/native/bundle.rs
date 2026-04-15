@@ -85,7 +85,8 @@ impl Bundle {
     pub fn research() -> Self {
         Bundle {
             name: "research".to_string(),
-            description: "Read-only research agent with background tasks and web access.".to_string(),
+            description: "Read-only research agent with background tasks and web access."
+                .to_string(),
             tools: vec![
                 "read_file".to_string(),
                 "glob".to_string(),
@@ -443,29 +444,68 @@ context_scope = "graph"
     #[test]
     fn test_bundle_research_has_bg_and_web() {
         let bundle = Bundle::research();
-        assert!(bundle.tools.contains(&"bg".to_string()), "research should include bg");
-        assert!(bundle.tools.contains(&"web_search".to_string()), "research should include web_search");
-        assert!(bundle.tools.contains(&"web_fetch".to_string()), "research should include web_fetch");
-        assert!(!bundle.tools.contains(&"delegate".to_string()), "research should NOT include delegate");
+        assert!(
+            bundle.tools.contains(&"bg".to_string()),
+            "research should include bg"
+        );
+        assert!(
+            bundle.tools.contains(&"web_search".to_string()),
+            "research should include web_search"
+        );
+        assert!(
+            bundle.tools.contains(&"web_fetch".to_string()),
+            "research should include web_fetch"
+        );
+        assert!(
+            !bundle.tools.contains(&"delegate".to_string()),
+            "research should NOT include delegate"
+        );
     }
 
     #[test]
     fn test_bundle_shell_has_bg_only() {
         let bundle = Bundle::shell();
-        assert!(bundle.tools.contains(&"bash".to_string()), "shell should include bash");
-        assert!(bundle.tools.contains(&"bg".to_string()), "shell should include bg");
-        assert!(!bundle.tools.contains(&"web_search".to_string()), "shell should NOT include web_search");
-        assert!(!bundle.tools.contains(&"web_fetch".to_string()), "shell should NOT include web_fetch");
-        assert!(!bundle.tools.contains(&"delegate".to_string()), "shell should NOT include delegate");
+        assert!(
+            bundle.tools.contains(&"bash".to_string()),
+            "shell should include bash"
+        );
+        assert!(
+            bundle.tools.contains(&"bg".to_string()),
+            "shell should include bg"
+        );
+        assert!(
+            !bundle.tools.contains(&"web_search".to_string()),
+            "shell should NOT include web_search"
+        );
+        assert!(
+            !bundle.tools.contains(&"web_fetch".to_string()),
+            "shell should NOT include web_fetch"
+        );
+        assert!(
+            !bundle.tools.contains(&"delegate".to_string()),
+            "shell should NOT include delegate"
+        );
     }
 
     #[test]
     fn test_bundle_bare_no_new_tools() {
         let bundle = Bundle::bare();
-        assert!(!bundle.tools.contains(&"bg".to_string()), "bare should NOT include bg");
-        assert!(!bundle.tools.contains(&"web_search".to_string()), "bare should NOT include web_search");
-        assert!(!bundle.tools.contains(&"web_fetch".to_string()), "bare should NOT include web_fetch");
-        assert!(!bundle.tools.contains(&"delegate".to_string()), "bare should NOT include delegate");
+        assert!(
+            !bundle.tools.contains(&"bg".to_string()),
+            "bare should NOT include bg"
+        );
+        assert!(
+            !bundle.tools.contains(&"web_search".to_string()),
+            "bare should NOT include web_search"
+        );
+        assert!(
+            !bundle.tools.contains(&"web_fetch".to_string()),
+            "bare should NOT include web_fetch"
+        );
+        assert!(
+            !bundle.tools.contains(&"delegate".to_string()),
+            "bare should NOT include delegate"
+        );
     }
 
     #[test]
@@ -481,11 +521,27 @@ context_scope = "graph"
         let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
         let bundle = Bundle::research();
         let filtered = bundle.filter_registry(registry);
-        let names: Vec<String> = filtered.definitions().iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"bg".to_string()), "filtered research should have bg");
-        assert!(names.contains(&"web_search".to_string()), "filtered research should have web_search");
-        assert!(names.contains(&"web_fetch".to_string()), "filtered research should have web_fetch");
-        assert!(!names.contains(&"delegate".to_string()), "filtered research should NOT have delegate");
+        let names: Vec<String> = filtered
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"bg".to_string()),
+            "filtered research should have bg"
+        );
+        assert!(
+            names.contains(&"web_search".to_string()),
+            "filtered research should have web_search"
+        );
+        assert!(
+            names.contains(&"web_fetch".to_string()),
+            "filtered research should have web_fetch"
+        );
+        assert!(
+            !names.contains(&"delegate".to_string()),
+            "filtered research should NOT have delegate"
+        );
     }
 
     #[test]
@@ -494,11 +550,27 @@ context_scope = "graph"
         let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
         let bundle = Bundle::shell();
         let filtered = bundle.filter_registry(registry);
-        let names: Vec<String> = filtered.definitions().iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"bash".to_string()), "filtered shell should have bash");
-        assert!(names.contains(&"bg".to_string()), "filtered shell should have bg");
-        assert!(!names.contains(&"web_search".to_string()), "filtered shell should NOT have web_search");
-        assert!(!names.contains(&"delegate".to_string()), "filtered shell should NOT have delegate");
+        let names: Vec<String> = filtered
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"bash".to_string()),
+            "filtered shell should have bash"
+        );
+        assert!(
+            names.contains(&"bg".to_string()),
+            "filtered shell should have bg"
+        );
+        assert!(
+            !names.contains(&"web_search".to_string()),
+            "filtered shell should NOT have web_search"
+        );
+        assert!(
+            !names.contains(&"delegate".to_string()),
+            "filtered shell should NOT have delegate"
+        );
     }
 
     #[test]
@@ -507,9 +579,22 @@ context_scope = "graph"
         let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
         let bundle = Bundle::bare();
         let filtered = bundle.filter_registry(registry);
-        let names: Vec<String> = filtered.definitions().iter().map(|d| d.name.clone()).collect();
-        assert!(!names.contains(&"bg".to_string()), "filtered bare should NOT have bg");
-        assert!(!names.contains(&"web_search".to_string()), "filtered bare should NOT have web_search");
-        assert!(!names.contains(&"delegate".to_string()), "filtered bare should NOT have delegate");
+        let names: Vec<String> = filtered
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            !names.contains(&"bg".to_string()),
+            "filtered bare should NOT have bg"
+        );
+        assert!(
+            !names.contains(&"web_search".to_string()),
+            "filtered bare should NOT have web_search"
+        );
+        assert!(
+            !names.contains(&"delegate".to_string()),
+            "filtered bare should NOT have delegate"
+        );
     }
 }

@@ -201,12 +201,8 @@ impl AgentLoop {
         // just message-content length.
         let context_budget = {
             let tool_defs = tools.definitions();
-            let overhead = estimate_agent_overhead(
-                &system_prompt,
-                &tool_defs,
-                client.max_tokens(),
-                4.0,
-            );
+            let overhead =
+                estimate_agent_overhead(&system_prompt, &tool_defs, client.max_tokens(), 4.0);
             ContextBudget::with_window_size(client.context_window()).with_overhead(overhead)
         };
 
@@ -609,18 +605,14 @@ impl AgentLoop {
                         let delta = pre_tokens.saturating_sub(post_tokens);
                         eprintln!(
                             "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
-                            pre_tokens,
-                            post_tokens,
-                            delta,
-                            self.context_budget.overhead_tokens,
+                            pre_tokens, post_tokens, delta, self.context_budget.overhead_tokens,
                         );
 
                         // Reduce completion reservation on retry to free budget for
                         // input. On a 32k-window model where we're already over
                         // capacity, reserving 8k for output is hostile — halve it
                         // with a 1024-token floor so the model can still respond.
-                        let retry_max_tokens =
-                            std::cmp::max(self.client.max_tokens() / 2, 1024);
+                        let retry_max_tokens = std::cmp::max(self.client.max_tokens() / 2, 1024);
 
                         // Rebuild request with compacted messages and retry once
                         let retry_request = MessagesRequest {
@@ -1210,7 +1202,11 @@ impl AgentLoop {
 
                     eprintln!(
                         "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} messages, overhead {} kept, noop_streak={})",
-                        if should_escalate { "Escalated hard" } else { "Proactive" },
+                        if should_escalate {
+                            "Escalated hard"
+                        } else {
+                            "Proactive"
+                        },
                         pre_tokens,
                         post_tokens,
                         delta,

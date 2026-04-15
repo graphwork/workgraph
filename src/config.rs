@@ -6572,7 +6572,10 @@ profile = "openrouter"
         assert_eq!(config.native_executor.web.fetch_timeout_secs, 30);
         assert!(config.native_executor.web.search_api_key.is_none());
         assert_eq!(config.native_executor.background.max_background_tasks, 5);
-        assert_eq!(config.native_executor.background.background_timeout_secs, 600);
+        assert_eq!(
+            config.native_executor.background.background_timeout_secs,
+            600
+        );
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 10);
         assert_eq!(config.native_executor.delegate.delegate_model, "");
     }
@@ -6596,13 +6599,22 @@ delegate_model = "claude-haiku-4-5-20251001"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.native_executor.web.search_backend, "serper");
-        assert_eq!(config.native_executor.web.search_api_key, Some("sk-test-123".to_string()));
+        assert_eq!(
+            config.native_executor.web.search_api_key,
+            Some("sk-test-123".to_string())
+        );
         assert_eq!(config.native_executor.web.fetch_max_chars, 32_000);
         assert_eq!(config.native_executor.web.fetch_timeout_secs, 60);
         assert_eq!(config.native_executor.background.max_background_tasks, 10);
-        assert_eq!(config.native_executor.background.background_timeout_secs, 1200);
+        assert_eq!(
+            config.native_executor.background.background_timeout_secs,
+            1200
+        );
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 15);
-        assert_eq!(config.native_executor.delegate.delegate_model, "claude-haiku-4-5-20251001");
+        assert_eq!(
+            config.native_executor.delegate.delegate_model,
+            "claude-haiku-4-5-20251001"
+        );
     }
 
     #[test]

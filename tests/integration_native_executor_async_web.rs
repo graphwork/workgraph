@@ -103,35 +103,32 @@ async fn web_fetch_tool_fetches_html_returns_markdown() {
     // Serve a simple HTML page
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            async {
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                let mut s = stream;
-                let mut buf = vec![0u8; 4096];
-                let _ = s.read(&mut buf).await;
-                let response = concat!(
-                    "HTTP/1.1 200 OK\r\n",
-                    "Content-Type: text/html\r\n",
-                    "Connection: close\r\n",
-                    "\r\n",
-                    "<html><head><title>Test Page</title></head>",
-                    "<body>",
-                    "<article>",
-                    "<h1>Hello World</h1>",
-                    "<p>This is the main content of the test page. It has enough text ",
-                    "that readability should be able to extract it properly. The content ",
-                    "discusses integration testing for the native executor.</p>",
-                    "<p>Second paragraph with more meaningful content about how web fetch ",
-                    "converts HTML into clean markdown output.</p>",
-                    "</article>",
-                    "<footer>Footer noise</footer>",
-                    "</body></html>",
-                );
-                s.write_all(response.as_bytes()).await.unwrap();
-                s.shutdown().await.ok();
-            },
-        )
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut s = stream;
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: text/html\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+                "<html><head><title>Test Page</title></head>",
+                "<body>",
+                "<article>",
+                "<h1>Hello World</h1>",
+                "<p>This is the main content of the test page. It has enough text ",
+                "that readability should be able to extract it properly. The content ",
+                "discusses integration testing for the native executor.</p>",
+                "<p>Second paragraph with more meaningful content about how web fetch ",
+                "converts HTML into clean markdown output.</p>",
+                "</article>",
+                "<footer>Footer noise</footer>",
+                "</body></html>",
+            );
+            s.write_all(response.as_bytes()).await.unwrap();
+            s.shutdown().await.ok();
+        })
         .await;
     });
 
@@ -182,9 +179,7 @@ async fn web_fetch_error_on_empty_url() {
     let tmp = TempDir::new().unwrap();
     let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
 
-    let output = registry
-        .execute("web_fetch", &json!({"url": ""}))
-        .await;
+    let output = registry.execute("web_fetch", &json!({"url": ""})).await;
     assert!(output.is_error, "Should error on empty URL");
     assert!(output.content.contains("empty"));
 }
@@ -209,7 +204,10 @@ async fn web_fetch_custom_config_applies() {
 
     let defs = registry.definitions();
     let has_web_fetch = defs.iter().any(|d| d.name == "web_fetch");
-    assert!(has_web_fetch, "web_fetch should be in the registry with custom config");
+    assert!(
+        has_web_fetch,
+        "web_fetch should be in the registry with custom config"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -459,12 +457,14 @@ async fn delegate_tool_input_validation() {
     // Missing prompt
     let output = registry.execute("delegate", &json!({})).await;
     assert!(output.is_error);
-    assert!(output.content.contains("Missing required parameter: prompt"));
+    assert!(
+        output
+            .content
+            .contains("Missing required parameter: prompt")
+    );
 
     // Empty prompt
-    let output = registry
-        .execute("delegate", &json!({"prompt": "  "}))
-        .await;
+    let output = registry.execute("delegate", &json!({"prompt": "  "})).await;
     assert!(output.is_error);
     assert!(output.content.contains("must not be empty"));
 

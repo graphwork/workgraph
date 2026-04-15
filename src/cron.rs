@@ -453,12 +453,24 @@ mod tests {
         };
 
         let result = reset_cron_task(&mut task);
-        assert!(result, "reset_cron_task should return true for Done cron task");
+        assert!(
+            result,
+            "reset_cron_task should return true for Done cron task"
+        );
         assert_eq!(task.status, crate::graph::Status::Open);
         assert!(task.assigned.is_none(), "assigned should be cleared");
-        assert!(task.completed_at.is_none(), "completed_at should be cleared");
-        assert!(task.last_cron_fire.is_some(), "last_cron_fire should be set");
-        assert!(task.next_cron_fire.is_some(), "next_cron_fire should be set");
+        assert!(
+            task.completed_at.is_none(),
+            "completed_at should be cleared"
+        );
+        assert!(
+            task.last_cron_fire.is_some(),
+            "last_cron_fire should be set"
+        );
+        assert!(
+            task.next_cron_fire.is_some(),
+            "next_cron_fire should be set"
+        );
     }
 
     #[test]
@@ -511,7 +523,10 @@ mod tests {
         let from = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
         let jitter = calculate_jitter("task-a", &schedule, from);
-        assert!(jitter.num_seconds().abs() <= 6, "jitter should be ≤6s for minute schedule");
+        assert!(
+            jitter.num_seconds().abs() <= 6,
+            "jitter should be ≤6s for minute schedule"
+        );
     }
 
     #[test]
@@ -527,7 +542,10 @@ mod tests {
         let next = next.unwrap();
         let raw_next = Utc.with_ymd_and_hms(2024, 1, 1, 2, 0, 0).unwrap();
         let diff = (next - raw_next).num_seconds().abs();
-        assert!(diff <= MAX_JITTER_SECS, "jitter should be within MAX_JITTER_SECS");
+        assert!(
+            diff <= MAX_JITTER_SECS,
+            "jitter should be within MAX_JITTER_SECS"
+        );
     }
 
     #[test]

@@ -411,7 +411,11 @@ mod tests {
         let text = format!("{}\n\n{}\n\n{}", para1, para2, para3);
         // Chunk size 500 → should split roughly at paragraph boundaries.
         let chunks = chunk_text(&text, 500);
-        assert!(chunks.len() >= 2, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
 
         // Concatenation should reconstruct the original (no chars lost).
         let recombined: String = chunks.join("");

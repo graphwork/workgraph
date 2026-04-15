@@ -217,11 +217,12 @@ pub fn run(
 
     // Validate --subtask: requires WG_TASK_ID (must be called from within an agent context)
     let subtask_parent_id = if subtask {
-        let parent_id = std::env::var("WG_TASK_ID")
-            .map_err(|_| anyhow::anyhow!(
+        let parent_id = std::env::var("WG_TASK_ID").map_err(|_| {
+            anyhow::anyhow!(
                 "--subtask requires an active task context (WG_TASK_ID must be set). \
                  This flag is designed for agents to delegate blocking child tasks."
-            ))?;
+            )
+        })?;
         Some(parent_id)
     } else {
         None
@@ -706,9 +707,7 @@ pub fn run(
         }
 
         // Update agent status to Parked if there's an assigned agent
-        if let Ok(mut registry) =
-            workgraph::service::registry::AgentRegistry::load_locked(dir)
-        {
+        if let Ok(mut registry) = workgraph::service::registry::AgentRegistry::load_locked(dir) {
             for agent in registry.registry.agents.values_mut() {
                 if agent.task_id == parent_id && agent.is_alive() {
                     agent.status = workgraph::service::registry::AgentStatus::Parked;
@@ -723,8 +722,13 @@ pub fn run(
         super::notify_graph_changed(dir);
 
         println!("Added subtask: {} ({})", title, task_id);
-        println!("  Parent '{}' is now waiting for subtask to complete.", parent_id);
-        println!("  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes.");
+        println!(
+            "  Parent '{}' is now waiting for subtask to complete.",
+            parent_id
+        );
+        println!(
+            "  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes."
+        );
     } else if paused {
         println!("Added task (draft): {} ({})", title, task_id);
         println!(
@@ -1487,8 +1491,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1542,8 +1546,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1596,9 +1600,9 @@ mod tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1658,9 +1662,9 @@ mod tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1718,8 +1722,8 @@ mod tests {
             true,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1772,9 +1776,9 @@ mod tests {
             None,
             false, // allow_phantom=false, but paused=true defers validation
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1832,8 +1836,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1935,11 +1939,7 @@ context_window = 32768
                 {"id": "qwen/qwen3-coder-30b-a3b-instruct", "name": "Qwen3 Coder 30B"},
             ]
         });
-        std::fs::write(
-            dir.path().join("model_cache.json"),
-            cache.to_string(),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
         let result = resolve_model_input("qwen3-coder-30b", dir.path()).unwrap();
         assert_eq!(result, "openai:qwen3-coder-30b");
@@ -1963,11 +1963,7 @@ tier = "standard"
                 {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
             ]
         });
-        std::fs::write(
-            dir.path().join("model_cache.json"),
-            cache.to_string(),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
         let result = resolve_model_input("minimax-m2.7", dir.path()).unwrap();
         assert_eq!(result, "openrouter:minimax/minimax-m2.7");
@@ -2081,8 +2077,8 @@ tier = "standard"
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -2143,8 +2139,8 @@ tier = "standard"
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -2318,7 +2314,11 @@ tier = "standard"
 
         unsafe { std::env::remove_var("WG_TASK_ID") };
 
-        assert!(result.is_ok(), "subtask creation should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "subtask creation should succeed: {:?}",
+            result
+        );
 
         let graph = load_graph(&path).unwrap();
 

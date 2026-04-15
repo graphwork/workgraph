@@ -422,12 +422,7 @@ fn build_resume_delta(graph: &workgraph::graph::WorkGraph, task: &Task, dir: &Pa
                     }
                 }
                 // Include recent log entries from completed subtasks for result context
-                let recent_logs: Vec<_> = dep
-                    .log
-                    .iter()
-                    .rev()
-                    .take(3)
-                    .collect();
+                let recent_logs: Vec<_> = dep.log.iter().rev().take(3).collect();
                 if !recent_logs.is_empty() {
                     for log in recent_logs.iter().rev() {
                         delta.push_str(&format!("  log: {}\n", log.message));

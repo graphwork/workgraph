@@ -213,10 +213,23 @@ fn test_reap_after_kill_tree_cleans_dead_agents() {
 
     // Verify post-reap: only the alive agent remains
     let post = load_registry(&wg_dir);
-    assert_eq!(post.agents.len(), 1, "Expected only 1 alive agent after reap");
-    assert!(post.get_agent(&a3).is_some(), "Alive agent should still be in registry");
-    assert!(post.get_agent(&a1).is_none(), "Dead agent a1 should have been reaped");
-    assert!(post.get_agent(&a2).is_none(), "Dead agent a2 should have been reaped");
+    assert_eq!(
+        post.agents.len(),
+        1,
+        "Expected only 1 alive agent after reap"
+    );
+    assert!(
+        post.get_agent(&a3).is_some(),
+        "Alive agent should still be in registry"
+    );
+    assert!(
+        post.get_agent(&a1).is_none(),
+        "Dead agent a1 should have been reaped"
+    );
+    assert!(
+        post.get_agent(&a2).is_none(),
+        "Dead agent a2 should have been reaped"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +350,11 @@ fn test_kill_tree_dry_run_no_side_effects() {
 
     // Verify registry unchanged
     let post_reg = load_registry(&wg_dir);
-    assert_eq!(post_reg.agents.len(), 1, "Registry should be unchanged after dry run");
+    assert_eq!(
+        post_reg.agents.len(),
+        1,
+        "Registry should be unchanged after dry run"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +385,11 @@ fn test_reap_dry_run_no_side_effects() {
 
     // Registry should be unchanged
     let post = load_registry(&wg_dir);
-    assert_eq!(post.agents.len(), 2, "Registry should be unchanged after reap --dry-run");
+    assert_eq!(
+        post.agents.len(),
+        2,
+        "Registry should be unchanged after reap --dry-run"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +470,11 @@ fn test_kill_tree_json_output() {
 
     let output = wg_cmd(&wg_dir, &["kill", "--tree", "task-a", "--force", "--json"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "kill --tree --json failed: {}", stdout);
+    assert!(
+        output.status.success(),
+        "kill --tree --json failed: {}",
+        stdout
+    );
 
     // Parse JSON output
     let json: serde_json::Value = serde_json::from_str(&stdout)
@@ -474,7 +499,11 @@ fn test_kill_tree_dry_run_json_output() {
         &["kill", "--tree", "task-a", "--dry-run", "--json"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "kill --tree --dry-run --json failed: {}", stdout);
+    assert!(
+        output.status.success(),
+        "kill --tree --dry-run --json failed: {}",
+        stdout
+    );
 
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("Invalid JSON output: {}\n{}", e, stdout));
@@ -531,9 +560,7 @@ fn test_reap_older_than_filter() {
     let old_id = registry.register_agent(999999999, "task-a", "claude", "/dev/null");
     registry.set_status(&old_id, AgentStatus::Dead);
     if let Some(agent) = registry.get_agent_mut(&old_id) {
-        agent.completed_at = Some(
-            (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
-        );
+        agent.completed_at = Some((chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339());
     }
     // Agent that "died" 5 seconds ago — should NOT be reaped with --older-than 1h
     let recent_id = registry.register_agent(999999998, "task-b", "claude", "/dev/null");

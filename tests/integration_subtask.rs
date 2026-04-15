@@ -47,11 +47,7 @@ fn wg_binary() -> PathBuf {
     path
 }
 
-fn wg_cmd_env(
-    wg_dir: &Path,
-    args: &[&str],
-    env: &[(&str, &str)],
-) -> std::process::Output {
+fn wg_cmd_env(wg_dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.arg("--dir")
         .arg(wg_dir)
@@ -355,10 +351,10 @@ fn subtask_coordinator_resumes_parent_on_child_failed() {
         did_change
     });
 
-    assert!(did_change, "Wait condition should be satisfied when child fails");
-    let graph = load_graph(&gp).unwrap();
-    assert_eq!(
-        graph.get_task("parent-task").unwrap().status,
-        Status::Open
+    assert!(
+        did_change,
+        "Wait condition should be satisfied when child fails"
     );
+    let graph = load_graph(&gp).unwrap();
+    assert_eq!(graph.get_task("parent-task").unwrap().status, Status::Open);
 }

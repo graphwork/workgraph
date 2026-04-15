@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool, truncate_tool_output};
+#[cfg(test)]
+use crate::executor::native::client::Usage;
 use crate::executor::native::client::{
     ContentBlock, Message, MessagesRequest, MessagesResponse, Role, StopReason, ToolDefinition,
 };
-#[cfg(test)]
-use crate::executor::native::client::Usage;
 use crate::executor::native::provider::Provider;
 
 /// Maximum output chars for delegate results.
@@ -79,12 +79,13 @@ impl Tool for DelegateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate".to_string(),
-            description: "Delegate a subtask to a focused sub-agent that runs within your process. \
+            description:
+                "Delegate a subtask to a focused sub-agent that runs within your process. \
                 The sub-agent has its own conversation context (your context is not affected) and \
                 returns its result as text. Use this for focused queries like reading files, \
                 searching code, or answering specific questions that would benefit from a \
                 separate context window."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -110,7 +111,9 @@ impl Tool for DelegateTool {
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
             Some(p) if !p.trim().is_empty() => p,
-            Some(_) => return ToolOutput::error("Parameter 'prompt' must not be empty".to_string()),
+            Some(_) => {
+                return ToolOutput::error("Parameter 'prompt' must not be empty".to_string());
+            }
             None => return ToolOutput::error("Missing required parameter: prompt".to_string()),
         };
 
@@ -563,7 +566,11 @@ mod tests {
         let result = tool.execute(&input).await;
 
         assert!(result.is_error);
-        assert!(result.content.contains("Missing required parameter: prompt"));
+        assert!(
+            result
+                .content
+                .contains("Missing required parameter: prompt")
+        );
     }
 
     #[tokio::test]

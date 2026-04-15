@@ -6284,11 +6284,7 @@ impl VizApp {
                 let model = coord_state
                     .as_ref()
                     .and_then(|s| s.model_override.clone())
-                    .or_else(|| {
-                        coord_state
-                            .as_ref()
-                            .and_then(|s| s.model.clone())
-                    })
+                    .or_else(|| coord_state.as_ref().and_then(|s| s.model.clone()))
                     .or_else(|| config.coordinator.model.clone())
                     .or_else(|| {
                         Some(

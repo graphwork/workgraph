@@ -80,9 +80,9 @@ pub mod quickstart;
 pub mod ready;
 pub mod reap;
 pub mod reclaim;
-pub mod reprioritize;
 pub mod reject;
 pub mod replay;
+pub mod reprioritize;
 pub mod requeue;
 pub mod reschedule;
 pub mod resource;
@@ -269,9 +269,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -322,9 +322,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -409,9 +409,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -470,8 +470,8 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -524,8 +524,8 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -577,9 +577,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -631,9 +631,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -688,9 +688,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -747,9 +747,9 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -807,8 +807,8 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -863,8 +863,8 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();
@@ -922,8 +922,8 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         )
         .unwrap();

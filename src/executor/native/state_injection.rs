@@ -307,7 +307,10 @@ impl StateInjector {
             );
 
             if !output_tail.is_empty() {
-                update.push_str(&format!("\nOutput (last 20 lines):\n```\n{}\n```", output_tail));
+                update.push_str(&format!(
+                    "\nOutput (last 20 lines):\n```\n{}\n```",
+                    output_tail
+                ));
             }
 
             update.push_str("\n</context-update>");
@@ -834,7 +837,15 @@ mod tests {
         setup_workgraph(wg_dir, "my-task", &[]);
 
         // Create a running (non-terminal) job
-        create_bg_job(wg_dir, "job-1", "build", "cargo build", "running", None, None);
+        create_bg_job(
+            wg_dir,
+            "job-1",
+            "build",
+            "cargo build",
+            "running",
+            None,
+            None,
+        );
 
         let mut injector =
             StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
@@ -879,7 +890,10 @@ mod tests {
         // Should contain only last 20 lines (lines 6-25)
         assert!(text.contains("line 25"));
         assert!(text.contains("line 6"));
-        assert!(!text.contains("line 5\n"), "line 5 should be trimmed (only last 20 lines)");
+        assert!(
+            !text.contains("line 5\n"),
+            "line 5 should be trimmed (only last 20 lines)"
+        );
     }
 
     #[test]
@@ -948,7 +962,13 @@ mod tests {
         setup_workgraph(wg_dir, "my-task", &[]);
 
         create_bg_job(
-            wg_dir, "job-a", "first", "echo a", "completed", Some(0), Some("output a\n"),
+            wg_dir,
+            "job-a",
+            "first",
+            "echo a",
+            "completed",
+            Some(0),
+            Some("output a\n"),
         );
 
         let mut injector =
@@ -961,7 +981,13 @@ mod tests {
 
         // Now a second job completes
         create_bg_job(
-            wg_dir, "job-b", "second", "echo b", "completed", Some(0), Some("output b\n"),
+            wg_dir,
+            "job-b",
+            "second",
+            "echo b",
+            "completed",
+            Some(0),
+            Some("output b\n"),
         );
 
         // Should only report the new one
@@ -980,7 +1006,13 @@ mod tests {
 
         // Job with no log content (log file doesn't exist)
         create_bg_job(
-            wg_dir, "job-nolog", "no-output", "true", "completed", Some(0), None,
+            wg_dir,
+            "job-nolog",
+            "no-output",
+            "true",
+            "completed",
+            Some(0),
+            None,
         );
 
         let mut injector =

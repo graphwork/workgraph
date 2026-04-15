@@ -344,7 +344,11 @@ fn test_worktree_full_lifecycle() {
     );
 
     let output = Command::new("git")
-        .args(["commit", "-m", "feat: lifecycle-test (agent-lifecycle)\n\nSquash-merged from worktree branch"])
+        .args([
+            "commit",
+            "-m",
+            "feat: lifecycle-test (agent-lifecycle)\n\nSquash-merged from worktree branch",
+        ])
         .current_dir(&project_root)
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@test.com")
@@ -462,20 +466,19 @@ fn test_worktree_workgraph_symlink_lifecycle() {
     // Manually create the .workgraph symlink (as create_worktree in spawn/worktree.rs does)
     let symlink_path = wt_dir.join(".workgraph");
     let wg_canonical = wg_dir.canonicalize().expect("Failed to canonicalize");
-    std::os::unix::fs::symlink(&wg_canonical, &symlink_path)
-        .expect("Failed to create symlink");
+    std::os::unix::fs::symlink(&wg_canonical, &symlink_path).expect("Failed to create symlink");
 
     // Verify symlink works — agent can read graph.jsonl through it
-    let content =
-        std::fs::read_to_string(symlink_path.join("graph.jsonl")).expect("Failed to read through symlink");
-    assert!(content.contains("test"), "Should read graph through symlink");
+    let content = std::fs::read_to_string(symlink_path.join("graph.jsonl"))
+        .expect("Failed to read through symlink");
+    assert!(
+        content.contains("test"),
+        "Should read graph through symlink"
+    );
 
     // Agent writes to .workgraph through symlink (e.g., logging)
-    std::fs::write(
-        symlink_path.join("test_log.txt"),
-        "agent log entry",
-    )
-    .expect("Failed to write through symlink");
+    std::fs::write(symlink_path.join("test_log.txt"), "agent log entry")
+        .expect("Failed to write through symlink");
 
     // Verify the write went to the real .workgraph
     assert!(
@@ -664,9 +667,11 @@ fn test_worktree_process_cwd_in_worktree() {
     );
 
     // Read the symlink target and verify it points to the worktree
-    let actual_cwd = std::fs::read_link(proc_cwd_path)
-        .expect("Failed to read /proc/pid/cwd symlink");
-    let wt_canonical = wt_dir.canonicalize().expect("Failed to canonicalize worktree dir");
+    let actual_cwd =
+        std::fs::read_link(proc_cwd_path).expect("Failed to read /proc/pid/cwd symlink");
+    let wt_canonical = wt_dir
+        .canonicalize()
+        .expect("Failed to canonicalize worktree dir");
     assert_eq!(
         actual_cwd, wt_canonical,
         "Process CWD should be the worktree directory.\nExpected: {:?}\nActual: {:?}",
@@ -724,7 +729,11 @@ fn test_worktree_main_dir_unmodified_during_agent_work() {
     // Simulate agent work in worktree: create files, modify existing file
     std::fs::write(wt_dir.join("new_feature.rs"), "fn feature() {}").unwrap();
     std::fs::write(wt_dir.join("data.json"), r#"{"key": "value"}"#).unwrap();
-    std::fs::write(wt_dir.join("src/main.rs"), "fn main() { println!(\"modified\"); }").unwrap();
+    std::fs::write(
+        wt_dir.join("src/main.rs"),
+        "fn main() { println!(\"modified\"); }",
+    )
+    .unwrap();
 
     // Stage and commit in the worktree
     Command::new("git")
@@ -890,7 +899,10 @@ fn test_worktree_kill_running_process_cleanup() {
     );
 
     // Worktree should still exist (kill doesn't clean it up automatically)
-    assert!(wt_dir.exists(), "Worktree should still exist after process kill");
+    assert!(
+        wt_dir.exists(),
+        "Worktree should still exist after process kill"
+    );
 
     // Now simulate the cleanup that the wrapper script would do
     // (remove symlink, force-remove worktree, delete branch)
@@ -1420,10 +1432,7 @@ for i in $(seq 1 100); do [ -f {signal_dir}/continue ] && break; sleep 0.1; done
         .output()
         .unwrap();
     let worktree_list = String::from_utf8_lossy(&output.stdout);
-    let wt_lines: Vec<&str> = worktree_list
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
+    let wt_lines: Vec<&str> = worktree_list.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(
         wt_lines.len(),
         1,

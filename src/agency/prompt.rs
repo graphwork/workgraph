@@ -1572,8 +1572,16 @@ mod tests {
     #[test]
     fn test_render_evaluator_prompt_with_decomposition() {
         let child_tasks = vec![
-            ("Subtask 1: Parse input".to_string(), "Done".to_string(), Some("Parse input data".to_string())),
-            ("Subtask 2: Process data".to_string(), "In-progress".to_string(), None),
+            (
+                "Subtask 1: Parse input".to_string(),
+                "Done".to_string(),
+                Some("Parse input data".to_string()),
+            ),
+            (
+                "Subtask 2: Process data".to_string(),
+                "In-progress".to_string(),
+                None,
+            ),
         ];
 
         let input = EvaluatorInput {
@@ -1602,17 +1610,29 @@ mod tests {
 
         // Should contain decomposition detection section
         assert!(output.contains("## Task Decomposition Detected"));
-        assert!(output.contains("This task created subtasks, indicating intentional work decomposition"));
+        assert!(
+            output
+                .contains("This task created subtasks, indicating intentional work decomposition")
+        );
         assert!(output.contains("Subtask 1: Parse input"));
         assert!(output.contains("Subtask 2: Process data"));
 
         // Should contain adjusted verification note for decomposition
         assert!(output.contains("This task was decomposed into subtasks"));
-        assert!(output.contains("this likely indicates proper work delegation rather than task failure"));
-        assert!(output.contains("Score the decomposition quality instead of penalizing for verify criteria"));
+        assert!(
+            output
+                .contains("this likely indicates proper work delegation rather than task failure")
+        );
+        assert!(
+            output.contains(
+                "Score the decomposition quality instead of penalizing for verify criteria"
+            )
+        );
 
         // Should NOT contain the standard verification note that penalizes failures
-        assert!(!output.contains("If verification failed, significantly\n             reduce the overall score"));
+        assert!(!output.contains(
+            "If verification failed, significantly\n             reduce the overall score"
+        ));
     }
 
     #[test]

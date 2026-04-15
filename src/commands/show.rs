@@ -2,11 +2,11 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
+use workgraph::config::Config;
 use workgraph::graph::{
     CycleConfig, LogEntry, LoopGuard, Priority, Status, Task, TokenUsage, format_tokens,
     parse_token_usage_live,
 };
-use workgraph::config::Config;
 use workgraph::query::build_reverse_index;
 use workgraph::service::AgentRegistry;
 
@@ -190,11 +190,7 @@ fn gather_task_runtime_info(
                 .as_ref()
                 .and_then(|s| s.model_override.clone())
                 .or(actual_model)
-                .or_else(|| {
-                    coord_state
-                        .as_ref()
-                        .and_then(|s| s.model.clone())
-                })
+                .or_else(|| coord_state.as_ref().and_then(|s| s.model.clone()))
                 .or_else(|| config.coordinator.model.clone())
                 .or_else(|| {
                     Some(

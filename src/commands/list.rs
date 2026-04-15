@@ -333,7 +333,15 @@ mod tests {
             dir.path(),
             vec![make_task("t1", "IP task", Status::InProgress)],
         );
-        let result = run(dir.path(), Some("in-progress"), false, &[], None, false, false);
+        let result = run(
+            dir.path(),
+            Some("in-progress"),
+            false,
+            &[],
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
     }
 
@@ -513,7 +521,15 @@ mod tests {
                 make_task("t2", "Open task", Status::Open),
             ],
         );
-        let result = run(dir.path(), Some("abandoned"), false, &[], None, false, false);
+        let result = run(
+            dir.path(),
+            Some("abandoned"),
+            false,
+            &[],
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
     }
 

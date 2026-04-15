@@ -365,10 +365,7 @@ impl Tool for WgAddTool {
                     )
                 }
                 Err(e) => {
-                    return ToolOutput::error(format!(
-                        "Invalid cron expression '{}': {}",
-                        expr, e
-                    ));
+                    return ToolOutput::error(format!("Invalid cron expression '{}': {}", expr, e));
                 }
             }
         } else {
@@ -854,9 +851,9 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
-    use serde_json::json;
     use crate::graph::{Node, Task, WorkGraph};
     use crate::parser::{load_graph, save_graph};
+    use serde_json::json;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

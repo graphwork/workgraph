@@ -1814,10 +1814,8 @@ mod tests {
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
         // Create worktrees for two agents: one live, one dead
-        let (live_wt, _live_branch) =
-            create_test_worktree(&project, "agent-100", "task-live");
-        let (dead_wt, _dead_branch) =
-            create_test_worktree(&project, "agent-200", "task-dead");
+        let (live_wt, _live_branch) = create_test_worktree(&project, "agent-100", "task-live");
+        let (dead_wt, _dead_branch) = create_test_worktree(&project, "agent-200", "task-dead");
 
         assert!(live_wt.exists());
         assert!(dead_wt.exists());

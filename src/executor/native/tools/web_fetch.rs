@@ -99,11 +99,7 @@ impl Tool for WebFetchTool {
         };
 
         if !response.status().is_success() {
-            return ToolOutput::error(format!(
-                "HTTP {} fetching {}",
-                response.status(),
-                url_str
-            ));
+            return ToolOutput::error(format!("HTTP {} fetching {}", response.status(), url_str));
         }
 
         let html = match response.text().await {

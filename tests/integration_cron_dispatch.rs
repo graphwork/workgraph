@@ -178,8 +178,14 @@ fn cron_task_resets_after_done() {
     assert!(result, "reset_cron_task should return true");
     assert_eq!(task.status, Status::Open, "Status should be Open");
     assert!(task.assigned.is_none(), "assigned should be cleared");
-    assert!(task.completed_at.is_none(), "completed_at should be cleared");
-    assert!(task.last_cron_fire.is_some(), "last_cron_fire should be set");
+    assert!(
+        task.completed_at.is_none(),
+        "completed_at should be cleared"
+    );
+    assert!(
+        task.last_cron_fire.is_some(),
+        "last_cron_fire should be set"
+    );
     assert!(
         task.next_cron_fire.is_some(),
         "next_cron_fire should be set for future dispatch"
@@ -227,8 +233,14 @@ fn list_cron_filter_shows_only_cron_tasks() {
 
     // List all tasks → both should appear
     let output_all = wg_ok(&wg_dir, &["list"]);
-    assert!(output_all.contains("cron-1"), "All list should contain cron task");
-    assert!(output_all.contains("normal-1"), "All list should contain normal task");
+    assert!(
+        output_all.contains("cron-1"),
+        "All list should contain cron task"
+    );
+    assert!(
+        output_all.contains("normal-1"),
+        "All list should contain normal task"
+    );
 
     // List with --cron → only cron task
     let output_cron = wg_ok(&wg_dir, &["list", "--cron"]);
@@ -270,7 +282,11 @@ fn list_cron_filter_json() {
     let json: serde_json::Value = serde_json::from_str(&output).expect("Should be valid JSON");
     let arr = json.as_array().expect("Should be array");
 
-    assert_eq!(arr.len(), 1, "Should have exactly 1 cron task in JSON output");
+    assert_eq!(
+        arr.len(),
+        1,
+        "Should have exactly 1 cron task in JSON output"
+    );
     assert_eq!(arr[0]["id"], "cj1");
     assert_eq!(arr[0]["cron_enabled"], true);
     assert!(arr[0].get("cron_schedule").is_some());
@@ -292,7 +308,10 @@ fn edit_cron_set_schedule() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("e1").unwrap();
-    assert!(task.cron_enabled, "cron_enabled should be true after edit --cron");
+    assert!(
+        task.cron_enabled,
+        "cron_enabled should be true after edit --cron"
+    );
     assert_eq!(
         task.cron_schedule.as_deref(),
         Some("0 0 9 * * *"),
@@ -322,7 +341,10 @@ fn edit_cron_clear_schedule() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("ec1").unwrap();
-    assert!(!task.cron_enabled, "cron_enabled should be false after clearing");
+    assert!(
+        !task.cron_enabled,
+        "cron_enabled should be false after clearing"
+    );
     assert!(
         task.cron_schedule.is_none(),
         "cron_schedule should be None after clearing"

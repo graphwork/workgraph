@@ -1001,13 +1001,15 @@ impl ContextBudget {
                         } else {
                             new_content.push(ContentBlock::ToolResult {
                                 tool_use_id,
-                                content: "[tool result elided for context pressure]"
-                                    .to_string(),
+                                content: "[tool result elided for context pressure]".to_string(),
                                 is_error,
                             });
                         }
                     }
-                    ContentBlock::Thinking { thinking, reasoning_details } => {
+                    ContentBlock::Thinking {
+                        thinking,
+                        reasoning_details,
+                    } => {
                         // Keep thinking only in preserved-verbatim messages.
                         if preserve_verbatim {
                             new_content.push(ContentBlock::Thinking {
@@ -1016,9 +1018,7 @@ impl ContextBudget {
                             });
                         }
                     }
-                    ContentBlock::Text { text }
-                        if !preserve_verbatim && text.len() > 400 =>
-                    {
+                    ContentBlock::Text { text } if !preserve_verbatim && text.len() > 400 => {
                         let boundary = text.floor_char_boundary(400);
                         new_content.push(ContentBlock::Text {
                             text: format!("{}… [truncated]", &text[..boundary]),

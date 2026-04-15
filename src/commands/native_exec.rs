@@ -61,11 +61,8 @@ pub fn run(
     let config = Config::load(workgraph_dir).unwrap_or_default();
 
     // Build the tool registry with config
-    let mut registry = ToolRegistry::default_all_with_config(
-        workgraph_dir,
-        &working_dir,
-        &config.native_executor,
-    );
+    let mut registry =
+        ToolRegistry::default_all_with_config(workgraph_dir, &working_dir, &config.native_executor);
 
     // Resolve bundle and filter tools
     let system_suffix = if let Some(bundle) = resolve_bundle(exec_mode, workgraph_dir) {

@@ -45,10 +45,7 @@ pub fn run(dir: &Path, id: &str, priority: &str) -> Result<()> {
     super::notify_graph_changed(dir);
 
     if old_priority == new_priority {
-        println!(
-            "Task '{}' already has priority '{}'",
-            id, new_priority
-        );
+        println!("Task '{}' already has priority '{}'", id, new_priority);
     } else {
         println!(
             "Reprioritized '{}': {} -> {}",

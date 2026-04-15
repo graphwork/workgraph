@@ -75,18 +75,12 @@ fn is_old_enough(agent: &AgentEntry, min_age: &Duration) -> bool {
 }
 
 /// Collect agents eligible for reaping
-fn collect_reapable(
-    registry: &AgentRegistry,
-    older_than: Option<&Duration>,
-) -> Vec<AgentEntry> {
+fn collect_reapable(registry: &AgentRegistry, older_than: Option<&Duration>) -> Vec<AgentEntry> {
     registry
         .agents
         .values()
         .filter(|a| {
-            is_reapable(a.status)
-                && older_than
-                    .map(|d| is_old_enough(a, d))
-                    .unwrap_or(true)
+            is_reapable(a.status) && older_than.map(|d| is_old_enough(a, d)).unwrap_or(true)
         })
         .cloned()
         .collect()
@@ -282,18 +276,15 @@ mod tests {
 
         // Set agent-2 (dead) completed_at to 2 hours ago
         if let Some(agent) = registry.get_agent_mut("agent-2") {
-            agent.completed_at =
-                Some((Utc::now() - Duration::hours(2)).to_rfc3339());
+            agent.completed_at = Some((Utc::now() - Duration::hours(2)).to_rfc3339());
         }
         // Set agent-3 (done) completed_at to 30 seconds ago
         if let Some(agent) = registry.get_agent_mut("agent-3") {
-            agent.completed_at =
-                Some((Utc::now() - Duration::seconds(30)).to_rfc3339());
+            agent.completed_at = Some((Utc::now() - Duration::seconds(30)).to_rfc3339());
         }
         // Set agent-4 (failed) completed_at to 3 hours ago
         if let Some(agent) = registry.get_agent_mut("agent-4") {
-            agent.completed_at =
-                Some((Utc::now() - Duration::hours(3)).to_rfc3339());
+            agent.completed_at = Some((Utc::now() - Duration::hours(3)).to_rfc3339());
         }
 
         // Only reap agents older than 1 hour
@@ -355,8 +346,7 @@ mod tests {
 
         // Make agent-2 (dead) old enough
         if let Some(agent) = registry.get_agent_mut("agent-2") {
-            agent.completed_at =
-                Some((Utc::now() - Duration::hours(2)).to_rfc3339());
+            agent.completed_at = Some((Utc::now() - Duration::hours(2)).to_rfc3339());
         }
         // Keep agent-3 (done) recent
         if let Some(agent) = registry.get_agent_mut("agent-3") {
@@ -364,8 +354,7 @@ mod tests {
         }
         // Make agent-4 (failed) old enough
         if let Some(agent) = registry.get_agent_mut("agent-4") {
-            agent.completed_at =
-                Some((Utc::now() - Duration::hours(5)).to_rfc3339());
+            agent.completed_at = Some((Utc::now() - Duration::hours(5)).to_rfc3339());
         }
 
         registry.save(tmp.path()).unwrap();

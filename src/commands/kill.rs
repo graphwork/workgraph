@@ -294,9 +294,7 @@ pub fn run_tree(
 
             match kill_result {
                 Ok(()) => {
-                    if let Err(e) =
-                        locked_registry.update_status(agent_id, AgentStatus::Stopping)
-                    {
+                    if let Err(e) = locked_registry.update_status(agent_id, AgentStatus::Stopping) {
                         eprintln!(
                             "Warning: failed to update status for agent {}: {}",
                             agent_id, e
@@ -582,7 +580,10 @@ mod tests {
         // Verify nothing was changed (dry run)
         let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         assert_eq!(graph.get_task("root").unwrap().status, Status::InProgress);
-        assert_eq!(graph.get_task("child-a").unwrap().status, Status::InProgress);
+        assert_eq!(
+            graph.get_task("child-a").unwrap().status,
+            Status::InProgress
+        );
         assert_eq!(graph.get_task("child-b").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("grandchild").unwrap().status, Status::Open);
     }
@@ -606,13 +607,15 @@ mod tests {
         );
 
         // Check failure reason
-        assert!(graph
-            .get_task("child-a")
-            .unwrap()
-            .failure_reason
-            .as_ref()
-            .unwrap()
-            .contains("root"));
+        assert!(
+            graph
+                .get_task("child-a")
+                .unwrap()
+                .failure_reason
+                .as_ref()
+                .unwrap()
+                .contains("root")
+        );
     }
 
     #[test]
@@ -626,7 +629,10 @@ mod tests {
         // Tasks should NOT be abandoned with --no-abandon
         let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         assert_eq!(graph.get_task("root").unwrap().status, Status::InProgress);
-        assert_eq!(graph.get_task("child-a").unwrap().status, Status::InProgress);
+        assert_eq!(
+            graph.get_task("child-a").unwrap().status,
+            Status::InProgress
+        );
         assert_eq!(graph.get_task("child-b").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("grandchild").unwrap().status, Status::Open);
     }
@@ -638,7 +644,11 @@ mod tests {
 
         // Single task, no dependents
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("solo", "Solo Task", Status::InProgress)));
+        graph.add_node(Node::Task(make_task(
+            "solo",
+            "Solo Task",
+            Status::InProgress,
+        )));
         save_graph(&graph, &path).unwrap();
 
         let result = run_tree(temp_dir.path(), "solo", false, false, false, false);

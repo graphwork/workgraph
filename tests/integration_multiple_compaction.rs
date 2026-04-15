@@ -21,7 +21,9 @@ use tempfile::TempDir;
 use workgraph::config::{Config, DispatchRole, ModelRegistryEntry, Tier};
 use workgraph::executor::native::client::{ContentBlock, Message, Role};
 use workgraph::executor::native::journal::{Journal, JournalEntryKind};
-use workgraph::executor::native::resume::{ContextBudget, ContextPressureAction, ResumeConfig, load_resume_data};
+use workgraph::executor::native::resume::{
+    ContextBudget, ContextPressureAction, ResumeConfig, load_resume_data,
+};
 use workgraph::service::chat_compactor::ChatCompactorState;
 use workgraph::service::compactor::{self, CompactorState};
 
@@ -286,10 +288,7 @@ fn test_compaction_error_recovery_across_cycles() {
 
     let state = CompactorState::load(dir);
     assert_eq!(state.error_count, 3, "Should have 3 accumulated errors");
-    assert_eq!(
-        state.compaction_count, 0,
-        "No successful compactions yet"
-    );
+    assert_eq!(state.compaction_count, 0, "No successful compactions yet");
 
     // Simulate a successful compaction that resets error count
     let mut state = CompactorState::load(dir);
@@ -299,7 +298,10 @@ fn test_compaction_error_recovery_across_cycles() {
     state.save(dir).unwrap();
 
     let recovered = CompactorState::load(dir);
-    assert_eq!(recovered.error_count, 0, "Error count should reset on success");
+    assert_eq!(
+        recovered.error_count, 0,
+        "Error count should reset on success"
+    );
     assert_eq!(recovered.compaction_count, 1);
 }
 
@@ -440,7 +442,10 @@ fn test_multiple_compaction_preserves_tool_info() {
         .unwrap()
         .expect("Should load tool-heavy journal");
 
-    assert!(resume.was_compacted, "Tool-heavy journal should be compacted");
+    assert!(
+        resume.was_compacted,
+        "Tool-heavy journal should be compacted"
+    );
     assert_valid_alternation(&resume.messages);
 
     // The compaction summary should mention tools that were used
@@ -783,12 +788,17 @@ fn test_multiple_emergency_compaction_cycles() {
 
         eprintln!(
             "Emergency compact cycle {}: {} -> {} messages",
-            cycle, before_count, messages.len()
+            cycle,
+            before_count,
+            messages.len()
         );
     }
 
     // After 3 cycles, we should still have valid messages
-    assert!(messages.len() >= 2, "Should have at least 2 messages after 3 cycles");
+    assert!(
+        messages.len() >= 2,
+        "Should have at least 2 messages after 3 cycles"
+    );
 }
 
 /// Test emergency compaction with mixed content (text + tool use + tool results).
@@ -1001,7 +1011,11 @@ fn test_resume_compaction_adapts_to_context_window() {
         !resume_large.was_compacted,
         "200k window should not trigger compaction for 25 pairs"
     );
-    assert_eq!(resume_large.messages.len(), 50, "Should have all 50 messages");
+    assert_eq!(
+        resume_large.messages.len(),
+        50,
+        "Should have all 50 messages"
+    );
 
     // With a medium context window (8k): should compact
     let config_medium = ResumeConfig {
@@ -1153,9 +1167,32 @@ fn test_context_md_across_cycles() {
     let wg_dir = setup_wg(&tmp);
 
     // Add some tasks to the graph
-    wg_ok(&wg_dir, &["add", "Setup infrastructure", "--id", "infra-init"]);
-    wg_ok(&wg_dir, &["add", "Implement auth", "--id", "auth-impl", "--after", "infra-init"]);
-    wg_ok(&wg_dir, &["add", "Write tests", "--id", "write-tests", "--after", "auth-impl"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Setup infrastructure", "--id", "infra-init"],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Implement auth",
+            "--id",
+            "auth-impl",
+            "--after",
+            "infra-init",
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Write tests",
+            "--id",
+            "write-tests",
+            "--after",
+            "auth-impl",
+        ],
+    );
 
     // Simulate compaction cycle 1: write fake context.md
     let context_path = compactor::context_md_path(&wg_dir);
@@ -1238,8 +1275,12 @@ fn test_compactor_model_resolution_openai() {
     let mut config = Config::default();
 
     // Configure compactor to use an OpenAI-compatible model
-    config.models.set_model(DispatchRole::Compactor, "gpt-4o-mini");
-    config.models.set_provider(DispatchRole::Compactor, "openai");
+    config
+        .models
+        .set_model(DispatchRole::Compactor, "gpt-4o-mini");
+    config
+        .models
+        .set_provider(DispatchRole::Compactor, "openai");
 
     let resolved = config.resolve_model_for_role(DispatchRole::Compactor);
     assert_eq!(resolved.model, "gpt-4o-mini");
@@ -1251,8 +1292,12 @@ fn test_compactor_model_resolution_openai() {
 fn test_chat_compactor_model_resolution_openrouter() {
     let mut config = Config::default();
 
-    config.models.set_model(DispatchRole::ChatCompactor, "deepseek/deepseek-chat");
-    config.models.set_provider(DispatchRole::ChatCompactor, "openrouter");
+    config
+        .models
+        .set_model(DispatchRole::ChatCompactor, "deepseek/deepseek-chat");
+    config
+        .models
+        .set_provider(DispatchRole::ChatCompactor, "openrouter");
 
     let resolved = config.resolve_model_for_role(DispatchRole::ChatCompactor);
     assert_eq!(resolved.model, "deepseek/deepseek-chat");
@@ -1286,18 +1331,46 @@ fn smoke_multiple_compaction_cycles_openrouter() {
     wg_ok(
         &wg_dir,
         &[
-            "endpoint", "add", "test-openrouter",
-            "--provider", "openrouter",
-            "--url", "https://openrouter.ai/api/v1",
-            "--key-env", "OPENROUTER_API_KEY",
+            "endpoint",
+            "add",
+            "test-openrouter",
+            "--provider",
+            "openrouter",
+            "--url",
+            "https://openrouter.ai/api/v1",
+            "--key-env",
+            "OPENROUTER_API_KEY",
         ],
     );
     wg_ok(&wg_dir, &["endpoint", "set-default", "test-openrouter"]);
 
     // Add tasks to create graph state for compaction
-    wg_ok(&wg_dir, &["add", "Research context windows", "--id", "research-ctx"]);
-    wg_ok(&wg_dir, &["add", "Implement dynamic sizing", "--id", "impl-sizing", "--after", "research-ctx"]);
-    wg_ok(&wg_dir, &["add", "Write integration tests", "--id", "write-tests", "--after", "impl-sizing"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Research context windows", "--id", "research-ctx"],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Implement dynamic sizing",
+            "--id",
+            "impl-sizing",
+            "--after",
+            "research-ctx",
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Write integration tests",
+            "--id",
+            "write-tests",
+            "--after",
+            "impl-sizing",
+        ],
+    );
 
     // Configure the compactor to use a cheap OpenRouter model
     let config_path = wg_dir.join("config.toml");
@@ -1350,9 +1423,11 @@ provider = "openrouter"
         // Verify state was updated
         let state = CompactorState::load(&wg_dir);
         assert_eq!(
-            state.compaction_count, u64::from(cycle),
+            state.compaction_count,
+            u64::from(cycle),
             "Cycle {}: compaction count should be {}",
-            cycle, cycle
+            cycle,
+            cycle
         );
         assert_eq!(
             state.error_count, 0,

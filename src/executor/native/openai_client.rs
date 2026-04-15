@@ -810,9 +810,9 @@ impl OpenAiClient {
                 Err(e) => {
                     // Don't retry deterministic client errors (400, 401, 403, 404, etc.)
                     // — only retry transient/network errors.
-                    let is_client_error = e
-                        .downcast_ref::<ApiError>()
-                        .is_some_and(|ae| ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status));
+                    let is_client_error = e.downcast_ref::<ApiError>().is_some_and(|ae| {
+                        ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
+                    });
                     if !is_client_error && retry_count < max_retries {
                         retry_count += 1;
                         let wait = jittered_backoff(backoff_ms);
@@ -1207,9 +1207,9 @@ impl OpenAiClient {
                 Err(e) => {
                     // Don't retry deterministic client errors (400, 401, 403, 404, etc.)
                     // — only retry transient/network errors.
-                    let is_client_error = e
-                        .downcast_ref::<ApiError>()
-                        .is_some_and(|ae| ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status));
+                    let is_client_error = e.downcast_ref::<ApiError>().is_some_and(|ae| {
+                        ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
+                    });
                     if !is_client_error && retry_count < max_retries {
                         retry_count += 1;
                         let wait = jittered_backoff(backoff_ms);
