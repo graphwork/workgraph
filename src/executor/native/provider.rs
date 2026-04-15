@@ -62,6 +62,22 @@ pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Prov
     create_provider_ext(workgraph_dir, model, None, None, None)
 }
 
+/// Heuristic: does this bare model name look like a Claude/Anthropic
+/// model? Used when a model string has no provider prefix and no slash
+/// and no endpoint is set — these bare names fall through to the
+/// provider-resolution default, which is `"openai"`, so we need an
+/// escape hatch for well-known Anthropic models like `"opus"`,
+/// `"sonnet"`, `"haiku"`, and `"claude-sonnet-4-6"`.
+///
+/// Case-insensitive. Returns true for:
+/// - `"opus"`, `"sonnet"`, `"haiku"` (short aliases for the three tiers)
+/// - Anything starting with `"claude"` (e.g. `"claude-sonnet-4-6"`,
+///   `"claude-opus-4-6"`, `"claude3"`, `"Claude-Sonnet"`)
+fn looks_like_claude_model(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(lower.as_str(), "opus" | "sonnet" | "haiku") || lower.starts_with("claude")
+}
+
 /// Parse the `<endpoint>:<model>` shorthand in the model string.
 ///
 /// Allows callers to write `lambda01:qwen3-coder-30b` as the model
@@ -121,6 +137,19 @@ pub fn create_provider_ext(
     let endpoint_name = endpoint_name_owned.as_deref();
     let model = effective_model_str.as_str();
 
+    // Early endpoint lookup (by name only). If the caller passed an
+    // explicit `-e <name>` OR the shorthand matched a named endpoint,
+    // we use that endpoint's `provider` field to seed the provider
+    // resolution — otherwise bare model names like `qwen3-coder-30b`
+    // fall through to the "anthropic" default and the request hits
+    // the wrong API shape even though the URL points at an OpenAI-
+    // compatible endpoint. Purely additive; doesn't replace the full
+    // endpoint lookup below which also handles provider-based and
+    // default fallbacks.
+    let endpoint_provider_override: Option<String> = endpoint_name
+        .and_then(|name| config.llm_endpoints.find_by_name(name))
+        .map(|ep| ep.provider.clone());
+
     // Load merged TOML value (global + local) for legacy [native_executor] access
     let config_val: Option<toml::Value> =
         crate::config::Config::load_merged_toml_value(workgraph_dir).ok();
@@ -139,7 +168,24 @@ pub fn create_provider_ext(
         .map(crate::config::provider_to_native_provider)
         .map(String::from);
 
-    // Resolve provider name: spec prefix > override > model heuristic > config > env var
+    // Resolve provider name: spec prefix > override > model heuristic >
+    // named-endpoint.provider > config > env var > openai default.
+    //
+    // Two key changes from legacy behavior:
+    //
+    // 1. The named-endpoint.provider slot makes `-e lambda01 -m
+    //    qwen3-coder-30b` work: a bare model name with no slash would
+    //    otherwise fall through to the hardcoded default, but the user's
+    //    endpoint is explicitly OpenAI-compatible, so we use its
+    //    `provider` field instead.
+    //
+    // 2. The fallback for unrecognized bare names is `"openai"`, not
+    //    `"anthropic"`. Workgraph has shifted toward local/open-model-
+    //    first operation and the overwhelming majority of new deployments
+    //    use OpenAI-compatible endpoints (Ollama, vLLM, llama.cpp, lambda,
+    //    etc.). Known Claude-family model names (opus, sonnet, haiku,
+    //    claude-*) are still detected heuristically and routed to
+    //    anthropic — see `looks_like_claude_model`.
     let provider_name = spec_provider
         .or_else(|| provider_override.map(String::from))
         .or_else(|| {
@@ -148,10 +194,13 @@ pub fn create_provider_ext(
                 Some("anthropic".to_string())
             } else if spec.model_id.contains('/') {
                 Some("openai".to_string())
+            } else if looks_like_claude_model(&spec.model_id) {
+                Some("anthropic".to_string())
             } else {
                 None
             }
         })
+        .or_else(|| endpoint_provider_override.clone())
         .or_else(|| {
             native_cfg
                 .and_then(|c| c.get("provider"))
@@ -160,8 +209,10 @@ pub fn create_provider_ext(
         })
         .or_else(|| std::env::var("WG_LLM_PROVIDER").ok())
         .unwrap_or_else(|| {
-            // Fallback for bare model names
-            "anthropic".to_string()
+            // Fallback for bare unrecognized model names — defaults to
+            // openai-compatible because that covers local model servers
+            // (Ollama, vLLM, llama.cpp, lambda, etc.).
+            "openai".to_string()
         });
 
     // Use the parsed model ID (provider prefix stripped) for API calls.
@@ -392,5 +443,45 @@ mod tests {
         let (ep, model) = parse_endpoint_model_shorthand(&config, "qwen3-coder-30b", None);
         assert_eq!(ep, None);
         assert_eq!(model, "qwen3-coder-30b");
+    }
+
+    // ── looks_like_claude_model heuristic ──────────────────────────
+
+    #[test]
+    fn claude_heuristic_matches_short_aliases() {
+        assert!(looks_like_claude_model("opus"));
+        assert!(looks_like_claude_model("sonnet"));
+        assert!(looks_like_claude_model("haiku"));
+    }
+
+    #[test]
+    fn claude_heuristic_matches_claude_prefix() {
+        assert!(looks_like_claude_model("claude-sonnet-4-6"));
+        assert!(looks_like_claude_model("claude-opus-4-6"));
+        assert!(looks_like_claude_model("claude-haiku-4-5"));
+        assert!(looks_like_claude_model("claude3"));
+        assert!(looks_like_claude_model("claude-3-5-sonnet-20241022"));
+    }
+
+    #[test]
+    fn claude_heuristic_is_case_insensitive() {
+        assert!(looks_like_claude_model("Opus"));
+        assert!(looks_like_claude_model("SONNET"));
+        assert!(looks_like_claude_model("Claude-Sonnet-4-6"));
+        assert!(looks_like_claude_model("CLAUDE3"));
+    }
+
+    #[test]
+    fn claude_heuristic_does_not_match_other_models() {
+        assert!(!looks_like_claude_model("qwen3-coder-30b"));
+        assert!(!looks_like_claude_model("llama3.2"));
+        assert!(!looks_like_claude_model("gpt-4o"));
+        assert!(!looks_like_claude_model("deepseek-chat"));
+        assert!(!looks_like_claude_model("mistral"));
+        // Partial match of "claude" in the middle is NOT enough —
+        // only a leading prefix counts, to avoid false positives like
+        // "my-claude-clone" getting routed to the real Anthropic API.
+        assert!(!looks_like_claude_model("my-claude-model"));
+        assert!(!looks_like_claude_model("opuscoin"));
     }
 }
