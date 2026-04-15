@@ -1447,6 +1447,10 @@ impl AgentLoop {
         let mut turns: usize = 0;
         let mut consecutive_server_errors: u32 = 0;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
+        // Compaction escalation state — same pattern as `AgentLoop::run`.
+        // Drives the three-tier ladder: L1 soft → L2 hard → L3 summarize.
+        let mut nex_noop_streak: u32 = 0;
+        let mut nex_l3_fired: bool = false;
 
         // Rustyline editor for line editing + history.
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
@@ -1637,14 +1641,27 @@ impl AgentLoop {
                 }
                 Err(e) => {
                     if super::openai_client::is_context_too_long(&e) {
-                        eprintln!("\n\x1b[33m[nex] Context too long — compacting...\x1b[0m");
-                        let pre = messages.len();
-                        messages = ContextBudget::emergency_compact(messages, 5);
+                        // Hit the 32k wall despite the proactive
+                        // escalation ladder. Run hard_emergency_compact
+                        // with keep_recent_tool_results=1 to force a
+                        // real reduction, and let the next turn use the
+                        // reduced messages. Same pattern as the
+                        // `AgentLoop::run` streaming-400 path.
                         eprintln!(
-                            "\x1b[33m[nex] Compacted {} -> {} messages\x1b[0m",
-                            pre,
-                            messages.len()
+                            "\n\x1b[33m[nex] Context too long — hard compaction...\x1b[0m"
                         );
+                        let pre_tokens = self.context_budget.effective_tokens(&messages);
+                        messages = ContextBudget::hard_emergency_compact(messages, 1);
+                        let post_tokens = self.context_budget.effective_tokens(&messages);
+                        eprintln!(
+                            "\x1b[33m[nex] Hard emergency: ~{} → ~{} tokens (Δ -{})\x1b[0m",
+                            pre_tokens,
+                            post_tokens,
+                            pre_tokens.saturating_sub(post_tokens),
+                        );
+                        // Reset the streak — we just did the most
+                        // aggressive compaction available.
+                        nex_noop_streak = 0;
                         continue;
                     }
                     if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
@@ -1853,9 +1870,19 @@ impl AgentLoop {
                             is_error: output.is_error,
                         });
 
+                        // Channel oversized outputs to disk before they
+                        // enter the message vec (L1). Without this, a
+                        // single 16 KB file read can saturate a 32k
+                        // context in a handful of turns and push the
+                        // REPL into compaction-no-op hell.
+                        let channeled_content = match &self.tool_output_channeler {
+                            Some(c) => c.maybe_channel(name, &output.content),
+                            None => output.content.clone(),
+                        };
+
                         results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: output.content.clone(),
+                            content: channeled_content,
                             is_error: output.is_error,
                         });
                     }
@@ -1878,12 +1905,59 @@ impl AgentLoop {
             match self.context_budget.check_pressure(&messages) {
                 ContextPressureAction::Ok | ContextPressureAction::Warning => {}
                 ContextPressureAction::EmergencyCompaction => {
-                    let pre = messages.len();
-                    messages = ContextBudget::emergency_compact(messages, 5);
+                    // Same three-tier escalation ladder as
+                    // `AgentLoop::run`: L1 soft → L2 hard → L3
+                    // summarize-history. keep_recent counts tool-result
+                    // occurrences (not messages), so recent-position big
+                    // tool results actually get shrunk.
+                    let pre_tokens = self.context_budget.effective_tokens(&messages);
+                    let pre_count = messages.len();
+
+                    let streak = nex_noop_streak;
+                    const NEX_ESCALATION_THRESHOLD: u32 = 2;
+                    let use_l3 = streak >= NEX_ESCALATION_THRESHOLD * 2 && !nex_l3_fired;
+                    let use_hard = !use_l3 && streak >= NEX_ESCALATION_THRESHOLD;
+
+                    let tier_name = if use_l3 {
+                        "L3 summarize-history"
+                    } else if use_hard {
+                        "L2 hard"
+                    } else {
+                        "L1 soft"
+                    };
+
+                    messages = if use_l3 {
+                        nex_l3_fired = true;
+                        super::tools::summarize::summarize_history_for_compaction(
+                            self.client.as_ref(),
+                            messages,
+                        )
+                        .await
+                    } else if use_hard {
+                        ContextBudget::hard_emergency_compact(messages, 1)
+                    } else {
+                        ContextBudget::emergency_compact(messages, 2)
+                    };
+
+                    let post_tokens = self.context_budget.effective_tokens(&messages);
+                    let post_count = messages.len();
+                    let delta = pre_tokens.saturating_sub(post_tokens);
+
+                    if delta > 0 || use_hard || use_l3 {
+                        nex_noop_streak = 0;
+                    } else {
+                        nex_noop_streak = nex_noop_streak.saturating_add(1);
+                    }
+
                     eprintln!(
-                        "\x1b[33m[nex] Context pressure — compacted {} -> {} messages\x1b[0m",
-                        pre,
-                        messages.len()
+                        "\x1b[33m[nex] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} msgs, noop_streak={})\x1b[0m",
+                        tier_name,
+                        pre_tokens,
+                        post_tokens,
+                        delta,
+                        pre_count,
+                        post_count,
+                        nex_noop_streak,
                     );
                 }
                 ContextPressureAction::CleanExit => {
