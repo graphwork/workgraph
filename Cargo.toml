@@ -59,6 +59,8 @@ csv = "1.3"
 cron = "0.12"
 log = "0.4"
 env_logger = "0.11"
+lru = "0.12"
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
