@@ -40,6 +40,14 @@ pub enum Commands {
         /// Skip agency initialization (roles, agents, auto-assign config)
         #[arg(long)]
         no_agency: bool,
+
+        /// Initialize the GLOBAL workgraph at `~/.workgraph` instead of
+        /// the current directory. Useful for `wg nex`-style interactive
+        /// usage from arbitrary directories without littering `.workgraph`
+        /// dirs everywhere. Resolver precedence: --dir > $WG_DIR >
+        /// project discovery > ~/.workgraph > ./.workgraph
+        #[arg(long)]
+        global: bool,
     },
 
     /// Add a new task

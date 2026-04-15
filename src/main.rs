@@ -11,6 +11,178 @@ mod tui;
 
 use cli::*;
 
+/// Resolve the workgraph directory for this invocation.
+///
+/// Precedence (highest first):
+///
+/// 1. **Explicit `--dir <path>` CLI flag.** Always wins. Pass-through.
+/// 2. **`WG_DIR` environment variable.** Second-highest — lets users
+///    script `wg` commands against a specific graph without a flag.
+/// 3. **Project discovery.** Walk up from `cwd` looking for a
+///    `.workgraph` directory. If found, use it. This matches how
+///    `git` finds `.git`, `cargo` finds `Cargo.toml`, etc.
+/// 4. **Global fallback `~/.workgraph`.** If the user has a global
+///    workgraph directory in their home, use it. This makes `wg nex`
+///    usable from any directory without littering `.workgraph` dirs
+///    across the filesystem. Primarily for REPL-style interactive
+///    commands; project-scoped commands (`wg add`, `wg done`, etc.)
+///    will still fail-on-missing when they try to load the graph.
+/// 5. **Default `./.workgraph` in current directory.** Backward-
+///    compatible final fallback. Same as the old pre-resolver
+///    behavior — will error cleanly downstream if the directory
+///    doesn't exist and a graph-reading command is run.
+///
+/// The resolver does NOT create any directories — it only locates
+/// one. Auto-creation is the responsibility of individual commands
+/// (`wg init`, `wg nex` when the global fallback is used, etc.).
+fn resolve_workgraph_dir(
+    cli_dir: Option<PathBuf>,
+    env_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> PathBuf {
+    // 1. Explicit CLI flag
+    if let Some(p) = cli_dir {
+        return p;
+    }
+
+    // 2. WG_DIR env var
+    if let Some(p) = env_dir.filter(|p| !p.as_os_str().is_empty()) {
+        return p;
+    }
+
+    // 3. Walk up from cwd looking for an existing .workgraph directory
+    if let Some(start) = cwd.as_ref() {
+        let mut cur: &Path = start;
+        loop {
+            let candidate = cur.join(".workgraph");
+            if candidate.is_dir() {
+                return candidate;
+            }
+            match cur.parent() {
+                Some(parent) => cur = parent,
+                None => break,
+            }
+        }
+    }
+
+    // 4. Global fallback: ~/.workgraph if it exists
+    if let Some(home) = home_dir.as_ref() {
+        let global = home.join(".workgraph");
+        if global.is_dir() {
+            return global;
+        }
+    }
+
+    // 5. Default: ./.workgraph in current directory
+    cwd.map(|c| c.join(".workgraph"))
+        .unwrap_or_else(|| PathBuf::from(".workgraph"))
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::resolve_workgraph_dir;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    fn explicit_cli_flag_wins_over_everything() {
+        let tmp = TempDir::new().unwrap();
+        let explicit = tmp.path().join("explicit/.workgraph");
+        let result = resolve_workgraph_dir(
+            Some(explicit.clone()),
+            Some(PathBuf::from("/should/not/be/used")),
+            Some(tmp.path().to_path_buf()),
+            Some(PathBuf::from("/fake/home")),
+        );
+        assert_eq!(result, explicit);
+    }
+
+    #[test]
+    fn wg_dir_env_var_wins_over_discovery_and_global() {
+        let tmp = TempDir::new().unwrap();
+        let env = tmp.path().join("from-env/.workgraph");
+        let result = resolve_workgraph_dir(
+            None,
+            Some(env.clone()),
+            Some(tmp.path().to_path_buf()),
+            Some(PathBuf::from("/fake/home")),
+        );
+        assert_eq!(result, env);
+    }
+
+    #[test]
+    fn empty_wg_dir_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let result = resolve_workgraph_dir(
+            None,
+            Some(PathBuf::from("")),
+            Some(tmp.path().to_path_buf()),
+            Some(PathBuf::from("/fake/home")),
+        );
+        // Should fall through to the default
+        assert_eq!(result, tmp.path().join(".workgraph"));
+    }
+
+    #[test]
+    fn project_discovery_finds_workgraph_in_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        let wg = project.join(".workgraph");
+        std::fs::create_dir_all(&wg).unwrap();
+        let result =
+            resolve_workgraph_dir(None, None, Some(project), Some(tmp.path().to_path_buf()));
+        assert_eq!(result, wg);
+    }
+
+    #[test]
+    fn project_discovery_walks_up_from_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        let deep = project.join("src/deep/nested");
+        let wg = project.join(".workgraph");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(&wg).unwrap();
+        let result = resolve_workgraph_dir(None, None, Some(deep), Some(tmp.path().to_path_buf()));
+        assert_eq!(result, wg);
+    }
+
+    #[test]
+    fn global_fallback_used_when_no_project_and_home_has_workgraph() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let global = home.join(".workgraph");
+        std::fs::create_dir_all(&global).unwrap();
+        let outside = tmp.path().join("somewhere/else");
+        std::fs::create_dir_all(&outside).unwrap();
+        let result = resolve_workgraph_dir(None, None, Some(outside), Some(home));
+        assert_eq!(result, global);
+    }
+
+    #[test]
+    fn project_beats_global_when_both_exist() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let global = home.join(".workgraph");
+        std::fs::create_dir_all(&global).unwrap();
+        let project = tmp.path().join("project");
+        let project_wg = project.join(".workgraph");
+        std::fs::create_dir_all(&project_wg).unwrap();
+        let result = resolve_workgraph_dir(None, None, Some(project), Some(home));
+        assert_eq!(result, project_wg);
+    }
+
+    #[test]
+    fn default_fallback_when_nothing_exists() {
+        let tmp = TempDir::new().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let home = tmp.path().join("home"); // no .workgraph inside
+        let result = resolve_workgraph_dir(None, None, Some(outside.clone()), Some(home));
+        assert_eq!(result, outside.join(".workgraph"));
+    }
+}
+
 /// Print custom help output with usage-based ordering
 fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     use workgraph::config::Config;
@@ -275,7 +447,42 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let workgraph_dir = cli.dir.unwrap_or_else(|| PathBuf::from(".workgraph"));
+    let workgraph_dir = resolve_workgraph_dir(
+        cli.dir.clone(),
+        std::env::var_os("WG_DIR").map(PathBuf::from),
+        std::env::current_dir().ok(),
+        dirs::home_dir(),
+    );
+
+    // Auto-create the global fallback `~/.workgraph` for REPL-style
+    // commands that should Just Work from any directory. Project-
+    // scoped commands (wg add, wg list, etc.) still require an
+    // existing workgraph dir and will error cleanly downstream if
+    // one isn't found. This mirrors how `gh auth` can create
+    // `~/.config/gh` on first use without requiring `gh init`.
+    let is_repl_style = matches!(
+        cli.command,
+        Some(Commands::Nex { .. }) | Some(Commands::TuiNex { .. })
+    );
+    if is_repl_style
+        && !workgraph_dir.exists()
+        && let Some(home) = dirs::home_dir()
+        && workgraph_dir == home.join(".workgraph")
+    {
+        if let Err(e) = std::fs::create_dir_all(&workgraph_dir) {
+            eprintln!(
+                "warning: failed to create global workgraph dir {}: {}",
+                workgraph_dir.display(),
+                e
+            );
+        } else {
+            eprintln!(
+                "\x1b[2m[wg] created global workgraph directory: {}\x1b[0m",
+                workgraph_dir.display()
+            );
+        }
+    }
+
     let workgraph_dir = workgraph_dir.canonicalize().unwrap_or(workgraph_dir);
 
     // Handle help flags (top-level custom help with usage-based ordering)
@@ -301,7 +508,23 @@ fn main() -> Result<()> {
     workgraph::usage::append_usage_log(&workgraph_dir, command_name(&command));
 
     match command {
-        Commands::Init { no_agency } => commands::init::run(&workgraph_dir, no_agency),
+        Commands::Init { no_agency, global } => {
+            // When --global is set, override the resolver's decision
+            // and point init at `~/.workgraph` regardless of cwd.
+            let target_dir = if global {
+                match dirs::home_dir() {
+                    Some(home) => home.join(".workgraph"),
+                    None => {
+                        anyhow::bail!(
+                            "--global requires a resolvable home directory but HOME is not set"
+                        );
+                    }
+                }
+            } else {
+                workgraph_dir.clone()
+            };
+            commands::init::run(&target_dir, no_agency)
+        }
         Commands::Add {
             title,
             id,
