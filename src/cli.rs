@@ -1796,6 +1796,13 @@ pub enum Commands {
         /// Maximum conversation turns
         #[arg(long, default_value = "200")]
         max_turns: usize,
+
+        /// Verbose console output: show tool-call previews, result sizes,
+        /// compaction diagnostics, and the exit summary. Default is quiet
+        /// (only the prompt, assistant text, and errors). The on-disk
+        /// NDJSON session log is always complete regardless of this flag.
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

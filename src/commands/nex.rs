@@ -21,6 +21,7 @@ pub fn run(
     system_prompt: Option<&str>,
     message: Option<&str>,
     max_turns: usize,
+    verbose: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -57,10 +58,12 @@ pub fn run(
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         sessions_dir.join(format!("{}.ndjson", stamp))
     };
-    eprintln!(
-        "\x1b[2m[wg nex] session log → {}\x1b[0m",
-        output_log.display()
-    );
+    if verbose {
+        eprintln!(
+            "\x1b[2m[wg nex] session log → {}\x1b[0m",
+            output_log.display()
+        );
+    }
 
     let client = create_provider_ext(workgraph_dir, &effective_model, None, endpoint, None)?;
 
@@ -74,12 +77,16 @@ pub fn run(
         max_turns,
         output_log,
         supports_tools,
-    );
+    )
+    .with_nex_verbose(verbose);
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
         agent = agent.with_registry_entry(entry);
     }
 
+    // Always show the minimal banner — it names the model so the user
+    // knows what they're talking to. Verbose-only details (warning
+    // text, exit hint) are gated.
     eprintln!(
         "\x1b[1;32mwg nex\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
         effective_model
@@ -90,16 +97,22 @@ pub fn run(
             effective_model
         );
     }
-    eprintln!("Type /quit or Ctrl-D to exit.\n");
+    if verbose {
+        eprintln!("Type /quit or Ctrl-D to exit.\n");
+    } else {
+        eprintln!();
+    }
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     let result = rt.block_on(agent.run_interactive(message))?;
 
-    eprintln!(
-        "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
-        result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
-    );
+    if verbose {
+        eprintln!(
+            "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
+            result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
+        );
+    }
 
     Ok(())
 }

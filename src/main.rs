@@ -2688,6 +2688,7 @@ fn main() -> Result<()> {
             system_prompt,
             message,
             max_turns,
+            verbose,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2695,6 +2696,7 @@ fn main() -> Result<()> {
             system_prompt.as_deref(),
             message.as_deref(),
             max_turns,
+            verbose,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

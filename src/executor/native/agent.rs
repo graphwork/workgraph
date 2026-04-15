@@ -107,6 +107,13 @@ pub struct AgentLoop {
     /// be exploded by a single large tool call. The agent retrieves full
     /// content via `bash` (cat/head/tail/sed/grep) on the handle path.
     tool_output_channeler: Option<super::channel::ToolOutputChanneler>,
+    /// REPL verbose mode. When false (default), `run_interactive` suppresses
+    /// tool-call previews, tool-result size lines, compaction chatter, and
+    /// other infrastructure telemetry — leaving only assistant text, the
+    /// prompt, errors, and the exit summary. Machine-testing flows set this
+    /// to true via the `--verbose` CLI flag to recover full console output.
+    /// The on-disk NDJSON session log is unaffected and always complete.
+    nex_verbose: bool,
 }
 
 /// NDJSON log entry types for the output file.
@@ -266,7 +273,15 @@ impl AgentLoop {
             state_injector: None,
             registry_entry: None,
             tool_output_channeler,
+            nex_verbose: false,
         }
+    }
+
+    /// Enable verbose REPL output in `run_interactive`.
+    /// Defaults to quiet. Use `--verbose` / `-v` on `wg nex` to turn on.
+    pub fn with_nex_verbose(mut self, verbose: bool) -> Self {
+        self.nex_verbose = verbose;
+        self
     }
 
     /// Set the registry entry for cost estimation.
@@ -1739,18 +1754,17 @@ impl AgentLoop {
                         // real reduction, and let the next turn use the
                         // reduced messages. Same pattern as the
                         // `AgentLoop::run` streaming-400 path.
-                        eprintln!(
-                            "\n\x1b[33m[nex] Context too long — hard compaction...\x1b[0m"
-                        );
                         let pre_tokens = self.context_budget.effective_tokens(&messages);
                         messages = ContextBudget::hard_emergency_compact(messages, 1);
                         let post_tokens = self.context_budget.effective_tokens(&messages);
-                        eprintln!(
-                            "\x1b[33m[nex] Hard emergency: ~{} → ~{} tokens (Δ -{})\x1b[0m",
-                            pre_tokens,
-                            post_tokens,
-                            pre_tokens.saturating_sub(post_tokens),
-                        );
+                        if self.nex_verbose {
+                            eprintln!(
+                                "\n\x1b[33m[nex] Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})\x1b[0m",
+                                pre_tokens,
+                                post_tokens,
+                                pre_tokens.saturating_sub(post_tokens),
+                            );
+                        }
                         // Reset the streak — we just did the most
                         // aggressive compaction available.
                         nex_noop_streak = 0;
@@ -1859,20 +1873,25 @@ impl AgentLoop {
                         })
                         .collect();
 
-                    for (_, name, input) in &tool_use_blocks {
-                        let input_summary = if let Some(cmd) =
-                            input.get("command").and_then(|v| v.as_str())
-                        {
-                            format!("command={}", truncate_for_display(cmd, 80))
-                        } else if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
-                            format!("path={}", path)
-                        } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str()) {
-                            format!("pattern={}", truncate_for_display(pat, 60))
-                        } else {
-                            let s = input.to_string();
-                            truncate_for_display(&s, 80).to_string()
-                        };
-                        eprintln!("\x1b[2m  > {}({})\x1b[0m", name, input_summary);
+                    if self.nex_verbose {
+                        for (_, name, input) in &tool_use_blocks {
+                            let input_summary = if let Some(cmd) =
+                                input.get("command").and_then(|v| v.as_str())
+                            {
+                                format!("command={}", truncate_for_display(cmd, 80))
+                            } else if let Some(path) =
+                                input.get("file_path").and_then(|v| v.as_str())
+                            {
+                                format!("path={}", path)
+                            } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str())
+                            {
+                                format!("pattern={}", truncate_for_display(pat, 60))
+                            } else {
+                                let s = input.to_string();
+                                truncate_for_display(&s, 80).to_string()
+                            };
+                            eprintln!("\x1b[2m  > {}({})\x1b[0m", name, input_summary);
+                        }
                     }
 
                     let mut parse_error_results = Vec::new();
@@ -1915,10 +1934,49 @@ impl AgentLoop {
 
                     let calls_only: Vec<_> =
                         batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
-                    let batch_results = self
-                        .tools
-                        .execute_batch(&calls_only, super::tools::DEFAULT_MAX_CONCURRENT_TOOLS)
-                        .await;
+
+                    // Wrap tool execution in a Ctrl-C-aware select so the
+                    // human can regain the prompt even if a tool is
+                    // running a long subprocess. On interrupt we produce
+                    // synthetic "[interrupted by user]" tool results for
+                    // every pending tool_use in the assistant message
+                    // (the OpenAI wire format requires a tool_result for
+                    // every tool_use), push them, and `continue` back to
+                    // the prompt. Note: this does NOT kill the child
+                    // process launched by `bash` — that needs proper
+                    // cancellation plumbing through ToolRegistry. But it
+                    // does return control to the human immediately.
+                    let batch_results = {
+                        let batch_future = self
+                            .tools
+                            .execute_batch(&calls_only, super::tools::DEFAULT_MAX_CONCURRENT_TOOLS);
+                        let ctrl_c_future = tokio::signal::ctrl_c();
+                        tokio::select! {
+                            biased;
+                            _ = ctrl_c_future => {
+                                eprintln!(
+                                    "\n\x1b[33m[nex] Interrupted during tool execution — returning to prompt.\x1b[0m"
+                                );
+                                // Synthesize interrupted results for every
+                                // tool_use in the assistant message so the
+                                // message history stays well-formed.
+                                let mut interrupted_results = Vec::new();
+                                for (id, _name, _input) in &tool_use_blocks {
+                                    interrupted_results.push(ContentBlock::ToolResult {
+                                        tool_use_id: id.clone(),
+                                        content: "[interrupted by user]".to_string(),
+                                        is_error: true,
+                                    });
+                                }
+                                messages.push(Message {
+                                    role: Role::User,
+                                    content: interrupted_results,
+                                });
+                                continue;
+                            }
+                            res = batch_future => res,
+                        }
+                    };
 
                     let mut all_results: Vec<(
                         usize,
@@ -1948,13 +2006,16 @@ impl AgentLoop {
 
                     let mut results = Vec::new();
                     for (_, id, name, input, output, _) in &all_results {
+                        // Always surface tool errors — they are
+                        // actionable signal even in quiet mode. Success
+                        // lines are verbose-only.
                         if output.is_error {
                             eprintln!(
                                 "\x1b[2m  x {} error: {}\x1b[0m",
                                 name,
                                 truncate_for_display(&output.content, 100)
                             );
-                        } else {
+                        } else if self.nex_verbose {
                             eprintln!(
                                 "\x1b[2m  + {} ({} chars)\x1b[0m",
                                 name,
@@ -2056,16 +2117,18 @@ impl AgentLoop {
                         nex_noop_streak = nex_noop_streak.saturating_add(1);
                     }
 
-                    eprintln!(
-                        "\x1b[33m[nex] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} msgs, noop_streak={})\x1b[0m",
-                        tier_name,
-                        pre_tokens,
-                        post_tokens,
-                        delta,
-                        pre_count,
-                        post_count,
-                        nex_noop_streak,
-                    );
+                    if self.nex_verbose {
+                        eprintln!(
+                            "\x1b[33m[nex] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} msgs, noop_streak={})\x1b[0m",
+                            tier_name,
+                            pre_tokens,
+                            post_tokens,
+                            delta,
+                            pre_count,
+                            post_count,
+                            nex_noop_streak,
+                        );
+                    }
                 }
                 ContextPressureAction::CleanExit => {
                     eprintln!(
