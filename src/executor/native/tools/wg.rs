@@ -261,7 +261,9 @@ impl Tool for WgAddTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "wg_add".to_string(),
-            description: "Create a new task in the workgraph.".to_string(),
+            description: "Create a new task in the workgraph. Supports subtask delegation \
+                (block current task until child completes) and cron scheduling."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -284,6 +286,14 @@ impl Tool for WgAddTool {
                     "skills": {
                         "type": "string",
                         "description": "Comma-separated skills"
+                    },
+                    "subtask": {
+                        "type": "boolean",
+                        "description": "If true, treat as a blocking subtask of the current task. The current task is parked (Waiting) until this child completes. Requires WG_TASK_ID to be set in the agent environment."
+                    },
+                    "cron": {
+                        "type": "string",
+                        "description": "5-field cron expression (e.g. '*/5 * * * *' for every 5 minutes, '0 2 * * *' for daily at 2am). Creates a calendar-scheduled task that fires periodically instead of on dependency completion."
                     }
                 },
                 "required": ["title"]
@@ -303,6 +313,11 @@ impl Tool for WgAddTool {
         let after_str = input.get("after").and_then(|v| v.as_str()).unwrap_or("");
         let tags_str = input.get("tags").and_then(|v| v.as_str()).unwrap_or("");
         let skills_str = input.get("skills").and_then(|v| v.as_str()).unwrap_or("");
+        let is_subtask = input
+            .get("subtask")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let cron_expr = input.get("cron").and_then(|v| v.as_str());
 
         let after: Vec<String> = after_str
             .split(',')
@@ -320,11 +335,58 @@ impl Tool for WgAddTool {
             .filter(|s| !s.is_empty())
             .collect();
 
+        // --subtask: requires WG_TASK_ID to identify the parent task.
+        let subtask_parent_id: Option<String> = if is_subtask {
+            match std::env::var("WG_TASK_ID") {
+                Ok(pid) if !pid.is_empty() => Some(pid),
+                _ => {
+                    return ToolOutput::error(
+                        "subtask=true requires WG_TASK_ID to be set in the agent environment \
+                         (the in-process wg_add tool uses it to identify the parent task). \
+                         This should be set automatically when spawned by the coordinator."
+                            .to_string(),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+
+        // --cron: parse expression and compute next fire time up-front so
+        // invalid cron rejects the task creation cleanly.
+        let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(expr) = cron_expr {
+            match crate::cron::parse_cron_expression(expr) {
+                Ok(schedule) => {
+                    let next_fire = crate::cron::calculate_next_fire(&schedule, Utc::now());
+                    (
+                        Some(expr.to_string()),
+                        true,
+                        next_fire.map(|dt| dt.to_rfc3339()),
+                    )
+                }
+                Err(e) => {
+                    return ToolOutput::error(format!(
+                        "Invalid cron expression '{}': {}",
+                        expr, e
+                    ));
+                }
+            }
+        } else {
+            (None, false, None)
+        };
+
         let (graph, path) = match load_workgraph(&self.dir) {
             Ok(g) => g,
             Err(e) => return ToolOutput::error(e),
         };
-        let effective_after = default_parent_after(&graph, &after);
+        // For subtask, we bypass the default-parent injection because the
+        // parent handles the blocking relationship via wait_condition, not
+        // via the normal after-dependency mechanism.
+        let effective_after = if is_subtask {
+            after.clone()
+        } else {
+            default_parent_after(&graph, &after)
+        };
 
         // Generate a unique task ID from title
         let mut task_id = generate_id(title);
@@ -336,8 +398,10 @@ impl Tool for WgAddTool {
             counter += 1;
         }
 
-        // Determine initial status
-        let initial_status = if effective_after.is_empty() {
+        // Determine initial status. Subtasks always start Open so the
+        // coordinator can immediately dispatch them — the parent's
+        // wait_condition is what enforces blocking.
+        let initial_status = if is_subtask || effective_after.is_empty() {
             Status::Open
         } else {
             // Check if all dependencies are done
@@ -363,6 +427,10 @@ impl Tool for WgAddTool {
             tags,
             skills,
             created_at: Some(Utc::now().to_rfc3339()),
+            cron_schedule,
+            cron_enabled,
+            next_cron_fire,
+            unplaced: is_subtask,
             ..Default::default()
         };
 
@@ -381,6 +449,83 @@ impl Tool for WgAddTool {
         }) {
             Ok(_) => {}
             Err(e) => return ToolOutput::error(format!("Failed to save graph: {}", e)),
+        }
+
+        // --subtask: park the parent with a wait_condition for this child.
+        if let Some(ref parent_id) = subtask_parent_id {
+            let child_id = task_id.clone();
+            let parent_id_s = parent_id.clone();
+            let mut wait_error: Option<String> = None;
+
+            match modify_graph(&path, |graph| {
+                let parent = match graph.get_task(&parent_id_s) {
+                    Some(t) => t,
+                    None => {
+                        wait_error = Some(format!(
+                            "Parent task '{}' not found (WG_TASK_ID is stale?)",
+                            parent_id_s
+                        ));
+                        return false;
+                    }
+                };
+                if parent.status != Status::InProgress {
+                    wait_error = Some(format!(
+                        "Cannot set subtask wait on parent '{}': status is '{}', expected 'in-progress'",
+                        parent_id_s, parent.status
+                    ));
+                    return false;
+                }
+                let parent = graph.get_task_mut(&parent_id_s).expect("verified above");
+                parent.status = Status::Waiting;
+                parent.wait_condition = Some(crate::graph::WaitSpec::Any(vec![
+                    crate::graph::WaitCondition::TaskStatus {
+                        task_id: child_id.clone(),
+                        status: Status::Done,
+                    },
+                    crate::graph::WaitCondition::TaskStatus {
+                        task_id: child_id.clone(),
+                        status: Status::Failed,
+                    },
+                ]));
+                parent.log.push(crate::graph::LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: parent.assigned.clone(),
+                    user: Some(crate::current_user()),
+                    message: format!(
+                        "Agent parked. Waiting for subtask '{}' to complete.",
+                        child_id
+                    ),
+                });
+                true
+            }) {
+                Ok(_) => {}
+                Err(e) => {
+                    return ToolOutput::error(format!(
+                        "Created task '{}' but failed to park parent: {}",
+                        task_id_clone, e
+                    ));
+                }
+            }
+            if let Some(msg) = wait_error {
+                return ToolOutput::error(format!(
+                    "Created task '{}' but failed to park parent: {}",
+                    task_id_clone, msg
+                ));
+            }
+
+            return ToolOutput::success(format!(
+                "Created subtask: {} (parent '{}' parked until child completes)",
+                task_id_clone, parent_id
+            ));
+        }
+
+        // --cron: mention the schedule in the success message so the agent
+        // can verify it was accepted.
+        if let Some(expr) = cron_expr {
+            return ToolOutput::success(format!(
+                "Created cron task: {} (schedule: '{}')",
+                task_id_clone, expr
+            ));
         }
 
         ToolOutput::success(format!("Created task: {}", task_id_clone))
@@ -710,8 +855,8 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use serde_json::json;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use crate::graph::{Node, Task, WorkGraph};
+    use crate::parser::{load_graph, save_graph};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
