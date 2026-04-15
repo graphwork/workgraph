@@ -39,7 +39,10 @@ pub fn run(
          Working directory: {}\n\n\
          You have tools available: read files, write/edit files, run bash commands, \
          grep/search, and more. Use them freely to help the user.\n\n\
-         Be concise. Show code when relevant. Execute commands to verify your work.",
+         Be concise. Show code when relevant. Execute commands to verify your work.\n\n\
+         IMPORTANT: You are a coordinator agent - your role is to facilitate development tasks \n\
+         but you should NOT attempt to mark tasks as 'done' or participate in the workgraph system.\n\
+         Your job is to assist developers, not to manage the workgraph lifecycle.",
         working_dir.display()
     );
     let system = system_prompt.unwrap_or(&default_system);
