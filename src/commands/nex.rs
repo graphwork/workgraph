@@ -27,19 +27,12 @@ pub fn run(
     let effective_model = model
         .map(String::from)
         .or_else(|| std::env::var("WG_MODEL").ok())
-        .unwrap_or_else(|| {
-            config
-                .resolve_model_for_role(DispatchRole::TaskAgent)
-                .model
-        });
+        .unwrap_or_else(|| config.resolve_model_for_role(DispatchRole::TaskAgent).model);
 
     let working_dir = std::env::current_dir().unwrap_or_default();
 
-    let registry = ToolRegistry::default_all_with_config(
-        workgraph_dir,
-        &working_dir,
-        &config.native_executor,
-    );
+    let registry =
+        ToolRegistry::default_all_with_config(workgraph_dir, &working_dir, &config.native_executor);
 
     let default_system = format!(
         "You are an expert software engineer working in an interactive coding session.\n\
@@ -53,13 +46,7 @@ pub fn run(
 
     let output_log = workgraph_dir.join("nex-session.ndjson");
 
-    let client = create_provider_ext(
-        workgraph_dir,
-        &effective_model,
-        None,
-        endpoint,
-        None,
-    )?;
+    let client = create_provider_ext(workgraph_dir, &effective_model, None, endpoint, None)?;
 
     let model_registry = ModelRegistry::load(workgraph_dir).unwrap_or_default();
     let supports_tools = model_registry.supports_tool_use(&effective_model);
@@ -95,9 +82,7 @@ pub fn run(
 
     eprintln!(
         "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
-        result.turns,
-        result.total_usage.input_tokens,
-        result.total_usage.output_tokens,
+        result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
     );
 
     Ok(())

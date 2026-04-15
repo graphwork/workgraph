@@ -3,8 +3,8 @@
 //! Uses mock providers to verify multi-turn conversation, tool calling,
 //! and streaming behavior in the interactive agent loop.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -156,10 +156,7 @@ async fn test_nex_interactive_single_turn() {
         tmp.path().join("test.ndjson"),
     );
 
-    let result = agent
-        .run_interactive(Some("Hello, world!"))
-        .await
-        .unwrap();
+    let result = agent.run_interactive(Some("Hello, world!")).await.unwrap();
 
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
     assert!(result.final_text.contains("Echo #0"));
