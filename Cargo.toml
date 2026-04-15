@@ -51,7 +51,7 @@ regex = "1"
 async-trait = "0.1"
 html-escape = "0.2"
 futures-util = "0.3"
-reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "stream", "rustls-tls"], default-features = false }
 glob = "0.3"
 unicode-width = "0.2"
 edtui = "0.9"
@@ -61,6 +61,8 @@ log = "0.4"
 env_logger = "0.11"
 lru = "0.12"
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
+rquest = { version = "5", features = ["json", "gzip", "brotli"] }
+rquest-util = "2"
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
