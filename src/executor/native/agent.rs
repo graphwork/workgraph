@@ -576,18 +576,21 @@ impl AgentLoop {
                         );
                         let pre_tokens = self.context_budget.effective_tokens(&messages);
                         // On a hard context-too-long error, use the aggressive
-                        // compact: drop ALL tool results in older turns, strip
-                        // thinking, truncate long text, keep only 2 recent
-                        // messages verbatim.
-                        messages = ContextBudget::hard_emergency_compact(messages, 2);
+                        // compact: drop ALL tool results except the single
+                        // most recent one (keep_recent_tool_results=1), strip
+                        // thinking in elided messages, truncate long text.
+                        // keep_recent counts tool-result occurrences, not
+                        // messages — so recent-position big tool results
+                        // actually get shrunk.
+                        messages = ContextBudget::hard_emergency_compact(messages, 1);
                         let post_tokens = self.context_budget.effective_tokens(&messages);
+                        let delta = pre_tokens.saturating_sub(post_tokens);
                         eprintln!(
-                            "[native-agent] Hard emergency compacted: ~{} → ~{} tokens ({} → {} messages, overhead {} kept)",
+                            "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
                             pre_tokens,
                             post_tokens,
-                            pre_tokens.saturating_sub(self.context_budget.overhead_tokens),
-                            post_tokens.saturating_sub(self.context_budget.overhead_tokens),
-                            self.context_budget.overhead_tokens
+                            delta,
+                            self.context_budget.overhead_tokens,
                         );
 
                         // Reduce completion reservation on retry to free budget for
@@ -1133,16 +1136,22 @@ impl AgentLoop {
                     }
                 }
                 ContextPressureAction::EmergencyCompaction => {
-                    // Proactive compaction at the compact threshold — strip
-                    // old tool results before the hard limit is reached.
+                    // Proactive compaction at the compact threshold — shrink
+                    // all tool results except the most recent 2 before the
+                    // hard limit is reached. keep_recent counts tool-result
+                    // occurrences, not messages, so recent-position big tool
+                    // results actually get shrunk (the main reason this fires
+                    // for chatty file-reading workloads).
                     let pre_tokens = self.context_budget.effective_tokens(&messages);
                     let pre_count = messages.len();
-                    messages = ContextBudget::emergency_compact(messages, 5);
+                    messages = ContextBudget::emergency_compact(messages, 2);
                     let post_tokens = self.context_budget.effective_tokens(&messages);
+                    let delta = pre_tokens.saturating_sub(post_tokens);
                     eprintln!(
-                        "[native-agent] Proactive compaction: ~{} → ~{} tokens ({} messages, overhead {} kept)",
+                        "[native-agent] Proactive compaction: ~{} → ~{} tokens (Δ -{}, {} messages, overhead {} kept, keep_recent_tool_results=2)",
                         pre_tokens,
                         post_tokens,
+                        delta,
                         pre_count,
                         self.context_budget.overhead_tokens
                     );

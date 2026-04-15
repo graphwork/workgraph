@@ -869,101 +869,83 @@ impl ContextBudget {
         )
     }
 
-    /// Aggressive variant of [`Self::emergency_compact`] used when a 400
-    /// context-too-long error has already fired.
-    ///
-    /// Differences from `emergency_compact`:
-    /// - Replaces ALL `ToolResult` blocks in older messages with a short
-    ///   stub (no 200-byte threshold).
-    /// - Strips `Thinking` blocks entirely from older messages.
-    /// - Truncates long `Text` blocks in older messages to 400 chars.
-    /// - Still preserves the last `keep_recent` messages verbatim so the
-    ///   model keeps its most recent context.
-    ///
-    /// The message count is unchanged by design (so tool_use/tool_result
-    /// pairing stays intact). The token reduction comes from shrinking
-    /// content within older messages.
-    pub fn hard_emergency_compact(messages: Vec<Message>, keep_recent: usize) -> Vec<Message> {
-        if messages.len() <= keep_recent {
-            return messages;
-        }
-        let split = messages.len().saturating_sub(keep_recent);
-        let mut compacted = Vec::with_capacity(messages.len());
-
-        for msg in &messages[..split] {
-            let mut new_content = Vec::new();
-            for block in &msg.content {
-                match block {
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        is_error,
-                        ..
-                    } => {
-                        new_content.push(ContentBlock::ToolResult {
-                            tool_use_id: tool_use_id.clone(),
-                            content: "[tool result elided for context pressure]".to_string(),
-                            is_error: *is_error,
-                        });
-                    }
-                    ContentBlock::Thinking { .. } => {
-                        // Drop thinking entirely — it's not load-bearing for the model's decisions.
-                    }
-                    ContentBlock::Text { text } if text.len() > 400 => {
-                        let boundary = text.floor_char_boundary(400);
-                        new_content.push(ContentBlock::Text {
-                            text: format!("{}… [truncated]", &text[..boundary]),
-                        });
-                    }
-                    other => new_content.push(other.clone()),
+    /// Collect (msg_idx, block_idx) for every `ToolResult` block whose content
+    /// exceeds `size_threshold` bytes, walking messages in order.
+    fn locate_large_tool_results(
+        messages: &[Message],
+        size_threshold: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut locations = Vec::new();
+        for (mi, msg) in messages.iter().enumerate() {
+            for (bi, block) in msg.content.iter().enumerate() {
+                if let ContentBlock::ToolResult { content, .. } = block
+                    && content.len() > size_threshold
+                {
+                    locations.push((mi, bi));
                 }
             }
-            compacted.push(Message {
-                role: msg.role,
-                content: new_content,
-            });
         }
-
-        compacted.extend_from_slice(&messages[split..]);
-        compacted
+        locations
     }
 
-    /// Perform emergency compaction: drop tool results from turns older than
-    /// the last `keep_recent` messages, replacing them with summaries.
-    pub fn emergency_compact(messages: Vec<Message>, keep_recent: usize) -> Vec<Message> {
-        if messages.len() <= keep_recent {
+    /// Select which tool-result locations to **keep verbatim**: the last
+    /// `keep_recent_tool_results` entries from a list in chronological order.
+    fn keep_set(
+        locations: &[(usize, usize)],
+        keep_recent_tool_results: usize,
+    ) -> std::collections::HashSet<(usize, usize)> {
+        let keep_count = keep_recent_tool_results.min(locations.len());
+        let start = locations.len() - keep_count;
+        locations[start..].iter().copied().collect()
+    }
+
+    /// Perform emergency compaction: walk ALL messages and shrink any
+    /// `ToolResult` block larger than 200 bytes, EXCEPT the last
+    /// `keep_recent_tool_results` of them, which are preserved verbatim as
+    /// the model's working memory.
+    ///
+    /// This is **position-independent by design** — the big content in a
+    /// chatty file-reading workload lives in recent positions (one tool call
+    /// per file), so a position-based "keep last N messages" rule would
+    /// protect the very content we need to shrink. By counting tool-result
+    /// occurrences instead of messages, we always compact the earliest tool
+    /// results first regardless of where they sit in the message vec.
+    ///
+    /// Message count is unchanged so tool_use/tool_result pairing stays
+    /// intact. Token reduction comes from shrinking `ToolResult::content`.
+    pub fn emergency_compact(
+        messages: Vec<Message>,
+        keep_recent_tool_results: usize,
+    ) -> Vec<Message> {
+        let locations = Self::locate_large_tool_results(&messages, 200);
+        if locations.is_empty() {
             return messages;
         }
-        let split = messages.len().saturating_sub(keep_recent);
+        let keep = Self::keep_set(&locations, keep_recent_tool_results);
 
-        let mut compacted = Vec::new();
-
-        // Compact older messages: strip large tool results
-        for msg in &messages[..split] {
-            let mut new_content = Vec::new();
-            for block in &msg.content {
+        let mut compacted = Vec::with_capacity(messages.len());
+        for (mi, msg) in messages.into_iter().enumerate() {
+            let mut new_content = Vec::with_capacity(msg.content.len());
+            for (bi, block) in msg.content.into_iter().enumerate() {
                 match block {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
                         is_error,
-                    } => {
-                        // Replace large tool results with a short summary
-                        let summary = if content.len() > 200 {
-                            format!(
-                                "[Tool result removed. Size: {} bytes. Preview: {}...]",
-                                content.len(),
-                                &content[..content.floor_char_boundary(100)]
-                            )
-                        } else {
-                            content.clone()
-                        };
+                    } if !keep.contains(&(mi, bi)) && content.len() > 200 => {
+                        let boundary = content.floor_char_boundary(100);
+                        let summary = format!(
+                            "[Tool result removed. Size: {} bytes. Preview: {}...]",
+                            content.len(),
+                            &content[..boundary]
+                        );
                         new_content.push(ContentBlock::ToolResult {
-                            tool_use_id: tool_use_id.clone(),
+                            tool_use_id,
                             content: summary,
-                            is_error: *is_error,
+                            is_error,
                         });
                     }
-                    other => new_content.push(other.clone()),
+                    other => new_content.push(other),
                 }
             }
             compacted.push(Message {
@@ -971,9 +953,85 @@ impl ContextBudget {
                 content: new_content,
             });
         }
+        compacted
+    }
 
-        // Keep recent messages verbatim
-        compacted.extend_from_slice(&messages[split..]);
+    /// Aggressive variant of [`Self::emergency_compact`] used after a
+    /// context-too-long API error has already fired. Differences:
+    ///
+    /// - ALL `ToolResult` blocks not in the keep set are replaced with a
+    ///   short stub (no 200-byte size threshold).
+    /// - `Thinking` blocks are stripped entirely from non-keep messages.
+    /// - `Text` blocks longer than 400 chars are truncated in non-keep
+    ///   messages.
+    ///
+    /// Like `emergency_compact`, this is position-independent: `keep_recent`
+    /// counts tool-result occurrences, not messages. The "non-keep messages"
+    /// are messages whose tool results would be shrunk — text/thinking in
+    /// those messages also gets pruned.
+    pub fn hard_emergency_compact(
+        messages: Vec<Message>,
+        keep_recent_tool_results: usize,
+    ) -> Vec<Message> {
+        let locations = Self::locate_large_tool_results(&messages, 0);
+        let keep = Self::keep_set(&locations, keep_recent_tool_results);
+
+        // Messages whose tool results will be kept verbatim — preserve their
+        // text/thinking too as part of the working memory.
+        let keep_msg_indices: std::collections::HashSet<usize> =
+            keep.iter().map(|(mi, _)| *mi).collect();
+
+        let mut compacted = Vec::with_capacity(messages.len());
+        for (mi, msg) in messages.into_iter().enumerate() {
+            let preserve_verbatim = keep_msg_indices.contains(&mi);
+            let mut new_content = Vec::with_capacity(msg.content.len());
+            for (bi, block) in msg.content.into_iter().enumerate() {
+                match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        content,
+                    } => {
+                        if keep.contains(&(mi, bi)) {
+                            new_content.push(ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            });
+                        } else {
+                            new_content.push(ContentBlock::ToolResult {
+                                tool_use_id,
+                                content: "[tool result elided for context pressure]"
+                                    .to_string(),
+                                is_error,
+                            });
+                        }
+                    }
+                    ContentBlock::Thinking { thinking, reasoning_details } => {
+                        // Keep thinking only in preserved-verbatim messages.
+                        if preserve_verbatim {
+                            new_content.push(ContentBlock::Thinking {
+                                thinking,
+                                reasoning_details,
+                            });
+                        }
+                    }
+                    ContentBlock::Text { text }
+                        if !preserve_verbatim && text.len() > 400 =>
+                    {
+                        let boundary = text.floor_char_boundary(400);
+                        new_content.push(ContentBlock::Text {
+                            text: format!("{}… [truncated]", &text[..boundary]),
+                        });
+                    }
+                    other => new_content.push(other),
+                }
+            }
+            compacted.push(Message {
+                role: msg.role,
+                content: new_content,
+            });
+        }
         compacted
     }
 }
@@ -1492,6 +1550,102 @@ mod tests {
         let msgs = user_messages(1, 400);
         assert_eq!(budget.estimate_tokens(&msgs), 100);
         assert_eq!(budget.effective_tokens(&msgs), 5_100);
+    }
+
+    #[test]
+    fn test_emergency_compact_shrinks_recent_position_tool_results() {
+        // Regression for the smoke-stress-compaction bug: a chatty
+        // file-reading workload puts big tool results in RECENT positions.
+        // The old message-position-based "keep last N messages" rule would
+        // protect them and compaction would reduce zero tokens. The new
+        // occurrence-based rule (keep last N TOOL RESULTS) should shrink
+        // earlier-occurrence tool results regardless of where they sit.
+        //
+        // Build a realistic 9-message layout:
+        //   0: user task
+        //   1: assistant (text + tool_use for read_file A)
+        //   2: user (tool_result with 10KB content)  ← old
+        //   3: assistant (text + tool_use for read_file B)
+        //   4: user (tool_result with 10KB content)  ← older-but-"recent" position
+        //   5: assistant (text + tool_use for read_file C)
+        //   6: user (tool_result with 10KB content)  ← most-recent position
+        //   7: assistant (text)
+        //   8: user (text)
+        let mut messages = Vec::new();
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Summarize all docs".to_string(),
+            }],
+        });
+        for i in 0..3 {
+            messages.push(Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: format!("Reading file {}", i),
+                    },
+                    ContentBlock::ToolUse {
+                        id: format!("tu-{}", i),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"path": format!("docs/{}.md", i)}),
+                    },
+                ],
+            });
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("tu-{}", i),
+                    content: "x".repeat(10_000),
+                    is_error: false,
+                }],
+            });
+        }
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "Now I'll write the summary".to_string(),
+            }],
+        });
+
+        let budget = ContextBudget::with_window_size(32_000);
+        let before = budget.estimate_tokens(&messages);
+
+        // keep_recent_tool_results=2 — should shrink the FIRST of 3 tool
+        // results (~10KB) while preserving the last 2 verbatim.
+        let after = ContextBudget::emergency_compact(messages.clone(), 2);
+        let after_tokens = budget.estimate_tokens(&after);
+        let delta = before.saturating_sub(after_tokens);
+
+        assert_eq!(after.len(), messages.len(), "message count preserved");
+        assert!(
+            delta >= 2000,
+            "compaction should shrink at least one 10KB tool result \
+             (~2500 tokens reduction expected), got delta={} (before={}, after={})",
+            delta,
+            before,
+            after_tokens,
+        );
+
+        // keep_recent_tool_results=1 — should shrink 2 of 3 tool results.
+        let aggressive = ContextBudget::emergency_compact(messages.clone(), 1);
+        let aggressive_tokens = budget.estimate_tokens(&aggressive);
+        assert!(
+            aggressive_tokens < after_tokens,
+            "keep_recent=1 should reduce more than keep_recent=2: {} vs {}",
+            aggressive_tokens,
+            after_tokens,
+        );
+
+        // keep_recent_tool_results=0 — should shrink ALL tool results.
+        let maximum = ContextBudget::emergency_compact(messages.clone(), 0);
+        let maximum_tokens = budget.estimate_tokens(&maximum);
+        assert!(
+            maximum_tokens < aggressive_tokens,
+            "keep_recent=0 should reduce more than keep_recent=1: {} vs {}",
+            maximum_tokens,
+            aggressive_tokens,
+        );
     }
 
     #[test]
