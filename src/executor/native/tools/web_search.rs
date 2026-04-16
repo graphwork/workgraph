@@ -1269,9 +1269,11 @@ pub(crate) struct BrowserHandle {
     /// PID of the Chrome child process, captured at launch time so
     /// we can send SIGKILL from the synchronous `Drop` impl.
     chrome_pid: Option<u32>,
-    /// Per-process user-data-dir (`/tmp/wg-chrome-<pid>`) that Chrome
-    /// writes profile data into. Cleaned up in `Drop`.
-    user_data_dir: std::path::PathBuf,
+    /// Persistent user-data-dir (`~/.wg-chrome-profile`) that Chrome
+    /// writes profile data into. Persists across sessions so cookies
+    /// survive — after solving one CAPTCHA manually, subsequent visits
+    /// to the same site reuse the authenticated cookie.
+    _user_data_dir: std::path::PathBuf,
 }
 
 impl Drop for BrowserHandle {
@@ -1290,11 +1292,10 @@ impl Drop for BrowserHandle {
             }
         }
 
-        // Clean up the per-process user-data-dir. Chrome writes caches,
-        // GPU shader caches, DevTools state, etc. into this directory
-        // and it can grow to tens of MB per session. Best-effort: if
-        // removal fails (e.g. permissions, already gone) we don't panic.
-        let _ = std::fs::remove_dir_all(&self.user_data_dir);
+        // NOTE: We intentionally do NOT remove the user-data-dir.
+        // The persistent profile at ~/.wg-chrome-profile preserves
+        // cookies across sessions, which means solved CAPTCHAs and
+        // authenticated sessions carry over to the next run.
     }
 }
 
@@ -1342,12 +1343,13 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
             "No Chrome/Chromium binary found. Set CHROME_BIN or install google-chrome.".to_string()
         })?;
 
-    // Dedicated per-process user-data-dir so we don't collide with
-    // an interactive Chrome session the user might already have
-    // running in `~/.config/google-chrome`. Chrome refuses to start
-    // when two instances fight for the same profile directory
-    // (ProcessSingleton lock).
-    let user_data_dir = std::env::temp_dir().join(format!("wg-chrome-{}", std::process::id()));
+    // Persistent user-data-dir so cookies survive across sessions.
+    // Separate from ~/.config/google-chrome to avoid colliding with
+    // an interactive Chrome session (Chrome refuses to start when two
+    // instances fight for the same profile — ProcessSingleton lock).
+    let user_data_dir = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".wg-chrome-profile");
 
     let config = BrowserConfig::builder()
         .chrome_executable(&chrome_path)
@@ -1399,7 +1401,7 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
         browser,
         _task: task,
         chrome_pid,
-        user_data_dir,
+        _user_data_dir: user_data_dir,
     })
 }
 
