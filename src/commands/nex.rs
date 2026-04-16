@@ -35,15 +35,21 @@ pub fn run(
     let working_dir = std::env::current_dir().unwrap_or_default();
 
     let registry = {
-        let full = ToolRegistry::default_all_with_config(
+        let mut reg = ToolRegistry::default_all_with_config(
             workgraph_dir,
             &working_dir,
             &config.native_executor,
         );
+        // Strip workgraph mutation tools — nex is an interactive
+        // session, not a workgraph task. wg_done/wg_add/wg_fail have
+        // no meaningful target and confuse models that try to "complete
+        // the task" by calling them. wg_show/wg_list are kept (read-
+        // only graph browsing is fine).
+        reg.remove_tools(&["wg_done", "wg_add", "wg_fail", "wg_artifact"]);
         if read_only {
-            full.filter_read_only()
+            reg.filter_read_only()
         } else {
-            full
+            reg
         }
     };
 
@@ -51,11 +57,18 @@ pub fn run(
         "You are an expert software engineer working in an interactive coding session.\n\
          Working directory: {}\n\n\
          You have tools available: read files, write/edit files, run bash commands, \
-         grep/search, and more. Use them freely to help the user.\n\n\
+         grep/search, web search, web fetch, and more. Use them freely to help the user.\n\n\
          Be concise. Show code when relevant. Execute commands to verify your work.\n\n\
-         IMPORTANT: You are a coordinator agent - your role is to facilitate development tasks \n\
-         but you should NOT attempt to mark tasks as 'done' or participate in the workgraph system.\n\
-         Your job is to assist developers, not to manage the workgraph lifecycle.",
+         IMPORTANT RULES:\n\
+         - When asked to search the web, ALWAYS follow up by fetching the top 2-3 \
+         result URLs with web_fetch to read the actual page content. Do NOT just \
+         report the search result titles and snippets — the user wants the real \
+         information from the pages, not a list of links.\n\
+         - Do NOT call wg_done, wg_add, or any workgraph management tools. You are \
+         in an interactive session, not a workgraph task. There is no task to mark \
+         done and no graph to modify.\n\
+         - Cite specific information from tool outputs. Do not fabricate or paraphrase \
+         from memory when you have real data from a tool call.",
         working_dir.display()
     );
     let system = system_prompt.unwrap_or(&default_system);

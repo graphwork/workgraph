@@ -169,6 +169,15 @@ impl ToolRegistry {
         filtered
     }
 
+    /// Remove tools by name. Used to strip workgraph mutation tools
+    /// (wg_done, wg_add, wg_fail) from the nex REPL registry where
+    /// there's no task context to mutate.
+    pub fn remove_tools(&mut self, names: &[&str]) {
+        for name in names {
+            self.tools.remove(*name);
+        }
+    }
+
     /// Check whether a tool is read-only by name.
     pub fn is_read_only(&self, name: &str) -> bool {
         self.tools.get(name).is_some_and(|t| t.is_read_only())
