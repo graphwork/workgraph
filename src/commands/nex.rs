@@ -49,20 +49,30 @@ pub fn run(
     );
     let system = system_prompt.unwrap_or(&default_system);
 
-    // Per-session timestamped log path — every invocation of `wg nex`
-    // leaves its own file under `.workgraph/nex-sessions/` so history
-    // is preserved and sessions don't clobber each other. Path format:
-    // `.workgraph/nex-sessions/<rfc3339-utc>.ndjson`
-    let output_log = {
-        let sessions_dir = workgraph_dir.join("nex-sessions");
-        let _ = std::fs::create_dir_all(&sessions_dir);
-        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        sessions_dir.join(format!("{}.ndjson", stamp))
-    };
+    // Per-session timestamped paths. Every `wg nex` invocation gets:
+    //
+    // - `.ndjson` — compact event log (tool calls, user inputs) for
+    //   the session-trace display and post-hoc analysis.
+    //
+    // - `.journal.jsonl` — full replayable conversation journal
+    //   (Init, every Message with role/content, ToolExecution,
+    //   Compaction, End). This is what enables resume, fork, replay,
+    //   and forensic analysis. Same format the background task agents
+    //   use, so tools that work on agent journals work on nex
+    //   journals too.
+    let sessions_dir = workgraph_dir.join("nex-sessions");
+    let _ = std::fs::create_dir_all(&sessions_dir);
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let output_log = sessions_dir.join(format!("{}.ndjson", &stamp));
+    let journal_path = sessions_dir.join(format!("{}.journal.jsonl", &stamp));
     if verbose {
         eprintln!(
             "\x1b[2m[wg nex] session log → {}\x1b[0m",
             output_log.display()
+        );
+        eprintln!(
+            "\x1b[2m[wg nex] journal    → {}\x1b[0m",
+            journal_path.display()
         );
     }
 
@@ -81,7 +91,9 @@ pub fn run(
     )
     .with_nex_verbose(verbose)
     .with_nex_chatty(chatty || verbose)
-    .with_nex_repl_mode(true);
+    .with_nex_repl_mode(true)
+    .with_journal(journal_path, format!("nex-{}", stamp))
+    .with_working_dir(working_dir.clone());
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
         agent = agent.with_registry_entry(entry);

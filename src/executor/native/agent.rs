@@ -1586,6 +1586,40 @@ impl AgentLoop {
         // file so the trace has a clear beginning marker.
         self.log_session_start(None);
 
+        // Open the journal for this session (if configured via
+        // `with_journal`). The journal records the FULL replayable
+        // message history — Init, every Message (user/assistant/
+        // tool-result), ToolExecution, Compaction, End — in the same
+        // format background task agents use. This enables resume,
+        // fork, replay, and forensic analysis of nex sessions.
+        let mut journal = if let Some(ref path) = self.journal_path {
+            match Journal::open(path) {
+                Ok(j) => Some(j),
+                Err(e) => {
+                    eprintln!("[nex] Warning: failed to open journal: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Write Init journal entry with session metadata.
+        if let Some(ref mut j) = journal {
+            let tool_defs = if self.supports_tools {
+                self.tools.definitions()
+            } else {
+                vec![]
+            };
+            let _ = j.append(JournalEntryKind::Init {
+                model: self.client.model().to_string(),
+                provider: self.client.name().to_string(),
+                system_prompt: self.system_prompt.clone(),
+                tools: tool_defs,
+                task_id: self.task_id.clone(),
+            });
+        }
+
         // Rustyline editor for line editing + history.
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
         // Persistent history file — survives sessions.
@@ -1744,6 +1778,21 @@ impl AgentLoop {
                 }
             }
 
+            // Journal the last message (user input or tool results)
+            // before the API call so the journal captures the full
+            // input that drove each model turn.
+            if let Some(ref mut j) = journal
+                && let Some(last) = messages.last()
+            {
+                let _ = j.append(JournalEntryKind::Message {
+                    role: last.role,
+                    content: last.content.clone(),
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                });
+            }
+
             let request = MessagesRequest {
                 model: self.client.model().to_string(),
                 max_tokens: self.client.max_tokens(),
@@ -1846,6 +1895,18 @@ impl AgentLoop {
                 role: Role::Assistant,
                 content: response.content.clone(),
             });
+
+            // Journal the assistant message so the full conversation
+            // is replayable from the journal file.
+            if let Some(ref mut j) = journal {
+                let _ = j.append(JournalEntryKind::Message {
+                    role: Role::Assistant,
+                    content: response.content.clone(),
+                    usage: Some(response.usage.clone()),
+                    response_id: None,
+                    stop_reason: response.stop_reason,
+                });
+            }
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
@@ -2221,6 +2282,26 @@ impl AgentLoop {
         // Emit the session-end marker and the final result into the
         // session log so the on-disk trace has a clear terminator.
         self.log_session_end(turns, session_exit_reason, &total_usage);
+
+        // Close the journal with an End entry.
+        if let Some(ref mut j) = journal {
+            use crate::executor::native::journal::EndReason;
+            let reason = match session_exit_reason {
+                "user_quit" | "eof" => EndReason::Complete,
+                "max_turns" => EndReason::MaxTurns,
+                "context_limit" => EndReason::Error {
+                    message: "context limit".to_string(),
+                },
+                other => EndReason::Error {
+                    message: other.to_string(),
+                },
+            };
+            let _ = j.append(JournalEntryKind::End {
+                reason,
+                total_usage: total_usage.clone(),
+                turns: turns as u32,
+            });
+        }
         let result_preview = AgentResult {
             final_text: final_text.clone(),
             turns,
