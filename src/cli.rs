@@ -1821,6 +1821,13 @@ pub enum Commands {
         /// agent modifying any files.
         #[arg(long, short = 'r')]
         read_only: bool,
+
+        /// Resume the most recent nex session. Loads the conversation
+        /// history from the last `.journal.jsonl` file and continues
+        /// from where you left off. The model sees the full prior
+        /// context (subject to any compaction that occurred).
+        #[arg(long)]
+        resume: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

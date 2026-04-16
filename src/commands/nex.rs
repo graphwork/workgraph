@@ -24,6 +24,7 @@ pub fn run(
     chatty: bool,
     verbose: bool,
     read_only: bool,
+    resume: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -88,7 +89,32 @@ pub fn run(
     let _ = std::fs::create_dir_all(&sessions_dir);
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let output_log = sessions_dir.join(format!("{}.ndjson", &stamp));
-    let journal_path = sessions_dir.join(format!("{}.journal.jsonl", &stamp));
+
+    // If --resume, find the most recent journal and continue from it.
+    // Otherwise, create a fresh journal for this session.
+    let (journal_path, resume_enabled) = if resume {
+        match find_most_recent_journal(&sessions_dir) {
+            Some(path) => {
+                eprintln!("\x1b[1;33m[wg nex] resuming from {}\x1b[0m", path.display());
+                (path, true)
+            }
+            None => {
+                eprintln!(
+                    "\x1b[33m[wg nex] --resume: no previous journal found, starting fresh\x1b[0m"
+                );
+                (
+                    sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
+                    false,
+                )
+            }
+        }
+    } else {
+        (
+            sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
+            false,
+        )
+    };
+
     if verbose {
         eprintln!(
             "\x1b[2m[wg nex] session log → {}\x1b[0m",
@@ -117,7 +143,8 @@ pub fn run(
     .with_nex_chatty(chatty || verbose)
     .with_nex_repl_mode(true)
     .with_journal(journal_path, format!("nex-{}", stamp))
-    .with_working_dir(working_dir.clone());
+    .with_working_dir(working_dir.clone())
+    .with_resume(resume_enabled);
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
         agent = agent.with_registry_entry(entry);
@@ -161,4 +188,24 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Find the most recent `.journal.jsonl` file in the sessions
+/// directory. Used by `--resume` to pick up where the last session
+/// left off. Returns None if no journal files exist.
+fn find_most_recent_journal(sessions_dir: &Path) -> Option<std::path::PathBuf> {
+    let mut journals: Vec<_> = std::fs::read_dir(sessions_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".journal.jsonl"))
+        })
+        .collect();
+
+    // Sort by modification time (most recent last), take the last.
+    journals.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    journals.last().map(|e| e.path())
 }

@@ -2701,6 +2701,7 @@ fn main() -> Result<()> {
             chatty,
             verbose,
             read_only,
+            resume,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2711,6 +2712,7 @@ fn main() -> Result<()> {
             chatty,
             verbose,
             read_only,
+            resume,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())
