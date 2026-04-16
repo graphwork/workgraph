@@ -20,6 +20,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Anything larger gets channeled.
 pub const DEFAULT_CHANNEL_THRESHOLD_BYTES: usize = 2048;
 
+/// Tools whose output should NEVER be channeled — their whole job is
+/// to bring structured data INTO the model's context, so replacing
+/// that data with a handle defeats the point. `web_search` enforces
+/// its own size cap (MAX_RESULTS results) so it fits comfortably in
+/// a turn and channeling is redundant. `web_fetch` self-manages its
+/// output differently — it writes fetched pages to a file artifact
+/// and returns metadata + preview, so it never passes a huge body
+/// to the channeler in the first place.
+///
+/// We learned this the hard way: qwen3-coder-30b was hallucinating
+/// restaurant names from real-looking URLs because it had never
+/// actually seen the web_search output — the 8 KB of results had
+/// been channeled to disk and the model only had a 400-char preview
+/// to work with. The model grounded on what it could see (restaurant
+/// name fragments) and confabulated plausible variants for the rest.
+const NEVER_CHANNEL_TOOLS: &[&str] = &["web_search"];
+
 /// Number of chars of preview included in the handle string.
 pub const DEFAULT_PREVIEW_CHARS: usize = 400;
 
@@ -54,9 +71,16 @@ impl ToolOutputChanneler {
     /// handle string pointing to the file. Otherwise return `content`
     /// unchanged.
     ///
+    /// Tools in `NEVER_CHANNEL_TOOLS` always pass through regardless
+    /// of size — their outputs are the whole point of the call and
+    /// truncating them to a 400-char preview destroys the value.
+    ///
     /// On any I/O failure, returns the original content rather than
     /// silently losing it — channeling is best-effort, never a blocker.
     pub fn maybe_channel(&self, tool_name: &str, content: &str) -> String {
+        if NEVER_CHANNEL_TOOLS.contains(&tool_name) {
+            return content.to_string();
+        }
         if content.len() <= self.threshold_bytes {
             return content.to_string();
         }

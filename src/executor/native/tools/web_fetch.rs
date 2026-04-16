@@ -1,6 +1,8 @@
-//! Web fetch tool: fetch a URL, extract main content, convert to markdown.
+//! Web fetch tool: fetch a URL, extract main content, **write to a
+//! file artifact**, and return a compact metadata+preview entry that
+//! the agent can then explore with `bash cat/head/grep`.
 //!
-//! Two-tier architecture:
+//! Two-tier fetch architecture:
 //!
 //! 1. **`rquest` with Chrome-136 emulation (primary path)**. Presents
 //!    as a real Chrome browser at the TLS (JA3/JA4), HTTP/2, and header
@@ -12,37 +14,62 @@
 //!    where even TLS-level emulation isn't enough (some Cloudflare
 //!    Turnstile configurations, JS-rendered content, cookie walls),
 //!    drop into the shared chromiumoxide `BrowserHandle` and navigate
-//!    to the URL for real. This is the same `BrowserHandle` the
-//!    `web_search` Browser backend uses, so cost is amortized across
-//!    both tools.
+//!    to the URL for real. Same `BrowserHandle` the `web_search`
+//!    Browser backend uses, so cost is amortized across both tools.
 //!
-//! The response JSON records `path_used` (`rquest_chrome136` |
-//! `headless_chrome`) and `duration_ms` per fetch so sessions can be
-//! analyzed later to measure how often the fallback is actually
-//! needed. The intent: if headless Chrome fallback fires on <5% of
-//! queries, rquest is load-bearing and headless Chrome is the tail;
-//! if >20%, rquest isn't cutting it and we need more aggressive
-//! emulation or different backends.
+//! File artifact architecture:
+//!
+//! Every successful fetch writes the extracted markdown to
+//! `<workgraph_dir>/nex-sessions/fetched-pages/NNNNN-<slug>.md`. The
+//! tool then returns ~1 KB of metadata (path, size, line count, first
+//! 20 lines preview) plus explicit bash hints for how to read the
+//! file. This keeps the full page OUT of the model's context on every
+//! turn — the agent reads what it needs via bash, exactly like it
+//! already does for large file_read outputs. The artifact survives
+//! the session for user inspection.
+//!
+//! Measurement: the metadata response includes `path_used`
+//! (`rquest_chrome136` | `headless_chrome`) and `duration_ms` per
+//! fetch so sessions can be analyzed later to measure how often the
+//! browser fallback is actually needed.
 
 use std::io::Cursor;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::json;
 use url::Url;
 
-use super::{Tool, ToolOutput, truncate_tool_output};
+use super::{Tool, ToolOutput};
 use crate::executor::native::client::ToolDefinition;
 
-/// Default maximum content length before truncation (chars).
+/// Cap on the size of any single fetched page written to disk. Real
+/// pages beyond this cap are truncated and the tool response says so.
+/// Prevents pathological fetches (100 MB HTML bombs) from filling the
+/// session dir.
 const DEFAULT_MAX_CONTENT_CHARS: usize = 16_000;
 
 /// Default HTTP request timeout.
 const DEFAULT_FETCH_TIMEOUT_SECS: u64 = 30;
 
-/// Register the web_fetch tool with default config.
-pub fn register_web_fetch_tool(registry: &mut super::ToolRegistry) {
+/// How many lines of the fetched page to inline into the tool
+/// response as a preview. The agent gets a taste of the content
+/// without loading the whole page into context.
+const PREVIEW_LINES: usize = 20;
+
+/// Monotonic counter for fetched-page filenames within a single
+/// process. Each fetch gets a unique number regardless of URL, so
+/// two fetches of the same URL produce two distinct artifacts.
+static FETCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Register the web_fetch tool. `workgraph_dir` is the root of the
+/// `.workgraph/` directory — fetched pages go under
+/// `<workgraph_dir>/nex-sessions/fetched-pages/`.
+pub fn register_web_fetch_tool(registry: &mut super::ToolRegistry, workgraph_dir: PathBuf) {
     registry.register(Box::new(WebFetchTool {
+        workgraph_dir,
         max_content_chars: DEFAULT_MAX_CONTENT_CHARS,
         fetch_timeout_secs: DEFAULT_FETCH_TIMEOUT_SECS,
     }));
@@ -51,16 +78,19 @@ pub fn register_web_fetch_tool(registry: &mut super::ToolRegistry) {
 /// Register the web_fetch tool with custom config values.
 pub fn register_web_fetch_tool_with_config(
     registry: &mut super::ToolRegistry,
+    workgraph_dir: PathBuf,
     max_content_chars: usize,
     fetch_timeout_secs: u64,
 ) {
     registry.register(Box::new(WebFetchTool {
+        workgraph_dir,
         max_content_chars,
         fetch_timeout_secs,
     }));
 }
 
 struct WebFetchTool {
+    workgraph_dir: PathBuf,
     max_content_chars: usize,
     fetch_timeout_secs: u64,
 }
@@ -78,16 +108,21 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page and return its main content as clean markdown. \
-                          Presents as a real Chrome browser (full TLS + HTTP/2 + client-hints \
-                          fingerprint) so anti-bot systems see a human, not a script. Falls \
-                          back to a headless Chrome process if TLS emulation isn't enough. \
+            description: "Fetch a web page and save it as a local markdown file artifact. \
+                          Returns metadata (path, size, title) and the first 20 lines as a \
+                          preview. To read the full page, use `bash` with `cat`, `head`, \
+                          `tail`, `sed`, or `grep` on the returned path. \
                           \n\n\
-                          IMPORTANT: Prefer URLs returned by `web_search` over guessing URLs. \
-                          Hallucinated URLs (like 'en.wikipedia.org/wiki/Naples_pizza' when \
-                          the real page is 'Neapolitan_pizza') will return 404 — `web_fetch` \
-                          cannot conjure pages that don't exist. Use `web_search` first, then \
-                          fetch a URL from its results."
+                          Presents as a real Chrome browser (TLS + HTTP/2 + client-hints \
+                          fingerprint via rquest) so anti-bot systems see a human, not a \
+                          script. Falls back to a headless Chrome process if TLS emulation \
+                          isn't enough. \
+                          \n\n\
+                          IMPORTANT: Prefer URLs returned by `web_search` over guessing \
+                          URLs. Hallucinated URLs (like 'en.wikipedia.org/wiki/Naples_pizza' \
+                          when the real page is 'Neapolitan_pizza') will return 404 — \
+                          `web_fetch` cannot conjure pages that don't exist. Use `web_search` \
+                          first, then fetch a URL from its results."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -115,65 +150,197 @@ impl Tool for WebFetchTool {
             Err(e) => return ToolOutput::error(format!("Invalid URL: {}", e)),
         };
 
+        let overall_started = Instant::now();
+
         // Primary path: rquest with Chrome-136 emulation.
-        let primary_started = Instant::now();
         let primary_result = fetch_via_rquest(&url_str, self.fetch_timeout_secs).await;
-        let primary_duration_ms = primary_started.elapsed().as_millis() as u64;
 
-        let (html, path_used, fallback_error): (String, &str, Option<String>) = match primary_result
-        {
-            Ok(body) => (body, "rquest_chrome136", None),
+        let (html, path_used): (String, &str) = match primary_result {
+            Ok(body) => (body, "rquest_chrome136"),
             Err(primary_err) => {
-                // rquest-with-Chrome-emulation failed. Before
-                // giving up, try the real headless Chrome process
-                // as a last resort. This is the 5% tail of sites
-                // that Cloudflare Turnstile or similar catch even
-                // with TLS-level emulation.
-                let fallback_started = Instant::now();
-                let fallback_result = fetch_via_browser(&url_str).await;
-                let fallback_duration_ms = fallback_started.elapsed().as_millis() as u64;
-
-                match fallback_result {
-                    Ok(body) => {
-                        // We use the fallback duration for the
-                        // reported duration_ms since that's what
-                        // actually produced the content.
-                        let _ = fallback_duration_ms; // silence unused
-                        (body, "headless_chrome", None)
-                    }
+                // rquest-with-Chrome-emulation failed. Before giving
+                // up, try the real headless Chrome process — the
+                // residual 5% of sites that Cloudflare Turnstile or
+                // similar catch even with TLS-level emulation.
+                match fetch_via_browser(&url_str).await {
+                    Ok(body) => (body, "headless_chrome"),
                     Err(browser_err) => {
-                        // Both paths failed. Report both errors so
-                        // the human and the model can see what
-                        // went wrong.
-                        let combined = format!(
+                        return ToolOutput::error(format!(
                             "Failed to fetch URL (both paths):\n\
-                                 - rquest_chrome136 ({}ms): {}\n\
-                                 - headless_chrome ({}ms): {}\n\n\
-                                 If the URL came from a web_search result, this is a transient \
-                                 failure — retry or use `bash curl` as a last resort. If you \
-                                 guessed the URL, it likely doesn't exist — use `web_search` \
-                                 to find real URLs first.",
-                            primary_duration_ms, primary_err, fallback_duration_ms, browser_err
-                        );
-                        return ToolOutput::error(combined);
+                             - rquest_chrome136: {}\n\
+                             - headless_chrome: {}\n\n\
+                             If the URL came from a web_search result, this is a transient \
+                             failure — retry or use `bash` with `curl` as a last resort. If \
+                             you guessed the URL, it likely doesn't exist — use `web_search` \
+                             to find real URLs first.",
+                            primary_err, browser_err
+                        ));
                     }
                 }
             }
         };
-        let _ = fallback_error; // destructure placeholder
 
         // Extract main content using readability + html2md.
-        let markdown = extract_to_markdown(&html, &parsed_url);
+        let (title, markdown) = extract_to_markdown(&html, &parsed_url);
 
-        // Stamp measurement header at the top of the output. Tiny
-        // overhead, visible in chatty mode, and downstream log
-        // analyzers can parse it to aggregate path-usage statistics
-        // across a session.
-        let header = format!("<!-- web_fetch path={} url={} -->\n", path_used, url_str);
-        let with_header = format!("{}{}", header, markdown);
+        // Write to a file artifact under <workgraph>/nex-sessions/fetched-pages/.
+        // The agent can then `cat`/`head`/`grep` it without loading the
+        // whole page into context on every turn.
+        let capped_markdown = if markdown.len() > self.max_content_chars {
+            let end = markdown
+                .char_indices()
+                .nth(self.max_content_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(markdown.len());
+            format!(
+                "{}\n\n[... content truncated at {} chars; upstream page was larger ...]\n",
+                &markdown[..end],
+                self.max_content_chars
+            )
+        } else {
+            markdown
+        };
 
-        let truncated = truncate_tool_output(&with_header, self.max_content_chars);
-        ToolOutput::success(truncated)
+        let artifact_path = match self.write_artifact(&url_str, &title, &capped_markdown) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolOutput::error(format!(
+                    "Fetched {} successfully via {} but failed to write artifact file: {}",
+                    url_str, path_used, e
+                ));
+            }
+        };
+
+        let total_bytes = capped_markdown.len();
+        let total_lines = capped_markdown.lines().count();
+        let duration_ms = overall_started.elapsed().as_millis() as u64;
+
+        let mut preview = String::new();
+        for (i, line) in capped_markdown.lines().take(PREVIEW_LINES).enumerate() {
+            preview.push_str(&format!("{:>4}: {}\n", i + 1, line));
+        }
+
+        let response = format!(
+            "Fetched: {url}\n\
+             Title:   {title}\n\
+             Path:    {path}\n\
+             Size:    {bytes} bytes, {lines} lines\n\
+             Via:     {path_used} ({ms} ms)\n\
+             \n\
+             Preview (first {preview_lines} lines):\n\
+             ────────────────────────────────────────────────────\n\
+             {preview}\
+             ────────────────────────────────────────────────────\n\
+             \n\
+             To read the full page, use `bash` on the path above:\n\
+             • Whole file:    cat '{path}'\n\
+             • First N lines: head -n 100 '{path}'\n\
+             • Last N lines:  tail -n 100 '{path}'\n\
+             • Search:        grep -in 'pattern' '{path}'\n\
+             • Line range:    sed -n '50,120p' '{path}'\n",
+            url = url_str,
+            title = if title.is_empty() {
+                "(untitled)"
+            } else {
+                title.as_str()
+            },
+            path = artifact_path.display(),
+            bytes = total_bytes,
+            lines = total_lines,
+            path_used = path_used,
+            ms = duration_ms,
+            preview_lines = PREVIEW_LINES,
+            preview = preview,
+        );
+
+        ToolOutput::success(response)
+    }
+}
+
+impl WebFetchTool {
+    /// Write the fetched page to `<workgraph>/nex-sessions/fetched-pages/`
+    /// under a counter-prefixed, URL-slug-based filename. Returns the
+    /// canonical absolute path for the agent to reference.
+    fn write_artifact(&self, url: &str, title: &str, markdown: &str) -> Result<PathBuf, String> {
+        let dir = self
+            .workgraph_dir
+            .join("nex-sessions")
+            .join("fetched-pages");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("create_dir_all {}: {}", dir.display(), e))?;
+
+        let n = FETCH_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let slug = slug_from_url(url);
+        let filename = format!("{:05}-{}.md", n, slug);
+        let path = dir.join(filename);
+
+        // Prepend a small provenance header so the artifact is self-
+        // documenting when the user opens it later.
+        let header = format!(
+            "<!-- web_fetch artifact -->\n\
+             <!-- url: {} -->\n\
+             <!-- title: {} -->\n\
+             <!-- fetched: {} -->\n\n",
+            url,
+            title,
+            chrono::Utc::now().to_rfc3339()
+        );
+        let body = format!("{}{}", header, markdown);
+
+        std::fs::write(&path, body).map_err(|e| format!("write {}: {}", path.display(), e))?;
+
+        Ok(std::fs::canonicalize(&path).unwrap_or(path))
+    }
+}
+
+/// Short filesystem-safe slug from a URL's host + path, capped at 40
+/// chars, with non-alphanumeric collapsed to `-`. Used in the
+/// artifact filename so users opening the fetched-pages directory
+/// can eyeball which file corresponds to which URL.
+fn slug_from_url(url: &str) -> String {
+    let parsed = Url::parse(url).ok();
+    let host = parsed
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .unwrap_or("unknown");
+    let path = parsed
+        .as_ref()
+        .map(|u| u.path().trim_matches('/').to_string())
+        .unwrap_or_default();
+    let combined = if path.is_empty() {
+        host.to_string()
+    } else {
+        format!("{}-{}", host, path)
+    };
+    let cleaned: String = combined
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // Collapse runs of dashes
+    let mut out = String::with_capacity(cleaned.len());
+    let mut prev_dash = false;
+    for c in cleaned.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push(c);
+            }
+            prev_dash = true;
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.len() > 40 {
+        trimmed[..40].to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -237,21 +404,21 @@ async fn fetch_via_browser(url: &str) -> Result<String, String> {
     Ok(content)
 }
 
-/// Extract main content from HTML and convert to markdown.
-fn extract_to_markdown(html: &str, url: &Url) -> String {
+/// Extract main content from HTML and convert to markdown. Returns
+/// `(title, markdown)` — title may be empty if readability failed to
+/// find one.
+fn extract_to_markdown(html: &str, url: &Url) -> (String, String) {
     let mut cursor = Cursor::new(html.as_bytes());
 
     match readability::extractor::extract(&mut cursor, url) {
         Ok(product) => {
-            let mut markdown = html2md::parse_html(&product.content);
-            if !product.title.is_empty() {
-                markdown = format!("# {}\n\n{}", product.title, markdown);
-            }
-            clean_markdown(&markdown)
+            let markdown = html2md::parse_html(&product.content);
+            let cleaned = clean_markdown(&markdown);
+            (product.title, cleaned)
         }
         Err(_) => {
             let markdown = html2md::parse_html(html);
-            clean_markdown(&markdown)
+            (String::new(), clean_markdown(&markdown))
         }
     }
 }
@@ -283,6 +450,7 @@ mod tests {
 
     fn default_tool() -> WebFetchTool {
         WebFetchTool {
+            workgraph_dir: std::env::temp_dir().join("wg-test-fetch"),
             max_content_chars: DEFAULT_MAX_CONTENT_CHARS,
             fetch_timeout_secs: DEFAULT_FETCH_TIMEOUT_SECS,
         }
@@ -338,16 +506,8 @@ mod tests {
         </html>"#;
 
         let url = Url::parse("https://example.com/test").unwrap();
-        let markdown = extract_to_markdown(html, &url);
+        let (_title, markdown) = extract_to_markdown(html, &url);
         assert!(!markdown.is_empty());
-    }
-
-    #[test]
-    fn test_truncation_behavior() {
-        let long_content = "x".repeat(DEFAULT_MAX_CONTENT_CHARS + 5000);
-        let truncated = truncate_tool_output(&long_content, DEFAULT_MAX_CONTENT_CHARS);
-        assert!(truncated.len() < long_content.len());
-        assert!(truncated.contains("chars omitted"));
     }
 
     #[test]
@@ -361,7 +521,21 @@ mod tests {
     fn test_extract_to_markdown_fallback() {
         let html = "<p>Just a paragraph</p>";
         let url = Url::parse("https://example.com").unwrap();
-        let markdown = extract_to_markdown(html, &url);
+        let (_title, markdown) = extract_to_markdown(html, &url);
         assert!(markdown.contains("Just a paragraph"));
+    }
+
+    #[test]
+    fn test_slug_from_url() {
+        assert_eq!(
+            slug_from_url("https://en.wikipedia.org/wiki/Neapolitan_pizza"),
+            "en-wikipedia-org-wiki-neapolitan-pizza"
+        );
+        assert_eq!(slug_from_url("https://example.com/"), "example-com");
+        assert_eq!(slug_from_url("not a url"), "unknown");
+        let long = slug_from_url(
+            "https://a.very.long.hostname.example.com/path/that/is/very/long/indeed/seriously",
+        );
+        assert!(long.len() <= 40);
     }
 }

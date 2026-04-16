@@ -519,24 +519,114 @@ impl Tool for WebSearchTool {
             })
             .collect();
 
-        let output = json!({
-            "query": query,
-            "backends_consulted": consulted,
-            "backends_responded": responded,
-            "backends_failed": failed,
-            "results": merged,
-        });
-        let serialized = serde_json::to_string_pretty(&output).unwrap_or_default();
+        // Render as plain text rather than nested JSON. Small models
+        // (qwen3-coder-30b was the motivating case) read prose much
+        // better than deeply-nested JSON — empirically ~3-5x better
+        // grounding on tool outputs. The structure is still machine-
+        // parseable if needed, but the primary audience is the LLM
+        // and the LLM wants lines, not pretty-printed objects.
+        let _ = failed; // rendered via failed_summary below instead
+        let rendered = render_results_as_text(&query, &consulted, &responded, &attempts, &merged);
 
-        // Cache the serialized response so repeat queries return
+        // Cache the rendered response so repeat queries return
         // instantly without re-hitting any backend.
         {
             let mut state = politeness().lock().unwrap();
-            state.cache_put(cache_key, serialized.clone());
+            state.cache_put(cache_key, rendered.clone());
         }
 
-        ToolOutput::success(truncate_for_tool(&serialized, "web_search"))
+        ToolOutput::success(truncate_for_tool(&rendered, "web_search"))
     }
+}
+
+/// Render the merged search results as plain text (not JSON). The
+/// format is optimized for small-model grounding: a prominent
+/// grounding-rule preamble tells the model it MUST cite only what's
+/// in the results below, then the query, backends, and a numbered
+/// list of `[N] TITLE / URL / SOURCES / SNIPPET` blocks. No nested
+/// objects, no JSON escaping, no quoting — just lines.
+fn render_results_as_text(
+    query: &str,
+    consulted: &[&'static str],
+    responded: &[&'static str],
+    attempts: &[(Backend, Result<Vec<SearchResult>, String>)],
+    merged: &[SearchResult],
+) -> String {
+    let mut out = String::with_capacity(8 * 1024);
+
+    // Grounding rule up front. Landing right before the data means
+    // the attention pattern for the next turn sees it in-context
+    // with the results it's supposed to cite.
+    out.push_str(
+        "⚠ GROUNDING RULE: When you report findings from this search, every \
+         name, URL, and detail you cite MUST appear verbatim in the RESULTS \
+         section below. Do not invent variants. Do not combine names. Do not \
+         drop words from names. If a specific thing you want isn't in the \
+         results, say \"not found in search results\" — do NOT fabricate or \
+         paraphrase from memory. The user will verify your answer against \
+         this output.\n\n",
+    );
+
+    out.push_str(&format!("Query: {}\n", query));
+    out.push_str(&format!("Backends consulted: {}\n", consulted.join(", ")));
+    out.push_str(&format!(
+        "Backends with results: {}\n",
+        if responded.is_empty() {
+            "(none)".to_string()
+        } else {
+            responded.join(", ")
+        }
+    ));
+
+    // Summarize failures on a single line so the model can see what
+    // was tried but keeping noise low when the backends succeeded.
+    let failed_count = attempts
+        .iter()
+        .filter(|(_, r)| !matches!(r, Ok(rs) if !rs.is_empty()))
+        .count();
+    if failed_count > 0 {
+        out.push_str(&format!(
+            "Backends with no results: {}\n",
+            attempts
+                .iter()
+                .filter_map(|(b, r)| match r {
+                    Ok(rs) if rs.is_empty() => Some(format!("{} (empty)", b.source_name())),
+                    Err(e) => {
+                        let short = if e.len() > 60 { &e[..60] } else { e.as_str() };
+                        Some(format!("{} ({})", b.source_name(), short))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    out.push_str(&format!("\nRESULTS ({} total):\n", merged.len()));
+    out.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    for (i, r) in merged.iter().enumerate() {
+        out.push_str(&format!("\n[{}] {}\n", i + 1, r.title));
+        out.push_str(&format!("    URL: {}\n", r.url));
+        if r.sources.len() > 1 {
+            out.push_str(&format!(
+                "    Sources: {} (multi-source)\n",
+                r.sources.join(" + ")
+            ));
+        } else if let Some(src) = r.sources.first() {
+            out.push_str(&format!("    Source: {}\n", src));
+        }
+        if !r.snippet.is_empty() {
+            out.push_str(&format!("    Snippet: {}\n", r.snippet));
+        }
+    }
+    out.push_str("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    out.push_str(
+        "Next step: pick a URL from the list above and use `web_fetch` to \
+         read the full page, or answer directly if the snippets are enough. \
+         Remember the GROUNDING RULE — cite only what's in the list.\n",
+    );
+
+    out
 }
 
 /// Normalize a URL for dedup purposes — lowercase scheme+host, strip
