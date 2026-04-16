@@ -29,15 +29,15 @@
 //! `docs/design/todo-web-search-fixes.md` for full ecosystem context.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use futures_util::future::join_all;
-use rusqlite::{Connection, params};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
 use super::{Tool, ToolOutput, truncate_for_tool};
@@ -214,106 +214,107 @@ impl Backend {
 
 // ─── Persistent disk cache ──────────────────────────────────────────────
 //
-// SQLite-backed cache at `~/.workgraph/web-cache.db`, shared across
-// sessions and projects. Repeat queries within `CACHE_TTL` return the
-// stored response without hitting any backend — at research scale this
-// cuts an order of magnitude off query volume.
+// File-per-query cache at `~/.workgraph/web-cache/<sha256>.txt`, shared
+// across sessions and projects. Repeat queries within `CACHE_TTL` return
+// the stored response without hitting any backend — at research scale
+// this cuts an order of magnitude off query volume.
 //
-// Override path for tests via the `WG_WEB_CACHE_DB` env var.
+// Matches workgraph's everything-is-a-file ethos (graph.jsonl, agent
+// output logs, nex-sessions/fetched-pages/). Benefits over a SQLite blob:
+//   - Inspectable: `cat`, `grep -r`, `ls -lt`, `find -mtime`
+//   - Distributed-safe: atomic rename works on NFS/Dropbox/sshfs where
+//     SQLite's file locks are known brittle
+//   - Corruption-isolated: one bad file = one lost entry, not a nuked DB
+//   - No native deps
+//
+// File format:
+//   line 1: normalized query (makes the dir grep-able — you can see what
+//           was asked without decoding the hash)
+//   line 2..: the rendered response (same string the cache used to store)
+//
+// TTL uses the file's mtime — no bookkeeping needed. Atomic writes use
+// a tempfile + rename in the same directory.
+//
+// Override dir for tests via the `WG_WEB_CACHE_DIR` env var.
 
-fn cache_db_path() -> PathBuf {
-    if let Ok(override_path) = std::env::var("WG_WEB_CACHE_DB") {
+fn cache_root() -> PathBuf {
+    if let Ok(override_path) = std::env::var("WG_WEB_CACHE_DIR") {
         return PathBuf::from(override_path);
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".workgraph")
-        .join("web-cache.db")
+        .join("web-cache")
 }
 
-fn open_cache_db() -> rusqlite::Result<Connection> {
-    let path = cache_db_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Map a normalized query to its cache-file path under `root`.
+fn cache_path_for(root: &Path, normalized_query: &str) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(normalized_query.as_bytes());
+    let hex = hex_encode(&hasher.finalize());
+    root.join(format!("{}.txt", hex))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
     }
-    let conn = Connection::open(&path)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         CREATE TABLE IF NOT EXISTS web_search_cache (
-             query_key  TEXT PRIMARY KEY,
-             response   TEXT NOT NULL,
-             created_at INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_web_search_cache_created_at
-             ON web_search_cache(created_at);",
-    )?;
-    Ok(conn)
+    out
 }
 
-static CACHE_DB: OnceLock<Option<StdMutex<Connection>>> = OnceLock::new();
-
-fn cache_db() -> Option<&'static StdMutex<Connection>> {
-    CACHE_DB
-        .get_or_init(|| match open_cache_db() {
-            Ok(conn) => Some(StdMutex::new(conn)),
-            Err(e) => {
-                eprintln!(
-                    "[web_search] disk cache init failed: {} — continuing without persistence",
-                    e
-                );
-                None
-            }
-        })
-        .as_ref()
+/// Inner cache read — testable with any directory, no globals. Returns
+/// `None` if the file is missing, unreadable, stale (older than `ttl`),
+/// or malformed (missing the query header line).
+fn cache_get_with(root: &Path, normalized_query: &str, ttl: Duration) -> Option<String> {
+    let path = cache_path_for(root, normalized_query);
+    let meta = std::fs::metadata(&path).ok()?;
+    let modified = meta.modified().ok()?;
+    let age = SystemTime::now().duration_since(modified).ok()?;
+    if age > ttl {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let (_header, rest) = contents.split_once('\n')?;
+    Some(rest.to_string())
 }
 
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Inner cache read — testable with any connection, no globals.
-fn cache_get_with(conn: &Connection, key: &str, cutoff_created_at: i64) -> Option<String> {
-    conn.query_row(
-        "SELECT response FROM web_search_cache \
-         WHERE query_key = ?1 AND created_at > ?2",
-        params![key, cutoff_created_at],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-}
-
-/// Inner cache write — testable with any connection, no globals.
-fn cache_put_with(conn: &Connection, key: &str, response: &str, created_at: i64) {
-    let _ = conn.execute(
-        "INSERT OR REPLACE INTO web_search_cache (query_key, response, created_at) \
-         VALUES (?1, ?2, ?3)",
-        params![key, response, created_at],
-    );
-}
-
-/// Look up a fresh cached response for this query. Returns `None` on miss,
-/// stale entry, or any DB error.
-fn cache_get(key: &str) -> Option<String> {
-    let db = cache_db()?;
-    let conn = db.lock().ok()?;
-    let cutoff = now_unix_secs().saturating_sub(CACHE_TTL.as_secs()) as i64;
-    cache_get_with(&conn, key, cutoff)
-}
-
-/// Store a response for this query. Silently drops on any DB error —
+/// Inner cache write — testable with any directory, no globals. Writes
+/// to a tempfile in the same directory, then atomically renames into
+/// place so readers never observe a partial file. Swallows all errors —
 /// cache writes are never critical-path.
+fn cache_put_with(root: &Path, normalized_query: &str, response: &str) {
+    if let Err(e) = std::fs::create_dir_all(root) {
+        eprintln!(
+            "[web_search] cache dir create failed at {:?}: {} — dropping write",
+            root, e
+        );
+        return;
+    }
+    let path = cache_path_for(root, normalized_query);
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let payload = format!("{}\n{}", normalized_query, response);
+    if let Err(e) = std::fs::write(&tmp, payload.as_bytes()) {
+        eprintln!("[web_search] cache tempfile write failed: {}", e);
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        eprintln!("[web_search] cache rename failed: {}", e);
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Look up a fresh cached response for this query.
+fn cache_get(key: &str) -> Option<String> {
+    cache_get_with(&cache_root(), key, CACHE_TTL)
+}
+
+/// Store a response for this query.
 fn cache_put(key: &str, response: &str) {
-    let Some(db) = cache_db() else {
-        return;
-    };
-    let Ok(conn) = db.lock() else {
-        return;
-    };
-    cache_put_with(&conn, key, response, now_unix_secs() as i64);
+    cache_put_with(&cache_root(), key, response);
 }
 
 // ─── Politeness state: rate limits + circuit breakers ───────────────────
@@ -1845,80 +1846,70 @@ fn clean_text(input: &str) -> String {
 mod tests {
     use super::*;
 
-    fn fresh_cache_conn() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
-        conn.execute_batch(
-            "CREATE TABLE web_search_cache (
-                 query_key  TEXT PRIMARY KEY,
-                 response   TEXT NOT NULL,
-                 created_at INTEGER NOT NULL
-             );",
-        )
-        .unwrap();
-        conn
-    }
-
     #[test]
-    fn cache_roundtrip_hit() {
-        let conn = fresh_cache_conn();
-        cache_put_with(&conn, "rust tokio", "RESULTS:1", 1000);
-        let got = cache_get_with(&conn, "rust tokio", 500);
+    fn cache_file_roundtrip_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "rust tokio", "RESULTS:1");
+        let got = cache_get_with(tmp.path(), "rust tokio", Duration::from_secs(3600));
         assert_eq!(got.as_deref(), Some("RESULTS:1"));
     }
 
     #[test]
-    fn cache_miss_on_unknown_key() {
-        let conn = fresh_cache_conn();
-        cache_put_with(&conn, "rust tokio", "RESULTS:1", 1000);
-        assert!(cache_get_with(&conn, "nothing here", 0).is_none());
+    fn cache_file_miss_on_unknown_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "rust tokio", "RESULTS:1");
+        assert!(
+            cache_get_with(tmp.path(), "nothing here", Duration::from_secs(3600)).is_none()
+        );
     }
 
     #[test]
-    fn cache_expired_entry_returns_none() {
-        let conn = fresh_cache_conn();
-        // Insert an entry stamped at t=100
-        cache_put_with(&conn, "old query", "STALE", 100);
-        // Ask for entries newer than t=200 — the entry is older, should miss
-        assert!(cache_get_with(&conn, "old query", 200).is_none());
+    fn cache_file_expired_entry_returns_none() {
+        // Write an entry, then read it back with a zero-length TTL so every
+        // entry is considered stale regardless of mtime.
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "old query", "STALE");
+        // The file exists, but a 0s TTL means anything older than "now" is stale.
+        // This exercises the age > ttl branch without needing to mutate mtime.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(cache_get_with(tmp.path(), "old query", Duration::from_nanos(1)).is_none());
     }
 
     #[test]
-    fn cache_put_overwrites_existing_key() {
-        let conn = fresh_cache_conn();
-        cache_put_with(&conn, "q", "first", 100);
-        cache_put_with(&conn, "q", "second", 200);
-        let got = cache_get_with(&conn, "q", 0);
+    fn cache_file_put_overwrites_existing_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "q", "first");
+        cache_put_with(tmp.path(), "q", "second");
+        let got = cache_get_with(tmp.path(), "q", Duration::from_secs(3600));
         assert_eq!(got.as_deref(), Some("second"));
     }
 
     #[test]
-    fn cache_schema_round_trips_via_open_cache_db() {
-        // Use WG_WEB_CACHE_DB to redirect to a temp file so we don't pollute ~/.workgraph.
-        let tmp = tempfile::Builder::new()
-            .prefix("wg-web-cache-test-")
-            .suffix(".db")
-            .tempfile()
-            .unwrap();
-        let path = tmp.path().to_path_buf();
-        drop(tmp); // rusqlite will recreate
-        // SAFETY: test-only env mutation; serialized via single-threaded test harness
-        // for this specific test. We restore afterward.
-        let old = std::env::var("WG_WEB_CACHE_DB").ok();
-        unsafe {
-            std::env::set_var("WG_WEB_CACHE_DB", &path);
-        }
-        let conn = open_cache_db().expect("open cache db");
-        cache_put_with(&conn, "persistent", "works", 1_000_000);
-        let got = cache_get_with(&conn, "persistent", 0);
-        assert_eq!(got.as_deref(), Some("works"));
-        // Cleanup
-        unsafe {
-            match old {
-                Some(v) => std::env::set_var("WG_WEB_CACHE_DB", v),
-                None => std::env::remove_var("WG_WEB_CACHE_DB"),
-            }
-        }
-        let _ = std::fs::remove_file(&path);
+    fn cache_file_first_line_is_normalized_query() {
+        // Inspectable cache: grep-ing the cache dir should reveal the query.
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "memphis news today", "(results)");
+        let file = cache_path_for(tmp.path(), "memphis news today");
+        let contents = std::fs::read_to_string(&file).unwrap();
+        let mut lines = contents.lines();
+        assert_eq!(lines.next(), Some("memphis news today"));
+        assert_eq!(lines.next(), Some("(results)"));
+    }
+
+    #[test]
+    fn cache_file_layout_uses_hex_sha256_filenames() {
+        let tmp = tempfile::tempdir().unwrap();
+        cache_put_with(tmp.path(), "rust tokio", "(results)");
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".txt"))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let stem = entries[0].trim_end_matches(".txt");
+        assert_eq!(stem.len(), 64, "sha256 hex = 64 chars");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
