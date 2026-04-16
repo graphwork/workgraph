@@ -1733,6 +1733,69 @@ async fn get_or_launch_browser() -> Result<Arc<TokioMutex<Option<BrowserHandle>>
     Ok(cell)
 }
 
+/// Reap an orphaned workgraph Chrome holding our profile's
+/// ProcessSingleton lock. Safe because we only kill processes whose
+/// command line references *our* user_data_dir — interactive user
+/// Chrome sessions or other profiles are left alone.
+///
+/// The SingletonLock file is a symlink whose target is `hostname-pid`.
+/// If that PID is dead: just remove the stale lock files.
+/// If alive but isn't ours: leave it (user's own Chrome, somehow).
+/// If alive and ours: SIGKILL and clean up the lock files.
+async fn reap_orphan_workgraph_chrome(user_data_dir: &std::path::Path) {
+    let lock_path = user_data_dir.join("SingletonLock");
+    let Ok(target) = std::fs::read_link(&lock_path) else {
+        return; // no lock → nothing to reap
+    };
+    let target_str = target.to_string_lossy();
+    // Format: "hostname-pid" — parse the pid off the right.
+    let Some(pid_str) = target_str.rsplit('-').next() else {
+        return;
+    };
+    let Ok(pid) = pid_str.parse::<u32>() else {
+        return;
+    };
+
+    let clean_lock_files = |dir: &std::path::Path| {
+        for name in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+    };
+
+    if !crate::service::is_process_alive(pid) {
+        eprintln!(
+            "[browser] Removing stale SingletonLock at {:?} (PID {} dead)",
+            lock_path, pid
+        );
+        clean_lock_files(user_data_dir);
+        return;
+    }
+
+    // Alive. Check if it's one of ours by looking for our user-data-dir
+    // in the process command line. /proc/<pid>/cmdline is NUL-delimited.
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) else {
+        return;
+    };
+    let cmdline_flat = cmdline.replace('\0', " ");
+    let expected = format!("--user-data-dir={}", user_data_dir.display());
+    if !cmdline_flat.contains(&expected) {
+        // Someone else holds the lock — don't touch it.
+        return;
+    }
+
+    eprintln!(
+        "[browser] Killing orphaned workgraph Chrome (PID {}) holding SingletonLock",
+        pid
+    );
+    let _ = crate::service::kill_process_force(pid);
+    // Brief wait for Chrome's own cleanup. Then force-remove any
+    // remaining lock artifacts ourselves — Chrome doesn't always
+    // clean on SIGKILL.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    clean_lock_files(user_data_dir);
+}
+
 async fn launch_browser() -> Result<BrowserHandle, String> {
     use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
 
@@ -1758,6 +1821,12 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
     let user_data_dir = dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".wg-chrome-profile");
+
+    // If an orphaned workgraph Chrome is holding the profile's
+    // SingletonLock, reap it first. Otherwise Chrome's ProcessSingleton
+    // logic refuses to start and chromiumoxide surfaces it as a
+    // mysterious "Browser process exited" error.
+    reap_orphan_workgraph_chrome(&user_data_dir).await;
 
     let config = BrowserConfig::builder()
         .chrome_executable(&chrome_path)
