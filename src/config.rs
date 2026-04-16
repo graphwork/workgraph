@@ -164,10 +164,6 @@ pub struct NativeExecutorConfig {
 /// Web access configuration for the native executor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeWebConfig {
-    /// Search backend: "duckduckgo" (default), "serper", "brave", "searxng".
-    #[serde(default = "default_search_backend")]
-    pub search_backend: String,
-
     /// API key for search backend (Serper, Brave, etc.). Supports env var syntax: "${VAR}".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_api_key: Option<String>,
@@ -189,9 +185,6 @@ pub struct NativeWebConfig {
     pub fetch_timeout_secs: u64,
 }
 
-fn default_search_backend() -> String {
-    "duckduckgo".to_string()
-}
 fn default_fetch_max_chars() -> usize {
     16_000
 }
@@ -202,7 +195,6 @@ fn default_fetch_timeout_secs() -> u64 {
 impl Default for NativeWebConfig {
     fn default() -> Self {
         Self {
-            search_backend: default_search_backend(),
             search_api_key: None,
             searxng_url: None,
             fetch_max_chars: default_fetch_max_chars(),
@@ -6595,10 +6587,10 @@ profile = "openrouter"
     #[test]
     fn test_native_executor_config_defaults() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.native_executor.web.search_backend, "duckduckgo");
         assert_eq!(config.native_executor.web.fetch_max_chars, 16_000);
         assert_eq!(config.native_executor.web.fetch_timeout_secs, 30);
         assert!(config.native_executor.web.search_api_key.is_none());
+        assert!(config.native_executor.web.searxng_url.is_none());
         assert_eq!(config.native_executor.background.max_background_tasks, 5);
         assert_eq!(
             config.native_executor.background.background_timeout_secs,
@@ -6612,7 +6604,6 @@ profile = "openrouter"
     fn test_native_executor_config_custom_values() {
         let toml_str = r#"
 [native_executor.web]
-search_backend = "serper"
 search_api_key = "sk-test-123"
 fetch_max_chars = 32000
 fetch_timeout_secs = 60
@@ -6626,7 +6617,6 @@ delegate_max_turns = 15
 delegate_model = "claude-haiku-4-5-20251001"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.native_executor.web.search_backend, "serper");
         assert_eq!(
             config.native_executor.web.search_api_key,
             Some("sk-test-123".to_string())
@@ -6655,9 +6645,24 @@ fetch_max_chars = 8000
         // Overridden value
         assert_eq!(config.native_executor.web.fetch_max_chars, 8_000);
         // Defaults preserved
-        assert_eq!(config.native_executor.web.search_backend, "duckduckgo");
         assert_eq!(config.native_executor.web.fetch_timeout_secs, 30);
         assert_eq!(config.native_executor.background.max_background_tasks, 5);
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 10);
+    }
+
+    /// Legacy `search_backend` field: no longer declared on the struct,
+    /// but existing user configs may still have it set (the project's
+    /// .workgraph/config.toml and tests have shipped with it for a
+    /// while). serde silently ignores unknown fields by default, so
+    /// deserialization must succeed.
+    #[test]
+    fn test_native_executor_config_ignores_legacy_search_backend() {
+        let toml_str = r#"
+[native_executor.web]
+search_backend = "duckduckgo"
+fetch_max_chars = 16000
+"#;
+        let config: Config = toml::from_str(toml_str).expect("legacy field should be ignored");
+        assert_eq!(config.native_executor.web.fetch_max_chars, 16_000);
     }
 }
