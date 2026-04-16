@@ -1264,10 +1264,42 @@ fn parse_arxiv_atom(body: &str) -> Vec<SearchResult> {
 // ─── Backend: Brave Search API ─────────────────────────────────────────
 
 async fn search_brave(client: &rquest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
-    let api_key = std::env::var("BRAVE_SEARCH_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| "BRAVE_SEARCH_API_KEY not set".to_string())?;
+    // Resolve API key: config.toml [native_executor.web] search_api_key
+    // → BRAVE_SEARCH_API_KEY env var. The config value can be either
+    // a literal key or a "${VAR}" reference that we expand.
+    let api_key = {
+        let config = crate::config::Config::load_or_default(std::path::Path::new("."));
+        let from_config = config
+            .native_executor
+            .web
+            .search_api_key
+            .as_ref()
+            .filter(|k| !k.is_empty())
+            .map(|k| {
+                // Expand "${VAR}" references in the config value
+                if k.starts_with("${") && k.ends_with('}') {
+                    let var_name = &k[2..k.len() - 1];
+                    std::env::var(var_name).unwrap_or_default()
+                } else {
+                    k.clone()
+                }
+            });
+        from_config
+            .filter(|k| !k.is_empty())
+            .or_else(|| {
+                std::env::var("BRAVE_SEARCH_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+            })
+            .unwrap_or_default()
+    };
+    if api_key.is_empty() {
+        return Err(
+            "Brave API key not configured. Set BRAVE_SEARCH_API_KEY env var or \
+                    [native_executor.web] search_api_key in config.toml"
+                .to_string(),
+        );
+    }
 
     let url = format!(
         "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
