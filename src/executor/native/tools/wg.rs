@@ -588,6 +588,17 @@ impl Tool for WgDoneTool {
                 }
             };
 
+            // Idempotent: if already done, don't re-mark. This
+            // prevents agents from looping on wg_done calls.
+            if task.status == Status::Done {
+                result_msg = Some(format!(
+                    "Task '{}' is already done. You have completed your work — \
+                     stop here, do NOT call wg_done again.",
+                    task_id
+                ));
+                return false;
+            }
+
             task.status = Status::Done;
             task.completed_at = Some(Utc::now().to_rfc3339());
 
@@ -600,10 +611,19 @@ impl Tool for WgDoneTool {
             Err(e) => return ToolOutput::error(format!("Failed to save graph: {}", e)),
         }
         if let Some(msg) = result_msg {
+            // "already done" is a success, not an error — the task
+            // IS done, which is what the agent wanted. Returning it
+            // as success prevents the agent from retrying.
+            if msg.contains("already done") {
+                return ToolOutput::success(msg);
+            }
             return ToolOutput::error(msg);
         }
 
-        ToolOutput::success(format!("Task '{}' marked as done", task_id))
+        ToolOutput::success(format!(
+            "Task '{}' marked as done. Your work is complete — stop here.",
+            task_id
+        ))
     }
 }
 
