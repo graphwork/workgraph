@@ -91,9 +91,11 @@ pub fn run(
         None
     };
 
+    let now = chrono::Local::now();
     let default_system = format!(
         "You are an expert software engineer working in an interactive coding session.\n\
-         Working directory: {}\n\n\
+         Working directory: {}\n\
+         Current date and time: {} ({})\n\n\
          You have tools available: read files, write/edit files, run bash commands, \
          grep/search, web search, web fetch, and more. Use them freely to help the user.\n\n\
          Be concise. Show code when relevant. Execute commands to verify your work.\n\n\
@@ -107,7 +109,9 @@ pub fn run(
          done and no graph to modify.\n\
          - Cite specific information from tool outputs. Do not fabricate or paraphrase \
          from memory when you have real data from a tool call.",
-        working_dir.display()
+        working_dir.display(),
+        now.format("%Y-%m-%d %H:%M %Z"),
+        now.format("%A"),
     );
     let system_with_role = if let Some(ref addendum) = role_prompt_addendum {
         format!("{}\n\n## Role\n\n{}", default_system, addendum)

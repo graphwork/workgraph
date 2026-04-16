@@ -450,7 +450,14 @@ fn main() -> Result<()> {
     let is_repl_invocation = std::env::args()
         .skip(1)
         .any(|a| a == "nex" || a == "tui-nex");
-    let default_filter = if is_repl_invocation { "warn" } else { "info" };
+    let default_filter = if is_repl_invocation {
+        // warn for our code, but suppress html5ever's noisy "node with
+        // weird namespace" warnings that fire on every malformed HTML
+        // page the web_fetch readability extractor touches.
+        "warn,html5ever=error,selectors=error"
+    } else {
+        "info"
+    };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .format_timestamp(None)
         .init();
