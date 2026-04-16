@@ -661,7 +661,7 @@ impl AgentLoop {
         // configured, attempt to restore conversation state from a prior
         // agent session. This is the same logic as the old `run()` —
         // session summary takes priority over raw journal replay.
-        let session_summary = if self.resume_enabled && self.autonomous {
+        let session_summary = if self.resume_enabled {
             if let Some(ref path) = self.session_summary_path {
                 match resume::load_session_summary(path) {
                     Ok(Some(summary)) => {
@@ -688,7 +688,7 @@ impl AgentLoop {
             None
         };
 
-        let resume_data = if self.resume_enabled && self.autonomous && session_summary.is_none() {
+        let resume_data = if self.resume_enabled && session_summary.is_none() {
             if let Some(ref path) = self.journal_path {
                 let working_dir = self
                     .working_dir
