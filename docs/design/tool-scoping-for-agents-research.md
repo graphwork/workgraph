@@ -1,87 +1,105 @@
 # Tool Scoping for Native-Executor Agents (Research)
 
-**Status:** research notes, not a plan of action.
+**Status:** research notes. Initial incident triage + refined design from subsequent discussion.
 **Date:** 2026-04-16
 **Context:** session with Erik on worktree sacredness, system prompt review, and an incident where a native-executor agent clobbered source files in the main tree.
 
-This document captures a set of design ideas that came up while investigating why a dispatched agent (qwen3-coder-30b on the `flip-web-search` task) hallucinated a replacement for the entire `src/executor/native/tools/web_search.rs` file and wrote it to the main tree despite being launched in a worktree. The ideas may be worth pursuing; they may also be over-engineered for the actual problems we have. They are recorded here for future evaluation, not adoption.
+This document originally captured design ideas that came up while investigating why a dispatched agent (qwen3-coder-30b on the `flip-web-search` task) hallucinated a replacement for the entire `src/executor/native/tools/web_search.rs` file and wrote it to the main tree despite being launched in a worktree. A later discussion with Erik refined the categorization — the revised scope table appears first below; the original research notes follow for context.
 
 ---
 
-## The incident that motivated this
+## Revised design (from 2026-04-16 follow-up)
+
+The original table grouped `.assign-*` / `.evaluate-*` / `.place-*` / `.compact-*` together. That's wrong — **evaluate is fundamentally different** from the others and needs full agent capabilities.
+
+### Final categorization
+
+| Task type | Tool scope | Rationale |
+|---|---|---|
+| **`.flip-*`** | **nothing at all** — pure in-context reasoning | Fidelity check against latent intent. Sees task + artifacts in its prompt, returns a score. No tools needed. Failure mode shrinks to "wrong score" (recoverable via re-eval) instead of "hallucinated code on disk." |
+| **`.assign-*`** | `wg` read-only (`list`, `show`, `context`, `status`, `ready`) — **no FS, no shell** | Job is to pick an agent for a task. Only needs to see the graph. Never needs to touch code. |
+| **`.place-*`** | `wg` read-only (same subset as `.assign-*`) | Decides dependency edges / graph structure. Observability only. |
+| **`.compact-*`** | read access to `.workgraph/context.md` + write to that one file | Narrow by design: reads distilled graph state, writes a new summary. Not full FS access. |
+| **`.evaluate-*`** | **full agent — all tools including `wg` mutation** | *This is the escalation/repair path.* Evaluators may need to `wg fail` a broken task, open a triage task with `wg add`, or launch a repair agent. Gating this tool set would break the automatic-repair loop. |
+| **Regular tasks** (`full`, `shell` exec modes) | full, with `write_file` and `edit_file` cwd-sandboxed | Where real implementation happens. Sandbox landed in commit `699376da`. |
+
+### Why evaluate is promoted to full agent
+
+An evaluator runs *after* a task completes. Its output is a judgment: "this did/didn't satisfy the intent." If the answer is "didn't," the evaluator may need to:
+
+- Mark the task failed (`wg fail`)
+- Decompose the failure into a follow-up task (`wg add "Investigate why X didn't work"`)
+- Launch a repair agent (`wg add --after failed-task "Fix Y"`)
+- Log context that downstream agents need (`wg log`)
+- In extreme cases, investigate the repo to understand what went wrong
+
+That's the entire set of things a regular full-agent can do. Restricting the evaluator defeats the "auto-heal" purpose — it becomes a passive critic that can't act on its own judgment. The safety argument ("don't give critic tools") is outweighed by the operational one ("critic is the only loop that can repair").
+
+### Why assign/place stay read-only
+
+Their output is a structured decision: "pick agent X, with exec_mode Y, context_scope Z, and these placement edges." That decision is consumed by the coordinator's IPC layer and applied to the graph — the assigner itself doesn't need to write anything. Read-only wg is sufficient.
+
+### Why flip is *nothing*
+
+Fidelity checks are pure reasoning. The task description + artifacts are in the prompt; the output is a number. Tools would only introduce attractors for unrelated behavior. Minimalism here is a feature.
+
+### Enforcement path
+
+Cleanest: tool-allowlist per task-type at registration time. When spawning an agent for `.flip-foo`, build a `ToolRegistry` with no tools; for `.assign-foo`, register only the wg-read subset; for `.evaluate-foo`, register everything (same as regular tasks). Tool names absent from the registry are rejected by the tool-call protocol — no runtime guard needed.
+
+Two tools need finer-grained handling:
+
+- **`wg` tool**: currently exposes all wg subcommands. For assign/place/compact we want a read-only subset. Either (a) introduce a second tool `wg_read` with only read-side commands, or (b) give the existing `wg` tool a mode parameter set at registration time.
+- **`write_file`**: already cwd-sandboxed (commit `699376da`). For `.compact-*` we additionally want to restrict writes to `.workgraph/context.md` specifically. Can layer on a "write-whitelist" check inside the tool.
+
+### Implementation shape
+
+1. In `src/executor/native/tools/mod.rs`, the registry builder takes a task-type or exec-mode parameter.
+2. Based on that parameter, it conditionally registers subsets.
+3. `src/commands/spawn/execution.rs` plumbs the task-type (via task-id prefix inspection or task metadata) to the registry builder.
+4. No changes to the agent loop itself — the loop already only calls registered tools.
+
+Rough size: ~100-150 lines including a new `ToolRegistry::for_task_type()` constructor and the task-id-prefix → allowlist mapping.
+
+---
+
+## Original research notes (context preserved)
+
+### The incident that motivated this
 
 - A workgraph task `flip-web-search` (a regular `exec_mode=full` task — NOT a `.flip-*` meta task) was dispatched by the coordinator daemon.
 - Three zombie `wg native-exec` processes were left running after `wg kill` was called (`wg kill` does not tree-kill child processes).
 - One of them wrote a hallucinated replacement for `web_search.rs` directly into the main tree, destroying ~1700 lines of real code (all search backends, rate limiting, circuit breakers, etc.). Recovery was via `git checkout HEAD --`.
 
-Concretely-actionable findings (independent of the ideas below):
+### Concrete findings (all now addressed)
 
-1. `wg kill` does not tree-kill. Orphaned child processes keep writing.
-2. `write_file` has no cwd sandbox — the model can pass absolute paths and escape the worktree entirely.
-3. qwen3-coder-30b on a surgical-refactor task hallucinates wholesale rewrites instead of applying targeted edits.
-4. The coordinator's agency binding pinned executor=native even when `[agent].executor=claude` was set in config.
-5. A ghost agent (agent-16844) was spawned after the service was stopped — unknown cause.
+1. `wg kill` does not tree-kill. Orphaned child processes keep writing. — **Fixed**, commit `699376da`.
+2. `write_file` has no cwd sandbox — the model can pass absolute paths and escape the worktree entirely. — **Fixed**, commit `699376da`.
+3. qwen3-coder-30b on a surgical-refactor task hallucinates wholesale rewrites instead of applying targeted edits. — **Known model limitation;** mitigated by (1) + (2) above and by not dispatching this model for code refactors.
+4. The coordinator's agency binding pinned executor=native even when `[agent].executor=claude` was set in config. — **Explained:** `provider_to_native_provider` correctly overrides to native when the model is non-Anthropic; there was no bug, just a missing path when the user wanted Claude for orchestration.
+5. A ghost agent (agent-16844) was spawned after the service was stopped — unknown cause. — **Root-caused + fixed** in commit `3294bcd8`. The daemon loop's coordinator-tick phase could fire after an IPC Shutdown set `running = false` but before the loop's while-condition re-checked.
 
-The research ideas below stem from (2) and the broader observation that the native executor currently exposes the same tool set to every task regardless of what that task actually needs to do.
+### Original open questions (now answered)
 
----
-
-## Research idea: task-type-gated tool registration
-
-### Claim
-
-The native executor could vary which tools it registers based on the task being run. Not every task needs every tool. Fewer tools = fewer attractors = fewer ways for a model to do something surprising.
-
-### Proposed categorization
-
-| Task type | Read FS | Write FS | Run `wg` | Shell | Notes |
-|---|---|---|---|---|---|
-| `.flip-*` | ❌ | ❌ | ❌ | ❌ | Pure judgment. Sees task + artifacts in context, returns fidelity score. If the only way to "do" is reason in text, the worst failure is "wrong score" — not "hallucinated code on disk." |
-| `.assign-*`, `.evaluate-*`, `.place-*`, `.compact-*` | ✅ | ❌ | read-only subset | ❓ | Need observability to reason about task state and artifacts. Output is a structured decision returned to the coordinator, not a filesystem write. |
-| Regular (`full`, `shell`) | ✅ | ✅ (cwd-sandboxed) | ✅ | ✅ | Where real implementation work happens. Still benefits from `write_file` being cwd-constrained. |
-
-### Enforcement
-
-Cleanest: **don't register the write tools at all** for restricted task types. Tool names not in the registry can't be invoked — the tool-call protocol rejects unknown names. No runtime guard needed.
-
-### Open questions
-
-These are the reasons this is "research" and not "plan":
-
-1. **Do `.assign-*` / `.evaluate-*` actually need `bash` or `write_file` today?** The user's honest read: *"It's not clear that they don't and that they haven't been using it sometimes."* If these tasks are, in practice, shelling out or writing scratch files as part of how they work, removing those tools is a behavioral regression dressed as a security fix. Need to audit current usage before gating.
-
-2. **What is the actual prompt/payload passed to an `.assign-*` or `.evaluate-*` agent today?** Before proposing what tools they should see, we need to see what they do see and what they do with it. A transcript of a few recent `.assign-*` runs would settle this.
-
-3. **Is the structured-result path (graph mutation via coordinator IPC) actually used, or do these tasks mutate the graph directly via `wg` commands?** If it's the latter, then "read-only `wg` subset" is actually behaviorally incomplete.
-
-4. **How does the `.compact-*` task actually operate?** It's meant to be the coordinator's own introspection cycle. Might need write access to `.workgraph/context.md` or similar — so "read-only" is probably wrong for this one.
-
-5. **Does the agency system itself have assumptions about what tools are available to meta tasks?** Role definitions have `default_exec_mode`, which already hints at a tool-tier model. There may already be a way to do this without adding a new whitelist layer.
-
-### Risks of pursuing this prematurely
-
-- Restricting meta-task tools could silently break agency evaluation/assignment in ways that only surface under production load.
-- Adds another axis of configuration complexity (per-task-type tool sets) when the simpler fix (cwd-sandbox `write_file`) covers most of the real attack surface.
-- The actual incident was caused by a regular task, not a meta task. So this is tangential to the bug, not a direct response.
-
-### Separable work that is worth doing regardless
-
-The `write_file` cwd sandbox is independently valuable and applies to ALL tasks (regular and meta). Scope: inside `write_file`'s `execute()`, reject paths that (a) are absolute and outside cwd, or (b) contain `..` components that would escape cwd after canonicalization. This is ~15 lines and no new config axis. Recommend landing this regardless of how the broader scoping discussion resolves.
-
-The `wg kill` tree-kill fix is also independently valuable. Scope: when killing an agent PID, also send the signal to its process group (or walk the process tree). This is another ~15 lines.
+1. *Do `.assign-*` / `.evaluate-*` actually need `bash` or `write_file` today?* — After discussion: assign does not, evaluate does. See revised categorization above.
+2. *What is the actual prompt/payload passed to an `.assign-*` or `.evaluate-*` agent today?* — Assignment prompt inspected at `src/commands/service/assignment.rs:131`. Performance scores (`avg_score`, `task_count`) are rendered into the agent catalog — the LLM assigner sees them and is instructed to prefer higher-scoring agents.
+3. *Is the structured-result path actually used?* — Yes, for assignment; the LLM returns JSON that the coordinator applies to the graph.
+4. *How does `.compact-*` operate?* — Reads graph state, writes `.workgraph/context.md`. Narrow scope per revised table.
+5. *Does the agency system have existing assumptions about tool sets?* — Roles have `default_exec_mode` (bare/light/full/shell). The exec-mode system is a partial answer but doesn't distinguish task-type-category (meta vs. regular).
 
 ---
 
-## Related: bwrap sandboxing (deferred — see separate design doc)
+## Related: bwrap sandboxing (deferred — separate design doc)
 
-An earlier discussion covered using `bwrap` to provide kernel-enforced read-only binds on the source tree for meta tasks, which would make the "cannot write" property a kernel guarantee rather than a tool-registration convention. That is out of scope for this document and tracked separately by the user. The short version: declarative tool-scoping (this doc) is portable and simple; bwrap is Linux-only but gives hard guarantees. Both layers can coexist.
+An earlier discussion covered using `bwrap` to provide kernel-enforced read-only binds on the source tree for meta tasks, which would make the "cannot write" property a kernel guarantee rather than a tool-registration convention. That is out of scope for this document and tracked separately by the user. Declarative tool-scoping (this doc) is portable and simple; bwrap is Linux-only but gives hard guarantees. Both layers can coexist — tool-scoping is the application-level boundary, bwrap is the OS-level backstop.
 
 ---
 
 ## Recommendation
 
-- **Do soon:** `write_file` cwd sandbox. `wg kill` tree-kill. Both land-and-forget.
-- **Research first, don't implement yet:** task-type tool scoping. Needs an audit of how `.assign-*` / `.evaluate-*` / `.place-*` / `.compact-*` actually behave in production before we decide what they "need."
-- **Out of scope here:** bwrap, model selection, agent self-dispatch policy.
+The revised categorization is stable enough to implement. The big questions from the original doc (what do evaluate/assign need? does assign use write?) got answered through discussion and code inspection. Remaining work:
 
-The broader point: we have intuitions about what meta tasks "should" be able to do, but we don't have data about what they do in practice. The right next step is an audit, not a restriction.
+- **Do soon:** implement the tool-allowlist-per-task-type path. ~100-150 lines.
+- **Consider as a follow-up:** a read-only `wg` tool variant vs. a mode parameter on the existing `wg` tool. Design call — either works.
+- **Done (separate commits):** `write_file` cwd sandbox, `wg kill` tree-kill, ghost-agent fix, worktree sacredness, agent orphan reaping, oai-compat rename, disk cache fileification, SearXNG, Google News URL resolution, deep_research tool.
+- **Out of scope here:** bwrap, model selection, agent self-dispatch policy.
