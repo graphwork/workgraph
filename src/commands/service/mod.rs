@@ -1925,17 +1925,26 @@ pub fn run_daemon(
         }
     }
 
-    // Clean up orphaned worktrees from a previous service run
-    match worktree::cleanup_orphaned_worktrees(&dir) {
-        Ok(count) if count > 0 => {
-            logger.info(&format!(
-                "Cleaned up {} orphaned worktree(s) on startup",
-                count
-            ));
-        }
-        Ok(_) => {} // No orphaned worktrees
-        Err(e) => {
-            logger.warn(&format!("Failed to clean up orphaned worktrees: {}", e));
+    // Worktree cleanup REMOVED. Worktrees contain agent work —
+    // potentially uncommitted changes, in-progress code, valuable
+    // artifacts. Automatic deletion is destructive and irreversible.
+    // Worktrees are only removable via explicit user action (archive).
+    // See: issues-2026-04-14.md Problems 4, 5, 10, 11.
+    if false {
+        // Dead code preserved for reference — will be fully removed
+        // once we're confident the no-cleanup policy is stable.
+        #[allow(unreachable_code)]
+        match worktree::cleanup_orphaned_worktrees(&dir) {
+            Ok(count) if count > 0 => {
+                logger.info(&format!(
+                    "Cleaned up {} orphaned worktree(s) on startup",
+                    count
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                logger.warn(&format!("Failed to clean up orphaned worktrees: {}", e));
+            }
         }
     }
 

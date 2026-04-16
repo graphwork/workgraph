@@ -489,23 +489,16 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
 
         let metadata_path = agent_dir.join("metadata.json");
         match validate_and_parse_agent_metadata(&metadata_path, agent_id) {
-            Ok(Some((wt_path_str, wt_branch))) => {
+            Ok(Some((wt_path_str, _wt_branch))) => {
+                // Worktree cleanup REMOVED. Worktrees are preserved
+                // for forensic inspection and manual archival. Agent
+                // work (uncommitted changes, artifacts) must not be
+                // auto-destroyed.
                 let wt_path = Path::new(&wt_path_str);
                 if wt_path.exists() {
                     eprintln!(
-                        "[triage] Cleaning up worktree for dead agent {}: {:?}",
+                        "[triage] Dead agent {} has worktree at {:?} (preserved — use `wg worktree archive` to clean up manually)",
                         agent_id, wt_path
-                    );
-                    super::worktree::cleanup_dead_agent_worktree(
-                        project_root,
-                        wt_path,
-                        &wt_branch,
-                        agent_id,
-                    );
-                } else {
-                    eprintln!(
-                        "[triage] Worktree path {:?} from metadata no longer exists for agent {}",
-                        wt_path, agent_id
                     );
                 }
             }
@@ -1101,103 +1094,15 @@ fn validate_and_parse_agent_metadata(
     }
 }
 
-/// Attempts fallback worktree cleanup when metadata.json is invalid or missing.
-/// Scans the .wg-worktrees directory for directories matching the agent ID pattern.
-fn attempt_fallback_worktree_cleanup(project_root: &Path, agent_id: &str) -> Result<()> {
-    let worktrees_dir = project_root.join(super::worktree::WORKTREES_DIR);
-
-    if !worktrees_dir.exists() {
-        return Ok(());
-    }
-
+/// Previously attempted fallback worktree cleanup for dead agents.
+/// Now a no-op: worktrees are preserved for forensic inspection and
+/// manual archival. Agent work (uncommitted changes, in-progress code,
+/// artifacts) must never be automatically destroyed.
+fn attempt_fallback_worktree_cleanup(_project_root: &Path, agent_id: &str) -> Result<()> {
     eprintln!(
-        "[triage] Attempting fallback worktree cleanup for agent {} by scanning {:?}",
-        agent_id, worktrees_dir
+        "[triage] Agent {} worktree preserved (automatic cleanup disabled — use `wg worktree archive` to clean up manually)",
+        agent_id
     );
-
-    let mut found_worktree = false;
-
-    for entry in fs::read_dir(&worktrees_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Look for directories that match this agent
-        if name == agent_id {
-            found_worktree = true;
-            let wt_path = entry.path();
-
-            eprintln!(
-                "[triage] Found orphaned worktree directory for agent {}: {:?}",
-                agent_id, wt_path
-            );
-
-            // Try to find the git branch for this worktree
-            let branch = super::worktree::find_branch_for_worktree(project_root, &wt_path);
-
-            if let Some(branch) = branch {
-                eprintln!(
-                    "[triage] Found git branch {} for fallback cleanup of agent {}",
-                    branch, agent_id
-                );
-                super::worktree::cleanup_dead_agent_worktree(
-                    project_root,
-                    &wt_path,
-                    &branch,
-                    agent_id,
-                );
-            } else {
-                eprintln!(
-                    "[triage] No git branch found for agent {} worktree, attempting manual removal",
-                    agent_id
-                );
-
-                // Manual cleanup without git branch information
-                let mut cleanup_errors = Vec::new();
-
-                // Remove .workgraph symlink
-                let symlink_path = wt_path.join(".workgraph");
-                if symlink_path.exists()
-                    && let Err(e) = fs::remove_file(&symlink_path)
-                {
-                    cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
-                }
-
-                // Remove target directory
-                let target_dir = wt_path.join("target");
-                if target_dir.exists()
-                    && let Err(e) = fs::remove_dir_all(&target_dir)
-                {
-                    cleanup_errors.push(format!("Failed to remove target directory: {}", e));
-                }
-
-                // Remove the worktree directory itself
-                if let Err(e) = fs::remove_dir_all(&wt_path) {
-                    cleanup_errors.push(format!("Failed to remove worktree directory: {}", e));
-                }
-
-                if !cleanup_errors.is_empty() {
-                    eprintln!(
-                        "[triage] Warnings during fallback cleanup of agent {}: {}",
-                        agent_id,
-                        cleanup_errors.join("; ")
-                    );
-                } else {
-                    eprintln!(
-                        "[triage] Successfully completed fallback cleanup for agent {}",
-                        agent_id
-                    );
-                }
-            }
-        }
-    }
-
-    if !found_worktree {
-        eprintln!(
-            "[triage] No orphaned worktree directory found for agent {} in fallback cleanup",
-            agent_id
-        );
-    }
-
     Ok(())
 }
 
