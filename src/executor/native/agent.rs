@@ -1823,6 +1823,30 @@ impl AgentLoop {
                         );
                     }
 
+                    // Inject a context note so the model knows
+                    // compaction happened and can adjust. Without
+                    // this, the model has no signal that earlier
+                    // context was compressed and may try to reference
+                    // details that are no longer in its window.
+                    if !self.autonomous {
+                        eprintln!(
+                            "\x1b[2m[context compacted: ~{} → ~{} tokens via {}]\x1b[0m",
+                            pre_tokens, post_tokens, tier_name
+                        );
+                    }
+                    messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "[System note: context was compacted ({}) — earlier turns \
+                                 were summarized. ~{} → ~{} tokens, {} → {} messages. \
+                                 If you need details from earlier, check the session \
+                                 log or ask the user to re-state.]",
+                                tier_name, pre_tokens, post_tokens, pre_count, post_count
+                            ),
+                        }],
+                    });
+
                     // Journal the compaction event
                     if let Some(ref mut j) = journal {
                         let compacted_through_seq = j.seq();
@@ -2086,6 +2110,8 @@ impl AgentLoop {
                      \x1b[1;36m  /bg kill <id>\x1b[0m                — kill a background job\n\
                      \x1b[1;36m  /bg delete <id>\x1b[0m              — remove terminated job from registry\n\
                      \x1b[1;36m  /cancel <id>\x1b[0m                 — alias for /bg kill <id>\n\
+                     \x1b[1;36m  /compact\x1b[0m                      — manually compact context (hard L2)\n\
+                     \x1b[1;36m  /status\x1b[0m                       — show agent state (context, tokens, paths)\n\
                      \n\
                      \x1b[2mCtrl-C during generation cancels the in-flight response.\x1b[0m\n\
                      \x1b[2mCtrl-C at the prompt is a no-op (use /quit or Ctrl-D to exit).\x1b[0m"
@@ -2250,6 +2276,64 @@ impl AgentLoop {
                 } else {
                     eprintln!("\x1b[2m[nex] {}\x1b[0m", result.content.trim());
                 }
+                NexSlashResult::Continue
+            }
+
+            "/compact" => {
+                let pre_tokens = self.context_budget.effective_tokens(messages);
+                let pre_count = messages.len();
+                *messages = ContextBudget::hard_emergency_compact(messages.clone(), 1);
+                let post_tokens = self.context_budget.effective_tokens(messages);
+                let post_count = messages.len();
+                eprintln!(
+                    "\x1b[2m[nex] manual compaction: ~{} → ~{} tokens, {} → {} messages\x1b[0m",
+                    pre_tokens, post_tokens, pre_count, post_count
+                );
+                messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: format!(
+                            "[System note: user triggered manual compaction. ~{} → ~{} tokens, \
+                             {} → {} messages. Earlier turns were summarized.]",
+                            pre_tokens, post_tokens, pre_count, post_count
+                        ),
+                    }],
+                });
+                NexSlashResult::Continue
+            }
+
+            "/status" => {
+                let token_est = self.context_budget.effective_tokens(messages);
+                let ctx_window = self.client.context_window();
+                let max_tok = self.client.max_tokens();
+                let pct = if ctx_window > 0 {
+                    (token_est as f64 / ctx_window as f64 * 100.0) as u32
+                } else {
+                    0
+                };
+                eprintln!("\x1b[1m── Agent Status ──\x1b[0m");
+                eprintln!("  Model:         {}", self.client.model());
+                eprintln!(
+                    "  Context:       ~{} / {} tokens ({}%), max_tokens={}",
+                    token_est, ctx_window, pct, max_tok
+                );
+                eprintln!("  Messages:      {} in history", messages.len());
+                eprintln!(
+                    "  Tokens used:   {} input + {} output",
+                    total_usage.input_tokens, total_usage.output_tokens
+                );
+                eprintln!("  Session log:   {}", self.output_log.display());
+                if let Some(ref jp) = self.journal_path {
+                    eprintln!("  Journal:       {}", jp.display());
+                }
+                if let Some(ref sp) = self.session_summary_path {
+                    eprintln!("  Summary:       {}", sp.display());
+                }
+                eprintln!("  Autonomous:    {}", self.autonomous);
+                eprintln!(
+                    "  Tools:         {} registered",
+                    self.tools.definitions().len()
+                );
                 NexSlashResult::Continue
             }
 
