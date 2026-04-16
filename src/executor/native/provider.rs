@@ -253,7 +253,10 @@ pub fn create_provider_ext(
         .or_else(|| std::env::var("WG_ENDPOINT_URL").ok())
         .or_else(|| {
             // OpenAI-family env var base URLs
-            if matches!(provider_name.as_str(), "openai" | "openrouter" | "local") {
+            if matches!(
+                provider_name.as_str(),
+                "oai-compat" | "openai" | "openrouter" | "local"
+            ) {
                 std::env::var("OPENAI_BASE_URL")
                     .or_else(|_| std::env::var("OPENROUTER_BASE_URL"))
                     .ok()
@@ -274,7 +277,7 @@ pub fn create_provider_ext(
         .map(|v| v as u32);
 
     match provider_name.as_str() {
-        "openai" | "openrouter" | "local" => {
+        "oai-compat" | "openai" | "openrouter" | "local" => {
             // Resolve API key. Priority: override > env var > endpoint config > native_executor (legacy)
             let env_key = ["WG_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]
                 .iter()

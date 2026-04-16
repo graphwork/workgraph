@@ -820,7 +820,7 @@ pub fn run() -> Result<()> {
     // 2. Auto-set executor based on provider, with override option
     let default_executor = match provider.as_str() {
         "anthropic" => "claude",
-        "openrouter" | "openai" | "local" => "native",
+        "openrouter" | "oai-compat" | "openai" | "local" => "native",
         _ => "native",
     };
 

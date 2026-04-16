@@ -63,7 +63,7 @@ pub fn run_lightweight_llm_call(
                     return Ok(result);
                 }
             }
-            "openai" | "openrouter" | "local" => {
+            "oai-compat" | "openai" | "openrouter" | "local" => {
                 if let Ok(result) = call_openai_native(
                     config,
                     prov,

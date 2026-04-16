@@ -522,7 +522,7 @@ fn agent_thread_main(
     let use_native = executor == "native"
         || matches!(
             provider,
-            Some("openrouter") | Some("openai") | Some("local")
+            Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
         )
         || model_requires_native;
     if use_native {

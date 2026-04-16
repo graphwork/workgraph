@@ -1413,10 +1413,18 @@ pub struct ResolvedModel {
 ///
 /// The `:` delimiter is unambiguous: provider names never contain `:`,
 /// and model IDs may contain `/` but never `:`.
+///
+/// "oai-compat" and "openai" are aliases for the same thing: the
+/// OpenAI-compatible HTTP protocol (POST /v1/chat/completions). Any
+/// vLLM/Ollama/SGLang/etc. server speaking that wire format qualifies.
+/// "oai-compat" is the preferred name going forward (more accurate —
+/// "openai" has always been a misnomer referring to the protocol, not
+/// the vendor). Both work in configs and match arms.
 pub const KNOWN_PROVIDERS: &[&str] = &[
     "claude",
     "openrouter",
-    "openai",
+    "oai-compat",
+    "openai", // alias for "oai-compat" — kept for backwards compatibility
     "codex",
     "gemini",
     "ollama",
@@ -1548,8 +1556,11 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
         input: spec.to_string(),
         message: format!(
             "Invalid model format '{}'. Models must use provider:model format. \
-             For example: 'claude:{}', 'openrouter:{}', 'openai:{}'. \
-             Known providers: {}.",
+             For example: 'claude:{}', 'openrouter:{}', 'oai-compat:{}'. \
+             Known providers: {}. \
+             (Note: 'openai' is accepted as a legacy alias for 'oai-compat' — \
+             both refer to the OpenAI-compatible HTTP protocol, not to OpenAI \
+             Inc. specifically.)",
             spec,
             spec,
             spec,
@@ -1580,7 +1591,12 @@ pub fn provider_to_native_provider(provider: &str) -> &'static str {
         "claude" => "anthropic",
         "codex" => "openai",
         "openrouter" => "openrouter",
-        "openai" => "openai",
+        // "oai-compat" is the canonical name for the OpenAI-compatible
+        // protocol; "openai" is kept as an alias for backwards compat.
+        // Both map to the internal "openai" tag (which is itself the
+        // legacy name for this protocol — renaming that is deferred
+        // until we're ready to migrate ~60 test assertions).
+        "oai-compat" | "openai" => "openai",
         "gemini" => "openai", // Gemini uses OpenAI-compatible endpoint
         "ollama" | "llamacpp" | "vllm" | "local" => "local",
         "native" => "openai", // auto-detect, use openai-compat
@@ -1595,7 +1611,10 @@ pub fn native_provider_to_prefix(provider: &str) -> &str {
     match provider {
         "anthropic" => "claude",
         "openrouter" => "openrouter",
-        "openai" => "openai",
+        // Internal tag "openai" → user-facing prefix "oai-compat".
+        // Configs written by workgraph will use "oai-compat:"; configs
+        // with the legacy "openai:" prefix still deserialize correctly.
+        "openai" => "oai-compat",
         "local" => "local",
         other => other,
     }
@@ -2709,7 +2728,7 @@ fn default_agent_timeout() -> String {
 }
 
 /// Providers that are not Anthropic-native and should default to the "native" executor.
-const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "openai", "local"];
+const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "oai-compat", "openai", "local"];
 
 impl CoordinatorConfig {
     /// Return the effective executor, considering provider-based auto-detection.

@@ -350,7 +350,7 @@ pub fn is_human_executor(executor: &str) -> bool {
 }
 
 /// Providers that are not Anthropic-native and should default to the "native" executor.
-const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "openai", "local"];
+const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "oai-compat", "openai", "local"];
 
 impl Agent {
     /// Returns true if this agent uses a human executor (matrix, email, shell).

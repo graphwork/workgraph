@@ -909,12 +909,17 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
         let source = config.resolve_model_source(DispatchRole::Default);
+        let provider_display = resolved
+            .provider
+            .as_deref()
+            .map(workgraph::config::native_provider_to_prefix)
+            .unwrap_or("(not set)");
         println!(
             "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
             "default",
             DispatchRole::Default.default_tier(),
             resolved.model,
-            resolved.provider.as_deref().unwrap_or("(not set)"),
+            provider_display,
             resolved.endpoint.as_deref().unwrap_or(""),
             source,
         );
@@ -923,12 +928,17 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
             let source = config.resolve_model_source(*role);
+            let provider_display = resolved
+                .provider
+                .as_deref()
+                .map(workgraph::config::native_provider_to_prefix)
+                .unwrap_or("(not set)");
             println!(
                 "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
                 role.to_string(),
                 role.default_tier(),
                 resolved.model,
-                resolved.provider.as_deref().unwrap_or("(not set)"),
+                provider_display,
                 resolved.endpoint.as_deref().unwrap_or(""),
                 source,
             );
