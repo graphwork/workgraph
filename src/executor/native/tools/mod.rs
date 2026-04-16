@@ -364,6 +364,7 @@ impl ToolRegistry {
         // Web fetch tool
         web_fetch::register_web_fetch_tool_with_config(
             &mut registry,
+            workgraph_dir.to_path_buf(),
             config.web.fetch_max_chars,
             config.web.fetch_timeout_secs,
         );
