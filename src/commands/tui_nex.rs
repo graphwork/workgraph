@@ -237,10 +237,10 @@ fn build_session(
     let supports_tools = model_registry.supports_tool_use(&effective_model);
 
     let system_prompt = format!(
-        "You are an expert software engineer working in an interactive coding session via a TUI.\n\
-         Working directory: {}\n\n\
-         You have tools available: read/write/edit files, run bash, grep, web, summarize, delegate, \
-         and more. Use them freely to help the user. Be concise. Show code when relevant.",
+        "You are an AI assistant in a TUI terminal session. You have tools for reading \
+         and writing files, running shell commands, web search, summarizing, and delegating.\n\
+         \n\
+         Working directory: {}",
         working_dir.display()
     );
 

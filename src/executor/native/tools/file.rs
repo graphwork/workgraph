@@ -14,6 +14,77 @@ use super::file_cache::FileCache;
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 
+/// Resolve a user-provided path against the current working directory and
+/// reject anything that escapes the cwd subtree.
+///
+/// This is the load-bearing sandbox for `write_file` and `edit_file`: a
+/// hallucinating model that emits `/home/user/some-other-repo/src/foo.rs`
+/// would otherwise happily write there. With this gate, the write is
+/// refused before it touches disk.
+///
+/// Allowed:
+///   - relative paths under cwd (e.g. `src/foo.rs`)
+///   - absolute paths inside cwd (e.g. cwd-prefixed)
+///
+/// Rejected:
+///   - absolute paths outside cwd (`/etc/passwd`, `/home/other/...`)
+///   - relative paths that escape via `..` after canonicalization
+///
+/// Non-existent targets are handled by canonicalizing the deepest existing
+/// ancestor and appending the remaining (not-yet-created) components.
+fn resolve_inside_cwd(input: &str) -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("cannot determine current working directory: {}", e))?;
+    let cwd_canonical = cwd
+        .canonicalize()
+        .map_err(|e| format!("cannot canonicalize cwd {:?}: {}", cwd, e))?;
+
+    let raw = Path::new(input);
+    let target = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+
+    // If the target exists, canonicalize it directly. Otherwise walk up to
+    // find the deepest existing ancestor, canonicalize that, then append the
+    // remaining (non-existent) tail components.
+    let canonical = match target.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            let mut ancestor = target.as_path();
+            while !ancestor.exists() {
+                ancestor = match ancestor.parent() {
+                    Some(p) => p,
+                    None => {
+                        return Err(format!("cannot resolve path: {}", input));
+                    }
+                };
+            }
+            let real_ancestor = ancestor
+                .canonicalize()
+                .map_err(|e| format!("cannot canonicalize {:?}: {}", ancestor, e))?;
+            let suffix = target
+                .strip_prefix(ancestor)
+                .map_err(|_| format!("internal path resolution error for: {}", input))?;
+            real_ancestor.join(suffix)
+        }
+    };
+
+    if !canonical.starts_with(&cwd_canonical) {
+        return Err(format!(
+            "path '{}' resolves to '{}' which is outside the working directory '{}'. \
+             Writes are restricted to the cwd subtree. Use a path inside the current \
+             working directory, or tell the user the action you intended so they can \
+             take it themselves.",
+            input,
+            canonical.display(),
+            cwd_canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
 /// Register all file tools into the registry.
 pub fn register_file_tools(registry: &mut ToolRegistry) {
     let cache = Arc::new(Mutex::new(FileCache::new()));
@@ -151,14 +222,19 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".to_string(),
-            description: "Write content to a file. Creates parent directories if needed."
+            description: "Save content to a file on disk at the given path. Writes are \
+                          restricted to the current working directory tree — paths outside \
+                          cwd are rejected. Use this when the user explicitly asks to save, \
+                          store, create, or modify a file. Do NOT use this to display or \
+                          return content to the user — include it in your text response \
+                          instead."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to write"
+                        "description": "Path to the file to write (must resolve inside cwd)"
                     },
                     "content": {
                         "type": "string",
@@ -171,7 +247,7 @@ impl Tool for WriteFileTool {
     }
 
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
-        let path = match input.get("path").and_then(|v| v.as_str()) {
+        let path_input = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolOutput::error("Missing required parameter: path".to_string()),
         };
@@ -180,25 +256,29 @@ impl Tool for WriteFileTool {
             None => return ToolOutput::error("Missing required parameter: content".to_string()),
         };
 
-        let path = Path::new(path);
+        let safe_path = match resolve_inside_cwd(path_input) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(e),
+        };
 
-        // Create parent directories if needed
-        if let Some(parent) = path.parent()
+        if let Some(parent) = safe_path.parent()
             && !parent.exists()
             && let Err(e) = fs::create_dir_all(parent)
         {
             return ToolOutput::error(format!("Failed to create directories: {}", e));
         }
 
-        match fs::write(path, content) {
+        match fs::write(&safe_path, content) {
             Ok(()) => ToolOutput::success(format!(
                 "Successfully wrote {} bytes to {}",
                 content.len(),
-                path.display()
+                safe_path.display()
             )),
-            Err(e) => {
-                ToolOutput::error(format!("Failed to write file '{}': {}", path.display(), e))
-            }
+            Err(e) => ToolOutput::error(format!(
+                "Failed to write file '{}': {}",
+                safe_path.display(),
+                e
+            )),
         }
     }
 }
@@ -245,7 +325,7 @@ impl Tool for EditFileTool {
     }
 
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
-        let path = match input.get("path").and_then(|v| v.as_str()) {
+        let path_input = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolOutput::error("Missing required parameter: path".to_string()),
         };
@@ -265,6 +345,13 @@ impl Tool for EditFileTool {
             .get("normalize_line_endings")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        let safe_path = match resolve_inside_cwd(path_input) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(e),
+        };
+        let path = safe_path.to_string_lossy().into_owned();
+        let path: &str = &path;
 
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -668,6 +755,75 @@ fn is_likely_binary(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── resolve_inside_cwd sandbox tests ──────────────────────────────
+    //
+    // These tests mutate the process-wide cwd, so they're serialized
+    // against other cwd-sensitive tests via serial_test. Using a fresh
+    // TempDir per test isolates them from each other.
+
+    #[test]
+    #[serial_test::serial]
+    fn test_sandbox_allows_relative_path_inside_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved = resolve_inside_cwd("a/b/c.txt").expect("relative path should be allowed");
+        assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
+        assert!(resolved.ends_with("a/b/c.txt"));
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_sandbox_allows_absolute_path_inside_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let canon_cwd = tmp.path().canonicalize().unwrap();
+        let abs = canon_cwd.join("foo.txt");
+        let resolved =
+            resolve_inside_cwd(abs.to_str().unwrap()).expect("abs path inside cwd should be OK");
+        assert_eq!(resolved, abs);
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_sandbox_rejects_absolute_path_outside_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let err = resolve_inside_cwd("/etc/passwd").expect_err("should reject escape");
+        assert!(err.contains("outside the working directory"), "got: {}", err);
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_sandbox_rejects_dotdot_escape() {
+        // cwd = tmp/inner, user passes "../outside.txt" which resolves to tmp/outside.txt
+        let tmp = tempfile::tempdir().unwrap();
+        let inner = tmp.path().join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&inner).unwrap();
+        let err = resolve_inside_cwd("../outside.txt").expect_err("dotdot escape should be rejected");
+        assert!(err.contains("outside the working directory"), "got: {}", err);
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_sandbox_permits_nonexistent_target_inside_cwd() {
+        // The target file doesn't exist yet; sandbox should still validate its parent.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved = resolve_inside_cwd("does/not/exist/yet.txt").expect("new paths OK");
+        assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
+        std::env::set_current_dir(prev).unwrap();
+    }
 
     #[tokio::test]
     async fn test_read_file_offset_beyond_end_returns_error() {

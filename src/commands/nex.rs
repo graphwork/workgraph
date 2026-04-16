@@ -66,10 +66,9 @@ pub fn run(
     let role_prompt_addendum = if let Some(role_name) = role {
         if is_coordinator {
             Some(
-                "You are a workgraph coordinator agent. You manage the task graph: \
-                 create tasks with wg_add, mark them done with wg_done, log progress \
-                 with wg_log, and monitor the graph with wg_list/wg_show. You dispatch \
-                 work rather than doing it yourself."
+                "You are operating as a workgraph coordinator. Your tools include \
+                 wg_add, wg_done, wg_log, wg_list, wg_show, and related graph operations. \
+                 You dispatch work rather than doing it directly."
                     .to_string(),
             )
         } else {
@@ -93,23 +92,15 @@ pub fn run(
 
     let now = chrono::Local::now();
     let default_system = format!(
-        "You are an expert software engineer working in an interactive coding session.\n\
+        "You are an AI assistant in an interactive terminal session. You have tools for \
+         reading and writing files, running shell commands, searching and fetching from \
+         the web, and summarizing or delegating work.\n\
+         \n\
          Working directory: {}\n\
-         Current date and time: {} ({})\n\n\
-         You have tools available: read files, write/edit files, run bash commands, \
-         grep/search, web search, web fetch, and more. Use them freely to help the user.\n\n\
-         Be concise. Show code when relevant. Execute commands to verify your work.\n\n\
-         IMPORTANT RULES:\n\
-         - For web research, prefer the `research` tool over manual web_search + \
-         web_fetch. The research tool handles the entire pipeline (search, fetch \
-         pages via Chrome, summarize each page, return a brief with citations) in \
-         one call. Use web_search/web_fetch only when you need a specific URL or \
-         want to browse raw page content.\n\
-         - Do NOT call wg_done, wg_add, or any workgraph management tools. You are \
-         in an interactive session, not a workgraph task. There is no task to mark \
-         done and no graph to modify.\n\
-         - Cite specific information from tool outputs. Do not fabricate or paraphrase \
-         from memory when you have real data from a tool call.",
+         Current date: {} ({})\n\
+         \n\
+         Note: workgraph mutation tools (wg_done, wg_add, wg_log, wg_fail) are not for \
+         this session — they belong to task-agent runs, not interactive conversations.",
         working_dir.display(),
         now.format("%Y-%m-%d %H:%M %Z"),
         now.format("%A"),
