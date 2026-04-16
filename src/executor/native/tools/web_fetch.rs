@@ -155,15 +155,12 @@ impl Tool for WebFetchTool {
         // Primary path: rquest with Chrome-136 emulation.
         let primary_result = fetch_via_rquest(&url_str, self.fetch_timeout_secs).await;
 
-        let (html, path_used): (String, &str) = match primary_result {
+        let fetched = match primary_result {
             Ok(body) => (body, "rquest_chrome136"),
             Err(primary_err) => {
-                // rquest-with-Chrome-emulation failed. Before giving
-                // up, try the real headless Chrome process — the
-                // residual 5% of sites that Cloudflare Turnstile or
-                // similar catch even with TLS-level emulation.
+                // rquest-with-Chrome-emulation failed. Try headless Chrome.
                 match fetch_via_browser(&url_str).await {
-                    Ok(body) => (body, "headless_chrome"),
+                    Ok(body) => (FetchedBody::Html(body), "headless_chrome"),
                     Err(browser_err) => {
                         return ToolOutput::error(format!(
                             "Failed to fetch URL (both paths):\n\
@@ -179,9 +176,42 @@ impl Tool for WebFetchTool {
                 }
             }
         };
+        let (body, path_used) = fetched;
 
-        // Extract main content using readability + html2md.
-        let (title, markdown) = extract_to_markdown(&html, &parsed_url);
+        // Handle PDF vs HTML content.
+        let (title, markdown) = match body {
+            FetchedBody::Binary {
+                ref content_type,
+                ref bytes,
+            } if content_type.contains("pdf") => {
+                match extract_pdf_text(bytes, &self.workgraph_dir) {
+                    Ok(text) => ("(PDF)".to_string(), text),
+                    Err(e) => {
+                        return ToolOutput::error(format!(
+                            "Fetched PDF from {} ({} bytes) but failed to extract text: {}\n\n\
+                             Make sure `pdftotext` is installed: `sudo apt install poppler-utils`",
+                            url_str,
+                            bytes.len(),
+                            e
+                        ));
+                    }
+                }
+            }
+            FetchedBody::Binary {
+                ref content_type,
+                ref bytes,
+            } => {
+                return ToolOutput::error(format!(
+                    "Fetched {} but content-type is '{}' ({} bytes) — \
+                     web_fetch only handles HTML and PDF. For other binary \
+                     formats, use `bash` with `curl -o <file> <url>`.",
+                    url_str,
+                    content_type,
+                    bytes.len()
+                ));
+            }
+            FetchedBody::Html(ref html) => extract_to_markdown(html, &parsed_url),
+        };
 
         // Write to a file artifact under <workgraph>/nex-sessions/fetched-pages/.
         // The agent can then `cat`/`head`/`grep` it without loading the
@@ -386,7 +416,18 @@ fn slug_from_url(url: &str) -> String {
 /// Fetch via `rquest` with Chrome-136 emulation. This is the primary
 /// path. Returns the response body on HTTP 2xx, otherwise an error
 /// with the status or underlying reqwest error.
-async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<String, String> {
+/// Result of a fetch: either HTML text or raw bytes with a content type.
+enum FetchedBody {
+    /// HTML/text content, decoded from the response charset.
+    Html(String),
+    /// Binary content (PDF, images, etc.) — raw bytes + content-type header.
+    Binary {
+        content_type: String,
+        bytes: Vec<u8>,
+    },
+}
+
+async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<FetchedBody, String> {
     let client = rquest::Client::builder()
         .emulation(rquest_util::Emulation::Chrome136)
         .timeout(Duration::from_secs(timeout_secs))
@@ -404,7 +445,24 @@ async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<String, String
         return Err(format!("HTTP {}", status));
     }
 
-    resp.text().await.map_err(|e| format!("body: {}", e))
+    // Check content-type to decide whether to read as text or binary.
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if content_type.contains("application/pdf") || url.to_lowercase().ends_with(".pdf") {
+        let bytes = resp.bytes().await.map_err(|e| format!("body: {}", e))?;
+        Ok(FetchedBody::Binary {
+            content_type: "application/pdf".to_string(),
+            bytes: bytes.to_vec(),
+        })
+    } else {
+        let text = resp.text().await.map_err(|e| format!("body: {}", e))?;
+        Ok(FetchedBody::Html(text))
+    }
 }
 
 /// Fetch via headless Chrome. Uses the same shared `BrowserHandle`
@@ -441,6 +499,56 @@ async fn fetch_via_browser(url: &str) -> Result<String, String> {
     let _ = page.close().await;
 
     Ok(content)
+}
+
+/// Extract text from a PDF using `pdftotext` (from poppler-utils).
+/// Writes the raw PDF to a temp file, runs pdftotext, reads the
+/// output. Returns the extracted text or an error if pdftotext
+/// isn't installed or fails.
+fn extract_pdf_text(bytes: &[u8], workgraph_dir: &std::path::Path) -> Result<String, String> {
+    use std::process::Command;
+
+    // Write PDF to a temp file
+    let pdf_dir = workgraph_dir.join("nex-sessions").join("fetched-pages");
+    std::fs::create_dir_all(&pdf_dir).map_err(|e| format!("create dir: {}", e))?;
+
+    let n = super::web_fetch::FETCH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let pdf_path = pdf_dir.join(format!("{:05}-download.pdf", n));
+    let txt_path = pdf_dir.join(format!("{:05}-download.txt", n));
+
+    std::fs::write(&pdf_path, bytes).map_err(|e| format!("write PDF: {}", e))?;
+
+    // Run pdftotext — part of poppler-utils on most Linux distros
+    let output = Command::new("pdftotext")
+        .arg("-layout")
+        .arg(&pdf_path)
+        .arg(&txt_path)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "pdftotext not found — install with: sudo apt install poppler-utils".to_string()
+            } else {
+                format!("pdftotext exec: {}", e)
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "pdftotext exited {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    let text =
+        std::fs::read_to_string(&txt_path).map_err(|e| format!("read extracted text: {}", e))?;
+
+    // Clean up the temp files (best effort)
+    let _ = std::fs::remove_file(&pdf_path);
+    // Keep the txt as an artifact — useful for the user to inspect
+
+    Ok(text)
 }
 
 /// Extract main content from HTML and convert to markdown. Returns
