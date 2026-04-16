@@ -174,6 +174,21 @@ impl ToolRegistry {
         self.tools.get(name).is_some_and(|t| t.is_read_only())
     }
 
+    /// Return a new registry containing only read-only tools. Used by
+    /// `wg nex --read-only` to provide a safe browsing mode where the
+    /// agent can read files, search the web, and run non-destructive
+    /// commands but cannot write files, edit code, or run arbitrary
+    /// bash that modifies state.
+    pub fn filter_read_only(self) -> Self {
+        let mut filtered = ToolRegistry::new();
+        for (name, tool) in self.tools {
+            if tool.is_read_only() {
+                filtered.tools.insert(name, tool);
+            }
+        }
+        filtered
+    }
+
     /// Execute a batch of tool calls with parallelism for read-only tools.
     ///
     /// Partitions calls into read-only and mutating. Read-only calls execute

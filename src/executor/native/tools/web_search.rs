@@ -1249,6 +1249,36 @@ pub(crate) struct BrowserHandle {
     /// that consumes messages from the handler stream. This handle
     /// keeps that task alive for the lifetime of BrowserHandle.
     _task: tokio::task::JoinHandle<()>,
+    /// PID of the Chrome child process, captured at launch time so
+    /// we can send SIGKILL from the synchronous `Drop` impl.
+    chrome_pid: Option<u32>,
+    /// Per-process user-data-dir (`/tmp/wg-chrome-<pid>`) that Chrome
+    /// writes profile data into. Cleaned up in `Drop`.
+    user_data_dir: std::path::PathBuf,
+}
+
+impl Drop for BrowserHandle {
+    fn drop(&mut self) {
+        // Best-effort kill of the Chrome child process. We can't call
+        // the async `browser.kill()` from a synchronous Drop, so we
+        // use a raw SIGKILL via libc. This handles the common case
+        // where the process is still running at exit.
+        if let Some(pid) = self.chrome_pid {
+            // SAFETY: We're sending a signal to a process we own.
+            // SIGKILL is always safe to send; if the process already
+            // exited the call harmlessly returns ESRCH which we ignore.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+
+        // Clean up the per-process user-data-dir. Chrome writes caches,
+        // GPU shader caches, DevTools state, etc. into this directory
+        // and it can grow to tens of MB per session. Best-effort: if
+        // removal fails (e.g. permissions, already gone) we don't panic.
+        let _ = std::fs::remove_dir_all(&self.user_data_dir);
+    }
 }
 
 static BROWSER_CELL: OnceLock<Arc<TokioMutex<Option<BrowserHandle>>>> = OnceLock::new();
@@ -1327,9 +1357,14 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
         .build()
         .map_err(|e| format!("browser config: {}", e))?;
 
-    let (browser, mut handler) = Browser::launch(config)
+    let (mut browser, mut handler) = Browser::launch(config)
         .await
         .map_err(|e| format!("browser launch: {}", e))?;
+
+    // Capture the Chrome child PID before we lose mutability to
+    // the shared handle. We need this for the synchronous SIGKILL
+    // in Drop — the async browser.kill() can't be called there.
+    let chrome_pid = browser.get_mut_child().and_then(|child| child.inner.id());
 
     // Event-loop pump: chromiumoxide requires us to consume the
     // handler stream or the browser stalls. Drain the stream until
@@ -1346,6 +1381,8 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
     Ok(BrowserHandle {
         browser,
         _task: task,
+        chrome_pid,
+        user_data_dir,
     })
 }
 

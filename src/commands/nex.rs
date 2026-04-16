@@ -23,6 +23,7 @@ pub fn run(
     max_turns: usize,
     chatty: bool,
     verbose: bool,
+    read_only: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -33,8 +34,18 @@ pub fn run(
 
     let working_dir = std::env::current_dir().unwrap_or_default();
 
-    let registry =
-        ToolRegistry::default_all_with_config(workgraph_dir, &working_dir, &config.native_executor);
+    let registry = {
+        let full = ToolRegistry::default_all_with_config(
+            workgraph_dir,
+            &working_dir,
+            &config.native_executor,
+        );
+        if read_only {
+            full.filter_read_only()
+        } else {
+            full
+        }
+    };
 
     let default_system = format!(
         "You are an expert software engineer working in an interactive coding session.\n\
@@ -102,10 +113,17 @@ pub fn run(
     // Always show the minimal banner — it names the model so the user
     // knows what they're talking to. Verbose-only details (warning
     // text, exit hint) are gated.
-    eprintln!(
-        "\x1b[1;32mwg nex\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
-        effective_model
-    );
+    if read_only {
+        eprintln!(
+            "\x1b[1;32mwg nex\x1b[0m \x1b[33m[read-only]\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+            effective_model
+        );
+    } else {
+        eprintln!(
+            "\x1b[1;32mwg nex\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+            effective_model
+        );
+    }
     if !supports_tools {
         eprintln!(
             "\x1b[33mWarning: model '{}' may not support tool use\x1b[0m",

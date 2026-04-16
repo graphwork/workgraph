@@ -2700,6 +2700,7 @@ fn main() -> Result<()> {
             max_turns,
             chatty,
             verbose,
+            read_only,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2709,6 +2710,7 @@ fn main() -> Result<()> {
             max_turns,
             chatty,
             verbose,
+            read_only,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

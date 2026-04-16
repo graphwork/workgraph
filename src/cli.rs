@@ -1812,6 +1812,15 @@ pub enum Commands {
         /// regardless of this flag.
         #[arg(long, short = 'v')]
         verbose: bool,
+
+        /// Read-only safety mode: only expose tools that cannot modify
+        /// state (read_file, grep, web_search, web_fetch, etc.). Tools
+        /// like write_file, edit_file, and bash (which can run arbitrary
+        /// commands) are removed from the registry. Use this when you
+        /// want to browse, research, or explore without risk of the
+        /// agent modifying any files.
+        #[arg(long, short = 'r')]
+        read_only: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)
