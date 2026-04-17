@@ -623,6 +623,13 @@ impl AgentLoop {
         let mut turns: usize = 0;
         let mut consecutive_server_errors: u32 = 0;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
+        // After a cooperative or hard cancel, force the next iteration to
+        // prompt the user for fresh input even if the last message in the
+        // vec is user-role. Without this the loop simply re-sends the
+        // same conversation to the LLM, which re-generates the same
+        // response, which the user cancels again — the "Ctrl-C does
+        // nothing" bug discovered in live smoke testing (2026-04-17).
+        let mut force_fresh_input = false;
         // Compaction tracking for /status display.
         let mut compaction_count: u32 = 0;
         let mut total_tokens_compacted: usize = 0;
@@ -1000,8 +1007,12 @@ impl AgentLoop {
                     "\n\x1b[31m[nex] Hard cancel — subprocess tree killed.\x1b[0m"
                 );
                 // Hard implies cooperative — clear both so the next
-                // iteration's checks start fresh.
+                // iteration's checks start fresh. Force a fresh
+                // readline so the loop doesn't just resend the same
+                // conversation to the LLM (the "Ctrl-C does nothing"
+                // bug fix).
                 cancel.take_cooperative();
+                force_fresh_input = true;
                 continue;
             }
 
@@ -1010,6 +1021,7 @@ impl AgentLoop {
                 eprintln!(
                     "\n\x1b[33m[nex] Cancelled — returning to prompt.\x1b[0m"
                 );
+                force_fresh_input = true;
                 // If the last message is an assistant turn with
                 // unresolved tool_use blocks, synthesize cancelled
                 // tool_results so the next LLM call sees a valid
@@ -1124,13 +1136,16 @@ impl AgentLoop {
             }
 
             // If the last entry isn't a user message (e.g., we just
-            // handled a slash command that printed info), prompt again
-            // before the next LLM call.
-            let needs_user_input = messages
-                .last()
-                .map(|m| m.role != Role::User)
-                .unwrap_or(true);
+            // handled a slash command that printed info), OR a recent
+            // cancel asked for fresh input, prompt again before the
+            // next LLM call.
+            let needs_user_input = force_fresh_input
+                || messages
+                    .last()
+                    .map(|m| m.role != Role::User)
+                    .unwrap_or(true);
             if needs_user_input {
+                force_fresh_input = false;
                 match read_user_input(&mut editor) {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
@@ -1440,6 +1455,7 @@ impl AgentLoop {
                             "\n\x1b[33m[nex] Interrupted — dropping in-flight response.\x1b[0m"
                         );
                         cancel.take_cooperative();
+                        force_fresh_input = true;
                         continue;
                     }
                     res = streaming_future => match res {
@@ -1823,6 +1839,7 @@ impl AgentLoop {
                                     role: Role::User,
                                     content: interrupted_results,
                                 });
+                                force_fresh_input = true;
                                 continue;
                             }
                             res = batch_future => res,
