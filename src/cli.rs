@@ -50,6 +50,38 @@ pub enum Commands {
         global: bool,
     },
 
+    /// Rescue a failed task by inserting a first-class replacement at
+    /// its graph slot. Successors are rewired to unblock from the
+    /// rescue instead of the failed target; the target stays in the
+    /// graph for history with `superseded_by` log entries.
+    ///
+    /// Primary caller: the `.evaluate-*` agent, when it judges a task
+    /// failed and can describe a concrete fix. The description becomes
+    /// the rescue task's brief — be specific about what to change.
+    Rescue {
+        /// The failed task's ID to rescue.
+        target: String,
+
+        /// What the rescue task needs to do differently. Becomes the
+        /// rescue task's description — treat this as the next agent's
+        /// assignment brief.
+        #[arg(long, short = 'd', alias = "desc")]
+        description: String,
+
+        /// Optional title override (default: `Rescue: <target>`).
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Explicit ID for the rescue task (auto-derived from title otherwise).
+        #[arg(long)]
+        id: Option<String>,
+
+        /// The ID of the eval task that concluded the failure. Recorded
+        /// in the rescue task's description and in the operations log.
+        #[arg(long = "from-eval")]
+        from_eval: Option<String>,
+    },
+
     /// Insert a new task at a position relative to an existing target
     /// (before / after / parallel). Graph-surgery primitive; used as
     /// the foundation for `wg rescue`.
@@ -3756,6 +3788,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Init { .. } => "init",
         Commands::Insert { .. } => "insert",
+        Commands::Rescue { .. } => "rescue",
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",

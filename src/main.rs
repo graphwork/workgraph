@@ -542,6 +542,28 @@ fn main() -> Result<()> {
             };
             commands::init::run(&target_dir, no_agency)
         }
+        Commands::Rescue {
+            target,
+            description,
+            title,
+            id,
+            from_eval,
+        } => {
+            let actor = std::env::var("WG_ACTOR")
+                .ok()
+                .or_else(|| std::env::var("WG_AGENT_ID").ok());
+            let new_id = commands::rescue::run(
+                &workgraph_dir,
+                &target,
+                &description,
+                title.as_deref(),
+                id.as_deref(),
+                from_eval.as_deref(),
+                actor.as_deref(),
+            )?;
+            println!("Rescue task '{}' created (supersedes '{}').", new_id, target);
+            Ok(())
+        }
         Commands::Insert {
             position,
             target,
