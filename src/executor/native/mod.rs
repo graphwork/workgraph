@@ -11,6 +11,7 @@
 pub mod agent;
 pub mod background;
 pub mod bundle;
+pub mod cancel;
 pub mod channel;
 pub mod client;
 pub mod journal;

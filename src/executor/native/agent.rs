@@ -613,6 +613,18 @@ impl AgentLoop {
         #[allow(unused_assignments)]
         let mut session_exit_reason: &'static str = "eof";
 
+        // Cancel token drives all interruption signals in this session.
+        // Stage A: cooperative level only (single Ctrl-C). Later stages
+        // add hard-cancel (double Ctrl-C, tree-kill) and inbox-driven
+        // cancel (workgraph IPC). The listener task runs for the life
+        // of the session and is detached — it exits when the process
+        // does. Interactive sessions only: in autonomous mode the
+        // process is supervised externally, not by a local terminal.
+        let cancel = super::cancel::CancelToken::new();
+        if !self.autonomous {
+            cancel.clone().spawn_ctrl_c_listener();
+        }
+
         // Emit the session-start event as the first line of the log
         // file so the trace has a clear beginning marker.
         self.log_session_start(None);
@@ -924,6 +936,50 @@ impl AgentLoop {
         }
 
         loop {
+            // ── Turn boundary ──────────────────────────────────────
+            // Every iteration starts here. This is the single
+            // synchronization point for end-of-turn hooks. Stage A
+            // introduces only the cancel check; later stages add
+            // inbox drain, microcompact, and journal hooks.
+            if cancel.take_cooperative() {
+                eprintln!(
+                    "\n\x1b[33m[nex] Cancelled — returning to prompt.\x1b[0m"
+                );
+                // If the last message is an assistant turn with
+                // unresolved tool_use blocks, synthesize cancelled
+                // tool_results so the next LLM call sees a valid
+                // message sequence. Otherwise the cancel just drops
+                // us at the prompt with the history intact.
+                if let Some(last) = messages.last()
+                    && last.role == Role::Assistant
+                {
+                    let unresolved: Vec<_> = last
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !unresolved.is_empty() {
+                        let results: Vec<_> = unresolved
+                            .into_iter()
+                            .map(|id| ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: "[cancelled by user before execution]".to_string(),
+                                is_error: true,
+                            })
+                            .collect();
+                        messages.push(Message {
+                            role: Role::User,
+                            content: results,
+                        });
+                    }
+                }
+                continue;
+            }
+            // ── end turn boundary ──────────────────────────────────
+
             if turns >= self.max_turns {
                 eprintln!(
                     "\n\x1b[33m[nex] Max turns ({}) reached.\x1b[0m",
@@ -1238,15 +1294,19 @@ impl AgentLoop {
                     }
                 }
             } else {
-                // Interactive mode: Ctrl-C cancels the in-flight call
+                // Interactive mode: cooperative cancel aborts the
+                // in-flight streaming call. The shared `cancel` token
+                // is flipped by the Ctrl-C listener task; we also
+                // re-check-and-clear at the next turn boundary so a
+                // late signal doesn't get stuck in the flag.
                 let streaming_future = self.client.send_streaming(&request, &on_text);
-                let ctrl_c_future = tokio::signal::ctrl_c();
                 tokio::select! {
                     biased;
-                    _ = ctrl_c_future => {
+                    _ = cancel.cancelled() => {
                         eprintln!(
                             "\n\x1b[33m[nex] Interrupted — dropping in-flight response.\x1b[0m"
                         );
+                        cancel.take_cooperative();
                         continue;
                     }
                     res = streaming_future => match res {
@@ -1604,17 +1664,21 @@ impl AgentLoop {
 
                         results
                     } else {
-                        // Interactive mode: Ctrl-C aware tool execution.
+                        // Interactive mode: cooperative cancel interrupts
+                        // the tool batch. Stage A treats this as a
+                        // select!-level abort — the batch future is
+                        // dropped. Stage B will add tree-kill of
+                        // spawned subprocesses for double-Ctrl-C.
                         let batch_future = self
                             .tools
                             .execute_batch(&calls_only, super::tools::DEFAULT_MAX_CONCURRENT_TOOLS);
-                        let ctrl_c_future = tokio::signal::ctrl_c();
                         tokio::select! {
                             biased;
-                            _ = ctrl_c_future => {
+                            _ = cancel.cancelled() => {
                                 eprintln!(
                                     "\n\x1b[33m[nex] Interrupted during tool execution — returning to prompt.\x1b[0m"
                                 );
+                                cancel.take_cooperative();
                                 let mut interrupted_results = Vec::new();
                                 for (id, _name, _input) in &tool_use_blocks {
                                     interrupted_results.push(ContentBlock::ToolResult {
