@@ -54,6 +54,7 @@ pub mod graph;
 pub mod heartbeat;
 pub mod impact;
 pub mod init;
+pub mod insert;
 pub mod key;
 pub mod kill;
 pub mod link;

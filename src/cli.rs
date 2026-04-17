@@ -50,6 +50,41 @@ pub enum Commands {
         global: bool,
     },
 
+    /// Insert a new task at a position relative to an existing target
+    /// (before / after / parallel). Graph-surgery primitive; used as
+    /// the foundation for `wg rescue`.
+    Insert {
+        /// Where to insert: `before`, `after`, or `parallel`.
+        position: String,
+
+        /// The existing task's ID that anchors the insertion.
+        target: String,
+
+        /// Title for the new task (required).
+        #[arg(long)]
+        title: String,
+
+        /// Detailed description for the new task.
+        #[arg(long, short = 'd', alias = "desc")]
+        description: Option<String>,
+
+        /// Explicit ID for the new task (auto-derived from title if absent).
+        #[arg(long)]
+        id: Option<String>,
+
+        /// For `before` / `after`: rewire target's old predecessor/successor
+        /// edges through the new node exclusively (remove the direct old
+        /// edge). No effect in `parallel` mode.
+        #[arg(long)]
+        splice: bool,
+
+        /// For `parallel`: remove target from its successors' dependency
+        /// lists so they unblock from the new node ONLY (rescue semantics).
+        /// No effect in `before` / `after` mode.
+        #[arg(long = "replace-edges")]
+        replace_edges: bool,
+    },
+
     /// Add a new task
     Add {
         /// Task title
@@ -3720,6 +3755,7 @@ pub enum TelegramCommands {
 pub fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Init { .. } => "init",
+        Commands::Insert { .. } => "insert",
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",

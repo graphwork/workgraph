@@ -542,6 +542,34 @@ fn main() -> Result<()> {
             };
             commands::init::run(&target_dir, no_agency)
         }
+        Commands::Insert {
+            position,
+            target,
+            title,
+            description,
+            id,
+            splice,
+            replace_edges,
+        } => {
+            let pos: commands::insert::Position = position.parse().map_err(|e: String| {
+                anyhow::anyhow!(e)
+            })?;
+            let opts = commands::insert::InsertOptions {
+                splice,
+                replace_edges,
+            };
+            let new_id = commands::insert::run(
+                &workgraph_dir,
+                pos,
+                &target,
+                &title,
+                description.as_deref(),
+                id.as_deref(),
+                opts,
+            )?;
+            println!("Inserted task '{}' ({:?} {}).", new_id, pos, target);
+            Ok(())
+        }
         Commands::Add {
             title,
             id,
