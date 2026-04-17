@@ -54,6 +54,12 @@ const DEFAULT_MAX_TURNS_PER_ITEM: usize = 20;
 /// Hard cap on per-chunk turns, matches `map`.
 const MAX_ALLOWED_TURNS: usize = 100;
 
+/// Default wall-clock ceiling per chunk. Matches `map`'s default.
+const DEFAULT_TIMEOUT_SECS_PER_ITEM: u64 = 180;
+
+/// Hard cap on per-chunk timeout. Matches `map`'s cap.
+const MAX_TIMEOUT_SECS_PER_ITEM: u64 = 20 * 60;
+
 /// Chunks smaller than this are still fine — the minimum exists only
 /// to protect against pathological caller-supplied values.
 const MIN_BYTES_PER_CHUNK: usize = 512;
@@ -126,8 +132,17 @@ impl Tool for ChunkMapTool {
                     "max_turns_per_item": {
                         "type": "integer",
                         "description": format!(
-                            "Max conversation turns per chunk sub-agent (default {}, cap {}).",
+                            "Max conversation turns per chunk sub-agent (default {}, cap {}). \
+                             Cost ceiling.",
                             DEFAULT_MAX_TURNS_PER_ITEM, MAX_ALLOWED_TURNS
+                        )
+                    },
+                    "timeout_secs_per_item": {
+                        "type": "integer",
+                        "description": format!(
+                            "Wall-clock ceiling per chunk in seconds (default {}, cap {}). \
+                             Whichever fires first (turns or time) kills the sub-agent.",
+                            DEFAULT_TIMEOUT_SECS_PER_ITEM, MAX_TIMEOUT_SECS_PER_ITEM
                         )
                     }
                 },
@@ -148,6 +163,11 @@ impl Tool for ChunkMapTool {
             .and_then(|v| v.as_u64())
             .map(|n| (n as usize).clamp(1, MAX_ALLOWED_TURNS))
             .unwrap_or(DEFAULT_MAX_TURNS_PER_ITEM);
+        let timeout_secs_per_item = input
+            .get("timeout_secs_per_item")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.clamp(1, MAX_TIMEOUT_SECS_PER_ITEM))
+            .unwrap_or(DEFAULT_TIMEOUT_SECS_PER_ITEM);
 
         let (source_label, body) = match (path, inline) {
             (Some(p), _) if !p.is_empty() => {
@@ -256,6 +276,7 @@ impl Tool for ChunkMapTool {
             &inputs,
             &task,
             max_turns_per_item,
+            timeout_secs_per_item,
         )
         .await
         {

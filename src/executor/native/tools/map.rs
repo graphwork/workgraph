@@ -65,26 +65,54 @@ const MAX_READ_OUTPUT_CHARS: usize = 40_000;
 /// Timeout for a single bash invocation inside an item's mini-executor.
 const BASH_TIMEOUT_SECS: u64 = 30;
 
+/// Default wall-clock ceiling per item, independent of max_turns.
+/// Protects against slow-model hangs and long-running sub-agent work
+/// that max_turns can't cap (because N turns × slow model = unbounded
+/// time). Whichever fires first kills the sub-agent and records a
+/// timeout error for that item. 180s is generous enough for a
+/// multi-turn summarize-plus-bash cycle on a mid-tier local model,
+/// short enough that a genuinely-hung worker fails fast.
+const DEFAULT_TIMEOUT_SECS_PER_ITEM: u64 = 180;
+
+/// Hard cap on per-item timeout so a caller can't accidentally disable
+/// it with an absurd value. 20 min should fit any realistic sub-agent
+/// task; batch jobs go outside the agent loop.
+const MAX_TIMEOUT_SECS_PER_ITEM: u64 = 20 * 60;
+
 const MAP_ITEM_SYSTEM_PROMPT: &str = "\
-You are processing ONE item from a larger map operation. Your task and \
-your specific input appear in the initial message. You have six tools:
+You are a WORKER running as one of many sub-agents in a parallel `map` \
+operation. A parent agent is coordinating you and others; your output \
+will be concatenated verbatim with peers who received the same task \
+instruction over different inputs.
+
+## Your output must match the format your peers' will use
+
+Read the task instruction in the initial message EXACTLY as written. If \
+it asks for 'a numbered list', produce a numbered list — not prose, not \
+a narrative, not a summary. If it asks for 'one paragraph', produce one \
+paragraph. Deviation breaks downstream aggregation.
+
+Do not add conversational framing ('Here are the results...', 'Based on \
+my analysis...', 'I hope this helps...'). Emit only what was asked for.
+
+## Your tools
 
   - append_note(name, content) — append to a file in your working dir
   - write_note(name, content)  — create/overwrite a file
   - list_notes()                — list files in your working dir
   - read_note(name)             — read back a note
   - bash(command)               — shell with cwd = your working dir
-  - finish(result)              — terminate with a result string
+  - finish(result)              — terminate; `result` is what the parent sees
 
 ## The core rule
 
 Your working directory is persistent. Your conversation context is NOT. \
-When you're done, the parent map operation collects your finish(result) \
-into a combined results file AND preserves your entire working dir for \
-inspection. So put durable output in notes, not just in the result text.
+Only `finish(result)` reaches the parent. Rich intermediate detail \
+belongs in notes — they survive for later inspection but don't pollute \
+the aggregated output.
 
-Produce a concise `result` via finish() — one paragraph. Rich detail \
-belongs in notes that live in the working dir.";
+Finish as soon as you have the answer. Extra turns after that are \
+wasted work.";
 
 pub fn register_map_tool(registry: &mut ToolRegistry, workgraph_dir: PathBuf) {
     registry.register(Box::new(MapTool { workgraph_dir }));
@@ -146,8 +174,18 @@ impl Tool for MapTool {
                         "type": "integer",
                         "description": format!(
                             "Max conversation turns per item (default {}, cap {}). Each \
-                             turn = one LLM call.",
+                             turn = one LLM call. Cost ceiling.",
                             DEFAULT_MAX_TURNS_PER_ITEM, MAX_ALLOWED_TURNS
+                        )
+                    },
+                    "timeout_secs_per_item": {
+                        "type": "integer",
+                        "description": format!(
+                            "Wall-clock ceiling per item in seconds (default {}, cap {}). \
+                             Independent of max_turns — whichever fires first kills the \
+                             sub-agent. Protects against slow-model hangs that max_turns \
+                             can't cap.",
+                            DEFAULT_TIMEOUT_SECS_PER_ITEM, MAX_TIMEOUT_SECS_PER_ITEM
                         )
                     }
                 },
@@ -188,8 +226,21 @@ impl Tool for MapTool {
             .and_then(|v| v.as_u64())
             .map(|n| (n as usize).clamp(1, MAX_ALLOWED_TURNS))
             .unwrap_or(DEFAULT_MAX_TURNS_PER_ITEM);
+        let timeout_secs_per_item = input
+            .get("timeout_secs_per_item")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.clamp(1, MAX_TIMEOUT_SECS_PER_ITEM))
+            .unwrap_or(DEFAULT_TIMEOUT_SECS_PER_ITEM);
 
-        match run_map(&self.workgraph_dir, &inputs, &task, max_turns_per_item).await {
+        match run_map(
+            &self.workgraph_dir,
+            &inputs,
+            &task,
+            max_turns_per_item,
+            timeout_secs_per_item,
+        )
+        .await
+        {
             Ok(result) => ToolOutput::success(result),
             Err(e) => ToolOutput::error(format!("map failed: {}", e)),
         }
@@ -207,6 +258,7 @@ pub(crate) async fn run_map(
     inputs: &[String],
     task: &str,
     max_turns_per_item: usize,
+    timeout_secs_per_item: u64,
 ) -> Result<String, String> {
     let parent_dir = make_parent_dir(workgraph_dir, task)?;
     let items_dir = parent_dir.join("items");
@@ -260,14 +312,34 @@ pub(crate) async fn run_map(
                 continue;
             }
         };
-        let outcome = run_item(
-            provider.as_ref(),
-            &item_dir,
-            item_input,
-            task,
-            max_turns_per_item,
+        let outcome = match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs_per_item),
+            run_item(
+                provider.as_ref(),
+                &item_dir,
+                item_input,
+                task,
+                max_turns_per_item,
+            ),
         )
-        .await;
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                eprintln!(
+                    "\x1b[33m[map] item {}/{} timed out after {}s — killing sub-agent\x1b[0m",
+                    i + 1,
+                    inputs.len(),
+                    timeout_secs_per_item
+                );
+                Err(format!(
+                    "item timed out after {}s (wall-clock ceiling). Whatever the \
+                     sub-agent had written to its working dir is preserved at {}.",
+                    timeout_secs_per_item,
+                    item_dir.display()
+                ))
+            }
+        };
         per_item_results.push((i, item_input.clone(), outcome));
     }
 
