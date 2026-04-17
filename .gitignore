@@ -35,3 +35,54 @@ api-keys.txt
 
 # Terminal Bench trial results (large, per-run artifacts)
 terminal-bench/results/
+/terminal-bench/tb-results/
+
+# Agent-generated scratch at repo root — these filenames are characteristic
+# of what native-executor agents produce mid-session. Keeping them out of
+# `git add -A` prevents the 14k-file accident from 2026-04-17.
+/bug_report_*.md
+/*_summary.md
+/*-summary.md
+/*-findings.md
+/*-synthesis.md
+/audit-*.md
+/comprehensive-*.md
+/consolidated-*.md
+/coordinator-*-analysis.md
+/coordinator-chat-research-findings.md
+/coordinator-persistence-analysis.md
+/design-documentation-audit-report.md
+/deep_reflection_*.md
+/documented-*.txt
+/canonical-*.md
+/cli-commands-*.txt
+/cli-commands-*.md
+/cli-documentation-*.md
+/evolution-manual-*.md
+/final-cli-*.md
+/evaluation_report_*.md
+/investigation_*.md
+/research_*.md
+/tokyo_*.md
+/tui-iteration-*.md
+/unified-manual-*.md
+/haikus.txt
+/blog_summary.md
+/analysis.md
+
+# Root-level token-count benchmark scratch
+/test_*_tokens*.txt
+
+# Root-level stray patches and parked extracts
+/*.patch
+/*.rs.parked
+/calculate_*.py
+/final_*.py
+/csv_parser.rs
+/web_search.rs
+
+# Scratch/backup variants of tracked files
+/.gitguardian.yml.old
+
+# Agent issue directories (per-run)
+/issues-*/
