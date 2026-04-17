@@ -198,6 +198,7 @@ pub fn build_child_registry(
     bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
     wg::register_wg_tools(&mut registry, workgraph_dir.to_path_buf());
     web_search::register_web_search_tool(&mut registry);
+    web_search::register_arxiv_search_tool(&mut registry);
     web_fetch::register_web_fetch_tool(&mut registry, workgraph_dir.to_path_buf());
     bg::register_bg_tool(&mut registry, workgraph_dir.to_path_buf());
 

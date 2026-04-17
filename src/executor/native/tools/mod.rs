@@ -389,6 +389,9 @@ impl ToolRegistry {
         // Web search tool
         web_search::register_web_search_tool(&mut registry);
 
+        // Arxiv search tool (separate from web_search fan-out — scholarly-only)
+        web_search::register_arxiv_search_tool(&mut registry);
+
         // Web fetch tool
         web_fetch::register_web_fetch_tool_with_config(
             &mut registry,

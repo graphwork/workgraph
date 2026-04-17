@@ -85,7 +85,13 @@ pub fn register_web_search_tool(registry: &mut super::ToolRegistry) {
     registry.register(Box::new(WebSearchTool));
 }
 
+pub fn register_arxiv_search_tool(registry: &mut super::ToolRegistry) {
+    registry.register(Box::new(ArxivSearchTool));
+}
+
 struct WebSearchTool;
+
+struct ArxivSearchTool;
 
 /// Internal accessor for the research tool to call web_search's
 /// execute without going through the registry.
@@ -210,6 +216,10 @@ impl Backend {
     /// parallel regardless. The `Browser` backend is only included
     /// when chromium is reachable — see `enabled_backends`.
     fn all() -> &'static [Backend] {
+        // arxiv is deliberately excluded from the general fan-out — it
+        // has a 3.5s rate-limit floor and adds no signal for non-scholarly
+        // queries (weather, news, product lookups etc). Agents that want
+        // academic results should call the dedicated `arxiv_search` tool.
         &[
             Backend::Wikipedia,
             Backend::News,
@@ -217,7 +227,6 @@ impl Backend {
             Backend::GitHub,
             Backend::StackExchange,
             Backend::CratesIo,
-            Backend::Arxiv,
             Backend::Browser,
             Backend::Brave,
             Backend::SearXNG,
@@ -440,7 +449,7 @@ impl Tool for WebSearchTool {
             name: "web_search".to_string(),
             description: "Search the web via parallel fan-out across multiple backends: \
                           Wikipedia, Google News RSS, Hacker News, GitHub, Stack Exchange, \
-                          crates.io, arxiv, Brave Search (if BRAVE_SEARCH_API_KEY is set), \
+                          crates.io, Brave Search (if BRAVE_SEARCH_API_KEY is set), \
                           headless Chrome driving DuckDuckGo, and reqwest DuckDuckGo HTML. \
                           Every query hits all available backends in parallel, results are \
                           merged by URL and ranked by multi-source agreement. Each result \
@@ -448,7 +457,10 @@ impl Tool for WebSearchTool {
                           includes `backends_consulted` and `backends_responded`. Results \
                           are cached for 10 minutes. Returns an error (not an empty list) \
                           when every backend failed — on error, try `web_fetch` against a \
-                          specific URL or `bash` with `curl` as a fallback."
+                          specific URL or `bash` with `curl` as a fallback.\n\
+                          \n\
+                          For scholarly papers / preprints use `arxiv_search` — it hits \
+                          the arxiv API directly and isn't part of this fan-out."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -644,6 +656,113 @@ impl Tool for WebSearchTool {
         cache_put(&cache_key, &rendered);
 
         ToolOutput::success(truncate_for_tool(&rendered, "web_search"))
+    }
+}
+
+#[async_trait]
+impl Tool for ArxivSearchTool {
+    fn name(&self) -> &str {
+        "arxiv_search"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "arxiv_search".to_string(),
+            description: "Search arxiv.org for scholarly papers and preprints. Hits the \
+                          arxiv Atom API directly. Rate-limited to 1 request per 3.5s per \
+                          arxiv's stated policy — so use this when you specifically want \
+                          academic sources, not for general web lookups (those belong in \
+                          `web_search`). Each result carries title, first author, published \
+                          date, abstract snippet, and the abs/ URL."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query. Supports arxiv's full-text search over titles, abstracts, and authors."
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+
+    async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
+        let query = match input.get("query").and_then(|v| v.as_str()) {
+            Some(q) if !q.trim().is_empty() => q.trim().to_string(),
+            _ => {
+                return ToolOutput::error("Missing or empty required parameter: query".to_string());
+            }
+        };
+
+        // Honor the same circuit breaker + rate limit the fan-out uses.
+        {
+            let state = politeness().lock().unwrap();
+            if state.is_circuit_open(Backend::Arxiv) {
+                return ToolOutput::error(
+                    "arxiv circuit breaker is open (3+ consecutive failures). Try again in a few minutes."
+                        .to_string(),
+                );
+            }
+        }
+        let delay = {
+            let state = politeness().lock().unwrap();
+            state.rate_limit_delay(Backend::Arxiv)
+        };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        {
+            let mut state = politeness().lock().unwrap();
+            state.mark_request(Backend::Arxiv);
+        }
+
+        let client = match build_client() {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(e),
+        };
+
+        let outcome = search_arxiv(&client, &query).await;
+
+        {
+            let mut state = politeness().lock().unwrap();
+            match &outcome {
+                Ok(r) if !r.is_empty() => state.mark_success(Backend::Arxiv),
+                _ => state.mark_failure(Backend::Arxiv),
+            }
+        }
+
+        match outcome {
+            Ok(results) if results.is_empty() => ToolOutput::success(format!(
+                "arxiv_search: no results for {:?}.\n\
+                 Try broader terms or different phrasing.",
+                query
+            )),
+            Ok(results) => {
+                let mut out = format!(
+                    "arxiv_search: {} result{} for {:?}\n\n",
+                    results.len(),
+                    if results.len() == 1 { "" } else { "s" },
+                    query
+                );
+                for (i, r) in results.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{}. {}\n   {}\n   {}\n\n",
+                        i + 1,
+                        r.title,
+                        r.url,
+                        r.snippet
+                    ));
+                }
+                ToolOutput::success(truncate_for_tool(&out, "arxiv_search"))
+            }
+            Err(e) => ToolOutput::error(format!("arxiv_search failed: {}", e)),
+        }
     }
 }
 

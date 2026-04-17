@@ -405,7 +405,6 @@ async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<FetchedBody, S
         return Err(format!("HTTP {}", status));
     }
 
-    // Check content-type to decide whether to read as text or binary.
     let content_type = resp
         .headers()
         .get("content-type")
@@ -413,16 +412,49 @@ async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<FetchedBody, S
         .unwrap_or("")
         .to_lowercase();
 
-    if content_type.contains("application/pdf") || url.to_lowercase().ends_with(".pdf") {
-        let bytes = resp.bytes().await.map_err(|e| format!("body: {}", e))?;
-        Ok(FetchedBody::Binary {
+    // Always read bytes first, then sniff. Servers lie about content-type
+    // (a `.pdf` URL returning an HTML "File not found" page with Content-Type:
+    // text/html was the concrete trigger), and URL suffixes lie too. Trust
+    // the bytes: PDFs begin with "%PDF-" magic.
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("body: {}", e))?
+        .to_vec();
+
+    if bytes.starts_with(b"%PDF-") {
+        return Ok(FetchedBody::Binary {
             content_type: "application/pdf".to_string(),
-            bytes: bytes.to_vec(),
-        })
-    } else {
-        let text = resp.text().await.map_err(|e| format!("body: {}", e))?;
-        Ok(FetchedBody::Html(text))
+            bytes,
+        });
     }
+
+    if is_text_content_type(&content_type) {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        return Ok(FetchedBody::Html(text));
+    }
+
+    // Non-text content-type that wasn't PDF magic — preserve as binary with
+    // its real content-type so the save_binary_artifact path can pick the
+    // right extension.
+    Ok(FetchedBody::Binary { content_type, bytes })
+}
+
+/// True when the content-type is text-like (HTML, XML, JSON, plain text,
+/// JS/CSS, or empty/unknown). These are decoded as UTF-8 and flow through
+/// the html2md pipeline. Everything else is treated as a binary artifact.
+fn is_text_content_type(ct: &str) -> bool {
+    if ct.is_empty() {
+        return true;
+    }
+    let prefix = ct.split(';').next().unwrap_or("").trim();
+    prefix.starts_with("text/")
+        || prefix == "application/xhtml+xml"
+        || prefix == "application/xml"
+        || prefix == "application/json"
+        || prefix == "application/javascript"
+        || prefix == "application/rss+xml"
+        || prefix == "application/atom+xml"
 }
 
 /// Fetch via headless Chrome. Uses the same shared `BrowserHandle`
@@ -721,6 +753,21 @@ mod tests {
         let input = "line1\n\n\n\n\n\nline2\n\n\nline3";
         let result = clean_markdown(input);
         assert!(!result.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn test_is_text_content_type() {
+        assert!(is_text_content_type(""));
+        assert!(is_text_content_type("text/html"));
+        assert!(is_text_content_type("text/html; charset=utf-8"));
+        assert!(is_text_content_type("text/plain"));
+        assert!(is_text_content_type("application/xhtml+xml"));
+        assert!(is_text_content_type("application/json"));
+        assert!(is_text_content_type("application/xml"));
+        assert!(is_text_content_type("application/rss+xml"));
+        assert!(!is_text_content_type("application/pdf"));
+        assert!(!is_text_content_type("image/png"));
+        assert!(!is_text_content_type("application/octet-stream"));
     }
 
     #[test]
