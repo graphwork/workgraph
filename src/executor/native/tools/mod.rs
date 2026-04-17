@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod bg;
+pub mod chunk_map;
 pub mod deep_research;
 pub mod delegate;
 pub mod file;
@@ -432,6 +433,9 @@ impl ToolRegistry {
 
         // Map (sub-executor per item over a list of inputs)
         map::register_map_tool(&mut registry, workgraph_dir.to_path_buf());
+
+        // chunk_map (split a file/text, then map a sub-agent over each chunk)
+        chunk_map::register_chunk_map_tool(&mut registry, workgraph_dir.to_path_buf());
 
         // Note: what was `survey_file` is now split across two entry points:
         // - `read_file(path, query=...)` — single-shot LLM query, fails loudly

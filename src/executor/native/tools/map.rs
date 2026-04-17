@@ -198,7 +198,11 @@ impl Tool for MapTool {
 
 /// Main map loop. Creates the parent working dir, iterates over inputs,
 /// spawns a mini-executor per item, aggregates results.
-async fn run_map(
+///
+/// Exposed as `pub(crate)` so `chunk_map` (which auto-chunks a file
+/// before fan-out) can delegate here without duplicating the sub-agent
+/// + working-dir machinery.
+pub(crate) async fn run_map(
     workgraph_dir: &Path,
     inputs: &[String],
     task: &str,

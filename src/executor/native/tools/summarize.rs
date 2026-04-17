@@ -200,14 +200,14 @@ impl Tool for SummarizeTool {
 
 /// Estimate how many chars of input fit in one summarization LLM call,
 /// leaving headroom for system prompt, instruction, reasoning, and output.
-fn chunk_size_chars(window_size: usize) -> usize {
+pub(crate) fn chunk_size_chars(window_size: usize) -> usize {
     ((window_size as f64) * CHUNK_CONTEXT_FRACTION * CHARS_PER_TOKEN) as usize
 }
 
 /// Split `text` into chunks of approximately `chunk_chars` bytes each.
 /// Prefers to break on paragraph boundaries (`\n\n`) within the final 20%
 /// of each chunk. Falls back to char-boundary truncation otherwise.
-fn chunk_text(text: &str, chunk_chars: usize) -> Vec<String> {
+pub(crate) fn chunk_text(text: &str, chunk_chars: usize) -> Vec<String> {
     if text.len() <= chunk_chars {
         return vec![text.to_string()];
     }
