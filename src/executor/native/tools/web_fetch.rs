@@ -258,12 +258,16 @@ impl Tool for WebFetchTool {
         }
 
         let response = format!(
-            "web_fetch: {url} → {lines} lines, {bytes} bytes via {path_used} ({ms} ms) \
-             → {path}\n\
+            "SAVED TO: {path}\n\
+             (Full page content is at the path above. The preview below is ONLY the \
+             first {preview_lines} lines — to read the rest, use `read_file`, `bash cat`, \
+             `summarize`, or `reader` on that path.)\n\
              \n\
+             URL:     {url}\n\
              Title:   {title}\n\
+             Size:    {lines} lines, {bytes} bytes (fetched via {path_used} in {ms} ms)\n\
              \n\
-             Preview (first {preview_lines} lines):\n\
+             Preview (first {preview_lines} lines of {lines}):\n\
              ────────────────────────────────────────────────────\n\
              {preview}\
              ────────────────────────────────────────────────────\n",

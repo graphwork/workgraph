@@ -182,10 +182,9 @@ impl Tool for SummarizeTool {
             };
 
         eprintln!(
-            "[summarize] starting: model={}, input_bytes={}, instruction='{}'",
+            "\x1b[2m[summarize] starting: model={}, input_bytes={}\x1b[0m",
             model,
             content.len(),
-            instruction
         );
 
         // 4. Recursive summarize
@@ -270,22 +269,22 @@ pub(crate) fn recursive_summarize<'a>(
 
         // Base case: fits in one call.
         if text.len() <= chunk_chars {
-            eprintln!(
-                "[summarize] depth={}: single call ({} bytes, window={})",
-                depth,
-                text.len(),
-                window_size
-            );
-            return summarize_chunk(provider, text, instruction).await;
+            let started = std::time::Instant::now();
+            let result = summarize_chunk(provider, text, instruction).await;
+            let elapsed = started.elapsed();
+            if let Ok(ref summary) = result {
+                log_summarize_call(depth, text.len(), summary.len(), elapsed);
+            }
+            return result;
         }
 
         // Recursive case: chunk, map, reduce.
         let chunks = chunk_text(text, chunk_chars);
         eprintln!(
-            "[summarize] depth={}: {} chunks from {} bytes (chunk_chars={})",
+            "\x1b[2m[summarize] depth={}: chunking {} bytes into {} parts (chunk_chars={})\x1b[0m",
             depth,
-            chunks.len(),
             text.len(),
+            chunks.len(),
             chunk_chars
         );
 
@@ -298,15 +297,10 @@ pub(crate) fn recursive_summarize<'a>(
                 chunks.len(),
                 instruction
             );
+            let started = std::time::Instant::now();
             let summary = summarize_chunk(provider, chunk, &chunk_instruction).await?;
-            eprintln!(
-                "[summarize] depth={} chunk {}/{}: {} → {} bytes",
-                depth,
-                i + 1,
-                chunks.len(),
-                chunk.len(),
-                summary.len()
-            );
+            let elapsed = started.elapsed();
+            log_summarize_chunk(depth, i + 1, chunks.len(), chunk.len(), summary.len(), elapsed);
             chunk_summaries.push(summary);
         }
 
@@ -321,17 +315,77 @@ pub(crate) fn recursive_summarize<'a>(
                 chunks.len(),
                 instruction
             );
-            return summarize_chunk(provider, &merged, &merge_instruction).await;
+            let started = std::time::Instant::now();
+            let result = summarize_chunk(provider, &merged, &merge_instruction).await;
+            let elapsed = started.elapsed();
+            if let Ok(ref summary) = result {
+                eprintln!(
+                    "\x1b[2m[summarize] depth={} merge: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
+                    depth,
+                    merged.len(),
+                    summary.len(),
+                    elapsed.as_secs_f64(),
+                    throughput_label(summary.len(), elapsed),
+                );
+            }
+            return result;
         }
 
         // Merged summaries still too large — recurse.
         eprintln!(
-            "[summarize] depth={}: merged summaries still too large ({} bytes), recursing",
+            "\x1b[2m[summarize] depth={}: merged summaries still too large ({} bytes), recursing\x1b[0m",
             depth,
             merged.len()
         );
         recursive_summarize(provider, &merged, instruction, depth + 1).await
     })
+}
+
+/// Format a single-shot summarization telemetry line. Dim-styled so the
+/// user can visually tune it out when the agent is working hard but it
+/// stays visible for when they want to check on progress.
+fn log_summarize_call(depth: usize, in_bytes: usize, out_bytes: usize, elapsed: std::time::Duration) {
+    eprintln!(
+        "\x1b[2m[summarize] depth={}: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
+        depth,
+        in_bytes,
+        out_bytes,
+        elapsed.as_secs_f64(),
+        throughput_label(out_bytes, elapsed),
+    );
+}
+
+fn log_summarize_chunk(
+    depth: usize,
+    i: usize,
+    total: usize,
+    in_bytes: usize,
+    out_bytes: usize,
+    elapsed: std::time::Duration,
+) {
+    eprintln!(
+        "\x1b[2m[summarize] depth={} chunk {}/{}: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
+        depth,
+        i,
+        total,
+        in_bytes,
+        out_bytes,
+        elapsed.as_secs_f64(),
+        throughput_label(out_bytes, elapsed),
+    );
+}
+
+/// Convert (output bytes, elapsed) into a compact throughput label.
+/// We show output-tok/s (approx = output_bytes / 4 / seconds) because
+/// that's the metric the user cares about — how fast is the summarizer
+/// producing text? Input is effectively free (prefill).
+fn throughput_label(out_bytes: usize, elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs_f64();
+    if secs < 0.001 {
+        return "instant".to_string();
+    }
+    let tok_per_sec = (out_bytes as f64 / 4.0) / secs;
+    format!("≈{:.0} tok/s out", tok_per_sec)
 }
 
 /// Issue a single summarization LLM call. Text-in/text-out, no tools.
@@ -548,7 +602,7 @@ pub async fn summarize_history_for_compaction(
         .join("\n\n---\n\n");
 
     eprintln!(
-        "[summarize-l3] compacting {} older messages ({} bytes transcript), keeping {} recent",
+        "\x1b[2m[summarize-history] compacting {} older messages ({} bytes transcript), keeping {} recent\x1b[0m",
         older.len(),
         transcript.len(),
         recent.len()
@@ -559,7 +613,7 @@ pub async fn summarize_history_for_compaction(
             Ok(s) => s,
             Err(e) => {
                 eprintln!(
-                    "[summarize-l3] recursive_summarize failed: {} — returning messages unchanged",
+                    "\x1b[33m[summarize-history] recursive_summarize failed: {} — returning messages unchanged\x1b[0m",
                     e
                 );
                 return messages;
@@ -567,12 +621,14 @@ pub async fn summarize_history_for_compaction(
         };
 
     if summary.trim().is_empty() {
-        eprintln!("[summarize-l3] empty summary — returning messages unchanged");
+        eprintln!(
+            "\x1b[33m[summarize-history] empty summary — returning messages unchanged\x1b[0m"
+        );
         return messages;
     }
 
     eprintln!(
-        "[summarize-l3] summary produced: {} bytes (from {} bytes transcript)",
+        "\x1b[2m[summarize-history] summary produced: {} bytes (from {} bytes transcript)\x1b[0m",
         summary.len(),
         transcript.len()
     );
