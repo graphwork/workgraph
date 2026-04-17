@@ -614,16 +614,23 @@ impl AgentLoop {
         let mut session_exit_reason: &'static str = "eof";
 
         // Cancel token drives all interruption signals in this session.
-        // Stage A: cooperative level only (single Ctrl-C). Later stages
-        // add hard-cancel (double Ctrl-C, tree-kill) and inbox-driven
-        // cancel (workgraph IPC). The listener task runs for the life
-        // of the session and is detached — it exits when the process
-        // does. Interactive sessions only: in autonomous mode the
-        // process is supervised externally, not by a local terminal.
+        // Single Ctrl-C → cooperative cancel (let current tool finish).
+        // Double Ctrl-C within DOUBLE_TAP_WINDOW → hard cancel
+        // (SIGKILL subprocess tree, return to prompt now). Interactive
+        // sessions only: in autonomous mode the process is supervised
+        // externally, not by a local terminal.
         let cancel = super::cancel::CancelToken::new();
         if !self.autonomous {
             cancel.clone().spawn_ctrl_c_listener();
         }
+
+        // Inbox collects user inputs delivered between turn boundaries
+        // — from Stage E the TUI composing buffer will feed it, from
+        // Stage F the workgraph IPC will too. Stage B just wires the
+        // drain call so later stages have somewhere to plug producers.
+        // For now the inbox is always empty and `drain()` is cheap.
+        let mut inbox: Box<dyn super::inbox::AgentInbox> =
+            Box::new(super::inbox::InMemoryInbox::new());
 
         // Emit the session-start event as the first line of the log
         // file so the trace has a clear beginning marker.
@@ -937,10 +944,29 @@ impl AgentLoop {
 
         loop {
             // ── Turn boundary ──────────────────────────────────────
-            // Every iteration starts here. This is the single
-            // synchronization point for end-of-turn hooks. Stage A
-            // introduces only the cancel check; later stages add
-            // inbox drain, microcompact, and journal hooks.
+            // Every iteration starts here. The single synchronization
+            // point for end-of-turn hooks. Stage C will add microcompact
+            // here; Stage B wires the cancel + inbox-drain hooks.
+
+            // 1. Hard cancel: SIGKILL the subprocess tree so any bash /
+            //    chrome / curl children from the interrupted tool die
+            //    immediately. Descendants detached with setsid/nohup
+            //    are still reachable via /proc (we respect the Unix
+            //    semantic — genuinely init-reparented processes are
+            //    outside our reach by design).
+            if cancel.take_hard() {
+                let pid = std::process::id();
+                crate::service::kill_descendants(pid);
+                eprintln!(
+                    "\n\x1b[31m[nex] Hard cancel — subprocess tree killed.\x1b[0m"
+                );
+                // Hard implies cooperative — clear both so the next
+                // iteration's checks start fresh.
+                cancel.take_cooperative();
+                continue;
+            }
+
+            // 2. Cooperative cancel: return to prompt, preserve state.
             if cancel.take_cooperative() {
                 eprintln!(
                     "\n\x1b[33m[nex] Cancelled — returning to prompt.\x1b[0m"
@@ -977,6 +1003,25 @@ impl AgentLoop {
                     }
                 }
                 continue;
+            }
+
+            // 3. Drain the inbox. Notes append to the next user turn;
+            //    Interrupts do the same but would have already flipped
+            //    the cooperative flag when pushed — so by the time we
+            //    get here the in-flight work has already aborted. Both
+            //    cases land as user messages in the transcript.
+            let drained = inbox.drain().await;
+            if !drained.is_empty() {
+                let mut content = Vec::with_capacity(drained.len());
+                for input in drained {
+                    content.push(ContentBlock::Text {
+                        text: input.text().to_string(),
+                    });
+                }
+                messages.push(Message {
+                    role: Role::User,
+                    content,
+                });
             }
             // ── end turn boundary ──────────────────────────────────
 

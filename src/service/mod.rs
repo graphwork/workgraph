@@ -208,6 +208,26 @@ pub fn kill_process_force(_pid: u32) -> anyhow::Result<()> {
     anyhow::bail!("Process killing is only supported on Unix systems")
 }
 
+/// SIGKILL every descendant of `root_pid` *without* touching `root_pid`
+/// itself. Use this when the caller IS the root (e.g. a native-executor
+/// session hard-cancelling its own spawned subprocess tree — we want
+/// bash/chrome/curl children dead, but not ourselves).
+///
+/// Processes detached with `setsid` / `nohup` / `disown` are still
+/// descendants in `/proc` terms and will be killed. Genuinely
+/// reparented-to-init processes that the kernel no longer associates
+/// with our pid are outside our reach — that's the standard Unix
+/// semantics we respect (see `docs/design/native-executor-run-loop.md`).
+#[cfg(unix)]
+pub fn kill_descendants(root_pid: u32) {
+    for child in collect_process_descendants(root_pid) {
+        let _ = signal_pid(child, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_descendants(_root_pid: u32) {}
+
 /// Read a process's start time from `/proc/<pid>/stat` as seconds since epoch.
 ///
 /// Returns `None` if the process doesn't exist, `/proc` is unavailable, or

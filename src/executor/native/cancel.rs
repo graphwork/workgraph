@@ -5,9 +5,14 @@
 //! (workgraph IPC in later stages), external commands — and consulted
 //! at every turn boundary and inside every cancellable await.
 //!
-//! Stage A introduces only the `Cooperative` level. Stage B will add
-//! `Hard` for double-Ctrl-C tree-kill semantics; the API is shaped
-//! to accommodate that without churn.
+//! Two levels:
+//!
+//! - **Cooperative**: let the current tool / LLM call finish, then
+//!   return to prompt. Triggered by single Ctrl-C.
+//! - **Hard**: SIGKILL our subprocess tree and return to prompt now.
+//!   Triggered by double Ctrl-C within `DOUBLE_TAP_WINDOW`. Implies
+//!   cooperative too, so consumers that only care about "should I
+//!   stop" can check `is_cooperative()` without missing hard cancels.
 //!
 //! # Typical use
 //!
@@ -40,8 +45,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
+
+/// Window in which a second Ctrl-C counts as a "double tap" that
+/// escalates from cooperative to hard cancel. 500ms matches muscle
+/// memory for terminal users familiar with Claude Code and most
+/// other REPLs that use the same convention.
+pub const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct CancelToken {
@@ -50,6 +62,7 @@ pub struct CancelToken {
 
 struct Inner {
     cooperative: AtomicBool,
+    hard: AtomicBool,
     notify: Notify,
 }
 
@@ -58,6 +71,7 @@ impl CancelToken {
         Self {
             inner: Arc::new(Inner {
                 cooperative: AtomicBool::new(false),
+                hard: AtomicBool::new(false),
                 notify: Notify::new(),
             }),
         }
@@ -70,9 +84,23 @@ impl CancelToken {
         self.inner.notify.notify_waiters();
     }
 
+    /// Request a hard cancel. Also sets the cooperative flag — a hard
+    /// cancel IS a cooperative cancel plus subprocess tree-kill, so
+    /// any code path that only consults `is_cooperative` still stops.
+    pub fn request_hard(&self) {
+        self.inner.hard.store(true, Ordering::SeqCst);
+        self.inner.cooperative.store(true, Ordering::SeqCst);
+        self.inner.notify.notify_waiters();
+    }
+
     /// Is a cooperative cancel currently pending?
     pub fn is_cooperative(&self) -> bool {
         self.inner.cooperative.load(Ordering::SeqCst)
+    }
+
+    /// Is a hard cancel currently pending?
+    pub fn is_hard(&self) -> bool {
+        self.inner.hard.load(Ordering::SeqCst)
     }
 
     /// Atomically check-and-clear the cooperative flag. Returns true
@@ -80,6 +108,14 @@ impl CancelToken {
     /// boundary so subsequent iterations start clean.
     pub fn take_cooperative(&self) -> bool {
         self.inner.cooperative.swap(false, Ordering::SeqCst)
+    }
+
+    /// Atomically check-and-clear the hard flag. Returns true if a
+    /// hard cancel was pending. Separate from the cooperative flag
+    /// so the consumer can decide *when* to perform the tree-kill
+    /// (e.g., after it has pulled together its "interrupted" state).
+    pub fn take_hard(&self) -> bool {
+        self.inner.hard.swap(false, Ordering::SeqCst)
     }
 
     /// Future that resolves when a cooperative cancel is requested.
@@ -105,20 +141,42 @@ impl CancelToken {
     }
 
     /// Spawn a background task that listens for Ctrl-C (SIGINT) for
-    /// the lifetime of this process and flips the cooperative flag
-    /// every time one arrives. Returns immediately; the task detaches.
+    /// the lifetime of this process and maps signals onto the token:
     ///
-    /// Re-arms after each signal so multiple Ctrl-Cs in one session
-    /// are each captured. Drops out silently if the signal handler
-    /// install fails (pre-existing shell that stole SIGINT, test
-    /// harness with its own handler, etc.).
+    /// - First Ctrl-C → cooperative cancel.
+    /// - Second Ctrl-C within `DOUBLE_TAP_WINDOW` → hard cancel.
+    /// - A third Ctrl-C after hard already fired → cooperative again
+    ///   (the run loop is expected to have returned to prompt and
+    ///   reset both flags by then; a stray Ctrl-C just cancels the
+    ///   next iteration's boundary check).
+    /// - After `DOUBLE_TAP_WINDOW` elapses, the tap window resets so
+    ///   slow re-taps don't accidentally escalate.
+    ///
+    /// Re-arms after each signal so any number of Ctrl-Cs in one
+    /// session are each captured. Drops out silently if the signal
+    /// handler install fails (pre-existing shell that stole SIGINT,
+    /// test harness with its own handler, etc.).
     pub fn spawn_ctrl_c_listener(self) {
         tokio::spawn(async move {
+            let mut last_tap: Option<Instant> = None;
             loop {
                 if tokio::signal::ctrl_c().await.is_err() {
                     break;
                 }
-                self.request_cooperative();
+                let now = Instant::now();
+                let is_double_tap = last_tap
+                    .map(|t| now.duration_since(t) <= DOUBLE_TAP_WINDOW)
+                    .unwrap_or(false);
+
+                if is_double_tap && !self.is_hard() {
+                    self.request_hard();
+                    // Consume the tap window so a third rapid Ctrl-C
+                    // doesn't re-fire hard.
+                    last_tap = None;
+                } else {
+                    self.request_cooperative();
+                    last_tap = Some(now);
+                }
             }
         });
     }
@@ -185,5 +243,41 @@ mod tests {
                 .unwrap()
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn hard_implies_cooperative() {
+        let cancel = CancelToken::new();
+        cancel.request_hard();
+        assert!(cancel.is_hard());
+        assert!(
+            cancel.is_cooperative(),
+            "hard cancel must also set cooperative"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_hard_clears_only_hard_flag() {
+        let cancel = CancelToken::new();
+        cancel.request_hard();
+        assert!(cancel.take_hard());
+        assert!(!cancel.is_hard());
+        // Cooperative flag is independent — callers usually take_cooperative
+        // separately at the next boundary.
+        assert!(cancel.is_cooperative());
+        assert!(!cancel.take_hard());
+    }
+
+    #[tokio::test]
+    async fn hard_wakes_cancelled_future() {
+        let cancel = CancelToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { c2.cancelled().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancel.request_hard();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

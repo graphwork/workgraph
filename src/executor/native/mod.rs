@@ -14,6 +14,7 @@ pub mod bundle;
 pub mod cancel;
 pub mod channel;
 pub mod client;
+pub mod inbox;
 pub mod journal;
 pub mod openai_client;
 pub mod provider;
