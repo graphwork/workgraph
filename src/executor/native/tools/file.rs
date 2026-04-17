@@ -254,6 +254,24 @@ impl Tool for ReadFileTool {
             output.push_str("\n[cached read, file unchanged]\n");
         }
 
+        // Loud truncation notice: when the file has more lines than we
+        // just returned, the model needs to know. Point at the escape
+        // hatches (explicit offset+limit, query mode, reader tool) so
+        // the model can escalate rather than silently thinking it saw
+        // everything.
+        let total_lines = lines.len();
+        if end < total_lines {
+            output.push_str(&format!(
+                "\n[TRUNCATED at line {}. File has {} lines total ({} more below). \
+                 To see more: call read_file again with a higher `offset`, pass a `query` \
+                 for an LLM-answered summary of the whole file, or use `reader` for a \
+                 multi-turn survey with a working directory.]\n",
+                end,
+                total_lines,
+                total_lines - end
+            ));
+        }
+
         ToolOutput::success(truncate_for_tool(&output, "read_file"))
     }
 }
