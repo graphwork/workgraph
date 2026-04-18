@@ -2825,6 +2825,83 @@ impl AgentLoop {
         match cmd {
             "/quit" | "/exit" => NexSlashResult::Quit,
 
+            "/sessions" | "/resume" => {
+                // List all registered chat sessions, most-recent
+                // first, with the exec command to resume each. We
+                // don't switch mid-session (would require tearing
+                // down + rebuilding the AgentLoop with a different
+                // journal + message vec, which is a bigger refactor);
+                // this is the "find the thing you want" half. The
+                // user /quits and re-runs with the printed command.
+                let Some(ref wg_dir) = self.workgraph_dir else {
+                    eprintln!(
+                        "\x1b[33m[nex] /{} unavailable: no workgraph dir in scope for this session\x1b[0m",
+                        cmd.trim_start_matches('/')
+                    );
+                    return NexSlashResult::Continue;
+                };
+                match crate::chat_sessions::list(wg_dir) {
+                    Ok(mut sessions) => {
+                        // Sort by journal mtime (most-recent first).
+                        sessions.sort_by(|a, b| {
+                            let a_mt = std::fs::metadata(
+                                crate::chat_sessions::chat_dir_for_uuid(wg_dir, &a.0)
+                                    .join("conversation.jsonl"),
+                            )
+                            .and_then(|m| m.modified())
+                            .ok();
+                            let b_mt = std::fs::metadata(
+                                crate::chat_sessions::chat_dir_for_uuid(wg_dir, &b.0)
+                                    .join("conversation.jsonl"),
+                            )
+                            .and_then(|m| m.modified())
+                            .ok();
+                            b_mt.cmp(&a_mt).then_with(|| b.1.created.cmp(&a.1.created))
+                        });
+                        if sessions.is_empty() {
+                            eprintln!("\x1b[2m[nex] no sessions registered yet\x1b[0m");
+                        } else {
+                            eprintln!(
+                                "\x1b[1m{} session(s) (most recent first):\x1b[0m",
+                                sessions.len()
+                            );
+                            for (uuid, meta) in sessions.iter().take(30) {
+                                let short = &uuid[..std::cmp::min(uuid.len(), 8)];
+                                let kind = format!("{:?}", meta.kind).to_lowercase();
+                                let aliases = if meta.aliases.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" [{}]", meta.aliases.join(", "))
+                                };
+                                let handle = meta
+                                    .aliases
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| uuid.clone());
+                                eprintln!(
+                                    "  \x1b[1;36m{}\x1b[0m {}{}\n    \x1b[2m→ /quit and run: \x1b[0mwg nex --chat {}",
+                                    short, kind, aliases, handle
+                                );
+                            }
+                            if sessions.len() > 30 {
+                                eprintln!(
+                                    "\x1b[2m  ... {} more (use `wg session list` for the full set)\x1b[0m",
+                                    sessions.len() - 30
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "\x1b[31m[nex] /{}: {}\x1b[0m",
+                            cmd.trim_start_matches('/'),
+                            e
+                        );
+                    }
+                }
+                NexSlashResult::Continue
+            }
+
             "/help" | "/?" => {
                 eprintln!(
                     "\x1b[1mNex REPL commands:\x1b[0m\n\
@@ -2843,6 +2920,7 @@ impl AgentLoop {
                      \x1b[1;36m  /cancel <id>\x1b[0m                 — alias for /bg kill <id>\n\
                      \x1b[1;36m  /compact\x1b[0m                      — manually compact context (hard L2)\n\
                      \x1b[1;36m  /status\x1b[0m                       — show agent state (context, tokens, paths)\n\
+                     \x1b[1;36m  /resume, /sessions\x1b[0m            — list all chat sessions with resume hints\n\
                      \n\
                      \x1b[2mCtrl-C during generation cancels the in-flight response.\x1b[0m\n\
                      \x1b[2mCtrl-C at the prompt is a no-op (use /quit or Ctrl-D to exit).\x1b[0m"
