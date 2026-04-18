@@ -501,17 +501,20 @@ impl AgentLoop {
         // The cursor file is the source of truth for "what has this
         // session already processed." If it exists, trust it — any
         // restart (crash or clean) resumes from there. If it doesn't,
-        // this is a fresh session and pre-existing inbox messages
-        // were meant for something else, so skip them.
-        //
-        // The caller's `resume_existing` flag only matters when the
-        // cursor file doesn't exist: it lets an explicit `--resume`
-        // override the seek-to-end on fresh sessions (useful for
-        // tests + manual recovery).
-        let cursor_exists = paths.cursor.exists();
-        if !cursor_exists && !resume_existing {
-            let _ = super::chat_surface::seek_inbox_to_end(&workgraph_dir, &session_ref, &paths);
-        }
+        // this is a brand-new session and we process the whole
+        // inbox from the start (cursor=0). That was NOT the
+        // original behavior — it used to `seek_inbox_to_end` on
+        // fresh sessions to skip pre-existing queue — but that
+        // dropped the user's first message in the common
+        // TUI-coordinator race: the TUI writes "hello" to the
+        // inbox at time T, the daemon spawns the coordinator
+        // subprocess at T+dt, the subprocess seeks past the
+        // "hello" and doesn't see it until 60s later when the
+        // heartbeat fires. The fresh-session-seek-to-end was the
+        // wrong side of that trade-off. Keep the `resume_existing`
+        // parameter in the signature for now for API stability;
+        // `ignored` here documents it's no-op for a fresh cursor.
+        let _ignored_resume_existing = resume_existing;
         match super::chat_surface::ChatInboxReader::new(
             workgraph_dir.clone(),
             session_ref.clone(),

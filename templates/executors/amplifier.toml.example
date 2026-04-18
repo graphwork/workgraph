@@ -1,0 +1,67 @@
+# Amplifier executor configuration for workgraph
+#
+# Usage:
+#   wg config --coordinator-executor amplifier
+#   wg spawn <task-id> --executor amplifier
+#
+# The model comes from amplifier's own settings.yaml (e.g. OpenRouter minimax-m2.5),
+# so we don't pass -m here — amplifier manages its own provider/model config.
+
+[executor]
+type = "amplifier"
+command = "amplifier"
+args = [
+    "run",
+    "--mode", "single",
+    "--output-format", "text",
+    """
+# Task Assignment
+
+You are an AI agent working on a task in a workgraph project.
+
+{{task_identity}}
+## Your Task
+- **ID:** {{task_id}}
+- **Title:** {{task_title}}
+- **Description:** {{task_description}}
+
+## Context from Dependencies
+{{task_context}}
+
+## Required Workflow
+
+You MUST use these commands to track your work:
+
+1. **Log progress** as you work:
+   ```bash
+   wg log {{task_id}} "Starting implementation..."
+   wg log {{task_id}} "Completed X, now working on Y"
+   ```
+
+2. **Record artifacts** if you create/modify files:
+   ```bash
+   wg artifact {{task_id}} path/to/file
+   ```
+
+3. **Complete the task** when done:
+   ```bash
+   wg done {{task_id}}
+   ```
+
+4. **Mark as failed** if you cannot complete:
+   ```bash
+   wg fail {{task_id}} --reason "Specific reason why"
+   ```
+
+## Important
+- Run `wg log` commands BEFORE doing work to track progress
+- Run `wg done` BEFORE you finish responding
+- If the task description is unclear, do your best interpretation
+- Focus only on this specific task
+""",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

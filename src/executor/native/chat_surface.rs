@@ -34,12 +34,12 @@
 //!   `chat/<ref>/session-summary.md`
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// One user turn, flattened from `crate::chat::ChatMessage` into what
 /// the agent loop actually needs: the request_id (for correlating the
@@ -101,9 +101,11 @@ pub struct ChatInboxReader {
     /// `None` means inotify init failed — readers fall back to pure
     /// polling.
     _watcher: Option<RecommendedWatcher>,
-    /// Channel that the watcher pushes events into; `next_entry`
-    /// drains it between polls.
-    events_rx: Option<Receiver<notify::Result<Event>>>,
+    /// Tokio async channel that the watcher pushes events into.
+    /// Wrapped in a `Mutex` because `next_entry` takes `&self` (the
+    /// reader is shared through the agent loop); only one coroutine
+    /// ever waits on it at a time in practice.
+    events_rx: Option<Arc<tokio::sync::Mutex<UnboundedReceiver<notify::Result<Event>>>>>,
 }
 
 impl ChatInboxReader {
@@ -116,13 +118,21 @@ impl ChatInboxReader {
         // writes where the target path is replaced, which some tools
         // (including `crate::chat::append_message`) do under the hood.
         // If the watcher can't be created, degrade to pure polling.
-        let (tx, rx) = channel();
+        //
+        // We bridge the `notify` crate's synchronous callback into a
+        // tokio unbounded channel, so `wait_for_change` can actually
+        // `await` on new events and wake sub-millisecond rather than
+        // falling back to a 250ms poll.
+        let (tx, rx): (
+            UnboundedSender<notify::Result<Event>>,
+            UnboundedReceiver<notify::Result<Event>>,
+        ) = unbounded_channel();
         let watcher_result = notify::recommended_watcher(move |event| {
             let _ = tx.send(event);
         })
         .and_then(|mut w| w.watch(&paths.dir, RecursiveMode::NonRecursive).map(|_| w));
         let (watcher, events_rx) = match watcher_result {
-            Ok(w) => (Some(w), Some(rx)),
+            Ok(w) => (Some(w), Some(Arc::new(tokio::sync::Mutex::new(rx)))),
             Err(e) => {
                 eprintln!(
                     "\x1b[33m[chat-inbox] inotify setup failed for {:?}: {} — falling back to polling\x1b[0m",
@@ -170,52 +180,25 @@ impl ChatInboxReader {
     }
 
     /// Wait for either:
-    /// - an inotify event to arrive (sub-ms), or
+    /// - an inotify event to arrive on the chat dir (sub-ms), or
     /// - `poll_interval` to elapse as a safety-net poll.
+    ///
+    /// With the tokio-channel bridge, `recv().await` genuinely
+    /// awaits the next event — we don't busy-poll, and an inbox
+    /// write wakes us within the kernel's scheduling quantum.
+    /// The timeout is the floor for the rare case where inotify
+    /// silently drops an event.
     async fn wait_for_change(&self, poll_interval: Duration) {
-        // Drain any already-queued events (they indicate the file
-        // changed since our last `try_next_entry`; return immediately
-        // so the caller re-reads).
-        if let Some(rx) = self.events_rx.as_ref() {
-            if let Ok(ev) = rx.try_recv() {
-                // Any mutation on the chat dir is a signal. We don't
-                // filter because:
-                //   - `create`: new inbox file
-                //   - `modify`: append to inbox
-                //   - `remove`: unlikely but could happen on rotation
-                //   - `any`: catch-all
-                let _ = ev;
-                // Drain rest to avoid busy-loop on a burst.
-                while rx.try_recv().is_ok() {}
-                return;
-            }
-            // No queued events — block on recv with a timeout.
-            let rx_cloned = rx as *const _;
-            // Need to move off the borrow so we can await. Use
-            // blocking channel recv inside spawn_blocking with a
-            // timeout, or just sleep(poll_interval) and re-check on
-            // next loop. The simpler path: sleep, then drain on
-            // next iteration.
-            //
-            // A proper async-bridged select would require wrapping
-            // the std::sync::mpsc channel, which notify's Watcher
-            // can't trivially do. The current shape (short sleep,
-            // re-check events on next poll) gives us inotify's
-            // latency benefit for the *common* case (events arriving
-            // while we're reading), and caps latency at
-            // `poll_interval` for the rare case where an event
-            // sneaks in during the sleep.
-            //
-            // Silence the unused raw pointer warning — it's a
-            // pedagogical note only.
-            let _ = rx_cloned;
-        }
-        tokio::time::sleep(poll_interval).await;
-        // After the sleep, drain any events that arrived so the
-        // next try_next_entry runs without stale state.
-        if let Some(rx) = self.events_rx.as_ref() {
-            while rx.try_recv().is_ok() {}
-        }
+        let Some(rx) = self.events_rx.as_ref() else {
+            // No watcher — pure polling fallback.
+            tokio::time::sleep(poll_interval).await;
+            return;
+        };
+        let mut guard = rx.lock().await;
+        let _ = tokio::time::timeout(poll_interval, guard.recv()).await;
+        // Drain any extra burst events so the next try_next_entry
+        // runs without a backlog of stale signals.
+        while guard.try_recv().is_ok() {}
     }
 
     /// Non-blocking read. Returns Ok(None) if no new entries, Ok(Some)

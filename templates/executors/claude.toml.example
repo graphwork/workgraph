@@ -1,0 +1,27 @@
+# Claude CLI executor — uses `claude --print` with your Claude Code
+# subscription for billing.
+#
+# This file is an EXAMPLE. The defaults in `ExecutorRegistry` match
+# these settings, so you only need to drop this in at
+# `.workgraph/executors/claude.toml` (strip the `.example` suffix)
+# if you want to override behavior — e.g. pass additional flags,
+# set environment variables, or customize the prompt template.
+#
+# Usage:
+#   wg config --coordinator-executor claude
+#   wg spawn <task-id> --executor claude
+
+[executor]
+type = "claude"
+command = "claude"
+args = [
+    "--print",
+    "--verbose",
+    "--permission-mode", "bypassPermissions",
+    "--output-format", "stream-json",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

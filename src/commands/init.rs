@@ -58,6 +58,36 @@ pub fn run(dir: &Path, no_agency: bool) -> Result<()> {
     let gitignore_path = dir.join(".gitignore");
     fs::write(&gitignore_path, GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
 
+    // Seed `<dir>/executors/` with example configs for the common
+    // external-executor backends. The TOMLs mirror the built-in
+    // defaults in `ExecutorRegistry::default_config`, so they act as
+    // documentation-by-example: users copy the `.example` off to
+    // override a specific flag, env var, or timeout without having
+    // to reconstruct the whole config from scratch.
+    //
+    // Templates are bundled into the binary via `include_str!` so
+    // `wg init` works regardless of where the binary is run from —
+    // no dependency on the source tree being present.
+    let executors_dir = dir.join("executors");
+    fs::create_dir_all(&executors_dir).context("Failed to create executors directory")?;
+    for (name, contents) in [
+        (
+            "claude.toml.example",
+            include_str!("../../templates/executors/claude.toml.example"),
+        ),
+        (
+            "codex.toml.example",
+            include_str!("../../templates/executors/codex.toml.example"),
+        ),
+        (
+            "amplifier.toml.example",
+            include_str!("../../templates/executors/amplifier.toml.example"),
+        ),
+    ] {
+        fs::write(executors_dir.join(name), contents)
+            .with_context(|| format!("Failed to write executor template {}", name))?;
+    }
+
     println!("Initialized workgraph at {}", dir.display());
 
     // Full agency initialization: roles, tradeoffs, default agents, config

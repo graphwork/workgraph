@@ -1,0 +1,23 @@
+# Codex CLI executor — uses `codex exec` (OpenAI Codex).
+#
+# Drop this in at `.workgraph/executors/codex.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# Usage:
+#   wg config --coordinator-executor codex
+#   wg spawn <task-id> --executor codex
+
+[executor]
+type = "codex"
+command = "codex"
+args = [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "--dangerously-bypass-approvals-and-sandbox",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"
