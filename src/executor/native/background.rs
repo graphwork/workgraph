@@ -293,20 +293,70 @@ impl JobStore {
 
     /// Kill a job by sending SIGTERM, then SIGKILL if needed.
     pub async fn kill(&mut self, id_or_name: &str) -> Result<()> {
-        // Get job ID first (clone it to avoid borrow issues)
+        // Get job ID first (clone it to avoid borrow issues).
+        // On not-found, include the list of known IDs so the agent
+        // can retry with a valid one (small models routinely make up
+        // friendly-looking names like "my-build" instead of the
+        // auto-generated `jo...` IDs).
         let job_id = {
-            let job = self
-                .get(id_or_name)
-                .ok_or_else(|| anyhow!("Job not found: {}", id_or_name))?;
+            let job = self.get(id_or_name).ok_or_else(|| {
+                let known: Vec<String> =
+                    self.jobs.keys().take(10).cloned().collect();
+                let hint = if known.is_empty() {
+                    " (no jobs registered; call bg(action:'list') or start one with bg(action:'run'))".to_string()
+                } else {
+                    format!(" (known job ids: {})", known.join(", "))
+                };
+                anyhow!("Job not found: '{}'{}", id_or_name, hint)
+            })?;
             job.pid.context("Job has no PID")?;
             job.id.clone()
         };
 
         let pid = self.jobs.get(&job_id).unwrap().pid.unwrap();
 
+        // If the process is already gone, the job has exited between
+        // the time the agent checked status and now. Treat as a
+        // successful kill — the end state is the same (process gone)
+        // and the agent's intent was to stop it. Mark the job record
+        // so subsequent status calls reflect reality.
+        if !process_exists(pid) {
+            if let Some(job) = self.jobs.get_mut(&job_id) {
+                if job.status == JobStatus::Running {
+                    // Race with natural exit: infer status from exit code.
+                    // Non-zero or missing code = Failed; zero = Completed.
+                    let code = get_exit_code(pid);
+                    job.status = match code {
+                        Some(0) => JobStatus::Completed,
+                        _ => JobStatus::Failed,
+                    };
+                    job.exit_code = code;
+                }
+            }
+            return Ok(());
+        }
+
         // Send SIGTERM
         if let Err(e) = kill_process(pid, false) {
-            return Err(anyhow!("Failed to send SIGTERM: {}", e));
+            // ESRCH = "No such process" — a race with natural exit.
+            // Treat as success (see above).
+            let msg = format!("{}", e);
+            if msg.contains("No such process") || msg.contains("ESRCH") {
+                if let Some(job) = self.jobs.get_mut(&job_id)
+                    && job.status == JobStatus::Running
+                {
+                    // Race with natural exit: infer status from exit code.
+                    // Non-zero or missing code = Failed; zero = Completed.
+                    let code = get_exit_code(pid);
+                    job.status = match code {
+                        Some(0) => JobStatus::Completed,
+                        _ => JobStatus::Failed,
+                    };
+                    job.exit_code = code;
+                }
+                return Ok(());
+            }
+            return Err(anyhow!("Failed to send SIGTERM to PID {}: {}", pid, e));
         }
 
         // Wait for graceful shutdown with timeout
@@ -387,18 +437,38 @@ impl JobStore {
 
     /// Get output from a job's log file.
     pub fn output(&self, id_or_name: &str, lines: Option<usize>) -> Result<String> {
-        let job = self
-            .get(id_or_name)
-            .ok_or_else(|| anyhow!("Job not found: {}", id_or_name))?;
+        let job = self.get(id_or_name).ok_or_else(|| {
+            let known: Vec<String> = self.jobs.keys().take(10).cloned().collect();
+            let hint = if known.is_empty() {
+                " (no jobs registered)".to_string()
+            } else {
+                format!(" (known job ids: {})", known.join(", "))
+            };
+            anyhow!("Job not found: '{}'{}", id_or_name, hint)
+        })?;
 
         if !job.log_path.exists() {
-            return Ok(String::new());
+            // Log file not created yet. Empty string alone misleads the
+            // agent into thinking the job actually produced nothing;
+            // be explicit about the "not yet" case.
+            return Ok(format!(
+                "(no output yet — job '{}' is {:?}; log file not yet created at {})",
+                job.id,
+                job.status,
+                job.log_path.display()
+            ));
         }
 
         let file = File::open(&job.log_path)?;
         let reader = BufReader::new(file);
 
         let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+        if all_lines.is_empty() {
+            return Ok(format!(
+                "(log file exists but is empty — job '{}' is {:?}; check back in a moment if it's still Running)",
+                job.id, job.status
+            ));
+        }
         let count = lines.unwrap_or(all_lines.len());
 
         if count >= all_lines.len() {
