@@ -2155,9 +2155,10 @@ impl AgentLoop {
                     let pre_tokens = self.context_budget.effective_tokens(&messages);
                     let pre_count = messages.len();
 
-                    messages = super::tools::summarize::summarize_history_for_compaction(
+                    messages = super::tools::summarize::summarize_history_for_compaction_cancellable(
                         self.client.as_ref(),
                         messages,
+                        Some(cancel.clone()),
                     )
                     .await;
 

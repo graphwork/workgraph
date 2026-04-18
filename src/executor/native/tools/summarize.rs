@@ -255,7 +255,29 @@ pub(crate) fn recursive_summarize<'a>(
     instruction: &'a str,
     depth: usize,
 ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+    recursive_summarize_cancellable(provider, text, instruction, depth, None)
+}
+
+/// Cancellable variant: a clone of the outer agent loop's `CancelToken`
+/// can be threaded in. Between each chunk (and before starting the
+/// whole call), we check `cancel.is_cooperative()` and bail with an
+/// error if the user has hit Ctrl-C. This stops wasted work after the
+/// current chunk completes, without needing to plumb cancellation
+/// into every individual `provider.send()` call. If the outer cancel
+/// is `None`, behavior is identical to the non-cancellable variant.
+pub(crate) fn recursive_summarize_cancellable<'a>(
+    provider: &'a dyn Provider,
+    text: &'a str,
+    instruction: &'a str,
+    depth: usize,
+    cancel: Option<crate::executor::native::cancel::CancelToken>,
+) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
     Box::pin(async move {
+        if let Some(ref c) = cancel
+            && c.is_cooperative()
+        {
+            return Err("summarize cancelled by user".to_string());
+        }
         if depth >= MAX_RECURSION_DEPTH {
             return Err(format!(
                 "Max recursion depth ({}) exceeded — summaries are not shrinking. \
@@ -288,9 +310,20 @@ pub(crate) fn recursive_summarize<'a>(
             chunk_chars
         );
 
-        // Map: summarize each chunk independently.
+        // Map: summarize each chunk independently. Check cancel
+        // between chunks so a Ctrl-C bails out after at most the
+        // currently-in-flight chunk completes.
         let mut chunk_summaries = Vec::with_capacity(chunks.len());
         for (i, chunk) in chunks.iter().enumerate() {
+            if let Some(ref c) = cancel
+                && c.is_cooperative()
+            {
+                return Err(format!(
+                    "summarize cancelled by user after chunk {}/{}",
+                    i,
+                    chunks.len()
+                ));
+            }
             let chunk_instruction = format!(
                 "This is part {} of {} of a larger document. {}",
                 i + 1,
@@ -337,7 +370,7 @@ pub(crate) fn recursive_summarize<'a>(
             depth,
             merged.len()
         );
-        recursive_summarize(provider, &merged, instruction, depth + 1).await
+        recursive_summarize_cancellable(provider, &merged, instruction, depth + 1, cancel).await
     })
 }
 
@@ -608,6 +641,19 @@ pub async fn summarize_history_for_compaction(
     provider: &dyn Provider,
     messages: Vec<Message>,
 ) -> Vec<Message> {
+    summarize_history_for_compaction_cancellable(provider, messages, None).await
+}
+
+/// Cancellable variant. See `recursive_summarize_cancellable`. Passes
+/// the optional `CancelToken` down into the inner summarize chain
+/// so a Ctrl-C during compaction aborts it after the currently-in-
+/// flight chunk instead of waiting for the whole history summary to
+/// complete.
+pub async fn summarize_history_for_compaction_cancellable(
+    provider: &dyn Provider,
+    messages: Vec<Message>,
+    cancel: Option<crate::executor::native::cancel::CancelToken>,
+) -> Vec<Message> {
     if messages.len() <= L3_KEEP_RECENT_MESSAGES + 1 {
         // Not enough history to bother summarizing — the standard
         // compact already handles small vecs.
@@ -631,17 +677,24 @@ pub async fn summarize_history_for_compaction(
         recent.len()
     );
 
-    let summary =
-        match recursive_summarize(provider, &transcript, HISTORY_SUMMARY_INSTRUCTION, 0).await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "\x1b[33m[summarize-history] recursive_summarize failed: {} — returning messages unchanged\x1b[0m",
-                    e
-                );
-                return messages;
-            }
-        };
+    let summary = match recursive_summarize_cancellable(
+        provider,
+        &transcript,
+        HISTORY_SUMMARY_INSTRUCTION,
+        0,
+        cancel,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "\x1b[33m[summarize-history] recursive_summarize failed: {} — returning messages unchanged\x1b[0m",
+                e
+            );
+            return messages;
+        }
+    };
 
     if summary.trim().is_empty() {
         eprintln!(
