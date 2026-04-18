@@ -168,7 +168,38 @@ New wg tools the coordinator LLM calls to manage the graph:
 
 These wrap existing functionality. Tests: each tool in isolation.
 
-### Phase 3: coordinator-as-nex prototype
+### Phase 3: coordinator-as-nex prototype — **shipped 2026-04-18**
+
+The I/O surface is done: `wg nex --chat-id N [--role coordinator] [--resume]`
+now reads user turns from `.workgraph/chat/N/inbox.jsonl`, streams
+tokens to `.workgraph/chat/N/.streaming`, and appends finalized
+replies to `.workgraph/chat/N/outbox.jsonl` — same paths, same
+`ChatMessage` format, same streaming dotfile that the TUI already
+tails. Journal is pinned to `.workgraph/chat/N/conversation.jsonl`
+so `--resume` picks up the right session deterministically.
+
+See `src/executor/native/chat_surface.rs` (adapter over `crate::chat`)
+and the `with_chat_id` builder on `AgentLoop`. Smoke-tested against
+qwen3-coder-30b on lambda01: seeded `{"content":"Respond with
+exactly: ACK-SMOKE"}` into the inbox, nex produced the expected
+outbox entry within seconds.
+
+Still open in this phase:
+
+- The TUI / `wg service start` spawn path still runs the legacy
+  `native_coordinator_loop` directly in-process. The swap —
+  `Command::new("wg").args(["nex", "--chat-id", N, "--role",
+  "coordinator", "--resume"])` — is ready on the producing side
+  but needs the `send_message` and `route_chat_to_agent` paths
+  refactored to write to the inbox instead of the mpsc channel
+  (the subprocess reads the inbox directly via `.nex-cursor`,
+  bypassing the channel).
+- Coordinate `.coordinator-cursor` (daemon-side) and `.nex-cursor`
+  (agent-side) so messages aren't double-consumed or missed on
+  crash recovery.
+- Full integration test spawning the actual `wg` binary.
+
+(Original plan below, kept for history:)
 
 Add `wg nex --detach` that forks, sets up file inbox, runs
 `run_interactive` with `--role coordinator` + a coordinator-specific
