@@ -69,12 +69,15 @@ pub fn run(
     // against component names in .workgraph/agency/primitives/components/.
     let role_prompt_addendum = if let Some(role_name) = role {
         if is_coordinator {
-            Some(
-                "You are operating as a workgraph coordinator. Your tools include \
-                 wg_add, wg_done, wg_log, wg_list, wg_show, and related graph operations. \
-                 You dispatch work rather than doing it directly."
-                    .to_string(),
-            )
+            // Compose the full coordinator system prompt from the
+            // project's `agency/coordinator-prompt/*.md` files, with
+            // a built-in fallback for projects that haven't
+            // customized. This is the same prompt the daemon used
+            // to hand to the Claude CLI, now shared between every
+            // coordinator invocation.
+            Some(workgraph::coordinator_prompt::build_system_prompt(
+                workgraph_dir,
+            ))
         } else {
             match load_agency_role(workgraph_dir, role_name) {
                 Some(content) => {

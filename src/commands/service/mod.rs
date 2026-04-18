@@ -1221,7 +1221,7 @@ fn route_chat_to_agent(
     dir: &Path,
     coordinator_id: u32,
     agent: &coordinator_agent::CoordinatorAgent,
-    logger: &DaemonLogger,
+    _logger: &DaemonLogger,
 ) -> Result<usize> {
     let chat_dir = dir.join("chat").join(coordinator_id.to_string());
     if !chat_dir.exists() {
@@ -1236,30 +1236,13 @@ fn route_chat_to_agent(
     }
 
     let count = new_messages.len();
-    let use_subprocess = agent.uses_subprocess();
+    // Every coordinator is now subprocess-backed; it reads the inbox
+    // directly. Calling `agent.send_message` would double-append —
+    // the message is already in `chat/coordinator-N/inbox.jsonl`. All
+    // this function does now is bookkeeping: forward each message to
+    // the user-board and advance the daemon's `.coordinator-cursor`.
+    let _ = agent;
     for msg in &new_messages {
-        // Subprocess-backed coordinators read the inbox directly — the
-        // message is already there (the TUI or whoever appended it did
-        // so before we got here). Re-sending via send_message would
-        // double-append. Skip that path; still do the user-board
-        // forwarding below.
-        if !use_subprocess
-            && let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone())
-        {
-            logger.error(&format!(
-                "Failed to send chat message to coordinator agent {}: {}",
-                coordinator_id, e
-            ));
-            // Write an error response so the user isn't left hanging
-            let _ = workgraph::chat::append_outbox_for(
-                dir,
-                coordinator_id,
-                "The coordinator agent is not available. Please try again.",
-                &msg.request_id,
-            );
-        }
-
-        // Forward the chat message to the user board
         coordinator::forward_chat_to_user_board(dir, &msg.content, coordinator_id);
     }
 
