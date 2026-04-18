@@ -64,11 +64,37 @@ const MAX_CHUNK_CHARS: usize = 40_000;
 /// Minimum chunk — below this the per-turn overhead dominates.
 const MIN_CHUNK_CHARS: usize = 512;
 
-/// Default max conversation turns. One turn = one LLM call.
-const DEFAULT_MAX_TURNS: usize = 50;
+/// Floor on auto-sized max_turns: even tiny files need room for
+/// the initial read, a note, and a finalize.
+const MIN_AUTO_TURNS: usize = 10;
 
 /// Hard cap on max_turns — prevents runaway cost.
 const MAX_ALLOWED_TURNS: usize = 200;
+
+/// Compute a reasonable `max_turns` for a reader run given the
+/// total size of the input file.
+///
+/// Model: the sub-agent reads the file in `DEFAULT_CHUNK_CHARS`-sized
+/// chunks, keeping notes along the way. A rough cost model is:
+///
+///   turns ≈ ceil(content_len / DEFAULT_CHUNK_CHARS) * (1 + overhead)
+///
+/// where `overhead` covers the per-chunk note-taking turn(s) and
+/// the final synthesis. We use `1.3` (30%) which matches what
+/// in-practice reader runs burn.
+///
+/// Clamped to `[MIN_AUTO_TURNS, MAX_ALLOWED_TURNS]` so small files
+/// get enough turns to complete and huge files don't trigger
+/// runaway cost.
+pub(crate) fn auto_size_max_turns(content_len: usize) -> usize {
+    if content_len == 0 {
+        return MIN_AUTO_TURNS;
+    }
+    let chunks = content_len.div_ceil(DEFAULT_CHUNK_CHARS);
+    // 1 turn per chunk read + ~30% for synthesis/notes.
+    let est = ((chunks as f64) * 1.3).ceil() as usize;
+    est.clamp(MIN_AUTO_TURNS, MAX_ALLOWED_TURNS)
+}
 
 /// Cap on the size of any note file. Prevents a runaway agent from
 /// filling the disk. A 1 MB note is bigger than most books' main text.
@@ -206,11 +232,23 @@ impl Tool for ReaderTool {
             Some(t) if !t.trim().is_empty() => t.trim().to_string(),
             _ => return ToolOutput::error("Missing or empty parameter: task".to_string()),
         };
-        let max_turns = input
-            .get("max_turns")
-            .and_then(|v| v.as_u64())
-            .map(|n| (n as usize).clamp(1, MAX_ALLOWED_TURNS))
-            .unwrap_or(DEFAULT_MAX_TURNS);
+        // Resolve max_turns. Explicit caller value wins. Otherwise
+        // size it to the content: enough turns to read the file in
+        // `DEFAULT_CHUNK_CHARS`-sized bites plus a ~30% synthesis
+        // overhead for note-taking + finalization, with a floor of
+        // 10 (so small files aren't starved) and a hard ceiling of
+        // MAX_ALLOWED_TURNS (200). The old fixed 50 was both too
+        // many for 5kb files (wastes LLM budget) and too few for
+        // 500kb files (fails before synthesis).
+        let max_turns = match input.get("max_turns").and_then(|v| v.as_u64()) {
+            Some(n) => (n as usize).clamp(1, MAX_ALLOWED_TURNS),
+            None => {
+                let content_len = std::fs::metadata(&path)
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0);
+                auto_size_max_turns(content_len)
+            }
+        };
 
         match run_reader(&self.workgraph_dir, &path, &task, max_turns).await {
             Ok(result) => ToolOutput::success(result),
@@ -1118,6 +1156,43 @@ fn truncate(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_size_scales_with_content() {
+        // Tiny file: floor clamp fires.
+        assert_eq!(auto_size_max_turns(0), MIN_AUTO_TURNS);
+        assert_eq!(auto_size_max_turns(500), MIN_AUTO_TURNS);
+
+        // 20kb file (~3 chunks of 8k): 3 * 1.3 = 3.9 → 4, but
+        // floor is 10, so we get 10.
+        assert_eq!(auto_size_max_turns(20_000), MIN_AUTO_TURNS);
+
+        // 100kb file: 100_000 / 8_000 = 13 chunks; 13 * 1.3 = 16.9
+        // → 17. Above the floor, under the ceiling.
+        assert_eq!(auto_size_max_turns(100_000), 17);
+
+        // 1MB file: 128 chunks * 1.3 = 166.4 → 167.
+        assert_eq!(auto_size_max_turns(1_024_000), 167);
+
+        // Huge file (5MB): would compute >600 but ceiling clamps.
+        assert_eq!(auto_size_max_turns(5_000_000), MAX_ALLOWED_TURNS);
+    }
+
+    #[test]
+    fn auto_size_matches_docstring_examples() {
+        // From the design discussion: a 17kb file should fit 1-2
+        // chunks and need a handful of turns — floor applies.
+        assert_eq!(auto_size_max_turns(17_000), MIN_AUTO_TURNS);
+
+        // A 500kb file should need roughly 80-90 turns (63 chunks
+        // * 1.3 ≈ 82). Well below the 200 ceiling.
+        let big = auto_size_max_turns(500_000);
+        assert!(
+            (75..=95).contains(&big),
+            "500kb auto-size {} should be in 75..=95",
+            big
+        );
+    }
 
     fn fresh_state(text: &str, dir: &Path) -> ReaderStateRef {
         Arc::new(Mutex::new(ReaderState {

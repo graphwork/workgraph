@@ -2809,7 +2809,7 @@ fn main() -> Result<()> {
             chatty,
             verbose,
             read_only,
-            resume,
+            resume.as_deref(),
             role.as_deref(),
             chat_id,
             chat_ref.as_deref(),

@@ -25,7 +25,7 @@ pub fn run(
     chatty: bool,
     verbose: bool,
     read_only: bool,
-    resume: bool,
+    resume: Option<&str>,
     role: Option<&str>,
     chat_id: Option<u32>,
     chat_ref: Option<&str>,
@@ -172,22 +172,22 @@ pub fn run(
 
     // Every nex session — CLI, coordinator, task-agent — lives under
     // `<workgraph>/chat/<ref>/`. Pick the reference:
-    //   1. Explicit `--chat <ref>` wins.
-    //   2. Else legacy `--chat-id N` (resolves through the numeric
-    //      alias symlink, for back-compat with daemons/tests that
-    //      still pass the old flag).
-    //   3. Else a tty-derived default so running `wg nex` in the
-    //      same terminal auto-resumes without needing a flag.
+    //   1. `--chat <ref>`  — explicit, wins over everything else.
+    //   2. `--chat-id N`   — legacy numeric id, same effect.
+    //   3. `--resume`      — interactive picker (no arg) or pattern
+    //                        match (with arg), resolves to an
+    //                        existing session's alias.
+    //   4. None of the above — fresh session with a new UUID.
     //
-    // Whatever we pick, if the session isn't in the registry yet,
-    // we register it here with `ensure_session` so future `wg chat
-    // list` sees it and the alias symlink is wired up.
+    // Bare `wg nex` (no flags) no longer auto-resumes a tty-
+    // derived session. That was confusing (recycled ptys could
+    // resurrect stranger conversations) and the failure mode
+    // wasn't what users expected. `--resume` is now the explicit
+    // opt-in.
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let session_ref: String = if let Some(r) = chat_ref {
         r.to_string()
     } else if let Some(n) = chat_id {
-        // Legacy numeric id — migrate old `chat/N/` real dir to a
-        // UUID-named dir under the `coordinator-N` alias if needed.
         let _ = workgraph::chat_sessions::migrate_numeric_coord_dir(workgraph_dir, n);
         let _ = workgraph::chat_sessions::ensure_session(
             workgraph_dir,
@@ -196,17 +196,24 @@ pub fn run(
             Some(format!("coordinator {}", n)),
         );
         n.to_string()
+    } else if let Some(pattern) = resume {
+        // `--resume` with optional pattern. Empty pattern → picker.
+        // Non-empty → substring match on alias/uuid/kind, pick the
+        // most-recent matching session.
+        match pick_resume_session(workgraph_dir, pattern) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("\x1b[33m[wg nex] --resume: {}\x1b[0m", e);
+                eprintln!(
+                    "\x1b[2m  Starting a fresh session instead. Use `wg session list` to see what's available.\x1b[0m"
+                );
+                fresh_session(workgraph_dir, &stamp)?
+            }
+        }
     } else {
-        // Interactive CLI. Sticky alias per tty so `wg nex` + Ctrl-C
-        // + `wg nex` reattaches to the same session.
-        let alias = default_interactive_alias(&stamp);
-        let _ = workgraph::chat_sessions::ensure_session(
-            workgraph_dir,
-            &alias,
-            workgraph::chat_sessions::SessionKind::Interactive,
-            Some(format!("interactive {}", alias)),
-        );
-        alias
+        // Fresh session. Every bare `wg nex` invocation gets a new
+        // UUID and a new journal.
+        fresh_session(workgraph_dir, &stamp)?
     };
 
     let chat_dir = workgraph_dir.join("chat").join(&session_ref);
@@ -214,31 +221,15 @@ pub fn run(
     let journal_path = chat_dir.join("conversation.jsonl");
     let output_log = chat_dir.join("trace.ndjson");
 
-    // Resume semantics: auto-resume if the journal already exists.
-    // Explicit `--resume` means "require that resume succeed" — if
-    // the journal is missing, warn (but still proceed fresh so the
-    // caller isn't wedged).
+    // Resume is enabled iff the chosen session has a journal.
+    // With the new semantics, this is always true for `--resume` /
+    // `--chat <ref>` pointing at a real session, and always false
+    // for fresh sessions. No magic auto-resume.
     let journal_exists = journal_path.exists();
-    let resume_enabled = if resume {
-        if !journal_exists {
-            eprintln!(
-                "\x1b[33m[wg nex] --resume: no journal at {} — starting fresh\x1b[0m",
-                journal_path.display()
-            );
-        }
-        journal_exists
-    } else {
-        // Default: auto-resume when possible — the low-friction
-        // model the user asked for. No journal = first run of this
-        // session_ref, start fresh.
-        if journal_exists {
-            eprintln!(
-                "\x1b[1;33m[wg nex] auto-resuming session {} (journal exists)\x1b[0m",
-                session_ref
-            );
-        }
-        journal_exists
-    };
+    let resume_enabled = journal_exists;
+    if resume_enabled {
+        eprintln!("\x1b[1;33m[wg nex] resuming session {}\x1b[0m", session_ref);
+    }
 
     if verbose {
         eprintln!(
@@ -356,15 +347,131 @@ pub fn run(
     Ok(())
 }
 
-/// Derive a stable per-terminal alias for interactive `wg nex`
-/// sessions with no explicit chat-ref. The goal is sticky auto-resume:
-/// running `wg nex` in the same terminal twice reattaches to the
-/// same journal instead of creating a fresh session each time.
+/// Create a fresh interactive session and return its alias. The
+/// alias combines the controlling tty (if any) with the timestamp,
+/// so running `wg nex` twice in the same terminal produces two
+/// DISTINCT sessions instead of one that silently accumulates. To
+/// resume either, use `wg nex --resume`.
+fn fresh_session(workgraph_dir: &Path, stamp: &str) -> Result<String> {
+    let alias = default_interactive_alias(stamp);
+    workgraph::chat_sessions::ensure_session(
+        workgraph_dir,
+        &alias,
+        workgraph::chat_sessions::SessionKind::Interactive,
+        Some(format!("interactive {}", alias)),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to register fresh session: {}", e))?;
+    Ok(alias)
+}
+
+/// Resolve `--resume [PATTERN]` to a concrete session alias.
 ///
-/// We key on `$TTY` (or the current controlling terminal via
-/// `libc::ttyname`) — one slot per pts. Terminals that don't have a
-/// tty (detached invocations, piped stdin) fall back to a timestamp
-/// alias, which is effectively a fresh session every time.
+/// - empty pattern: show an interactive picker over all sessions,
+///   most-recent-journal first. Returns the picked session's
+///   alias (or first UUID if no aliases).
+/// - non-empty pattern: substring-match against session aliases,
+///   UUID prefixes, and kinds (interactive / coordinator /
+///   task-agent / other). Pick the most-recent matching session.
+///
+/// Errors if nothing matches, or if stdin isn't a tty for the
+/// picker path.
+fn pick_resume_session(workgraph_dir: &Path, pattern: &str) -> Result<String> {
+    let sessions =
+        workgraph::chat_sessions::list(workgraph_dir).context("failed to list sessions")?;
+    if sessions.is_empty() {
+        anyhow::bail!("no sessions to resume — `wg session list` is empty");
+    }
+
+    // Sort most-recent-first by journal mtime, falling back to the
+    // `created` string on meta when the journal is missing.
+    let mut ranked: Vec<_> = sessions
+        .into_iter()
+        .map(|(uuid, meta)| {
+            let journal = workgraph_dir
+                .join("chat")
+                .join(&uuid)
+                .join("conversation.jsonl");
+            let mtime = std::fs::metadata(&journal).and_then(|m| m.modified()).ok();
+            (uuid, meta, mtime)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.created.cmp(&a.1.created)));
+
+    let pat = pattern.trim();
+    if !pat.is_empty() {
+        // Pattern match: return the first (most-recent) session
+        // whose alias, UUID prefix, or kind contains the pattern
+        // (case-insensitive).
+        let needle = pat.to_lowercase();
+        for (uuid, meta, _) in &ranked {
+            let kind_str = format!("{:?}", meta.kind).to_lowercase();
+            if uuid.to_lowercase().starts_with(&needle)
+                || meta
+                    .aliases
+                    .iter()
+                    .any(|a| a.to_lowercase().contains(&needle))
+                || kind_str.contains(&needle)
+            {
+                return Ok(pick_best_ref(uuid, meta));
+            }
+        }
+        anyhow::bail!("no session matches pattern {:?}", pattern);
+    }
+
+    // Empty pattern: interactive picker. Require a tty so
+    // non-interactive callers (scripts, the daemon) get a clear
+    // error instead of a hang.
+    use dialoguer::{Select, theme::ColorfulTheme};
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        anyhow::bail!(
+            "--resume requires a terminal for the picker; pass a pattern or an explicit `--chat <ref>`"
+        );
+    }
+    let options: Vec<String> = ranked
+        .iter()
+        .take(30)
+        .map(|(uuid, meta, _)| {
+            let short = &uuid[..std::cmp::min(uuid.len(), 8)];
+            let aliases = if meta.aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", meta.aliases.join(", "))
+            };
+            let kind = format!("{:?}", meta.kind).to_lowercase();
+            let label = meta.label.as_deref().unwrap_or("");
+            format!("{} {} {}{}", short, kind, aliases, label)
+        })
+        .collect();
+    if options.is_empty() {
+        anyhow::bail!("no sessions to resume");
+    }
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Resume which session?")
+        .default(0)
+        .items(&options)
+        .interact()
+        .context("picker cancelled")?;
+    let (uuid, meta, _) = &ranked[selection];
+    Ok(pick_best_ref(uuid, meta))
+}
+
+/// Choose the most user-friendly reference for a session: the first
+/// alias if present, otherwise the full UUID. Aliases are preferred
+/// because they're shorter, readable, and stable across re-registrations.
+fn pick_best_ref(uuid: &str, meta: &workgraph::chat_sessions::SessionMeta) -> String {
+    meta.aliases
+        .first()
+        .cloned()
+        .unwrap_or_else(|| uuid.to_string())
+}
+
+/// Derive a tty-stamp alias for a fresh interactive session. Used
+/// only at session CREATION — resume goes through the picker.
+///
+/// Format: `tty-<pts-slug>-<stamp>`. The stamp keeps separate
+/// invocations distinct even in the same terminal; `wg nex`
+/// followed by `wg nex` produces two different sessions rather
+/// than silently merging.
 fn default_interactive_alias(stamp: &str) -> String {
     #[cfg(unix)]
     {
@@ -379,7 +486,7 @@ fn default_interactive_alias(stamp: &str) -> String {
                     .replace('/', "-")
                     .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
                 if !slug.is_empty() {
-                    return format!("tty-{}", slug);
+                    return format!("tty-{}-{}", slug, stamp);
                 }
             }
         }

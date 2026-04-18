@@ -726,16 +726,12 @@ mod tests {
 
         assert!(texts.iter().any(|t| t.trim_start().starts_with("┌─ bash")));
         assert!(
-            texts
-                .iter()
-                .any(|t| t.trim_start().starts_with("│ × bash")),
+            texts.iter().any(|t| t.trim_start().starts_with("│ × bash")),
             "error content inside box, got {:?}",
             texts
         );
         assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("... (3 more lines)")),
+            texts.iter().any(|t| t.contains("... (3 more lines)")),
             "truncation line inside box, got {:?}",
             texts
         );

@@ -1939,12 +1939,25 @@ pub enum Commands {
         #[arg(long, short = 'r')]
         read_only: bool,
 
-        /// Resume the most recent nex session. Loads the conversation
-        /// history from the last `.journal.jsonl` file and continues
-        /// from where you left off. The model sees the full prior
-        /// context (subject to any compaction that occurred).
-        #[arg(long)]
-        resume: bool,
+        /// Resume a previous nex session. Three shapes:
+        ///
+        ///   `wg nex --resume`              — interactive picker
+        ///                                   over all sessions,
+        ///                                   most-recent first.
+        ///   `wg nex --resume <pattern>`    — pattern-match the
+        ///                                   most-recent session
+        ///                                   whose alias / uuid
+        ///                                   prefix / kind
+        ///                                   contains `<pattern>`.
+        ///   `wg nex --chat <uuid|alias>`   — address a specific
+        ///                                   session directly
+        ///                                   (works without
+        ///                                   `--resume`).
+        ///
+        /// Bare `wg nex` (no flags) starts a FRESH session every
+        /// time — no auto-resume.
+        #[arg(long, value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
+        resume: Option<String>,
 
         /// Load an agency role/skill by name to augment the session.
         /// Searches `.workgraph/agency/primitives/components/` for a
