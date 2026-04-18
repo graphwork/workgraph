@@ -1021,6 +1021,7 @@ fn nex_subprocess_coordinator_loop(
         // new UUID-based layout here.
         let _ = workgraph::chat_sessions::migrate_numeric_coord_dir(dir, coordinator_id);
         let chat_alias = format!("coordinator-{}", coordinator_id);
+        let numeric_alias = coordinator_id.to_string();
         if let Err(e) = workgraph::chat_sessions::ensure_session(
             dir,
             &chat_alias,
@@ -1031,6 +1032,27 @@ fn nex_subprocess_coordinator_loop(
                 "Coordinator-{}: failed to register session alias {}: {}",
                 coordinator_id, chat_alias, e
             ));
+        }
+        // ALSO register the bare numeric alias (`chat/N` → UUID).
+        // `chat::append_inbox_for(dir, N, ...)` — used by the IPC
+        // `UserChat` handler via `append_chat_inbox` — resolves paths
+        // through `chat/<N>/inbox.jsonl`. Without this symlink,
+        // that write creates a parallel `chat/N/` real directory
+        // that the coordinator subprocess (watching
+        // `chat/coordinator-N/inbox.jsonl`) never sees, and the
+        // user's message sits unread until a heartbeat bump or
+        // restart re-routes things. Observed 2026-04-18: TUI chat
+        // messages hung forever until timeout.
+        if let Err(e) = workgraph::chat_sessions::add_alias(dir, &chat_alias, &numeric_alias) {
+            // `add_alias` returns an error when the alias is already
+            // taken — harmless steady-state idempotency. Only log
+            // non-trivial errors.
+            if !format!("{}", e).contains("already") {
+                logger.warn(&format!(
+                    "Coordinator-{}: failed to add numeric alias {}: {}",
+                    coordinator_id, numeric_alias, e
+                ));
+            }
         }
 
         // Build the argv. Always pass `--resume` — on first spawn there's
