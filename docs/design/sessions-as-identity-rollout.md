@@ -84,38 +84,63 @@ keeps working (it's what the native adapter calls).
 land behind `#[cfg]` gates or feature flags so they don't fail to
 build when the CLI isn't installed.
 
-### Phase 3: TUI Chat tab → PTY via `wg spawn-task`
+### Phase 3: TUI Chat tab → PTY (observer + takeover-on-send)
 
-**Ships:** the Chat tab in `wg tui` replaces its file-tailing renderer
-with a PtyPane running `wg spawn-task <active-coordinator-task-id>`.
-Lazy-spawn on first focus, keep alive across tab switches, tear down
-on `wg tui` exit.
+**Ships:** the Chat tab in `wg tui` becomes a PtyPane whose behaviour
+depends on whether the focused task's session has a live handler.
 
 - New field `task_panes: HashMap<TaskId, PtyPane>` on VizApp (reuse
-  the work already drafted in the pre-design Nex-tab attempt, now
-  rerouted to the Chat tab).
-- Key forwarding: when Chat tab is focused AND the chat input mode is
-  not capturing globally, all key events go to the PTY.
-- Takeover on focus: if another handler owns the lock, SIGTERM it and
-  wait for release before spawning the TUI's own.
+  the work from the pre-design Nex-tab attempt, rerouted to Chat).
+- **Observer mode (default when an external handler already owns
+  the session):** TUI tails the PTY/streaming file, renders faithfully,
+  does NOT signal the handler, does NOT acquire the lock. User can
+  see live activity without interfering.
+- **Owned mode (TUI acquired the lock — either because nothing else
+  owned it, or after a takeover):** key events forward to PTY stdin
+  directly. User types into real nex / claude / whichever handler.
+- **Takeover trigger:** sending a message via the TUI's input box in
+  observer mode. TUI writes to inbox, marks release-requested, waits
+  for the external handler to drain-and-exit at its next turn
+  boundary, then acquires the lock and spawns its own handler.
+- **Never-started tasks:** right pane shows "press `s` to start"
+  placeholder. `s` spawns via `wg spawn-task`.
+- **Terminal-state tasks (`done`/`failed`/`abandoned`):** read-only
+  replay by default. Keybind (`r`) flips to resumable.
 
-**User-visible change:** `wg tui` → focus a coordinator → live
-PTY-rendered session. You're typing into real nex (or claude, etc.),
-not a ratatui chat box. Tool boxes, streaming, progress — all
-faithful.
+**User-visible change:** `wg tui` → focus any LLM task → live
+PTY-rendered session. Observe autonomous work without interrupting
+it; send a message to engage, and the TUI takes over cleanly. Tool
+boxes, streaming, progress — all faithful because the PTY renders
+whatever the handler draws.
 
 **Validation:**
-- Live: `wg tui`, focus coordinator-0, type a message, see streaming
-  response, see tool calls render correctly.
-- Takeover: start `wg nex --chat coord-0` in a terminal, then open
-  `wg tui` and focus coord-0 — the terminal's nex should exit cleanly
-  (turn boundary), TUI takes over, conversation continues.
-- Cold focus: focus a task with no journal yet → handler spawns fresh.
-- Finished focus: focus a `done` task → handler resumes from journal,
-  shows final state, accepts further input.
+- **Observer fidelity.** Start `wg spawn-task <coord> --autonomous`
+  in a terminal running a multi-tool workflow, then open `wg tui`
+  and focus the same coordinator. TUI renders the live output; the
+  terminal handler is unaffected; no takeover happens.
+- **Takeover on send.** From the above observer state, type a
+  message in the TUI and hit send. Confirm: message lands in
+  `inbox.jsonl`; handler drains, finishes its current turn, exits;
+  TUI's new handler replays journal, processes message, responds
+  via PTY directly.
+- **Long tool call wait.** Same setup, but the handler is mid-30s
+  bash call when the user sends. Takeover must wait for the tool to
+  finish before releasing — verify the release marker is respected
+  at turn boundary, not mid-tool.
+- **Cancel (non-takeover).** Ctrl-C in observer pane: handler
+  aborts its in-flight tool; lock stays held; observer keeps
+  watching. Separate action from takeover.
+- **Cold focus.** Focus a never-started task. Right pane shows "press
+  `s`". Hit `s`: handler spawns, task goes `in-progress`, PTY owned
+  directly by TUI.
+- **Terminal focus.** Focus a `done` task: read-only replay, no
+  input accepted; hit `r`: now typeable.
+- **Rapid-fire sends during takeover.** Send message 1, wait 1s,
+  send message 2 before takeover completes. Both end up in inbox,
+  both processed by the new handler FIFO.
 
-**Size:** ~500 LOC. Retires large chunks of the file-tail chat renderer
-in `state.rs` / `render.rs`. Net could be negative LOC.
+**Size:** ~500 LOC new + retires large chunks of the file-tail chat
+renderer in `state.rs` / `render.rs`. Net could be negative.
 
 ### Phase 4: Collapse Log / Messages / Firehose / Output tabs
 
@@ -256,7 +281,7 @@ is nex in a PTY" vision. 4–6 clean up. 7 opens the executor choice.
 | Lock file on NFS / network FS doesn't do O_EXCL atomically | 1 | Document local-FS-only. Fallback flock() if O_EXCL is unavailable. |
 | SIGTERM during a tool call leaves the session journal half-written | 1, 3 | Signal handler defers exit to next turn boundary, which is already the "safe snapshot" point in the loop. |
 | Claude CLI session-resume disagrees with our chat-ref mapping | 7 | Store the mapping, log mismatches, fall back to preamble injection. |
-| TUI takeover loses the daemon's in-flight work | 3 | SIGTERM → 5s grace → SIGKILL. Daemon's turn commits to journal before exit. |
+| TUI takeover loses the daemon's in-flight work | 3 | Takeover is message-triggered, not open-triggered. Handler finishes current tool call, drains inbox, commits journal, exits clean at turn boundary — no SIGKILL. A runaway tool that never completes would block takeover indefinitely; the user's explicit-cancel action (Ctrl-C in observer pane) is the escape hatch. |
 | Phase 4 removes a tab someone actually used | 4 | Before deletion, survey the repo's own CLAUDE.md / docs for references. Announce deprecation in one release before removing. |
 | Migration (Phase 5) breaks git history links | 5 | Keep `.coordinator-N` as permanent alias — never actually rename in the graph, just map. |
 

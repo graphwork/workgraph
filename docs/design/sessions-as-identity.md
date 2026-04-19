@@ -128,32 +128,105 @@ stale-PID detection on next acquire.
 
 ### Takeover
 
-Handler A holds the lock. Handler B wants it. Flow:
-1. B reads A's PID.
-2. B sends `SIGTERM` to A.
-3. B polls the lock file every 100ms for up to 5s.
-4. A catches SIGTERM, finishes its current turn (the conversation
-   loop's turn-boundary is the safe point), removes the lock, exits.
-5. B acquires via O_EXCL.
-6. If A doesn't release within 5s, B escalates to `SIGKILL`, waits
-   another 1s, then removes the stale file and acquires.
+Takeover is **intent-triggered, not open-triggered.** Opening the TUI
+on a session that already has a handler does NOT trigger takeover —
+the TUI enters observer mode (see §Handoff policy below). Takeover
+only fires when the user signals *active engagement* by sending a
+message or explicitly requesting it.
+
+When triggered, the flow is:
+1. TUI writes the user's message to `inbox.jsonl` (same as always).
+2. TUI also marks the lock file with a `release_after_turn=true`
+   flag (or writes a dedicated `.handler.release-requested` marker
+   next to it).
+3. External handler, at its next turn boundary, drains inbox → sees
+   both the message and the release marker.
+4. Handler finishes any in-flight tool call (§Long tool calls in
+   progress below), commits journal, removes the lock file, exits
+   clean.
+5. TUI detects lock release, acquires via O_EXCL, spawns its own
+   PTY-backed handler with `--resume`.
+6. New handler replays journal (which includes the user's queued
+   message), responds via PTY.
+
+**No SIGKILL escalation.** We wait as long as the current tool call
+takes. Journal consistency beats UI responsiveness — if the user
+wants to interrupt a long tool call, they use the separate cancel
+action (§Non-message interventions), which is orthogonal to
+takeover.
 
 ## Handoff policy
 
-When the TUI opens and wants to own session X but X already has a
-handler:
+**Observing is free; sending a message is the signal for takeover.**
 
-**Decision:** *TUI always wins.* The TUI issues a takeover. The
-existing handler (likely a daemon-spawned coordinator) exits cleanly
-at its next turn boundary, the TUI's PTY-backed handler picks up. The
-journal ensures continuity — the new handler resumes from where the
-old one stopped.
+When the TUI opens on a session that already has a live handler, the
+TUI enters **observer mode**. It renders the session (tailing the
+PTY/streaming file) but does not signal, takeover, or otherwise
+interact with the handler. The autonomous work continues unaffected.
 
-Rationale: the everyday UX is "open TUI, talk to my agent". Anything
-else (refuse, degrade to read-only, modal "take over? y/n") is a
-paper-cut for the common case. Autonomous-daemon users who *don't*
-want takeover can `wg nex --chat X --no-takeover` in their terminal,
-which stays put and refuses to be replaced.
+### Observer mode
+
+- TUI reads whatever the handler is writing (streaming file + journal
+  for replay).
+- User input box is available but sending a message triggers takeover
+  (next section).
+- Non-takeover user actions (scrolling, switching tabs, viewing task
+  detail) never affect the handler.
+- Read-only: Ctrl-C in the observer pane is the separate
+  *cancel-current-turn* action (§Non-message interventions); it does
+  not trigger takeover.
+
+### Takeover trigger: sending a message
+
+When the user hits send on a message in observer mode, the TUI runs
+the full takeover sequence (§Takeover above). The handler reads the
+message at its next turn boundary, exits cleanly, and the TUI spawns
+its own handler which resumes with the message already in the inbox.
+
+The rationale for this model vs. "TUI always wins on open":
+
+- **No accidental interrupts.** Coming back to a long-running
+  research task should just show what's happening, not preempt it.
+- **Intent-driven.** Takeover only when the user actively wants to
+  converse. Navigation is free.
+- **Uses existing handler shutdown path.** Handlers already know how
+  to drain inbox and exit at turn boundary. No new code paths.
+- **Journal continuity.** The swap happens at a turn boundary, so
+  both handlers agree on state.
+
+### Long tool calls in progress
+
+If the handler is mid-tool-call (e.g. a 30-minute research) when the
+user sends, the user's message waits in the inbox until the tool call
+completes. The handler's next turn boundary is after the tool
+finishes. **We do not interrupt mid-tool-call for takeover.**
+
+Journal consistency wins over UI responsiveness. A user who wants to
+interrupt a long tool call uses the explicit cancel action
+(§Non-message interventions) first, which is a separate operation
+from takeover.
+
+### Non-message interventions
+
+Cancel-current-turn and slash-commands are not message sends:
+
+- **Cancel (Ctrl-C in observer pane):** sends a cooperative-cancel
+  signal to the handler. Handler aborts its in-flight tool at the
+  next safe point (same behaviour as Ctrl-C inside a `wg nex`
+  terminal session). Does NOT release the lock, does NOT trigger
+  takeover. The user can then decide whether to send a new message
+  (triggering takeover) or keep observing.
+- **Slash commands:** only available post-takeover, via the owned
+  PTY. Observer mode has no slash-command surface — slash commands
+  would require direct PTY stdin, which observer mode doesn't have.
+
+### Rapid-fire sends
+
+If the user sends multiple messages before takeover completes (common
+pattern: user types, hits send, types more, hits send again), both
+messages queue in the inbox. The external handler drains both FIFO,
+processes them, exits. TUI's new handler replays journal including
+both. No special handling.
 
 ## The TUI view
 
@@ -244,32 +317,45 @@ Daemon is opt-in. Running workgraph without a daemon works: the TUI
 (or `wg spawn-task` at a terminal) owns any handler you care about.
 Daemon is for users who want autonomous-when-I'm-away behavior.
 
-## Open questions (unresolved in design, answered in rollout)
+## Decisions on initial open questions
 
-1. **Finished task focus.** Focus a `done` task. PTY shows
-   `wg nex --chat X --resume` which replays journal and offers to
-   continue the conversation. Should it be read-only by default with
-   an explicit "resume and extend" command? Or hot, ready-to-type?
+(These were flagged as open during the design discussion. Resolved
+here so the rollout can proceed deterministically. Listed in the
+order they were raised.)
 
-2. **Never-started task focus.** Focus a task with no journal, status
-   `open`. Does focus auto-spawn its handler (effectively claiming
-   the task)? Or require explicit start (e.g., `s` keybind)?
+1. **Finished task focus.** *Read-only by default for terminal
+   states (`done` / `failed` / `abandoned`); hot otherwise.* The
+   PTY replays journal and shows the final screen. A dedicated
+   keybind (e.g. `r`) flips to hot/resumable mode — same underlying
+   `wg nex --chat X --resume`, just drops the read-only guard. The
+   status field already captures terminal-vs-live, so drive the
+   default off of it.
 
-3. **Remote worktree sessions.** Agent running on a git worktree.
-   Does its chat dir live in the main `.workgraph/chat/` (shared) or
-   in the worktree's `.workgraph/chat/`? PTY embedding assumes
-   shared; worktree-local chat requires cross-worktree session
-   resolution.
+2. **Never-started task focus.** *Require explicit start.* Focus on a
+   task with no journal (status `open`) shows a "press `s` to start"
+   placeholder in the right pane. Poking around the graph is
+   non-destructive. Hitting `s` spawns the handler, acquires the lock,
+   transitions the task to `in-progress`.
 
-4. **Task-id migration.** `.coordinator-N` exists in today's graphs.
-   Options: auto-migrate on startup to `.chat-<uuid>`, keep
-   `.coordinator-N` as a permanent alias, or provide a one-shot
-   migration tool.
+3. **Remote worktree sessions.** *Hybrid — handler runs in the
+   worktree, chat files live in the main repo's `.workgraph/chat/`.*
+   The handler opens its chat files via absolute path into the main
+   `.workgraph/`, while its working directory is the worktree. TUI in
+   the main repo sees one canonical chat dir; worktree isolation of
+   code edits is preserved; no cross-worktree session resolution
+   needed.
 
-5. **TUI takeover semantics for active conversations.** If the daemon
-   is mid-turn when the TUI takes over, do we wait for the turn to
-   complete (journal consistency) or interrupt immediately? Lean
-   toward "wait up to 5s, then SIGKILL" per §Lock §Takeover.
+4. **Task-id migration.** *Auto-migrate on first startup post-upgrade;
+   keep the old `.coordinator-N` id as a permanent alias.* No user
+   action required. Scripts / git-history links that hardcode
+   `.coordinator-0` continue to work via alias resolution forever.
+   New coordinators post-migration get `.chat-<uuid>` directly.
+
+5. **TUI takeover semantics.** *Observe by default, takeover
+   triggered by sending a message, wait for current tool call to
+   complete.* See §Handoff policy above for the full model. No
+   SIGKILL escalation — journal consistency beats UI responsiveness.
+   Explicit cancel is a separate non-takeover action.
 
 ## Non-goals
 
