@@ -450,22 +450,17 @@ pub enum InspectorSubFocus {
 /// Which tab is active in the right panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RightPanelTab {
-    Chat,     // 0
-    Detail,   // 1
-    Agency,   // 2
-    Config,   // 3
-    Files,    // 4
-    CoordLog, // 5
+    Chat,      // 0
+    Detail,    // 1
+    Agency,    // 2
+    Config,    // 3
+    Files,     // 4
+    CoordLog,  // 5
     Dashboard, // 6
-
-    // Phase 4 (soft removal): the tabs below were removed from the
-    // tab bar (`ALL` below) and from label/index/from_index. Their
-    // content is reachable via the PTY Chat tab (Ctrl+T). Variants
-    // are retained so existing match arms still compile; they're
-    // effectively dead code from the user's perspective since no
-    // keystroke navigates to them. A follow-up Phase 4-cleanup will
-    // delete the variants + associated draw/state code entirely once
-    // we've confirmed nothing relies on them in production.
+    // Temporary during Phase 4 cleanup — kept so dead match arms
+    // compile while we walk through and delete them. This enum
+    // block is the last thing to shrink; the final removal here
+    // happens at the end of the cleanup sweep.
     Log,
     Messages,
     Firehose,
@@ -482,7 +477,6 @@ impl RightPanelTab {
             Self::Files => "Files",
             Self::CoordLog => "Coord",
             Self::Dashboard => "Dash",
-            // Phase 4 soft-removed variants — not in the tab bar.
             Self::Log | Self::Messages | Self::Firehose | Self::Output => "",
         }
     }
@@ -496,10 +490,6 @@ impl RightPanelTab {
             Self::Files => 4,
             Self::CoordLog => 5,
             Self::Dashboard => 6,
-            // Phase 4 soft-removed variants — out-of-range so
-            // `from_index` never returns them. The value shouldn't
-            // matter to correct code paths (they're unreachable via
-            // tab navigation).
             Self::Log => usize::MAX - 3,
             Self::Messages => usize::MAX - 2,
             Self::Firehose => usize::MAX - 1,
