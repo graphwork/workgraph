@@ -2060,6 +2060,36 @@ pub enum Commands {
         resume: Option<String>,
     },
 
+    /// Spawn the handler for a task — the single entry point that
+    /// resolves executor type, chat session, and role, then launches
+    /// the right command (replaces the current process via exec).
+    ///
+    /// This is what the TUI PTY pane runs when you focus a task,
+    /// what humans run at a terminal to interact with a task, and
+    /// what the daemon supervisor runs to (re)start a handler.
+    ///
+    /// Per design (docs/design/sessions-as-identity.md), the
+    /// abstraction point is here: per-executor adapters live in
+    /// `commands/spawn_task.rs`. When a CLI vendor changes flags or
+    /// adds a new executor, we change one adapter; the TUI and the
+    /// daemon don't need to know.
+    #[command(name = "spawn-task")]
+    SpawnTask {
+        /// Task id in the graph. Resolves to a chat session
+        /// (alias == task id, by convention until Phase 5 migration).
+        task_id: String,
+
+        /// Override the auto-detected role. Interpreted per-executor
+        /// (native passes as `--role`; adapters may translate).
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Dry-run: print the command we'd exec without running it.
+        /// Useful for the TUI to preview, or for debugging.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -4127,6 +4157,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Nex { .. } => "nex",
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",
+        Commands::SpawnTask { .. } => "spawn-task",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",

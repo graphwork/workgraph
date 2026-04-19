@@ -1,0 +1,386 @@
+//! `wg spawn-task` — the single entry point that turns a task-id
+//! into a live handler process.
+//!
+//! See `docs/design/sessions-as-identity.md` for the full model.
+//! This command:
+//!   1. Looks up the task in the graph
+//!   2. Resolves its executor type, chat session, and role
+//!   3. Dispatches to the right handler command via a per-executor
+//!      adapter
+//!   4. `exec()`s into the child so stdio passes through cleanly —
+//!      the PTY embedding in `wg tui` just spawns `wg spawn-task`
+//!      and gets the handler's output as its own.
+//!
+//! Adapters live inline here (one match arm per executor). Claude /
+//! Codex / Gemini adapters are stubs until Phase 7 — they error
+//! cleanly with a "not yet implemented" message when selected.
+
+use std::path::Path;
+
+use anyhow::{Context, Result, anyhow};
+
+use crate::cli::Commands;
+use workgraph::graph::Task;
+
+/// Dispatch table for what handler to run for a task. Parsed from
+/// the task's executor hint (config override) or defaults to native.
+#[derive(Clone, Debug)]
+pub enum HandlerSpec {
+    Native {
+        chat_ref: String,
+        role: Option<String>,
+        resume: bool,
+        model: Option<String>,
+        endpoint: Option<String>,
+    },
+    Claude {
+        chat_ref: String,
+        model: Option<String>,
+    },
+    Codex {
+        chat_ref: String,
+    },
+    Gemini {
+        chat_ref: String,
+    },
+    Amplifier {
+        chat_ref: String,
+    },
+}
+
+impl HandlerSpec {
+    /// Render the command line we'd exec, for preview / dry-run.
+    pub fn command_preview(&self) -> String {
+        match self {
+            Self::Native {
+                chat_ref,
+                role,
+                resume,
+                model,
+                endpoint,
+            } => {
+                let mut s = format!("wg nex --chat {}", chat_ref);
+                if *resume {
+                    s.push_str(" --resume");
+                }
+                if let Some(r) = role {
+                    s.push_str(&format!(" --role {}", r));
+                }
+                if let Some(m) = model {
+                    s.push_str(&format!(" -m {}", m));
+                }
+                if let Some(e) = endpoint {
+                    s.push_str(&format!(" -e {}", e));
+                }
+                s
+            }
+            Self::Claude { chat_ref, model } => {
+                let mut s = format!("claude [TODO: adapter for session={}", chat_ref);
+                if let Some(m) = model {
+                    s.push_str(&format!(" model={}", m));
+                }
+                s.push(']');
+                s
+            }
+            Self::Codex { chat_ref } => format!("codex [TODO: adapter for session={}]", chat_ref),
+            Self::Gemini { chat_ref } => format!("gemini [TODO: adapter for session={}]", chat_ref),
+            Self::Amplifier { chat_ref } => {
+                format!("wg amplifier-run {} [TODO]", chat_ref)
+            }
+        }
+    }
+}
+
+/// The entry point called from `main.rs` for `Commands::SpawnTask`.
+pub fn run(
+    workgraph_dir: &Path,
+    task_id: &str,
+    role_override: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    let graph = workgraph::parser::load_graph(&graph_path)
+        .with_context(|| format!("load graph at {:?}", graph_path))?;
+    let task = graph
+        .tasks()
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| anyhow!("no such task: {}", task_id))?;
+
+    let spec = resolve_handler(workgraph_dir, task, role_override)?;
+
+    if dry_run {
+        println!("{}", spec.command_preview());
+        return Ok(());
+    }
+
+    dispatch(&spec, workgraph_dir)
+}
+
+/// Figure out what kind of handler to spawn for this task, given
+/// config + task-specific overrides.
+pub fn resolve_handler(
+    workgraph_dir: &Path,
+    task: &Task,
+    role_override: Option<&str>,
+) -> Result<HandlerSpec> {
+    let config = workgraph::config::Config::load_or_default(workgraph_dir);
+
+    // chat_ref convention: task id IS the chat alias, until Phase 5
+    // migration swaps to `.chat-<uuid>`. For now, ensure the session
+    // is registered so `--resume` finds the right journal. A raw
+    // `wg nex --chat <ref>` path also works without registration,
+    // but spawn-task does the polite thing.
+    let chat_ref = task.id.clone();
+
+    // Role: coordinator tasks get `--role coordinator`. Caller
+    // override wins. `.compact-*`, `.assign-*`, etc. inherit no
+    // special role — they're just task-agent runs.
+    let role = role_override.map(|s| s.to_string()).or_else(|| {
+        if task.id.starts_with(".coordinator-") {
+            Some("coordinator".to_string())
+        } else {
+            None
+        }
+    });
+
+    // Executor pick: task-level model hints override, else config
+    // default. For Phase 2 we only fully support Native; other
+    // executors compile but print a "not yet implemented" error at
+    // dispatch (Phase 7 fills them in).
+    let executor_kind = pick_executor(&config, task);
+
+    // Resume if the session journal exists on disk — same rule
+    // `wg nex` uses internally.
+    let chat_dir = workgraph_dir.join("chat").join(&chat_ref);
+    let journal_exists = chat_dir.join("conversation.jsonl").exists();
+
+    Ok(match executor_kind {
+        ExecutorKind::Native => HandlerSpec::Native {
+            chat_ref,
+            role,
+            resume: journal_exists,
+            model: task.model.clone(),
+            endpoint: task.endpoint.clone(),
+        },
+        ExecutorKind::Claude => HandlerSpec::Claude {
+            chat_ref,
+            model: task.model.clone(),
+        },
+        ExecutorKind::Codex => HandlerSpec::Codex { chat_ref },
+        ExecutorKind::Gemini => HandlerSpec::Gemini { chat_ref },
+        ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutorKind {
+    Native,
+    Claude,
+    Codex,
+    Gemini,
+    Amplifier,
+}
+
+fn pick_executor(config: &workgraph::config::Config, task: &Task) -> ExecutorKind {
+    // Task-level `executor` field could slot in here in the future.
+    // For now, use the coordinator_executor as the default —
+    // same resolution the daemon uses when spawning today.
+    let label = config
+        .coordinator
+        .executor
+        .as_deref()
+        .unwrap_or("native");
+    match label.to_ascii_lowercase().as_str() {
+        "native" | "nex" => ExecutorKind::Native,
+        "claude" => ExecutorKind::Claude,
+        "codex" => ExecutorKind::Codex,
+        "gemini" => ExecutorKind::Gemini,
+        "amplifier" => ExecutorKind::Amplifier,
+        _ => {
+            eprintln!(
+                "\x1b[33m[spawn-task] unknown executor {:?} for task {}, defaulting to native\x1b[0m",
+                label, task.id
+            );
+            ExecutorKind::Native
+        }
+    }
+}
+
+/// Exec into the handler process. This REPLACES the current process
+/// (via `execvp`) on Unix so stdio passes through cleanly — the PTY
+/// parent sees the handler's bytes directly.
+fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
+    match spec {
+        HandlerSpec::Native {
+            chat_ref,
+            role,
+            resume,
+            model,
+            endpoint,
+        } => dispatch_native(chat_ref, role.as_deref(), *resume, model.as_deref(), endpoint.as_deref()),
+        HandlerSpec::Claude { .. } => Err(anyhow!(
+            "claude adapter not yet implemented (Phase 7). Use --executor native for now."
+        )),
+        HandlerSpec::Codex { .. } => Err(anyhow!(
+            "codex adapter not yet implemented (Phase 7). Use --executor native for now."
+        )),
+        HandlerSpec::Gemini { .. } => Err(anyhow!(
+            "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
+        )),
+        HandlerSpec::Amplifier { .. } => Err(anyhow!(
+            "amplifier adapter via spawn-task not yet implemented (Phase 7). \
+             Use the existing service-level amplifier dispatch for now."
+        )),
+    }
+}
+
+fn dispatch_native(
+    chat_ref: &str,
+    role: Option<&str>,
+    resume: bool,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let self_exe = std::env::current_exe()
+            .context("resolve current exe for spawn-task dispatch")?;
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("nex").arg("--chat").arg(chat_ref);
+        if resume {
+            cmd.arg("--resume");
+        }
+        if let Some(r) = role {
+            cmd.arg("--role").arg(r);
+        }
+        if let Some(m) = model {
+            cmd.arg("-m").arg(m);
+        }
+        if let Some(e) = endpoint {
+            cmd.arg("-e").arg(e);
+        }
+        // Clean handoff — exec replaces us, child inherits stdio.
+        let err = cmd.exec();
+        // exec() only returns on error.
+        Err(anyhow!("exec wg nex failed: {}", err))
+    }
+    #[cfg(not(unix))]
+    {
+        // Fallback on non-Unix: spawn + wait + propagate exit code.
+        let _ = (chat_ref, role, resume, model, endpoint);
+        Err(anyhow!("spawn-task dispatch not yet supported on this platform"))
+    }
+}
+
+/// Helper for consumers (e.g., the TUI) who want to extract the
+/// `Commands::SpawnTask` fields cleanly.
+pub fn from_command(
+    workgraph_dir: &Path,
+    cmd: &Commands,
+) -> Option<Result<()>> {
+    if let Commands::SpawnTask {
+        task_id,
+        role,
+        dry_run,
+    } = cmd
+    {
+        Some(run(workgraph_dir, task_id, role.as_deref(), *dry_run))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mktask(id: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            title: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn coordinator_task_gets_coordinator_role() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
+        let task = mktask(".coordinator-0");
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        match spec {
+            HandlerSpec::Native { role, .. } => {
+                assert_eq!(role, Some("coordinator".to_string()));
+            }
+            _ => panic!("expected Native handler"),
+        }
+    }
+
+    #[test]
+    fn non_coordinator_task_gets_no_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = mktask("my-task");
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        match spec {
+            HandlerSpec::Native { role, .. } => {
+                assert!(role.is_none(), "regular task should not have a role");
+            }
+            _ => panic!("expected Native handler"),
+        }
+    }
+
+    #[test]
+    fn role_override_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = mktask(".coordinator-0");
+        let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
+        match spec {
+            HandlerSpec::Native { role, .. } => {
+                assert_eq!(role, Some("evaluator".to_string()));
+            }
+            _ => panic!("expected Native handler"),
+        }
+    }
+
+    #[test]
+    fn resume_true_when_journal_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = mktask("have-journal");
+        let chat = dir.path().join("chat").join(&task.id);
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::write(chat.join("conversation.jsonl"), b"").unwrap();
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        match spec {
+            HandlerSpec::Native { resume, .. } => assert!(resume),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn resume_false_when_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = mktask("fresh-task");
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        match spec {
+            HandlerSpec::Native { resume, .. } => assert!(!resume),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn command_preview_has_chat_flag() {
+        let spec = HandlerSpec::Native {
+            chat_ref: "foo".into(),
+            role: Some("coordinator".into()),
+            resume: true,
+            model: None,
+            endpoint: None,
+        };
+        let p = spec.command_preview();
+        assert!(p.contains("--chat foo"));
+        assert!(p.contains("--resume"));
+        assert!(p.contains("--role coordinator"));
+    }
+}

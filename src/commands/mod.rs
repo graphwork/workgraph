@@ -117,6 +117,7 @@ pub mod trace_export;
 pub mod trace_import;
 pub mod tradeoff;
 pub mod trajectory;
+pub mod spawn_task;
 pub mod tui_nex;
 pub mod tui_pty;
 pub mod user;
