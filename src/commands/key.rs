@@ -3,6 +3,7 @@
 use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use workgraph::config::{Config, EndpointConfig};
@@ -51,15 +52,20 @@ pub fn run_set(
                 .join(".workgraph")
                 .join("keys");
             fs::create_dir_all(&keys_dir)?;
-            // Set directory permissions to 700
+            // Set directory permissions to 700 (Unix only; Windows uses ACLs)
+            #[cfg(unix)]
             fs::set_permissions(&keys_dir, fs::Permissions::from_mode(0o700))?;
 
             let key_path = keys_dir.join(format!("{}.key", provider));
             fs::write(&key_path, key_value)?;
-            // Set file permissions to 600
+            // Set file permissions to 600 (Unix only; Windows uses ACLs)
+            #[cfg(unix)]
             fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
 
+            #[cfg(unix)]
             println!("Stored key securely in {} (mode 600)", key_path.display());
+            #[cfg(not(unix))]
+            println!("Stored key in {}", key_path.display());
             (None, Some(key_path.to_string_lossy().to_string()))
         } else {
             unreachable!()

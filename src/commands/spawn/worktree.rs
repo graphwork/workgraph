@@ -67,8 +67,12 @@ pub fn create_worktree(
         .canonicalize()
         .context("Failed to canonicalize .workgraph path")?;
     let symlink_path = worktree_dir.join(".workgraph");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&symlink_target, &symlink_path)
         .context("Failed to symlink .workgraph into worktree")?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&symlink_target, &symlink_path)
+        .context("Failed to symlink .workgraph into worktree (requires Developer Mode or admin)")?;
 
     // Run worktree-setup.sh if it exists
     let setup_script = workgraph_dir.join("worktree-setup.sh");

@@ -496,8 +496,19 @@ impl CoordinatorAgent {
             return false;
         }
         // Send SIGINT (not SIGKILL) — Claude CLI treats this as "stop generating"
+        #[cfg(unix)]
         unsafe {
             libc::kill(pid as i32, libc::SIGINT);
+        }
+        // Windows has no clean SIGINT equivalent for an arbitrary process.
+        // GenerateConsoleCtrlEvent only works on processes sharing our console.
+        // Fall back to taskkill (hard terminate); the agent will restart from
+        // the last persisted conversation turn.
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string()])
+                .output();
         }
         true
     }

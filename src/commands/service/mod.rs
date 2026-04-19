@@ -789,6 +789,7 @@ pub fn run_tick(
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn find_orphan_daemon_pids(dir: &Path, exclude_pid: Option<u32>) -> Vec<u32> {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let dir_str = canonical.to_string_lossy().to_string();
