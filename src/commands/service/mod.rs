@@ -2092,8 +2092,17 @@ pub fn run_daemon(
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
         }
-        // Also wake for heartbeat interval if enabled.
-        if let Some(hb_interval) = heartbeat_interval {
+        // Also wake for heartbeat interval if enabled — but only when a
+        // coordinator agent exists to receive the prompt. Without that
+        // gate, `--no-coordinator-agent` leaves `last_heartbeat` frozen at
+        // start time (see the gated reset below), so once `hb_interval`
+        // elapses `until_hb` becomes 0 and forces the poll to its 50ms
+        // floor on every iteration. Pairing the gate here with the one on
+        // the tick-trigger keeps the daemon genuinely idle when nothing
+        // depends on heartbeats.
+        if let Some(hb_interval) = heartbeat_interval
+            && enable_coordinator_agent
+        {
             let until_hb = hb_interval.saturating_sub(last_heartbeat.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_hb.as_millis().min(i32::MAX as u128) as i32);
@@ -2311,8 +2320,20 @@ pub fn run_daemon(
             // Autonomous heartbeat: also trigger a coordinator tick when the
             // heartbeat interval elapses, so the mechanical tick phases (cleanup,
             // spawn) run alongside the heartbeat prompt injection.
+            //
+            // Gated by `enable_coordinator_agent` to match the block that
+            // actually resets `last_heartbeat` (see "Autonomous heartbeat"
+            // block further down). Without this gate, running the daemon
+            // with `--no-coordinator-agent` causes the trigger to fire on
+            // every loop iteration once `hb_interval` has elapsed — since
+            // `last_heartbeat` never advances — pinning the daemon to a
+            // ~50ms tick cadence and spamming the log with cleanup/archival
+            // work. The heartbeat's purpose is prompting the coordinator
+            // LLM; when there's no coordinator, the poll interval is the
+            // correct cadence for the mechanical phases.
             if let Some(hb_interval) = heartbeat_interval
                 && last_heartbeat.elapsed() >= hb_interval
+                && enable_coordinator_agent
             {
                 should_tick = true;
             }
