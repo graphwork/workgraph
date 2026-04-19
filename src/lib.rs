@@ -23,6 +23,7 @@ pub mod model_benchmarks;
 pub mod models;
 pub mod notify;
 pub mod parser;
+pub mod platform_timeout;
 pub mod plan_validator;
 pub mod profile;
 pub mod provenance;

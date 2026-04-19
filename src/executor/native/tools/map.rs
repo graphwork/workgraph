@@ -920,13 +920,20 @@ impl Tool for BashTool {
         let s = self.state.lock().unwrap();
         let cwd = s.working_dir.clone();
         drop(s);
-        let output = Command::new("timeout")
-            .arg(format!("{}s", timeout_secs))
-            .arg("bash")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&cwd)
-            .output();
+        // Cross-platform `timeout(1)` replacement — Windows has no equivalent.
+        let output = crate::platform_timeout::spawn_with_timeout(
+            "bash",
+            |cmd| {
+                cmd.arg("-c")
+                    .arg(&command)
+                    .current_dir(&cwd)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+            },
+            timeout_secs,
+        )
+        .and_then(|(child, _killer)| child.wait_with_output());
         let output = match output {
             Ok(o) => o,
             Err(e) => return ToolOutput::error(format!("bash exec: {}", e)),

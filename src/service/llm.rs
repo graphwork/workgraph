@@ -111,25 +111,27 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     // Eval prompts can be very large (30KB+ with diffs, logs, artifacts) and
     // passing them as arguments can hit OS arg-length limits or cause the
     // `timeout` wrapper to fail with exit 124 before the API call even starts.
-    let mut child = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
-        .arg("claude")
-        .arg("--model")
-        .arg(model)
-        .arg("--print")
-        .arg("--output-format")
-        .arg("json")
-        .arg("--dangerously-skip-permissions")
-        // Strip CLAUDECODE env var so the CLI doesn't refuse to run
-        // when invoked from within a Claude Code session (e.g. daemon
-        // spawned by a coordinator agent). This is a headless --print
-        // call, not an interactive nested session.
-        .env_remove("CLAUDECODE")
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn claude CLI for lightweight LLM call")?;
+    let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
+        "claude",
+        |cmd| {
+            cmd.arg("--model")
+                .arg(model)
+                .arg("--print")
+                .arg("--output-format")
+                .arg("json")
+                .arg("--dangerously-skip-permissions")
+                // Strip CLAUDECODE env var so the CLI doesn't refuse to run
+                // when invoked from within a Claude Code session (e.g. daemon
+                // spawned by a coordinator agent). This is a headless --print
+                // call, not an interactive nested session.
+                .env_remove("CLAUDECODE")
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped())
+        },
+        timeout_secs,
+    )
+    .context("Failed to spawn claude CLI for lightweight LLM call")?;
 
     // Write prompt to stdin and close the pipe to signal EOF.
     if let Some(mut stdin) = child.stdin.take() {
