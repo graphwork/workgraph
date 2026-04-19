@@ -7395,6 +7395,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "windows-sys 0.60.2",
  "workgraph",
  "zstd",
 ]

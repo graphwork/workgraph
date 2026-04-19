@@ -495,20 +495,28 @@ impl CoordinatorAgent {
         if pid == 0 {
             return false;
         }
-        // Send SIGINT (not SIGKILL) — Claude CLI treats this as "stop generating"
+        // Send SIGINT (Unix) or Ctrl+Break (Windows) — Claude CLI treats
+        // either as "stop generating and emit TurnComplete", preserving
+        // conversation context.
         #[cfg(unix)]
         unsafe {
             libc::kill(pid as i32, libc::SIGINT);
         }
-        // Windows has no clean SIGINT equivalent for an arbitrary process.
-        // GenerateConsoleCtrlEvent only works on processes sharing our console.
-        // Fall back to taskkill (hard terminate); the agent will restart from
-        // the last persisted conversation turn.
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string()])
-                .output();
+            // `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)` delivers
+            // Ctrl+Break to the target process group. This requires the
+            // child to have been spawned with `CREATE_NEW_PROCESS_GROUP`,
+            // which `spawn_claude_process` sets. If that flag is missing
+            // the call silently no-ops (a non-zero return from the API
+            // wouldn't indicate "child didn't get a signal", so we don't
+            // check it).
+            use windows_sys::Win32::System::Console::{
+                CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent,
+            };
+            unsafe {
+                GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+            }
         }
         true
     }
@@ -2487,6 +2495,18 @@ fn spawn_claude_process(
     cmd.current_dir(dir.parent().unwrap_or(dir));
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
+
+    // On Windows, put the Claude process in its own process group so we can
+    // send it a Ctrl+Break via `GenerateConsoleCtrlEvent` later. Without this
+    // flag, signals would propagate to the whole process tree (including our
+    // daemon). `interrupt()` relies on this — if the flag is missing the
+    // console-ctrl call silently no-ops.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
+    }
 
     // Redirect stderr to a log file for debugging (using Stdio::null() swallows errors)
     let stderr_path = dir.join("service").join("coordinator-stderr.log");
