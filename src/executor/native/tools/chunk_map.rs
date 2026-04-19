@@ -151,6 +151,18 @@ impl Tool for ChunkMapTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let path = input.get("path").and_then(|v| v.as_str());
         let inline = input.get("text").and_then(|v| v.as_str());
@@ -233,7 +245,7 @@ impl Tool for ChunkMapTool {
 
         let total_chunks = raw_chunks.len();
         let total_bytes = body.len();
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[chunk_map] source={}, {} bytes → {} chunk(s) @ ~{} bytes/chunk (model window {})\x1b[0m",
             source_label,
             total_bytes,

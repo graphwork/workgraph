@@ -130,6 +130,18 @@ impl Tool for WebFetchTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let url_str = match input.get("url").and_then(|v| v.as_str()) {
             Some(u) if !u.is_empty() => u.to_string(),
@@ -141,6 +153,8 @@ impl Tool for WebFetchTool {
             Ok(u) => u,
             Err(e) => return ToolOutput::error(format!("Invalid URL: {}", e)),
         };
+
+        crate::tool_progress!("\x1b[2m[web_fetch] fetching: {}\x1b[0m", url_str);
 
         let overall_started = Instant::now();
 

@@ -114,6 +114,18 @@ impl Tool for SummarizeTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         // 1. Parse input
         let source = match input.get("source").and_then(|v| v.as_str()) {
@@ -181,7 +193,7 @@ impl Tool for SummarizeTool {
                 }
             };
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[summarize] starting: model={}, input_bytes={}\x1b[0m",
             model,
             content.len(),
@@ -302,7 +314,7 @@ pub(crate) fn recursive_summarize_cancellable<'a>(
 
         // Recursive case: chunk, map, reduce.
         let chunks = chunk_text(text, chunk_chars);
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[summarize] depth={}: chunking {} bytes into {} parts (chunk_chars={})\x1b[0m",
             depth,
             text.len(),
@@ -359,7 +371,7 @@ pub(crate) fn recursive_summarize_cancellable<'a>(
             let result = summarize_chunk(provider, &merged, &merge_instruction).await;
             let elapsed = started.elapsed();
             if let Ok(ref summary) = result {
-                eprintln!(
+                crate::tool_progress!(
                     "\x1b[2m[summarize] depth={} merge: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
                     depth,
                     merged.len(),
@@ -372,7 +384,7 @@ pub(crate) fn recursive_summarize_cancellable<'a>(
         }
 
         // Merged summaries still too large — recurse.
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[summarize] depth={}: merged summaries still too large ({} bytes), recursing\x1b[0m",
             depth,
             merged.len()
@@ -390,7 +402,7 @@ fn log_summarize_call(
     out_bytes: usize,
     elapsed: std::time::Duration,
 ) {
-    eprintln!(
+    crate::tool_progress!(
         "\x1b[2m[summarize] depth={}: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
         depth,
         in_bytes,
@@ -408,7 +420,7 @@ fn log_summarize_chunk(
     out_bytes: usize,
     elapsed: std::time::Duration,
 ) {
-    eprintln!(
+    crate::tool_progress!(
         "\x1b[2m[summarize] depth={} chunk {}/{}: {} bytes → {} bytes in {:.1}s ({})\x1b[0m",
         depth,
         i,
@@ -682,7 +694,7 @@ pub async fn summarize_history_for_compaction_cancellable(
         .collect::<Vec<_>>()
         .join("\n\n---\n\n");
 
-    eprintln!(
+    crate::tool_progress!(
         "\x1b[2m[summarize-history] compacting {} older messages ({} bytes transcript), keeping {} recent\x1b[0m",
         older.len(),
         transcript.len(),
@@ -700,7 +712,7 @@ pub async fn summarize_history_for_compaction_cancellable(
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
+            crate::tool_progress!(
                 "\x1b[33m[summarize-history] recursive_summarize failed: {} — returning messages unchanged\x1b[0m",
                 e
             );
@@ -709,13 +721,13 @@ pub async fn summarize_history_for_compaction_cancellable(
     };
 
     if summary.trim().is_empty() {
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[33m[summarize-history] empty summary — returning messages unchanged\x1b[0m"
         );
         return messages;
     }
 
-    eprintln!(
+    crate::tool_progress!(
         "\x1b[2m[summarize-history] summary produced: {} bytes (from {} bytes transcript)\x1b[0m",
         summary.len(),
         transcript.len()
@@ -819,7 +831,7 @@ pub async fn microcompact_oldest_block(
         Ok(s) if !s.trim().is_empty() => s,
         Ok(_) => return (messages, 0),
         Err(e) => {
-            eprintln!(
+            crate::tool_progress!(
                 "[microcompact] provider error summarizing block ({} bytes): {} — leaving unchanged",
                 orig_len, e
             );

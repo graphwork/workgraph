@@ -194,6 +194,18 @@ impl Tool for MapTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let inputs: Vec<String> = match input.get("inputs").and_then(|v| v.as_array()) {
             Some(arr) => arr
@@ -263,7 +275,7 @@ pub(crate) async fn run_map(
     std::fs::create_dir_all(&items_dir)
         .map_err(|e| format!("create items dir {:?}: {}", items_dir, e))?;
 
-    eprintln!(
+    crate::tool_progress!(
         "[map] start: {} items, task={:?}, parent_dir={}",
         inputs.len(),
         truncate(task, 80),
@@ -287,7 +299,7 @@ pub(crate) async fn run_map(
         let item_dir = items_dir.join(&item_slug);
         std::fs::create_dir_all(&item_dir)
             .map_err(|e| format!("create item_dir {:?}: {}", item_dir, e))?;
-        eprintln!(
+        crate::tool_progress!(
             "[map] item {}/{} ({}): {}",
             i + 1,
             inputs.len(),
@@ -324,7 +336,7 @@ pub(crate) async fn run_map(
         {
             Ok(r) => r,
             Err(_) => {
-                eprintln!(
+                crate::tool_progress!(
                     "\x1b[33m[map] item {}/{} timed out after {}s — killing sub-agent\x1b[0m",
                     i + 1,
                     inputs.len(),
@@ -484,7 +496,7 @@ async fn run_item(
                 // happening inside an item's sub-agent. Otherwise a
                 // long-running item looks frozen.
                 let tool_names: Vec<&str> = tool_uses.iter().map(|(_, n, _)| n.as_str()).collect();
-                eprintln!(
+                crate::tool_progress!(
                     "\x1b[2m[map item {} turn {}/{}: {}]\x1b[0m",
                     item_label,
                     turn + 1,

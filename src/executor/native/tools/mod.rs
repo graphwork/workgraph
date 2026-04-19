@@ -12,6 +12,7 @@ pub mod file;
 pub mod file_cache;
 pub mod map;
 pub mod reader;
+pub mod progress;
 pub mod research;
 pub mod summarize;
 pub mod web_fetch;

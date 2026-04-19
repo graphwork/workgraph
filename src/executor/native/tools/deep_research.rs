@@ -98,6 +98,23 @@ impl Tool for DeepResearchTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        // Install the progress callback for the duration of this
+        // execute() — any `tool_progress!` call inside nested code
+        // paths (decompose, research, synthesize) forwards to the
+        // chat transcript and `wg session attach` tails as well as
+        // stderr.
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let question = match input.get("question").and_then(|v| v.as_str()) {
             Some(q) if !q.trim().is_empty() => q.trim().to_string(),
@@ -120,7 +137,7 @@ impl Tool for DeepResearchTool {
                 )
             });
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[deep_research] question: {:?}\x1b[0m",
             truncate(&question, 100)
         );
@@ -157,7 +174,7 @@ impl Tool for DeepResearchTool {
                 vec![question.clone()]
             }
             Err(e) => {
-                eprintln!(
+                crate::tool_progress!(
                     "\x1b[2m[deep_research] decompose failed: {} — falling back to single-query research\x1b[0m",
                     e
                 );
@@ -165,12 +182,12 @@ impl Tool for DeepResearchTool {
             }
         };
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[deep_research] decomposed into {} sub-question(s)\x1b[0m",
             sub_questions.len()
         );
         for (i, sq) in sub_questions.iter().enumerate() {
-            eprintln!("\x1b[2m  {}. {}\x1b[0m", i + 1, truncate(sq, 100));
+            crate::tool_progress!("\x1b[2m  {}. {}\x1b[0m", i + 1, truncate(sq, 100));
         }
 
         // Step 2: research each. We instantiate ResearchTool directly
@@ -182,7 +199,7 @@ impl Tool for DeepResearchTool {
         };
         let mut briefs: Vec<(String, String)> = Vec::new(); // (sub_q, brief)
         for (i, sq) in sub_questions.iter().enumerate() {
-            eprintln!(
+            crate::tool_progress!(
                 "\x1b[2m[deep_research] ({}/{}) researching: {:?}\x1b[0m",
                 i + 1,
                 sub_questions.len(),
@@ -201,7 +218,7 @@ impl Tool for DeepResearchTool {
         }
 
         // Step 3: synthesize.
-        eprintln!("\x1b[2m[deep_research] synthesizing\x1b[0m");
+        crate::tool_progress!("\x1b[2m[deep_research] synthesizing\x1b[0m");
         match synthesize(provider.as_ref(), &question, &briefs).await {
             Ok(answer) => ToolOutput::success(answer),
             Err(e) => {

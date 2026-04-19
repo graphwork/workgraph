@@ -80,6 +80,18 @@ impl Tool for ResearchTool {
         }
     }
 
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: super::ToolStreamCallback,
+    ) -> ToolOutput {
+        super::progress::scope(
+            super::progress::from_tool_stream_callback(on_chunk),
+            self.execute(input),
+        )
+        .await
+    }
+
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
         let query = match input.get("query").and_then(|v| v.as_str()) {
             Some(q) if !q.trim().is_empty() => q.trim().to_string(),
@@ -101,7 +113,7 @@ impl Tool for ResearchTool {
                 )
             });
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[research] searching: {:?}\x1b[0m",
             truncate(&query, 80)
         );
@@ -134,7 +146,7 @@ impl Tool for ResearchTool {
 
         let urls_to_try: Vec<_> = urls.into_iter().take(MAX_URLS_TO_TRY).collect();
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[research] fetching up to {} of {} candidate URLs via Chrome\x1b[0m",
             MAX_PAGES_TO_SUMMARIZE,
             urls_to_try.len()
@@ -153,7 +165,7 @@ impl Tool for ResearchTool {
             let content = match fetch_page_content(url).await {
                 Ok(c) if !c.trim().is_empty() && c.len() > 50 && !looks_like_captcha_page(&c) => c,
                 Ok(c) if looks_like_captcha_page(&c) => {
-                    eprintln!(
+                    crate::tool_progress!(
                         "\x1b[2m[research] CAPTCHA detected, skipping: {}\x1b[0m",
                         truncate(url, 60)
                     );
@@ -183,7 +195,7 @@ impl Tool for ResearchTool {
             ));
         }
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[research] summarizing {} pages\x1b[0m",
             page_contents.len()
         );
@@ -233,7 +245,7 @@ impl Tool for ResearchTool {
                     // Empty summary — page had no relevant content
                 }
                 Err(e) => {
-                    eprintln!(
+                    crate::tool_progress!(
                         "\x1b[2m[research] summarize failed for {}: {}\x1b[0m",
                         truncate(url, 60),
                         e
@@ -278,7 +290,7 @@ impl Tool for ResearchTool {
             merged
         };
 
-        eprintln!(
+        crate::tool_progress!(
             "\x1b[2m[research] done: {} sources, {} chars\x1b[0m",
             summaries.len(),
             final_brief.len()
