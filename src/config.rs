@@ -205,7 +205,9 @@ pub struct NativeExecutorConfig {
     /// exact tool name. MCP tools use the `<server>__<tool>` form
     /// so you can deny a whole server by listing
     /// `filesystem__*` (glob matching is a future extension).
-    #[serde(default)]
+    /// Skipped when empty on serialize so `wg init` + subsequent
+    /// edits don't produce duplicate-key conflicts in the TOML.
+    #[serde(default, skip_serializing_if = "ToolPermissionsConfig::is_empty")]
     pub permissions: ToolPermissionsConfig,
 }
 
@@ -230,6 +232,15 @@ impl ToolPermissionsConfig {
     /// True if `tool_name` is on the denylist. Exact match for now.
     pub fn is_denied(&self, tool_name: &str) -> bool {
         self.deny_tools.iter().any(|d| d == tool_name)
+    }
+
+    /// True if no permissions are configured. Used by `#[serde(skip_serializing_if)]`
+    /// so the parent `NativeExecutorConfig` doesn't emit an empty
+    /// `[native_executor.permissions]` table — which would conflict
+    /// with user-appended `[native_executor.permissions]` entries
+    /// (TOML duplicate-key error).
+    pub fn is_empty(&self) -> bool {
+        self.deny_tools.is_empty()
     }
 }
 
