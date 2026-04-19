@@ -199,6 +199,38 @@ pub struct NativeExecutorConfig {
     /// Delegate (in-process subtask) settings.
     #[serde(default)]
     pub delegate: NativeDelegateConfig,
+
+    /// Tool-level permissions. Denylist-based for simplicity —
+    /// deny wins over allow, no rule means allowed. Matched on
+    /// exact tool name. MCP tools use the `<server>__<tool>` form
+    /// so you can deny a whole server by listing
+    /// `filesystem__*` (glob matching is a future extension).
+    #[serde(default)]
+    pub permissions: ToolPermissionsConfig,
+}
+
+/// Tool permission configuration. First cut is a simple denylist;
+/// room to grow to per-path / pattern matching without schema churn.
+///
+/// Example `.workgraph/config.toml`:
+/// ```toml
+/// [native_executor.permissions]
+/// deny_tools = ["bash", "write_file", "wg_done"]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolPermissionsConfig {
+    /// Tools that must NOT execute. A call to a denied tool returns
+    /// `ToolOutput::error("permission denied: ...")` to the agent,
+    /// visible in the tool_result block, so the model can adapt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_tools: Vec<String>,
+}
+
+impl ToolPermissionsConfig {
+    /// True if `tool_name` is on the denylist. Exact match for now.
+    pub fn is_denied(&self, tool_name: &str) -> bool {
+        self.deny_tools.iter().any(|d| d == tool_name)
+    }
 }
 
 /// Web access configuration for the native executor.

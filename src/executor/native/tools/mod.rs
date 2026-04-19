@@ -111,6 +111,12 @@ pub struct ToolCallResult {
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    /// Per-tool denylist, consulted before `execute` runs. When a
+    /// tool is on this list, every call to it returns a
+    /// `ToolOutput::error("permission denied: ...")` without
+    /// invoking the tool's `execute`. The agent sees the error in
+    /// its tool_result block and can adapt.
+    permissions: crate::config::ToolPermissionsConfig,
 }
 
 impl Default for ToolRegistry {
@@ -123,7 +129,16 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            permissions: crate::config::ToolPermissionsConfig::default(),
         }
+    }
+
+    /// Install a denylist-based permissions config on this
+    /// registry. Subsequent `execute` / `execute_streaming` calls
+    /// check each requested tool against the list before running.
+    pub fn with_permissions(mut self, permissions: crate::config::ToolPermissionsConfig) -> Self {
+        self.permissions = permissions;
+        self
     }
 
     /// Register a tool.
@@ -139,6 +154,12 @@ impl ToolRegistry {
 
     /// Execute a tool by name.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolOutput {
+        if self.permissions.is_denied(name) {
+            return ToolOutput::error(format!(
+                "permission denied: tool {:?} is on the deny list (see `[native_executor.permissions].deny_tools` in config.toml)",
+                name
+            ));
+        }
         match self.tools.get(name) {
             Some(tool) => tool.execute(input).await,
             None => ToolOutput::error(format!("Unknown tool: {}", name)),
@@ -152,6 +173,12 @@ impl ToolRegistry {
         input: &serde_json::Value,
         on_chunk: ToolStreamCallback,
     ) -> ToolOutput {
+        if self.permissions.is_denied(name) {
+            return ToolOutput::error(format!(
+                "permission denied: tool {:?} is on the deny list",
+                name
+            ));
+        }
         match self.tools.get(name) {
             Some(tool) => tool.execute_streaming(input, on_chunk).await,
             None => ToolOutput::error(format!("Unknown tool: {}", name)),
@@ -165,7 +192,14 @@ impl ToolRegistry {
             return self;
         }
 
-        let mut filtered = ToolRegistry::new();
+        let mut filtered = ToolRegistry {
+            tools: HashMap::new(),
+            // Preserve permissions across filter — explicit denies
+            // survive narrowing so a caller can't accidentally
+            // re-enable a denied tool by filtering down to a
+            // narrower allow-list that happens to include it.
+            permissions: self.permissions.clone(),
+        };
         for name in allowed {
             if let Some(tool) = self.tools.remove(name) {
                 filtered.tools.insert(name.clone(), tool);
@@ -194,7 +228,11 @@ impl ToolRegistry {
     /// commands but cannot write files, edit code, or run arbitrary
     /// bash that modifies state.
     pub fn filter_read_only(self) -> Self {
-        let mut filtered = ToolRegistry::new();
+        let mut filtered = ToolRegistry {
+            tools: HashMap::new(),
+            // Preserve permissions — same rationale as `filter`.
+            permissions: self.permissions.clone(),
+        };
         for (name, tool) in self.tools {
             if tool.is_read_only() {
                 filtered.tools.insert(name, tool);
@@ -376,7 +414,10 @@ impl ToolRegistry {
         working_dir: &Path,
         config: &NativeExecutorConfig,
     ) -> Self {
-        let mut registry = Self::new();
+        let mut registry = Self {
+            tools: HashMap::new(),
+            permissions: config.permissions.clone(),
+        };
 
         // File tools
         file::register_file_tools(&mut registry);
@@ -666,6 +707,78 @@ mod parallelism_tests {
         assert!(registry.is_read_only("reader"));
         assert!(!registry.is_read_only("writer"));
         assert!(!registry.is_read_only("missing"));
+    }
+
+    #[tokio::test]
+    async fn denied_tool_returns_error_without_executing() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "dangerous".to_string(),
+            read_only: false,
+        }));
+        registry.register(Box::new(TestTool {
+            tool_name: "safe".to_string(),
+            read_only: true,
+        }));
+        let registry = registry.with_permissions(crate::config::ToolPermissionsConfig {
+            deny_tools: vec!["dangerous".to_string()],
+        });
+
+        // Denied tool: error surfaces to agent, doesn't execute.
+        let out = registry.execute("dangerous", &serde_json::json!({})).await;
+        assert!(out.is_error, "denied tool must return an error");
+        assert!(
+            out.content.contains("permission denied"),
+            "error message must mention permission denied, got: {}",
+            out.content
+        );
+
+        // Non-denied tool still works.
+        let out = registry.execute("safe", &serde_json::json!({})).await;
+        assert!(!out.is_error);
+        assert_eq!(out.content, "ok-safe");
+
+        // Denial also applies to execute_streaming.
+        let cb: ToolStreamCallback = Box::new(|_| {});
+        let out = registry
+            .execute_streaming("dangerous", &serde_json::json!({}), cb)
+            .await;
+        assert!(out.is_error);
+        assert!(out.content.contains("permission denied"));
+    }
+
+    #[test]
+    fn permissions_survive_filter() {
+        // Filtering down to a narrower allow-list must NOT drop the
+        // denylist — otherwise a caller could bypass denies by
+        // filtering to an allow-list that happens to include the
+        // denied tool.
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "dangerous".to_string(),
+            read_only: false,
+        }));
+        let registry = registry
+            .with_permissions(crate::config::ToolPermissionsConfig {
+                deny_tools: vec!["dangerous".to_string()],
+            })
+            .filter(&["dangerous".to_string()]);
+        assert!(registry.permissions.is_denied("dangerous"));
+    }
+
+    #[test]
+    fn permissions_survive_filter_read_only() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "reader".to_string(),
+            read_only: true,
+        }));
+        let registry = registry
+            .with_permissions(crate::config::ToolPermissionsConfig {
+                deny_tools: vec!["reader".to_string()],
+            })
+            .filter_read_only();
+        assert!(registry.permissions.is_denied("reader"));
     }
 
     #[tokio::test]
