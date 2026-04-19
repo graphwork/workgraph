@@ -52,20 +52,28 @@ pub fn run_set(
                 .join(".workgraph")
                 .join("keys");
             fs::create_dir_all(&keys_dir)?;
-            // Set directory permissions to 700 (Unix only; Windows uses ACLs)
+            // Restrict directory and key file to the current user only.
+            // On Unix: chmod 700/600. On Windows: remove inherited ACEs
+            // and grant full control only to the current user via icacls.
             #[cfg(unix)]
             fs::set_permissions(&keys_dir, fs::Permissions::from_mode(0o700))?;
+            #[cfg(windows)]
+            restrict_windows_acl(&keys_dir);
 
             let key_path = keys_dir.join(format!("{}.key", provider));
             fs::write(&key_path, key_value)?;
-            // Set file permissions to 600 (Unix only; Windows uses ACLs)
             #[cfg(unix)]
             fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
+            #[cfg(windows)]
+            restrict_windows_acl(&key_path);
 
             #[cfg(unix)]
             println!("Stored key securely in {} (mode 600)", key_path.display());
-            #[cfg(not(unix))]
-            println!("Stored key in {}", key_path.display());
+            #[cfg(windows)]
+            println!(
+                "Stored key in {} (ACL restricted to current user)",
+                key_path.display()
+            );
             (None, Some(key_path.to_string_lossy().to_string()))
         } else {
             unreachable!()
@@ -413,6 +421,63 @@ fn check_openrouter_key_live(
     } else {
         let status = resp.status();
         bail!("HTTP {}", status);
+    }
+}
+
+/// Restrict a file or directory so only the current user can access it.
+///
+/// Uses `icacls` to wipe inherited ACEs (`/inheritance:r`) and grant full
+/// control to the current user (`/grant:r "%USERNAME%":(F)`). This is the
+/// Windows analogue of `chmod 600`/`700` for a single-user setup.
+///
+/// Best-effort: any failure (missing icacls, elevated parent folder, etc.)
+/// is reported to stderr but does not fail the overall operation — the key
+/// is still written and usable, just with the parent folder's default ACL.
+#[cfg(windows)]
+fn restrict_windows_acl(path: &Path) {
+    use std::process::Command;
+    // `%USERNAME%` isn't expanded by Command::new (no shell); pull it from
+    // the environment and pass literally.
+    let user = match std::env::var("USERNAME") {
+        Ok(u) if !u.is_empty() => u,
+        _ => {
+            eprintln!(
+                "warning: USERNAME env var unset; skipping ACL tightening on {}",
+                path.display()
+            );
+            return;
+        }
+    };
+
+    let run = |args: &[&str]| -> std::io::Result<std::process::Output> {
+        use std::os::windows::process::CommandExt;
+        Command::new("icacls")
+            .args(args)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+    };
+
+    let p = path.to_string_lossy().into_owned();
+    // Step 1: disable inheritance and convert inherited ACEs to explicit
+    // so we can then wipe them cleanly.
+    if let Err(e) = run(&[&p, "/inheritance:r"]) {
+        eprintln!(
+            "warning: icacls /inheritance:r failed on {}: {}",
+            path.display(),
+            e
+        );
+        return;
+    }
+    // Step 2: grant full control to current user, replacing any existing
+    // grants for that principal.
+    let grant = format!("{}:(F)", user);
+    if let Err(e) = run(&[&p, "/grant:r", &grant]) {
+        eprintln!(
+            "warning: icacls /grant:r {} failed on {}: {}",
+            grant,
+            path.display(),
+            e
+        );
     }
 }
 
