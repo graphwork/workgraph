@@ -181,7 +181,15 @@ fn run_event_loop_inner(
         let refreshed = app.maybe_refresh();
         let drained = app.drain_commands();
 
-        if needs_redraw || refreshed || drained {
+        // Phase 3c takeover poll. When the user sent a message in
+        // observer mode, we wrote a release marker and set
+        // chat_pty_takeover_pending_since. Poll the session lock
+        // each iteration: once the external handler releases (or
+        // after 15s timeout), drop the observer pane and spawn a
+        // fresh owner pane so the conversation continues live.
+        let takeover_redraw = poll_chat_pty_takeover(app);
+
+        if needs_redraw || refreshed || drained || takeover_redraw {
             let completed = terminal.draw(|frame| render::draw(frame, app))?;
             // Update the shared screen snapshot for IPC dump clients.
             update_shared_screen(completed.buffer, app, shared_screen);
@@ -2241,6 +2249,81 @@ fn maybe_load_more_chat_history(app: &mut VizApp) {
             app.chat.scroll = app.chat.scroll.saturating_add(estimated_new_lines);
         }
     }
+}
+
+/// Phase 3c: poll for the external handler to release the session
+/// lock after the user sent a message in observer mode.
+///
+/// Returns `true` if state changed (so the caller triggers a
+/// redraw). Returns `false` if nothing is pending OR the handler
+/// hasn't released yet.
+///
+/// Timeout: 15s. If the handler is mid-tool-call it may not release
+/// sooner; the design (sessions-as-identity.md §Long tool calls in
+/// progress) explicitly prefers journal consistency over UI
+/// snappiness. On timeout we drop the pending state but keep the
+/// observer pane — the user can re-send or wait.
+fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
+    let since = match app.chat_pty_takeover_pending_since {
+        Some(t) => t,
+        None => return false,
+    };
+    let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+    let chat_dir = app.workgraph_dir.join("chat").join(&task_id);
+    // Has the handler released?
+    let released = match workgraph::session_lock::read_holder(&chat_dir) {
+        Ok(None) => true,
+        Ok(Some(info)) => !info.alive,
+        Err(_) => false,
+    };
+    let timed_out = since.elapsed() > std::time::Duration::from_secs(15);
+
+    if !released && !timed_out {
+        return false;
+    }
+
+    app.chat_pty_takeover_pending_since = None;
+
+    if timed_out && !released {
+        eprintln!(
+            "[tui] takeover timed out for {} — handler still busy; \
+             retry by sending another message.",
+            task_id
+        );
+        return true;
+    }
+
+    // Lock is free. Drop observer pane and spawn owner.
+    app.task_panes.remove(&task_id);
+    app.chat_pty_observer = false;
+    // Clear any stale release marker so our new handler doesn't
+    // immediately exit upon seeing it.
+    workgraph::session_lock::clear_release_marker(&chat_dir);
+
+    let self_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "wg".to_string());
+    let env: Vec<(String, String)> = vec![(
+        "WG_DIR".to_string(),
+        app.workgraph_dir.display().to_string(),
+    )];
+    match crate::tui::pty_pane::PtyPane::spawn(
+        &self_exe,
+        &["spawn-task", &task_id],
+        &env,
+        24,
+        80,
+    ) {
+        Ok(pane) => {
+            app.task_panes.insert(task_id, pane);
+        }
+        Err(e) => {
+            eprintln!("[tui] takeover spawn failed: {}", e);
+            app.chat_pty_mode = false;
+        }
+    }
+    true
 }
 
 /// Toggle PTY-backed rendering for the active coordinator's chat.

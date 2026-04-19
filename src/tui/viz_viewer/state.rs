@@ -3532,9 +3532,15 @@ pub struct VizApp {
     /// When in PTY mode, whether the pane is a read-only observer
     /// (`wg session attach`, because a handler elsewhere owns the
     /// session lock) or a full owner (`wg spawn-task`, TUI holds
-    /// the lock). Determined at toggle-on time. Phase 3c will wire
-    /// the transition from observer → owner on user-send.
+    /// the lock). Determined at toggle-on time.
     pub chat_pty_observer: bool,
+
+    /// Set when the user has sent a message while in observer mode.
+    /// The TUI wrote the release marker and is now polling for the
+    /// external handler to release the lock. Once released, the
+    /// observer pane is dropped and an owner pane is spawned.
+    /// Phase 3c of sessions-as-identity-rollout.md.
+    pub chat_pty_takeover_pending_since: Option<std::time::Instant>,
 
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
@@ -3909,6 +3915,7 @@ impl VizApp {
             task_panes: HashMap::new(),
             chat_pty_mode: false,
             chat_pty_observer: false,
+            chat_pty_takeover_pending_since: None,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -8109,6 +8116,7 @@ impl VizApp {
             task_panes: HashMap::new(),
             chat_pty_mode: false,
             chat_pty_observer: false,
+            chat_pty_takeover_pending_since: None,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -10753,6 +10761,25 @@ impl VizApp {
 
         // Send via `wg chat` command in background.
         self.exec_command(args, CommandEffect::ChatResponse(request_id));
+
+        // Phase 3c takeover-on-send. If the Chat tab is showing a
+        // read-only observer PTY (because some other process owns
+        // the session), a user message is the signal for takeover.
+        // Write the release marker alongside the inbox append so
+        // the external handler notices at its next turn boundary,
+        // drains the inbox (including our just-written message),
+        // and exits cleanly. The main event loop polls for lock
+        // release and swaps the observer pane for an owner pane
+        // when it happens.
+        if self.chat_pty_mode && self.chat_pty_observer {
+            let task_id = format!(".coordinator-{}", self.active_coordinator_id);
+            let chat_dir = self.workgraph_dir.join("chat").join(&task_id);
+            if let Err(e) = workgraph::session_lock::request_release(&chat_dir) {
+                eprintln!("[tui] failed to write release marker for takeover: {}", e);
+            } else {
+                self.chat_pty_takeover_pending_since = Some(std::time::Instant::now());
+            }
+        }
     }
 
     /// Attempt to attach a file at the given path to the pending chat message.
