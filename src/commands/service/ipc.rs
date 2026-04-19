@@ -1,13 +1,11 @@
 //! IPC protocol: message types and request handlers for the service daemon.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use interprocess::local_socket::{Stream, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::Duration;
-
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
 use workgraph::cron::{calculate_next_fire, parse_cron_expression};
@@ -181,11 +179,15 @@ impl IpcResponse {
 }
 
 /// Handle a single IPC connection
-#[cfg(unix)]
+///
+/// Uses `&Stream` for both reading and writing — `interprocess::local_socket::Stream`
+/// exposes `Read`/`Write` on shared references, so we can run a `BufReader<&Stream>`
+/// and write responses via `(&stream).write_all(...)` in the same scope without
+/// needing a `try_clone`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
-    stream: UnixStream,
+    stream: Stream,
     running: &mut bool,
     wake_coordinator: &mut bool,
     urgent_wake: &mut bool,
@@ -195,21 +197,18 @@ pub(crate) fn handle_connection(
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    // Ensure reads block (the accepting listener is non-blocking, but we want
+    // straightforward request/response on the accepted connection).
+    stream.set_nonblocking(false)?;
 
-    // Clone stream for writing
-    let mut write_stream = stream
-        .try_clone()
-        .context("Failed to clone stream for writing")?;
-    let reader = BufReader::new(stream);
+    let reader = BufReader::new(&stream);
 
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
                 let response = IpcResponse::error(&format!("Read error: {}", e));
-                if let Err(we) = write_response(&mut write_stream, &response) {
+                if let Err(we) = write_response(&stream, &response) {
                     logger.warn(&format!("Failed to send error response: {}", we));
                 }
                 return Ok(());
@@ -225,7 +224,7 @@ pub(crate) fn handle_connection(
             Err(e) => {
                 logger.warn(&format!("Invalid IPC request: {}", e));
                 let response = IpcResponse::error(&format!("Invalid request: {}", e));
-                write_response(&mut write_stream, &response)?;
+                write_response(&stream, &response)?;
                 continue;
             }
         };
@@ -242,7 +241,7 @@ pub(crate) fn handle_connection(
             daemon_cfg,
             logger,
         );
-        write_response(&mut write_stream, &response)?;
+        write_response(&stream, &response)?;
 
         // Check if we should stop
         if !*running {
@@ -253,11 +252,11 @@ pub(crate) fn handle_connection(
     Ok(())
 }
 
-#[cfg(unix)]
-fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> Result<()> {
+fn write_response(stream: &Stream, response: &IpcResponse) -> Result<()> {
     let json = serde_json::to_string(response)?;
-    writeln!(stream, "{}", json)?;
-    stream.flush()?;
+    let mut w = stream;
+    writeln!(w, "{}", json)?;
+    w.flush()?;
     Ok(())
 }
 

@@ -25,15 +25,38 @@ pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
 /// Check if a process with the given PID is alive.
 ///
 /// Uses `kill(pid, 0)` on Unix to probe without sending a signal.
-/// On non-Unix platforms, conservatively assumes the process is alive.
+/// On Windows, uses `tasklist` to check for the PID.
 #[cfg(unix)]
 pub fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-#[cfg(not(unix))]
-pub fn is_process_alive(_pid: u32) -> bool {
-    true
+#[cfg(windows)]
+pub fn is_process_alive(pid: u32) -> bool {
+    // `tasklist /FI "PID eq <pid>" /NH /FO CSV` prints a row per matching
+    // process and "INFO: No tasks are running which match the specified
+    // criteria." on stderr when nothing matches. A quick sentinel check on
+    // stdout is cheaper than parsing.
+    use std::process::Command;
+    let out = Command::new("tasklist")
+        .args([
+            "/FI",
+            &format!("PID eq {}", pid),
+            "/NH",
+            "/FO",
+            "CSV",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            // When there's a match the output contains the PID in a CSV cell;
+            // when nothing matches tasklist prints the "No tasks..." line to
+            // stderr and produces empty stdout.
+            !s.trim().is_empty() && s.contains(&pid.to_string())
+        }
+        _ => false,
+    }
 }
 
 /// Collect all descendant PIDs of `root_pid` by walking `/proc/*/stat`.
@@ -174,9 +197,37 @@ pub fn kill_process_graceful(pid: u32, wait_secs: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn kill_process_graceful(_pid: u32, _wait_secs: u64) -> anyhow::Result<()> {
-    anyhow::bail!("Process killing is only supported on Unix systems")
+#[cfg(windows)]
+pub fn kill_process_graceful(pid: u32, wait_secs: u64) -> anyhow::Result<()> {
+    use std::process::Command;
+    use std::thread;
+    use std::time::Duration;
+
+    if !is_process_alive(pid) {
+        return Ok(());
+    }
+
+    // `taskkill /T` without /F requests a graceful WM_CLOSE + tree kill on
+    // the process and its descendants. This is the closest Windows analogue
+    // to SIGTERM-on-a-process-group. Console-only processes often ignore it
+    // since they have no window, but it's still worth trying first.
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .output();
+
+    for _ in 0..wait_secs {
+        thread::sleep(Duration::from_secs(1));
+        if !is_process_alive(pid) {
+            return Ok(());
+        }
+    }
+
+    // Still alive — force kill the tree.
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+
+    Ok(())
 }
 
 /// Send SIGKILL to `pid` and all its descendants.
@@ -199,9 +250,14 @@ pub fn kill_process_force(pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn kill_process_force(_pid: u32) -> anyhow::Result<()> {
-    anyhow::bail!("Process killing is only supported on Unix systems")
+#[cfg(windows)]
+pub fn kill_process_force(pid: u32) -> anyhow::Result<()> {
+    use std::process::Command;
+    // `taskkill /F /T /PID` hard-terminates the whole tree.
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+    Ok(())
 }
 
 /// SIGKILL every descendant of `root_pid` *without* touching `root_pid`
@@ -221,8 +277,37 @@ pub fn kill_descendants(root_pid: u32) {
     }
 }
 
-#[cfg(not(unix))]
-pub fn kill_descendants(_root_pid: u32) {}
+#[cfg(windows)]
+pub fn kill_descendants(root_pid: u32) {
+    // `taskkill /T` without listing the parent PID target isn't possible;
+    // `taskkill /F /T /PID <root>` kills the root AND its tree. We want the
+    // tree only. Walk the tree via `wmic` and kill each child.
+    use std::process::Command;
+    let Ok(out) = Command::new("wmic")
+        .args([
+            "process",
+            "where",
+            &format!("ParentProcessId={}", root_pid),
+            "get",
+            "ProcessId",
+            "/format:value",
+        ])
+        .output()
+    else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        if let Some(pid_str) = line.strip_prefix("ProcessId=")
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+            && pid != 0
+        {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .output();
+        }
+    }
+}
 
 /// Read a process's start time from `/proc/<pid>/stat` as seconds since epoch.
 ///

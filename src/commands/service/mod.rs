@@ -37,8 +37,61 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+use interprocess::local_socket::{
+    Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
+};
+
+/// Derive the local-socket name for the daemon at the given filesystem path.
+///
+/// On Unix, this is the filesystem path itself — the socket is a real UDS
+/// file at that location, so existing tooling (`ls`, `rm`, etc.) keeps
+/// working and multiple daemons on the same machine get distinct sockets
+/// naturally via distinct paths.
+///
+/// On Windows, named pipes live in a flat `\\.\pipe\*` namespace rather
+/// than the filesystem, and `interprocess` rejects filesystem-style paths
+/// with "not a named pipe path". We hash the full path into a short stable
+/// name so each workgraph directory still gets its own pipe.
+fn socket_name(
+    path: &Path,
+) -> std::io::Result<interprocess::local_socket::Name<'static>> {
+    #[cfg(unix)]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        path.as_os_str()
+            .to_os_string()
+            .to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // Normalise so the client and the daemon derive the same hash even
+        // when one side got an msys-style path and the other got a Windows
+        // one. `std::path::absolute` resolves `.` components and returns a
+        // platform-native absolute path without requiring the path to exist.
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut hasher = DefaultHasher::new();
+        abs.hash(&mut hasher);
+        let name = format!("workgraph-daemon-{:016x}", hasher.finish());
+        name.to_ns_name::<GenericNamespaced>()
+    }
+}
+
+/// Connect to the daemon's local socket.
+fn connect_to_socket(path: &Path) -> std::io::Result<Stream> {
+    Stream::connect(socket_name(path)?)
+}
+
+/// Bind a listener for the daemon's local socket.
+///
+/// On Unix this creates a real UDS file at `path`. On Windows the path
+/// seeds a namespaced named-pipe identifier and no filesystem entry is
+/// created.
+fn bind_socket(path: &Path) -> std::io::Result<Listener> {
+    ListenerOptions::new().name(socket_name(path)?).create_sync()
+}
 
 use chrono::{DateTime, Utc};
 
@@ -848,7 +901,6 @@ pub fn find_orphan_daemon_pids(_dir: &Path, _exclude_pid: Option<u32>) -> Vec<u3
 }
 
 /// Start the service daemon
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
     dir: &Path,
@@ -878,7 +930,7 @@ pub fn run_start(
                 // Send shutdown via IPC first (graceful)
                 let socket = PathBuf::from(&state.socket_path);
                 if socket.exists()
-                    && let Ok(mut stream) = UnixStream::connect(&socket)
+                    && let Ok(mut stream) = connect_to_socket(&socket)
                 {
                     let request = IpcRequest::Shutdown {
                         force: false,
@@ -1164,22 +1216,6 @@ pub fn run_start(
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_start(
-    _dir: &Path,
-    _socket_path: Option<&str>,
-    _port: Option<u16>,
-    _max_agents: Option<usize>,
-    _executor: Option<&str>,
-    _interval: Option<u64>,
-    _model: Option<&str>,
-    _json: bool,
-    _force: bool,
-    _no_coordinator_agent: bool,
-) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Reap zombie child processes (non-blocking).
 ///
 /// The daemon spawns agent processes via `Command::spawn()`. When an agent
@@ -1194,6 +1230,12 @@ fn reap_zombies() {
             break; // No more zombies (0) or error (-1, e.g. no children)
         }
     }
+}
+
+#[cfg(not(unix))]
+fn reap_zombies() {
+    // Windows has no zombie-process concept: the kernel finalises exited
+    // processes without requiring a parent `waitpid`. No-op.
 }
 
 /// Mutable coordinator runtime config, updated by Reconfigure IPC.
@@ -1780,7 +1822,6 @@ fn do_registry_refresh(dir: &Path) -> Result<String> {
 }
 
 /// Run the actual daemon loop (called by forked process)
-#[cfg(unix)]
 pub fn run_daemon(
     dir: &Path,
     socket_path: &str,
@@ -1848,11 +1889,12 @@ pub fn run_daemon(
         fs::remove_file(&socket)?;
     }
 
-    // Bind to socket
-    let listener = UnixListener::bind(&socket)
+    // Bind the daemon socket (UDS on Unix, named pipe on Windows).
+    let listener = bind_socket(&socket)
         .with_context(|| format!("Failed to bind to socket {:?}", socket))?;
 
-    // Set socket permissions
+    // Tighten Unix socket permissions to owner-only (Windows named pipes
+    // default to the creator's security descriptor, which is equivalent).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1860,8 +1902,8 @@ pub fn run_daemon(
         fs::set_permissions(&socket, perms)?;
     }
 
-    // Set non-blocking for graceful shutdown
-    listener.set_nonblocking(true)?;
+    // Non-blocking so the accept loop can also service timers/tick checks.
+    listener.set_nonblocking(ListenerNonblockingMode::Both)?;
 
     let dir = dir.to_path_buf();
     let mut running = true;
@@ -2061,20 +2103,13 @@ pub fn run_daemon(
     let mut archival_error_count: u64 = 0;
     let mut refresh_error_count: u64 = 0;
 
-    // Obtain the raw fd for poll()-based waiting. This lets the daemon
-    // sleep until an IPC connection arrives OR a timeout expires, instead
-    // of busy-polling with a fixed sleep.
-    let listener_fd = {
-        use std::os::unix::io::AsRawFd;
-        listener.as_raw_fd()
-    };
-
     while running {
         // Reap zombie child processes (agents that have exited).
         // Even though agents call setsid() to create a new session, they are
         // still children of the daemon (parent-child is set at fork, not
         // affected by setsid). Without reaping, killed agents remain as
-        // zombies and is_process_alive(pid) keeps returning true.
+        // zombies and is_process_alive(pid) keeps returning true. No-op on
+        // Windows — the OS cleans up exited children without parent action.
         reap_zombies();
 
         // Calculate how long to sleep. We wake on: incoming IPC connection,
@@ -2102,22 +2137,38 @@ pub fn run_daemon(
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
 
-        // Wait for an incoming connection or timeout.
-        let mut pollfd = libc::pollfd {
-            fd: listener_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let poll_ret = unsafe { libc::poll(&mut pollfd, 1, poll_timeout_ms) };
-
-        if poll_ret < 0 {
-            // EINTR (e.g. SIGCHLD) — just loop back to reap and retry.
-            continue;
+        // Wait for an incoming connection or the computed timeout. The
+        // listener is non-blocking, so we try accept, sleep briefly if it
+        // returns WouldBlock, and loop until either a connection arrives or
+        // the timeout elapses. On Unix this used `libc::poll` directly on
+        // the listener fd, but `interprocess` doesn't expose a raw fd/HANDLE
+        // for named pipes, so we poll in userspace. At 10ms per poll this
+        // costs ~100 wakeups per second at steady state — a fine trade for
+        // portability.
+        let poll_start = Instant::now();
+        let poll_timeout = Duration::from_millis(poll_timeout_ms as u64);
+        let mut accepted: Option<Stream> = None;
+        loop {
+            match listener.accept() {
+                Ok(stream) => {
+                    accepted = Some(stream);
+                    break;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if poll_start.elapsed() >= poll_timeout {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    logger.error(&format!("Accept error: {}", e));
+                    break;
+                }
+            }
         }
 
-        // Try to accept; may still get WouldBlock if poll was a timeout.
-        match listener.accept() {
-            Ok((stream, _)) => {
+        if let Some(stream) = accepted {
+            {
                 let mut wake_coordinator = false;
                 let mut conn_urgent_wake = false;
                 let mut conn_delete_coordinator_ids = Vec::new();
@@ -2185,14 +2236,8 @@ pub fn run_daemon(
                     }
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // poll() timed out — no connection pending, fall through to
-                // tick checks.
-            }
-            Err(e) => {
-                logger.error(&format!("Accept error: {}", e));
-            }
         }
+        // (No connection within the timeout falls through to tick checks.)
 
         // Keep coordinator chat history compacted so native coordinator sessions
         // can reset their in-memory conversation between exchanges.
@@ -2507,13 +2552,33 @@ pub fn run_daemon(
                                             original_args[1..].join(" "),
                                         ));
 
-                                        // exec() replaces the process image — only
-                                        // returns on error.
-                                        use std::os::unix::process::CommandExt;
-                                        let err = process::Command::new(path)
+                                        // Hot-restart: on Unix, exec() replaces the
+                                        // process image in-place (same PID, cheap).
+                                        // On Windows there's no exec, so we spawn
+                                        // the new binary as a child and exit —
+                                        // the PID changes but state is on disk,
+                                        // so the new daemon picks up where we
+                                        // left off. In both cases the call returns
+                                        // only on error.
+                                        #[cfg(unix)]
+                                        let err = {
+                                            use std::os::unix::process::CommandExt;
+                                            process::Command::new(path)
+                                                .args(&original_args[1..])
+                                                .exec()
+                                        };
+                                        #[cfg(windows)]
+                                        let err: std::io::Error = match process::Command::new(path)
                                             .args(&original_args[1..])
-                                            .exec();
-                                        // If we get here, exec failed.
+                                            .spawn()
+                                        {
+                                            Ok(_) => {
+                                                logger.info("New daemon spawned, exiting old one");
+                                                std::process::exit(0);
+                                            }
+                                            Err(e) => e,
+                                        };
+                                        // If we get here, the restart failed.
                                         logger.error(&format!(
                                             "Exec-restart failed: {}. Continuing with old binary.",
                                             err
@@ -2566,19 +2631,6 @@ pub fn run_daemon(
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_daemon(
-    _dir: &Path,
-    _socket_path: &str,
-    _max_agents: Option<usize>,
-    _executor: Option<&str>,
-    _interval: Option<u64>,
-    _model: Option<&str>,
-    _no_coordinator_agent: bool,
-) -> Result<()> {
-    anyhow::bail!("Daemon is only supported on Unix systems")
-}
-
 /// Check if the caller is an agent and refuse stop/pause operations.
 /// Returns `Err` if `WG_AGENT_ID` is set, `Ok(())` otherwise.
 fn guard_agent_stop_pause() -> Result<()> {
@@ -2589,14 +2641,12 @@ fn guard_agent_stop_pause() -> Result<()> {
 }
 
 /// Stop the service daemon
-#[cfg(unix)]
 pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     guard_agent_stop_pause()?;
     run_stop_inner(dir, force, kill_agents, json)
 }
 
 /// Inner stop logic (no agent guard) — used by `run_restart` to bypass the guard.
-#[cfg(unix)]
 fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
@@ -2614,7 +2664,7 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     // Try to send shutdown command via socket
     let socket = PathBuf::from(&state.socket_path);
     if socket.exists()
-        && let Ok(mut stream) = UnixStream::connect(&socket)
+        && let Ok(mut stream) = connect_to_socket(&socket)
     {
         let request = IpcRequest::Shutdown { force, kill_agents };
         let json_req = serde_json::to_string(&request)?;
@@ -2684,17 +2734,11 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_stop(_dir: &Path, _force: bool, _kill_agents: bool, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Restart the service daemon: graceful stop (agents kept alive) then start.
 ///
 /// Reads the running daemon's effective config (max_agents, executor, model,
 /// poll_interval) before stopping, and passes it to the new daemon so the
 /// restart is transparent.
-#[cfg(unix)]
 pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     // Capture the current daemon's effective config before stopping.
     let prior_config = CoordinatorState::load(dir);
@@ -2724,13 +2768,7 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     )
 }
 
-#[cfg(not(unix))]
-pub fn run_restart(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Show service status
-#[cfg(unix)]
 pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
@@ -2947,13 +2985,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_status(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Reload service daemon configuration at runtime
-#[cfg(unix)]
 pub fn run_reload(
     dir: &Path,
     max_agents: Option<usize>,
@@ -3022,20 +3054,7 @@ pub fn run_reload(
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_reload(
-    _dir: &Path,
-    _max_agents: Option<usize>,
-    _executor: Option<&str>,
-    _interval: Option<u64>,
-    _model: Option<&str>,
-    _json: bool,
-) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Pause the coordinator (no new agent spawns, running agents unaffected)
-#[cfg(unix)]
 pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
     guard_agent_stop_pause()?;
 
@@ -3065,13 +3084,7 @@ pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_pause(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Resume the coordinator (triggers immediate tick) and clear provider health pauses
-#[cfg(unix)]
 pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
     // Clear provider health pause state before resuming coordinator
     match workgraph::service::ProviderHealth::load(dir) {
@@ -3135,13 +3148,7 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_resume(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Freeze all running agents (SIGSTOP) and pause the coordinator
-#[cfg(unix)]
 pub fn run_freeze(dir: &Path, json: bool) -> Result<()> {
     guard_agent_stop_pause()?;
 
@@ -3188,13 +3195,7 @@ pub fn run_freeze(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_freeze(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Thaw all frozen agents (SIGCONT) and resume the coordinator
-#[cfg(unix)]
 pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
     let response = send_request(dir, &IpcRequest::Thaw)?;
 
@@ -3250,13 +3251,7 @@ pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_thaw(_dir: &Path, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Create a new coordinator session via IPC
-#[cfg(unix)]
 pub fn run_create_coordinator(
     dir: &Path,
     name: Option<&str>,
@@ -3293,19 +3288,7 @@ pub fn run_create_coordinator(
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_create_coordinator(
-    _dir: &Path,
-    _name: Option<&str>,
-    _model: Option<&str>,
-    _executor: Option<&str>,
-    _json: bool,
-) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Delete a coordinator session via IPC
-#[cfg(unix)]
 pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
     let response = send_request(dir, &IpcRequest::DeleteCoordinator { coordinator_id })?;
 
@@ -3329,13 +3312,7 @@ pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Re
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_delete_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Archive a coordinator session via IPC (mark as Done)
-#[cfg(unix)]
 pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
     let response = send_request(dir, &IpcRequest::ArchiveCoordinator { coordinator_id })?;
 
@@ -3359,13 +3336,7 @@ pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> R
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_archive_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Stop a coordinator session via IPC (kill agent, reset to Open)
-#[cfg(unix)]
 pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
     let response = send_request(dir, &IpcRequest::StopCoordinator { coordinator_id })?;
 
@@ -3389,13 +3360,7 @@ pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Resu
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Interrupt a coordinator's current generation via IPC (sends SIGINT, does NOT kill).
-#[cfg(unix)]
 pub fn run_interrupt_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
     let response = send_request(dir, &IpcRequest::InterruptCoordinator { coordinator_id })?;
 
@@ -3419,15 +3384,9 @@ pub fn run_interrupt_coordinator(dir: &Path, coordinator_id: u32, json: bool) ->
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn run_interrupt_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
-    anyhow::bail!("Service daemon is only supported on Unix systems")
-}
-
 /// Check if a Unix socket is accepting connections by doing a quick connect+drop.
-#[cfg(unix)]
 fn socket_accepting(socket: &Path) -> bool {
-    UnixStream::connect(socket).is_ok()
+    connect_to_socket(socket).is_ok()
 }
 
 /// Public wrapper: check if the service process is alive
@@ -3445,7 +3404,6 @@ pub fn is_service_paused(dir: &Path) -> bool {
 /// Retries transient connection failures (ECONNREFUSED, broken pipe) up to 2
 /// times with short exponential backoff (50ms, 100ms) before giving up.
 /// Distinguishes "daemon not running" from "daemon unreachable" in errors.
-#[cfg(unix)]
 pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
         anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
@@ -3482,10 +3440,13 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
             ));
         }
 
-        match UnixStream::connect(&socket) {
+        match connect_to_socket(&socket) {
             Ok(mut stream) => {
-                stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-                stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                // `interprocess::local_socket::Stream` doesn't expose per-op
+                // read/write timeouts portably (they mean different things for
+                // UDS vs named pipes). For local IPC on the same machine these
+                // were a belt-and-braces safety net; dropping them is fine in
+                // practice, and Ctrl+C still interrupts a truly hung daemon.
 
                 let json = serde_json::to_string(&request)?;
                 writeln!(stream, "{}", json)?;
@@ -3526,11 +3487,6 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
         MAX_RETRIES,
         err
     )
-}
-
-#[cfg(not(unix))]
-pub fn send_request(_dir: &Path, _request: &IpcRequest) -> Result<IpcResponse> {
-    anyhow::bail!("IPC is only supported on Unix systems")
 }
 
 #[cfg(test)]
