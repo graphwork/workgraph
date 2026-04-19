@@ -35,18 +35,21 @@ dirs = "5.0"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "signal"] }
 rustyline = "14"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 ascii-dag = "0.8"
 zstd = "0.13"
 dialoguer = "0.11"
 walkdir = "2"
-ansi-to-tui = "7"
+ansi-to-tui = "8"
 strip-ansi-escapes = "0.2"
 fuzzy-matcher = "0.3"
-tui-tree-widget = "0.23"
+tui-tree-widget = "0.24"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
-syntect-tui = { version = "3", default-features = false }
+# syntect-tui 3.0.6 is pinned to ratatui 0.29 and isn't yet updated
+# for ratatui 0.30. We inline the (small) Style/Span conversion in
+# `src/tui/syntect_convert.rs` to avoid being stuck on the older
+# ratatui until upstream catches up.
 regex = "1"
 async-trait = "0.1"
 html-escape = "0.2"
@@ -54,7 +57,7 @@ futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json", "blocking", "stream", "rustls-tls"], default-features = false }
 glob = "0.3"
 unicode-width = "0.2"
-edtui = "0.9"
+edtui = "0.11"
 csv = "1.3"
 cron = "0.12"
 log = "0.4"
@@ -88,8 +91,8 @@ hex = "0.4.3"
 # ratatui TUI with a pseudo-terminal, render its output as a
 # terminal-cell grid, forward key events to its stdin.
 portable-pty = "0.9"
-vt100 = "0.15"
-tui-term = "0.2"
+vt100 = "0.16"
+tui-term = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -99,11 +102,3 @@ tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
 workgraph = { path = ".", features = ["test-support"] }
-
-# Local vt100 fork: patches out upstream 0.15.2 panics in
-# screen.rs::text() at column-wrap + wide-char boundaries that fire
-# when the embedded `wg nex` writes its banner / prompt glyphs.
-# Upstream 0.16.0+ has related fixes but conflicts with ratatui 0.29's
-# exact unicode-width=0.2.0 pin. Keep the patch until ratatui upgrades.
-[patch.crates-io]
-vt100 = { path = "vendor/vt100" }

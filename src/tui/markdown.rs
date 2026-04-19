@@ -368,16 +368,10 @@ impl MdRenderer {
                         if trimmed.is_empty() && text.contains('\n') {
                             continue;
                         }
-                        match syntect_tui::into_span((style, trimmed)) {
-                            Ok(span) => {
-                                let mut s = span.style;
-                                s = s.bg(COLOR_CODE_BLOCK_BG);
-                                spans.push(Span::styled(span.content.into_owned(), s));
-                            }
-                            Err(_) => {
-                                spans.push(Span::styled(trimmed.to_owned(), bg_style));
-                            }
-                        }
+                        let span = crate::tui::syntect_convert::into_span((style, trimmed));
+                        let mut s = span.style;
+                        s = s.bg(COLOR_CODE_BLOCK_BG);
+                        spans.push(Span::styled(span.content.into_owned(), s));
                     }
                 }
                 Err(_) => {

@@ -509,20 +509,10 @@ fn highlight_lines(
         match highlighter.highlight_line(line, &assets.syntax_set) {
             Ok(ranges) => {
                 for (style, text) in ranges {
-                    match syntect_tui::into_span((style, text)) {
-                        Ok(span) => {
-                            // Strip trailing newline from the span text
-                            let s = span.content.trim_end_matches('\n');
-                            if !s.is_empty() {
-                                spans.push(Span::styled(s.to_owned(), span.style));
-                            }
-                        }
-                        Err(_) => {
-                            let s = text.trim_end_matches('\n');
-                            if !s.is_empty() {
-                                spans.push(Span::raw(s.to_owned()));
-                            }
-                        }
+                    let span = crate::tui::syntect_convert::into_span((style, text));
+                    let s = span.content.trim_end_matches('\n');
+                    if !s.is_empty() {
+                        spans.push(Span::styled(s.to_owned(), span.style));
                     }
                 }
             }

@@ -489,7 +489,7 @@ fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &App,
 ) -> std::io::Result<()> {
-    terminal.draw(|f| {
+    terminal.draw(|f| -> () {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -540,7 +540,8 @@ fn draw<B: ratatui::backend::Backend>(
             Span::raw(" send"),
         ]);
         f.render_widget(Paragraph::new(hint), chunks[2]);
-    })?;
+    })
+    .map_err(|e| std::io::Error::other(format!("draw failed: {:?}", e)))?;
     Ok(())
 }
 

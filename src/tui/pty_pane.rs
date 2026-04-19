@@ -146,24 +146,9 @@ impl PtyPane {
                             // live even if a chunk failed to render,
                             // which is much better UX than a locked
                             // black screen.
-                            // vt100 0.15 panics on certain wide-char
-                            // glyphs at column boundaries (em-dash
-                            // 0xe2 0x80 0x94 in the nex banner is
-                            // reproducible). Replace the few known
-                            // offenders with ASCII equivalents BEFORE
-                            // the parser sees them — and keep the
-                            // catch_unwind below as a defense in depth.
-                            let sanitized = sanitize_pty_bytes(&buf[..n]);
-                            let parser_for_catch = Arc::clone(&reader_parser);
-                            let _ = std::panic::catch_unwind(
-                                std::panic::AssertUnwindSafe(move || {
-                                    let mut p = match parser_for_catch.lock() {
-                                        Ok(g) => g,
-                                        Err(poisoned) => poisoned.into_inner(),
-                                    };
-                                    p.process(&sanitized);
-                                }),
-                            );
+                            if let Ok(mut p) = reader_parser.lock() {
+                                p.process(&buf[..n]);
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
@@ -244,7 +229,8 @@ impl PtyPane {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        p.set_size(rows, cols);
+        // vt100 0.16 moved set_size from Parser to Screen.
+        p.screen_mut().set_size(rows, cols);
         drop(p);
         self.rows = rows;
         self.cols = cols;
@@ -292,66 +278,6 @@ impl Drop for PtyPane {
         // OS reaps it when the process exits.
         let _ = self.reader_thread.take();
     }
-}
-
-/// Replace known-problematic wide-character UTF-8 sequences with
-/// ASCII equivalents before handing bytes to the vt100 parser.
-///
-/// vt100 0.15.2 has an unwrap-on-None bug (screen.rs:934) that fires
-/// on certain wide-glyph column-boundary transitions. The nex banner
-/// contains an em-dash (U+2014, 0xE2 0x80 0x94) which triggers it
-/// every time. Until we can upgrade vt100 past the bug (blocked by
-/// ratatui 0.29's exact unicode-width pin), this sanitizer lets the
-/// common case render. Tool output is typically ASCII so it passes
-/// through unchanged; only the decorative glyphs get rewritten.
-fn sanitize_pty_bytes(input: &[u8]) -> Vec<u8> {
-    // vt100 0.15.2 panics on certain UTF-8 byte sequences at column
-    // boundaries. Replace common glyphs with ASCII equivalents AND
-    // strip any remaining non-ASCII byte to `?` as a defense-in-depth
-    // measure. Loses fidelity for non-English content but prevents
-    // the pane from going black on every panic. Upgrading vt100 to
-    // 0.16+ (blocked by ratatui 0.29's exact unicode-width=0.2.0 pin)
-    // will let us remove this.
-    const REPLACEMENTS: &[(&[u8], &[u8])] = &[
-        (&[0xE2, 0x80, 0x94], b"--"),   // em-dash U+2014
-        (&[0xE2, 0x80, 0x93], b"-"),    // en-dash U+2013
-        (&[0xE2, 0x80, 0xA6], b"..."),  // ellipsis U+2026
-        (&[0xE2, 0x86, 0x92], b"->"),   // rightwards arrow U+2192
-        (&[0xE2, 0x86, 0x90], b"<-"),   // leftwards arrow U+2190
-    ];
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        let mut replaced = false;
-        for (pat, rep) in REPLACEMENTS {
-            if input[i..].starts_with(pat) {
-                out.extend_from_slice(rep);
-                i += pat.len();
-                replaced = true;
-                break;
-            }
-        }
-        if replaced {
-            continue;
-        }
-        let b = input[i];
-        if b < 0x80 {
-            // ASCII or control — safe.
-            out.push(b);
-            i += 1;
-        } else {
-            // Non-ASCII byte we don't have a mapping for. Skip the
-            // whole UTF-8 codepoint (1 leading byte + continuation
-            // bytes) and emit `?`. UTF-8 continuation bytes are
-            // 10xxxxxx so we advance past them.
-            out.push(b'?');
-            i += 1;
-            while i < input.len() && (input[i] & 0xC0) == 0x80 {
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 /// Convert a crossterm `KeyEvent` into the byte sequence a Unix PTY
@@ -504,32 +430,6 @@ mod tests {
     fn f1_emits_ss3_prefix() {
         let e = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
         assert_eq!(key_event_to_bytes(&e), b"\x1bOP");
-    }
-
-    #[test]
-    fn sanitizer_replaces_em_dash() {
-        let s = "wg nex \u{2014} session".as_bytes();
-        let out = sanitize_pty_bytes(s);
-        assert_eq!(out, b"wg nex -- session");
-    }
-
-    #[test]
-    fn sanitizer_passes_ascii_through() {
-        let s = b"plain ascii text";
-        assert_eq!(sanitize_pty_bytes(s), s);
-    }
-
-    #[test]
-    fn sanitizer_handles_mid_stream_replacement() {
-        // Em-dash in the middle with bytes on both sides.
-        let s = b"a\xE2\x80\x94b";
-        assert_eq!(sanitize_pty_bytes(s), b"a--b");
-    }
-
-    #[test]
-    fn sanitizer_ellipsis_becomes_three_dots() {
-        let s = "loading\u{2026}done".as_bytes();
-        assert_eq!(sanitize_pty_bytes(s), b"loading...done");
     }
 
     #[test]

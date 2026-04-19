@@ -121,7 +121,9 @@ fn run_loop<B: ratatui::backend::Backend>(
     // writes. Clamp to a sane minimum — the first real `draw` call
     // below resizes the pane to the actual frame area immediately,
     // so any "wrong" initial dims are transient.
-    let initial = terminal.size()?;
+    let initial = terminal
+        .size()
+        .map_err(|e| anyhow::anyhow!("terminal.size() failed: {:?}", e))?;
     let init_rows = initial.height.max(24);
     let init_cols = initial.width.max(80);
     let mut pane = PtyPane::spawn(wg_bin, args, env, init_rows, init_cols)
@@ -130,11 +132,15 @@ fn run_loop<B: ratatui::backend::Backend>(
     loop {
         // Draw: full-screen PTY. Resize the PTY to match the drawing
         // area so the embedded nex reflows its output correctly.
-        terminal.draw(|f| {
-            let area: Rect = f.area();
-            let _ = pane.resize(area.height, area.width);
-            pane.render(f, area);
-        })?;
+        // Ratatui 0.30's Backend::Error is no longer Send+Sync, so we
+        // can't use `?` directly with anyhow — map explicitly.
+        terminal
+            .draw(|f| {
+                let area: Rect = f.area();
+                let _ = pane.resize(area.height, area.width);
+                pane.render(f, area);
+            })
+            .map_err(|e| anyhow::anyhow!("terminal.draw() failed: {:?}", e))?;
 
         // Child-exit check: once `wg nex` exits (user /quit, EOF,
         // max_turns, etc.) we tear down the host TUI. Check before
