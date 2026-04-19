@@ -2267,9 +2267,20 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
         // Dead — drop so we can respawn fresh.
         app.task_panes.remove(&task_id);
     }
-    // Spawn `wg spawn-task <task-id>` in a PTY. Sizes are a safe
-    // default; the first render/resize will correct to the actual
-    // pane area.
+
+    // Decide spawn mode by lock state. Observer mode (another
+    // handler already owns the session) spawns `wg session attach`
+    // which tails the streaming/outbox files read-only. Owner mode
+    // (no current handler) spawns `wg spawn-task` which acquires
+    // the lock and runs the real handler. Phase 3c will wire the
+    // takeover-on-send path that bridges from observer → owner.
+    let chat_dir = app.workgraph_dir.join("chat").join(&task_id);
+    let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|info| info.alive);
+    app.chat_pty_observer = observer_mode;
+
     let self_exe = std::env::current_exe()
         .ok()
         .and_then(|p| p.to_str().map(|s| s.to_string()))
@@ -2278,18 +2289,24 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
         "WG_DIR".to_string(),
         app.workgraph_dir.display().to_string(),
     )];
-    match crate::tui::pty_pane::PtyPane::spawn(
-        &self_exe,
-        &["spawn-task", &task_id],
-        &env,
-        24,
-        80,
-    ) {
+
+    let args: Vec<&str> = if observer_mode {
+        vec!["session", "attach", &task_id]
+    } else {
+        vec!["spawn-task", &task_id]
+    };
+
+    match crate::tui::pty_pane::PtyPane::spawn(&self_exe, &args, &env, 24, 80) {
         Ok(pane) => {
             app.task_panes.insert(task_id, pane);
         }
         Err(e) => {
-            eprintln!("[tui] failed to spawn PTY handler for {}: {}", task_id, e);
+            eprintln!(
+                "[tui] failed to spawn {} pane for {}: {}",
+                if observer_mode { "observer" } else { "owner" },
+                task_id,
+                e
+            );
             app.chat_pty_mode = false;
         }
     }

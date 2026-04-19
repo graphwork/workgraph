@@ -3529,6 +3529,13 @@ pub struct VizApp {
     /// widgets. Toggle with Ctrl+T in the Chat tab.
     pub chat_pty_mode: bool,
 
+    /// When in PTY mode, whether the pane is a read-only observer
+    /// (`wg session attach`, because a handler elsewhere owns the
+    /// session lock) or a full owner (`wg spawn-task`, TUI holds
+    /// the lock). Determined at toggle-on time. Phase 3c will wire
+    /// the transition from observer → owner on user-send.
+    pub chat_pty_observer: bool,
+
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
@@ -3901,6 +3908,7 @@ impl VizApp {
             no_history,
             task_panes: HashMap::new(),
             chat_pty_mode: false,
+            chat_pty_observer: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -8100,6 +8108,7 @@ impl VizApp {
             no_history: false,
             task_panes: HashMap::new(),
             chat_pty_mode: false,
+            chat_pty_observer: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
