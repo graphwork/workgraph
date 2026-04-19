@@ -339,7 +339,17 @@ pub fn run(
         }
     }
 
-    let result = rt.block_on(agent.run_interactive(message))?;
+    // Eval mode: suppress the stderr half of `tool_progress!` for
+    // the duration of the run. Callback routing (if any scope
+    // installs one) still works; only the process-wide stderr
+    // broadcast is silenced. Non-eval callers pass `false` and the
+    // scope is a no-op — backward-compatible.
+    let result = rt.block_on(
+        workgraph::executor::native::tools::progress::stderr_scope(
+            eval_mode,
+            agent.run_interactive(message),
+        ),
+    )?;
 
     if verbose {
         eprintln!(

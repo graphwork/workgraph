@@ -39,6 +39,17 @@ tokio::task_local! {
     /// an `execute_streaming` call — `emit_if_set` is a no-op in
     /// that case, so non-streaming callers don't pay any cost.
     pub static CURRENT: ProgressCallback;
+
+    /// When set to `true`, the `tool_progress!` macro skips its
+    /// stderr write (callback still fires if scoped). Scoped by
+    /// `stderr_scope(true, ...)`. Used by `--eval-mode` so the
+    /// benchmark harness gets clean stderr logs — progress data
+    /// is still available to any in-scope callback, just not
+    /// broadcast to the process's stderr.
+    ///
+    /// Default (outside any `stderr_scope` call): stderr fires,
+    /// preserving backward compatibility for every non-eval path.
+    pub static STDERR_SUPPRESSED: bool;
 }
 
 /// Run `fut` with `callback` installed as the active progress
@@ -55,16 +66,38 @@ where
     CURRENT.scope(callback, fut).await
 }
 
+/// Run `fut` with a stderr-suppression flag installed for the
+/// task. When `suppress` is `true`, `tool_progress!` calls inside
+/// `fut` skip their `eprintln!` — useful for `--eval-mode` where
+/// the harness captures stderr as logs and we want them minimal.
+///
+/// Composes with `scope`: nest this outside an `execute_streaming`
+/// call and the inner callback still fires with progress lines,
+/// only stderr is silenced.
+pub async fn stderr_scope<F, T>(suppress: bool, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    STDERR_SUPPRESSED.scope(suppress, fut).await
+}
+
 /// Internal: forward `s` to the active progress callback if one
 /// is set, otherwise drop it. Used by the `progress!` macro.
 pub fn emit_if_set(s: &str) {
     let _ = CURRENT.try_with(|cb| cb(s.to_string()));
 }
 
-/// Emit a progress line. Writes to stderr (always, matching the
-/// old `eprintln!` behavior) and forwards to the task-local
-/// progress callback if one is set (so the TUI chat transcript
-/// and `wg session attach` pick it up).
+/// Internal: check whether stderr is currently suppressed for
+/// this task. Returns `false` outside any `stderr_scope` call, so
+/// callers that never opt in get the original always-on stderr.
+pub fn stderr_suppressed() -> bool {
+    STDERR_SUPPRESSED.try_with(|v| *v).unwrap_or(false)
+}
+
+/// Emit a progress line. Writes to stderr (unless the enclosing
+/// task is inside a `stderr_scope(true, ...)`) and forwards to
+/// the task-local progress callback if one is set (so the TUI
+/// chat transcript and `wg session attach` pick it up).
 ///
 /// Format args just like `eprintln!`. Prefer one progress line
 /// per meaningful sub-step — the TUI shows these as live output
@@ -73,7 +106,9 @@ pub fn emit_if_set(s: &str) {
 macro_rules! tool_progress {
     ($($arg:tt)*) => {{
         let __line = format!($($arg)*);
-        eprintln!("{}", __line);
+        if !$crate::executor::native::tools::progress::stderr_suppressed() {
+            eprintln!("{}", __line);
+        }
         $crate::executor::native::tools::progress::emit_if_set(&__line);
     }};
 }
@@ -134,5 +169,44 @@ mod tests {
         .await;
         let got = received.lock().unwrap().clone();
         assert_eq!(got, vec!["before yield".to_string(), "after yield".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn stderr_suppressed_default_is_false() {
+        // Outside any stderr_scope, stderr suppression is off — the
+        // default-compat guarantee for non-eval callers.
+        assert!(!stderr_suppressed());
+    }
+
+    #[tokio::test]
+    async fn stderr_scope_sets_the_task_local() {
+        stderr_scope(true, async {
+            assert!(stderr_suppressed());
+        })
+        .await;
+        // And it's cleared outside the scope.
+        assert!(!stderr_suppressed());
+    }
+
+    #[tokio::test]
+    async fn stderr_scope_composes_with_progress_scope() {
+        // stderr suppression + a progress callback: callback still
+        // fires, stderr-suppression flag also visible. This is the
+        // exact eval-mode shape — cb may or may not be set, and
+        // stderr is off regardless.
+        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let received_cb = received.clone();
+        let cb: ProgressCallback = Arc::new(move |s: String| {
+            received_cb.lock().unwrap().push(s);
+        });
+        stderr_scope(true, async {
+            scope(cb, async {
+                assert!(stderr_suppressed(), "outer scope must survive inner");
+                emit_if_set("line-A");
+            })
+            .await;
+        })
+        .await;
+        assert_eq!(received.lock().unwrap().clone(), vec!["line-A".to_string()]);
     }
 }
