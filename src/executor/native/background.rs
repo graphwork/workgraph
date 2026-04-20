@@ -138,7 +138,7 @@ impl JobStore {
     /// Get all jobs (sorted by created_at).
     pub fn list(&self) -> Vec<&Job> {
         let mut jobs: Vec<&Job> = self.jobs.values().collect();
-        jobs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        jobs.sort_by_key(|a| a.created_at);
         jobs
     }
 

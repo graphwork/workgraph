@@ -967,7 +967,7 @@ async fn search_google_news(
             })
             .collect();
         let chunk_urls: Vec<String> = join_all(futures).await;
-        for (mut result, new_url) in chunk.iter().cloned().zip(chunk_urls.into_iter()) {
+        for (mut result, new_url) in chunk.iter().cloned().zip(chunk_urls) {
             result.url = new_url;
             resolved.push(result);
         }
