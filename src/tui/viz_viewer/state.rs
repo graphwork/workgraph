@@ -48,6 +48,88 @@ pub fn editor_clear(state: &mut EditorState) {
     *state = new_emacs_editor();
 }
 
+/// Split the new-coordinator prompt's text into (name, cli-flags).
+///
+/// Users can type e.g. `"my-coord --executor codex --model claude:opus"`
+/// in the coordinator-name prompt. Anything before the first `--` is
+/// the name; everything from `--` onward becomes a flag vector that
+/// gets appended to the `wg service create-coordinator` call.
+///
+/// Whitespace outside quoted strings separates tokens; quotes keep
+/// spaces together. This is a minimal shell-style tokenizer — not
+/// POSIX-compliant, just enough for typical flag values.
+pub fn split_name_and_flags(input: &str) -> (String, Vec<String>) {
+    // Locate the first `--` *not* embedded inside a word. Anything
+    // before it is the name; everything from it onward is tokenized
+    // as flags.
+    let mut name_end = input.len();
+    let mut chars = input.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '-'
+            && matches!(chars.peek(), Some((_, '-')))
+            && (i == 0 || input[..i].ends_with(char::is_whitespace))
+        {
+            name_end = i;
+            break;
+        }
+    }
+    let name_part = input[..name_end].to_string();
+    let flag_part = tokenize_shell(&input[name_end..]);
+    (name_part, flag_part)
+}
+
+/// Minimal shell-style tokenizer. Handles single + double quotes
+/// and backslash-escaped characters outside quotes. Unterminated
+/// quotes are treated as extending to end of string.
+fn tokenize_shell(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            } else {
+                cur.push(c);
+            }
+        } else if in_double {
+            if c == '"' {
+                in_double = false;
+            } else if c == '\\'
+                && let Some(&next) = chars.peek()
+            {
+                chars.next();
+                cur.push(next);
+            } else {
+                cur.push(c);
+            }
+        } else {
+            match c {
+                ' ' | '\t' | '\n' => {
+                    if !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                }
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '\\' => {
+                    if let Some(&next) = chars.peek() {
+                        chars.next();
+                        cur.push(next);
+                    }
+                }
+                _ => cur.push(c),
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Insert-mode paste: inserts text at cursor and leaves cursor after the
 /// inserted text.  This replaces edtui's `on_paste_event` which uses Vim
 /// Normal-mode semantics (`append_str`) and leaves the cursor one position
@@ -11177,12 +11259,26 @@ impl VizApp {
     }
 
     /// Create a new coordinator session via IPC and switch to it.
+    ///
+    /// The text from the name prompt is parsed to support inline
+    /// executor/model flags — users can type e.g.
+    /// `"my-coord --executor codex"` or `"--model claude:opus"`
+    /// instead of dropping to the CLI to call
+    /// `wg service create-coordinator --executor codex`. Anything
+    /// before the first `--` is the name; everything after is
+    /// forwarded as CLI flags.
     pub fn create_coordinator(&mut self, name: Option<String>) {
-        // Send CreateCoordinator IPC in background; the response will contain the new ID.
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
-        if let Some(ref n) = name {
-            args.push("--name".to_string());
-            args.push(n.clone());
+        if let Some(n) = name {
+            let (name_part, flag_part) = split_name_and_flags(&n);
+            let name_trimmed = name_part.trim();
+            if !name_trimmed.is_empty() {
+                args.push("--name".to_string());
+                args.push(name_trimmed.to_string());
+            }
+            for token in flag_part {
+                args.push(token);
+            }
         }
         self.exec_command(args, CommandEffect::CreateCoordinator);
     }
@@ -15134,6 +15230,55 @@ mod hud_tests {
                 .iter()
                 .any(|l| l.contains("zero-iter"))
         );
+    }
+}
+
+#[cfg(test)]
+mod split_name_and_flags_tests {
+    use super::*;
+
+    #[test]
+    fn name_only() {
+        let (name, flags) = split_name_and_flags("my-coord");
+        assert_eq!(name, "my-coord");
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn name_with_trailing_flags() {
+        let (name, flags) = split_name_and_flags("my-coord --executor codex");
+        assert_eq!(name.trim(), "my-coord");
+        assert_eq!(flags, vec!["--executor", "codex"]);
+    }
+
+    #[test]
+    fn flags_only_no_name() {
+        let (name, flags) = split_name_and_flags("--model codex:gpt-5-codex");
+        assert_eq!(name.trim(), "");
+        assert_eq!(flags, vec!["--model", "codex:gpt-5-codex"]);
+    }
+
+    #[test]
+    fn multiple_flags() {
+        let (name, flags) = split_name_and_flags("frontend --executor codex --model claude:opus");
+        assert_eq!(name.trim(), "frontend");
+        assert_eq!(flags, vec!["--executor", "codex", "--model", "claude:opus"]);
+    }
+
+    #[test]
+    fn quoted_value_kept_whole() {
+        let (name, flags) = split_name_and_flags("coord --name \"has spaces\"");
+        assert_eq!(name.trim(), "coord");
+        assert_eq!(flags, vec!["--name", "has spaces"]);
+    }
+
+    #[test]
+    fn double_dash_inside_name_not_split() {
+        // `my--coord` is one word (no whitespace before `--`) so the
+        // entire thing is the name.
+        let (name, flags) = split_name_and_flags("my--coord");
+        assert_eq!(name, "my--coord");
+        assert!(flags.is_empty());
     }
 }
 
