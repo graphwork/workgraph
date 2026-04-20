@@ -4,8 +4,36 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Strip the Windows extended-length path prefix (`\\?\`) from a path.
+///
+/// `PathBuf::canonicalize` on Windows returns paths in verbatim form like
+/// `\\?\C:\src\ontempo\run.sh`. Most Windows APIs accept that, but some
+/// tools that consume paths as arguments don't — notably Git-for-Windows
+/// bash.exe fails to locate the script ("No such file or directory")
+/// before it can run, and Git itself bails in `git worktree add` with
+/// "could not create leading directories of '//?/C:/...'". Strip the
+/// prefix so those tools see the plain `C:\...` form, which they all
+/// handle.
+///
+/// No-op on non-Windows targets.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str()
+            && let Some(rest) = s.strip_prefix(r"\\?\")
+        {
+            // UNC form `\\?\UNC\server\share\...` must become `\\server\share\...`
+            if let Some(unc) = rest.strip_prefix("UNC\\") {
+                return PathBuf::from(format!(r"\\{unc}"));
+            }
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
 
 use workgraph::agency;
 use workgraph::config::{CapBehavior, Config, EndpointConfig};
@@ -527,9 +555,15 @@ pub(crate) fn spawn_agent_inner(
         &settings.executor_type,
     )?;
 
-    // Run the wrapper script
+    // Run the wrapper script. On Windows, `wrapper_path` often comes back
+    // from PathBuf::canonicalize with the `\\?\` extended-length prefix
+    // (e.g. `\\?\C:\src\ontempo\.workgraph\agents\agent-710\run.sh`). Most
+    // Windows APIs accept that form, but Git-for-Windows' bash.exe does
+    // not — it reports "No such file or directory" before the script can
+    // run, and the agent dies instantly with no output.log. Strip the
+    // prefix so bash sees a plain `C:\...` path, which it handles fine.
     let mut cmd = Command::new("bash");
-    cmd.arg(&wrapper_path);
+    cmd.arg(strip_verbatim_prefix(&wrapper_path));
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
