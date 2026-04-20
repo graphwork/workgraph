@@ -144,10 +144,12 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
-            "Claude CLI call failed (exit {:?}): {}",
+            "Claude CLI call failed (exit {:?}): stderr={:?} stdout={:?}",
             output.status.code(),
-            stderr.chars().take(500).collect::<String>()
+            stderr.chars().take(500).collect::<String>(),
+            stdout.chars().take(500).collect::<String>()
         );
     }
 
