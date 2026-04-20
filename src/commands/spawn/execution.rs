@@ -203,8 +203,15 @@ pub(crate) fn spawn_agent_inner(
     let task_exec = task.exec.clone();
     // Get per-task timeout override
     let task_timeout = task.timeout.clone();
-    // Get task model preference
-    let task_model = task.model.clone();
+    // Get task model preference. When unset, consult tag_routing
+    // rules so a whole subgraph tagged `frontend` (etc.) can pick
+    // up a specific model without editing each task. Explicit
+    // per-task models always win — tag routing is only the fallback
+    // when nothing else is set on the task.
+    let task_model = task.model.clone().or_else(|| {
+        workgraph::config::resolve_tag_routing(&config.tag_routing, &task.tags)
+            .map(|rule| rule.model.clone())
+    });
     // Get session_id for resume (from previous wg wait)
     let resume_session_id = task.session_id.clone();
     // Resolve exec_mode: task.exec_mode > role.default_exec_mode > "full"

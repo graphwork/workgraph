@@ -86,6 +86,26 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_registry: Vec<ModelRegistryEntry>,
 
+    /// Tag-based routing: assign a model (and optional executor) to
+    /// every task that has a given tag. Evaluated only when a task
+    /// lacks an explicit `model` — tag routing never overrides
+    /// explicit per-task settings. First matching rule wins (order
+    /// in config.toml determines priority). Useful for steering a
+    /// whole subgraph at once: tag tasks `frontend`, add a routing
+    /// rule, done.
+    ///
+    /// ```toml
+    /// [[tag_routing]]
+    /// tag = "frontend"
+    /// model = "codex:gpt-5-codex"
+    ///
+    /// [[tag_routing]]
+    /// tag = "infra"
+    /// model = "claude:opus"
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tag_routing: Vec<TagRoutingEntry>,
+
     /// Chat archive rotation settings
     #[serde(default)]
     pub chat: ChatConfig,
@@ -1307,6 +1327,46 @@ pub struct TierConfig {
     /// Model ID for premium tier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub premium: Option<String>,
+}
+
+/// Tag-based routing rule. When a task carries the named tag AND
+/// has no explicit `model`, the task's effective model becomes
+/// `model` (and optional `executor` hint). Rules are evaluated in
+/// declaration order; first match wins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagRoutingEntry {
+    /// Tag name to match against `task.tags`.
+    pub tag: String,
+    /// Model spec in provider:model format (e.g.
+    /// `codex:gpt-5-codex`, `oai-compat:qwen3-coder-30b`,
+    /// `claude:opus`). The normal resolver pipeline processes this
+    /// the same way as `task.model` would — including registry
+    /// alias lookup and tier resolution.
+    pub model: String,
+    /// Optional executor hint (`native`, `claude`, `codex`).
+    /// When omitted, executor is picked by the same rules as for
+    /// any other task: model's provider implies it (anthropic →
+    /// claude, oai-compat → native, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+}
+
+/// Resolve a model (and optional executor override) for a task via
+/// tag-based routing. Returns the first matching rule's settings,
+/// or `None` when no rule matches.
+///
+/// Call sites should only consult this when `task.model` is None:
+/// explicit per-task model always wins.
+pub fn resolve_tag_routing<'a>(
+    routing: &'a [TagRoutingEntry],
+    task_tags: &[String],
+) -> Option<&'a TagRoutingEntry> {
+    for rule in routing {
+        if task_tags.iter().any(|t| t == &rule.tag) {
+            return Some(rule);
+        }
+    }
+    None
 }
 
 /// Per-role model+provider assignment.
@@ -3839,6 +3899,58 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    fn tag_routing_matches_first_rule_by_order() {
+        let rules = vec![
+            TagRoutingEntry {
+                tag: "frontend".into(),
+                model: "codex:gpt-5-codex".into(),
+                executor: Some("codex".into()),
+            },
+            TagRoutingEntry {
+                tag: "infra".into(),
+                model: "claude:opus".into(),
+                executor: None,
+            },
+        ];
+        let tags = vec!["frontend".to_string(), "urgent".to_string()];
+        let hit = resolve_tag_routing(&rules, &tags).expect("match");
+        assert_eq!(hit.model, "codex:gpt-5-codex");
+        assert_eq!(hit.executor.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn tag_routing_returns_none_with_no_match() {
+        let rules = vec![TagRoutingEntry {
+            tag: "frontend".into(),
+            model: "codex:gpt-5-codex".into(),
+            executor: None,
+        }];
+        assert!(resolve_tag_routing(&rules, &["backend".to_string()]).is_none());
+    }
+
+    #[test]
+    fn tag_routing_first_rule_wins_when_task_has_multiple_tags() {
+        let rules = vec![
+            TagRoutingEntry {
+                tag: "urgent".into(),
+                model: "claude:opus".into(),
+                executor: None,
+            },
+            TagRoutingEntry {
+                tag: "frontend".into(),
+                model: "codex:gpt-5-codex".into(),
+                executor: None,
+            },
+        ];
+        let tags = vec!["frontend".to_string(), "urgent".to_string()];
+        // Declaration order wins: `urgent` is first.
+        assert_eq!(
+            resolve_tag_routing(&rules, &tags).unwrap().model,
+            "claude:opus"
+        );
+    }
 
     #[test]
     fn test_default_config() {
