@@ -11,9 +11,11 @@
 //!      the PTY embedding in `wg tui` just spawns `wg spawn-task`
 //!      and gets the handler's output as its own.
 //!
-//! Adapters live inline here (one match arm per executor). Claude /
-//! Codex / Gemini adapters are stubs until Phase 7 — they error
-//! cleanly with a "not yet implemented" message when selected.
+//! Adapters live inline here (one match arm per executor). Native
+//! execs into `wg nex`; Claude execs into `wg claude-handler`
+//! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Codex /
+//! Gemini / Amplifier are still stubs — they error cleanly with a
+//! "not yet implemented" message when selected.
 
 use std::path::Path;
 
@@ -74,11 +76,10 @@ impl HandlerSpec {
                 s
             }
             Self::Claude { chat_ref, model } => {
-                let mut s = format!("claude [TODO: adapter for session={}", chat_ref);
+                let mut s = format!("wg claude-handler --chat {}", chat_ref);
                 if let Some(m) = model {
-                    s.push_str(&format!(" model={}", m));
+                    s.push_str(&format!(" -m {}", m));
                 }
-                s.push(']');
                 s
             }
             Self::Codex { chat_ref } => format!("codex [TODO: adapter for session={}]", chat_ref),

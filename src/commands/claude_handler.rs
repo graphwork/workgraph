@@ -28,6 +28,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,12 +79,12 @@ pub fn run(
         chat_ref, role, model
     ));
 
-    // No custom signal handlers for now. On SIGTERM the kernel kills
-    // us without running Drop; the lock file lingers with a dead PID,
-    // and `SessionLock::acquire` treats it as stale on the next try.
-    // The supervisor (`spawn-task` parent / daemon) manages the
-    // restart cadence. Claude CLI becomes an orphan briefly and then
-    // gets reaped by init.
+    // SIGTERM → kernel kills us; lock lingers as stale, next handler
+    // picks it up. SIGINT → forwarded to the Claude CLI child so the
+    // user's "stop generating" gesture (e.g. Ctrl+C in the TUI
+    // pathway through `CoordinatorAgent::interrupt()`) preserves the
+    // session instead of killing the whole handler. See
+    // `install_sigint_forwarder` below.
     let shutdown = Arc::new(Mutex::new(false));
 
     // Resolve system prompt. For the coordinator-N convention we build
@@ -96,6 +97,13 @@ pub fn run(
         spawn_claude_process(workgraph_dir, &system_prompt, model, &logger)
             .context("spawn claude CLI")?;
 
+    // Record the child PID in a process-global atomic so the SIGINT
+    // handler (installed below, async-signal-safe) can forward to
+    // it. Set BEFORE installing the handler to close the race where
+    // SIGINT arrives between spawn and handler install.
+    CLAUDE_CHILD_PID.store(child.id() as i32, Ordering::SeqCst);
+    install_sigint_forwarder();
+
     // Reader thread: Claude stdout → ResponseEvent channel.
     let (resp_tx, resp_rx) = mpsc::channel::<ResponseEvent>();
     let reader_logger = logger.clone();
@@ -105,7 +113,13 @@ pub fn run(
         .context("spawn stdout reader thread")?;
 
     // Main loop: poll inbox, format → stdin, collect → outbox.
-    let mut inbox_cursor: u64 = current_inbox_cursor(workgraph_dir, chat_ref);
+    // Cursor starts at the highest inbox id that already has a
+    // matching outbox response — i.e., everything up to the last
+    // ANSWERED turn is skipped, and any pending (un-answered) turns
+    // are picked up by this handler. This handles both first-run
+    // (no outbox → cursor=0 → process all inbox) and restart
+    // (outbox has replies up to id N → cursor=N → process id N+1..).
+    let mut inbox_cursor: u64 = last_answered_inbox_id(workgraph_dir, chat_ref);
     let coordinator_id = parse_coordinator_id(chat_ref);
     let mut last_interaction = chrono::Utc::now().to_rfc3339();
     logger.info(&format!(
@@ -256,12 +270,33 @@ pub fn run(
     Ok(())
 }
 
-/// Compute the starting inbox cursor: the max inbox id already on
-/// disk. This avoids re-processing messages from prior handler runs
-/// (e.g. if the daemon supervisor restarts us after a crash).
-fn current_inbox_cursor(workgraph_dir: &Path, chat_ref: &str) -> u64 {
-    chat::read_inbox_ref(workgraph_dir, chat_ref)
-        .map(|msgs| msgs.iter().map(|m| m.id).max().unwrap_or(0))
+/// Compute the starting inbox cursor: the highest inbox id for which
+/// an outbox reply already exists (matched by `request_id`). Messages
+/// with larger ids OR without a matching outbox reply are unprocessed
+/// work, so we pick them up.
+///
+/// First run with a fresh inbox: no outbox → cursor = 0 → we process
+/// everything.
+///
+/// Restart scenario: outbox contains replies for the earlier inbox
+/// messages → cursor = id of the last answered one → we skip those
+/// and resume from the first un-answered message.
+fn last_answered_inbox_id(workgraph_dir: &Path, chat_ref: &str) -> u64 {
+    let inbox = match chat::read_inbox_ref(workgraph_dir, chat_ref) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    let outbox = match chat::read_outbox_since_ref(workgraph_dir, chat_ref, 0) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    let answered_request_ids: std::collections::HashSet<String> =
+        outbox.iter().map(|m| m.request_id.clone()).collect();
+    inbox
+        .iter()
+        .filter(|m| answered_request_ids.contains(&m.request_id))
+        .map(|m| m.id)
+        .max()
         .unwrap_or(0)
 }
 
@@ -559,6 +594,38 @@ fn build_collected(parts: &[String]) -> Option<CollectedResponse> {
         return None;
     }
     Some(CollectedResponse { summary })
+}
+
+// --- SIGINT forwarding -------------------------------------------------------
+
+/// PID of the Claude CLI child process. Set by the handler's main
+/// thread before installing the signal handler. The `SIGINT` handler
+/// (below) uses it to forward the signal; `libc::kill` is
+/// async-signal-safe so this is legal from inside a signal handler.
+/// 0 means "no child spawned yet" — the handler ignores SIGINT in
+/// that case rather than crashing.
+static CLAUDE_CHILD_PID: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn sigint_forwarder(_sig: libc::c_int) {
+    // Async-signal-safe: just read the atomic + issue kill.
+    let pid = CLAUDE_CHILD_PID.load(Ordering::SeqCst);
+    if pid > 0 {
+        unsafe {
+            libc::kill(pid, libc::SIGINT);
+        }
+    }
+    // Do NOT exit the handler process — Claude CLI treats SIGINT as
+    // "stop generating" and the handler continues processing future
+    // inbox messages after the interrupted turn flushes.
+}
+
+fn install_sigint_forwarder() {
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            sigint_forwarder as *const () as libc::sighandler_t,
+        );
+    }
 }
 
 // --- Handler-local logger ----------------------------------------------------

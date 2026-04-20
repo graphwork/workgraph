@@ -494,12 +494,24 @@ impl CoordinatorAgent {
 
     /// Shut down the coordinator agent.
     ///
-    /// Drops the sender channel, which causes the agent thread to exit
-    /// after the current message completes.
+    /// SIGTERMs the handler child so it releases its session lock
+    /// promptly, then drops the sender channel. Without the kill,
+    /// a Phase-7 handler (e.g. `wg claude-handler`) would be
+    /// orphaned on daemon exit — its blocking I/O keeps it alive
+    /// under init, still holding the chat-dir lock, and a fresh
+    /// daemon on restart can't reclaim the session.
     pub fn shutdown(self) {
+        let pid = *self.pid.lock().unwrap_or_else(|e| e.into_inner());
+        if pid > 0 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
         drop(self.tx);
-        // The agent thread will detect the channel close and exit.
-        // We don't join here to avoid blocking the daemon shutdown.
+        // The supervisor thread's `child.wait()` returns once the
+        // handler responds to SIGTERM, letting the forwarder and
+        // supervisor exit on their own. We don't join here to avoid
+        // blocking daemon shutdown.
     }
 }
 
