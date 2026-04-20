@@ -8,6 +8,36 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Strip the Windows extended-length path prefix (`\\?\`) from a path.
+///
+/// `PathBuf::canonicalize` on Windows returns paths in verbatim form like
+/// `\\?\C:\src\ontempo\.wg-worktrees\agent-710`. Git-for-Windows renders
+/// that prefix as forward-slashes (`//?/C:/...`) when it tries to create
+/// leading directories and then bails:
+///
+///     fatal: could not create leading directories of
+///     '//?/C:/src/ontempo/.wg-worktrees/agent-710/.git': Invalid argument
+///
+/// Strip the prefix so git sees a plain `C:\...` path, which it handles.
+/// No-op on non-Windows targets.
+///
+/// (Duplicated in `commands/spawn/execution.rs` per #24 — factor into a
+/// shared helper once both land.)
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str()
+            && let Some(rest) = s.strip_prefix(r"\\?\")
+        {
+            if let Some(unc) = rest.strip_prefix("UNC\\") {
+                return PathBuf::from(format!(r"\\{unc}"));
+            }
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Worktree paths and metadata for an isolated agent workspace.
 #[derive(Debug)]
 pub struct WorktreeInfo {
@@ -48,12 +78,14 @@ pub fn create_worktree(
         );
     }
 
-    // Create worktree from HEAD
+    // Create worktree from HEAD.
+    // Strip the `\\?\` prefix from both the target path and cwd on Windows,
+    // otherwise `git worktree add` fails to create the leading directories.
     let output = Command::new("git")
         .args(["worktree", "add"])
-        .arg(&worktree_dir)
+        .arg(strip_verbatim_prefix(&worktree_dir))
         .args(["-b", &branch, "HEAD"])
-        .current_dir(project_root)
+        .current_dir(strip_verbatim_prefix(project_root))
         .output()
         .context("Failed to run git worktree add")?;
 
@@ -70,14 +102,16 @@ pub fn create_worktree(
     std::os::unix::fs::symlink(&symlink_target, &symlink_path)
         .context("Failed to symlink .workgraph into worktree")?;
 
-    // Run worktree-setup.sh if it exists
+    // Run worktree-setup.sh if it exists. Same `\\?\` stripping as the
+    // main bash wrapper spawn — without it, bash can't parse the script
+    // path as an argument.
     let setup_script = workgraph_dir.join("worktree-setup.sh");
     if setup_script.exists() {
         let _ = Command::new("bash")
-            .arg(&setup_script)
-            .arg(&worktree_dir)
-            .arg(project_root)
-            .current_dir(&worktree_dir)
+            .arg(strip_verbatim_prefix(&setup_script))
+            .arg(strip_verbatim_prefix(&worktree_dir))
+            .arg(strip_verbatim_prefix(project_root))
+            .current_dir(strip_verbatim_prefix(&worktree_dir))
             .output(); // Best-effort; don't fail spawn if setup hook fails
     }
 
@@ -102,17 +136,18 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
         let _ = std::fs::remove_dir_all(&target_dir);
     }
 
-    // Force-remove the worktree
+    // Force-remove the worktree. Strip the `\\?\` prefix to match the
+    // create-path — git rejects it on both add and remove.
     let _ = Command::new("git")
         .args(["worktree", "remove", "--force"])
-        .arg(worktree_path)
-        .current_dir(project_root)
+        .arg(strip_verbatim_prefix(worktree_path))
+        .current_dir(strip_verbatim_prefix(project_root))
         .output();
 
     // Delete the branch
     let _ = Command::new("git")
         .args(["branch", "-D", branch])
-        .current_dir(project_root)
+        .current_dir(strip_verbatim_prefix(project_root))
         .output();
 
     // NOTE: We intentionally do NOT run `git worktree prune` here.
@@ -154,6 +189,35 @@ mod tests {
             .current_dir(path)
             .output()
             .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_strip_verbatim_prefix_windows() {
+        // Plain verbatim path
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\src\foo")),
+            PathBuf::from(r"C:\src\foo")
+        );
+        // UNC verbatim → plain UNC
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
+        // Non-verbatim path passes through unchanged
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\src\foo")),
+            PathBuf::from(r"C:\src\foo")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_strip_verbatim_prefix_noop_on_unix() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("/c/src/foo")),
+            PathBuf::from("/c/src/foo")
+        );
     }
 
     #[test]
