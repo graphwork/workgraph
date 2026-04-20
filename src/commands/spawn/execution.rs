@@ -578,6 +578,17 @@ pub(crate) fn spawn_agent_inner(
         }
     }
 
+    // Pass through the Claude Code OAuth token (if configured in [auth]
+    // of config.toml and not already in the daemon's env). Task agents
+    // shell out to the `claude` CLI for the claude executor; without
+    // this, agents on a headless Windows install either can't
+    // authenticate or the user has to export the token in every shell
+    // before starting the daemon. No-op when `claude login` has been
+    // run — the CLI picks up `~/.claude/credentials.json` on its own.
+    if let Some(token) = config.auth.resolve_claude_oauth_token() {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+
     // Set working directory: worktree overrides settings.working_dir
     if let Some(ref wt) = worktree_info {
         cmd.current_dir(&wt.path);

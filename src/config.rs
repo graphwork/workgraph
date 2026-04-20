@@ -105,6 +105,13 @@ pub struct Config {
     #[serde(default)]
     pub mcp: McpConfig,
 
+    /// Authentication credentials for child processes the daemon spawns
+    /// (coordinator agent, task agents, lightweight LLM calls). Only
+    /// consulted when the matching env var isn't already set; explicit
+    /// env always wins.
+    #[serde(default)]
+    pub auth: AuthConfig,
+
     /// True when `agent.model` was explicitly set in local config.
     /// Used by `resolve_model_for_role` to skip tier defaults in favor of agent.model.
     #[serde(skip)]
@@ -440,6 +447,89 @@ impl Default for OpenRouterConfig {
             track_session_costs: default_track_session_costs(),
             persist_cost_history: false,
         }
+    }
+}
+
+/// Authentication credentials for child processes the daemon spawns.
+///
+/// The daemon runs `claude` subprocesses for three things: the long-running
+/// coordinator agent (`spawn_claude_process`), lightweight LLM calls
+/// (`call_claude_cli` — chat compaction, triage, evaluation), and per-task
+/// agent wrappers (`spawn/execution.rs`). All three read credentials from
+/// the same places the Claude CLI itself does (env vars, `~/.claude/
+/// credentials.json`). If `claude login` has been run on the machine, this
+/// section can stay empty — the CLI resolves auth on its own.
+///
+/// This section only exists for headless setups where no interactive
+/// login happened (e.g. a daemon started via Task Scheduler / systemd at
+/// boot) and the user has a bare `sk-ant-oat01-…` token from
+/// `claude setup-token` or a subscription dashboard.
+///
+/// **Important:** `sk-ant-oat01-…` tokens are OAuth access tokens. They
+/// go in `CLAUDE_CODE_OAUTH_TOKEN` (Bearer scheme). Passing them in
+/// `ANTHROPIC_API_KEY` produces a 401 because the CLI sends that env
+/// with the `x-api-key` header, which is only valid for `sk-ant-api03-…`
+/// keys.
+///
+/// ```toml
+/// [auth]
+/// # Preferred: point at a file, leave the token out of git.
+/// claude_code_oauth_token_file = "~/.config/workgraph/oauth-token"
+///
+/// # Or inline (discouraged — keep `.workgraph/config.toml` out of VCS
+/// # if you use this form):
+/// # claude_code_oauth_token = "sk-ant-oat01-…"
+/// ```
+///
+/// Resolution order when the daemon spawns a claude subprocess:
+///   1. `CLAUDE_CODE_OAUTH_TOKEN` already in env → use as-is
+///   2. `[auth] claude_code_oauth_token` inline → inject into env
+///   3. `[auth] claude_code_oauth_token_file` → read file, inject
+///   4. Nothing here → Claude CLI falls back to `~/.claude/credentials.json`
+///      / its own refresh loop (the normal logged-in path)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Inline OAuth token (`sk-ant-oat01-…`). Discouraged because the file
+    /// ends up on disk in `.workgraph/config.toml`; prefer `_file` below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code_oauth_token: Option<String>,
+
+    /// Path to a file containing the OAuth token on a single line.
+    /// Supports `~/` and `$HOME/` expansion. ACL the file to your user
+    /// (`icacls <path> /inheritance:r /grant %USERNAME%:R` on Windows,
+    /// `chmod 600 <path>` on Unix) and keep it out of version control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code_oauth_token_file: Option<String>,
+}
+
+impl AuthConfig {
+    /// Resolve the Claude Code OAuth token from env → inline → file.
+    ///
+    /// Returns `None` if nothing is configured; callers should treat that
+    /// as "let the Claude CLI handle auth" rather than an error, because
+    /// `~/.claude/credentials.json` (written by `claude login`) is the
+    /// normal path.
+    pub fn resolve_claude_oauth_token(&self) -> Option<String> {
+        if let Ok(v) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN")
+            && !v.is_empty()
+        {
+            return Some(v);
+        }
+        if let Some(v) = self.claude_code_oauth_token.as_ref()
+            && !v.is_empty()
+        {
+            return Some(v.clone());
+        }
+        if let Some(path) = self.claude_code_oauth_token_file.as_ref() {
+            let expanded = expand_tilde(path);
+            if let Ok(content) = std::fs::read_to_string(&expanded) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        None
     }
 }
 

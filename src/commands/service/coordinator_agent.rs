@@ -2420,6 +2420,15 @@ fn spawn_claude_process(
     let mut cmd = Command::new(command);
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+
+    // If the user configured an OAuth token in [auth] of config.toml
+    // (and didn't already export CLAUDE_CODE_OAUTH_TOKEN), surface it
+    // into the child's env. Otherwise the CLI resolves auth itself.
+    if let Ok(cfg) = workgraph::config::Config::load_merged(dir)
+        && let Some(token) = cfg.auth.resolve_claude_oauth_token()
+    {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
     cmd.args([
         "--print",
         "--input-format",

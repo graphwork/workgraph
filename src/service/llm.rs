@@ -27,6 +27,27 @@ pub struct LlmCallResult {
 /// can easily exceed 1024 tokens. 4096 provides comfortable headroom.
 const LIGHTWEIGHT_MAX_TOKENS: u32 = 4096;
 
+/// If the daemon has a Claude OAuth token configured via `[auth]` in
+/// config.toml, inject it into the child's env so the spawned `claude`
+/// CLI can authenticate without requiring the caller to have exported
+/// `CLAUDE_CODE_OAUTH_TOKEN` beforehand. No-op when the token is already
+/// present in the env or not configured (falls back to the CLI's own
+/// credential resolution — `~/.claude/credentials.json`, etc.).
+fn inject_claude_oauth_token(cmd: &mut process::Command) {
+    // Best-effort: load config from cwd's workgraph dir. This is a pure
+    // read of the file and can silently skip on any failure.
+    let dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.join(".workgraph"))
+        .filter(|p| p.exists());
+    if let Some(dir) = dir
+        && let Ok(cfg) = Config::load_merged(&dir)
+        && let Some(token) = cfg.auth.resolve_claude_oauth_token()
+    {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+}
+
 /// Run a lightweight (no tool-use) LLM call for an internal dispatch role.
 ///
 /// Resolves the model and provider for the given role, then dispatches via:
@@ -111,8 +132,8 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     // Eval prompts can be very large (30KB+ with diffs, logs, artifacts) and
     // passing them as arguments can hit OS arg-length limits or cause the
     // `timeout` wrapper to fail with exit 124 before the API call even starts.
-    let mut child = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
+    let mut cmd = process::Command::new("timeout");
+    cmd.arg(format!("{}s", timeout_secs))
         .arg("claude")
         .arg("--model")
         .arg(model)
@@ -127,7 +148,9 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
         .env_remove("CLAUDECODE")
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
+        .stderr(process::Stdio::piped());
+    inject_claude_oauth_token(&mut cmd);
+    let mut child = cmd
         .spawn()
         .context("Failed to spawn claude CLI for lightweight LLM call")?;
 
