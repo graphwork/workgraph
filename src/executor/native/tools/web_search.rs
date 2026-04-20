@@ -1915,19 +1915,36 @@ async fn reap_orphan_workgraph_chrome(user_data_dir: &std::path::Path) {
 async fn launch_browser() -> Result<BrowserHandle, String> {
     use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
 
-    // Chrome binary path: env override > /usr/bin/google-chrome >
-    // /usr/bin/chromium. Users with Chrome at a non-standard path
-    // can set CHROME_BIN.
+    // Chrome binary path: env override > first hit in the probe
+    // list below. `chromium-browser` is Debian/Ubuntu's default
+    // package name; `chromium` is the Arch/Fedora name;
+    // `/snap/bin/chromium` is the Snap install Ubuntu ships by
+    // default on recent releases. CHROME_BIN overrides all of these
+    // for custom installs or WSL Edge/Chrome.
+    const CHROME_PROBES: &[&str] = &[
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+        "/usr/local/bin/chromium",
+        "/usr/local/bin/google-chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
     let chrome_path = std::env::var("CHROME_BIN")
         .ok()
         .or_else(|| {
-            ["/usr/bin/google-chrome", "/usr/bin/chromium"]
+            CHROME_PROBES
                 .iter()
                 .find(|p| std::path::Path::new(p).exists())
                 .map(|s| s.to_string())
         })
         .ok_or_else(|| {
-            "No Chrome/Chromium binary found. Set CHROME_BIN or install google-chrome.".to_string()
+            format!(
+                "No Chrome/Chromium binary found. Set CHROME_BIN or install one of: {}.",
+                CHROME_PROBES.join(", ")
+            )
         })?;
 
     // Persistent user-data-dir so cookies survive across sessions.
