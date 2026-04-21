@@ -1,0 +1,76 @@
+{
+    "job_name": "condition-a-eval-mode",
+    "jobs_dir": "results/condition-a-eval-mode",
+    "n_attempts": 1,
+    "timeout_multiplier": 3.0,
+    "debug": false,
+    "n_concurrent_trials": 1,
+    "quiet": false,
+    "retry": {
+        "max_retries": 2,
+        "include_exceptions": null,
+        "exclude_exceptions": [
+            "VerifierOutputParseError",
+            "RewardFileEmptyError",
+            "AgentTimeoutError",
+            "VerifierTimeoutError",
+            "RewardFileNotFoundError"
+        ],
+        "wait_multiplier": 1.0,
+        "min_wait_sec": 1.0,
+        "max_wait_sec": 60.0
+    },
+    "environment": {
+        "type": "docker",
+        "import_path": null,
+        "force_build": false,
+        "delete": false,
+        "override_cpus": null,
+        "override_memory_mb": null,
+        "override_storage_mb": null,
+        "override_gpus": null,
+        "suppress_override_warnings": false,
+        "mounts_json": "[\"target/bookworm-out/wg:/usr/local/bin/wg:ro\"]",
+        "env": {},
+        "kwargs": {}
+    },
+    "verifier": {
+        "override_timeout_sec": null,
+        "max_timeout_sec": null,
+        "disable": false
+    },
+    "metrics": [],
+    "agents": [
+        {
+            "name": null,
+            "import_path": "wg.adapter:NexEvalAgent",
+            "model_name": "qwen3-coder-30b",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {
+                "max_turns": 50,
+                "temperature": 0.0,
+                "endpoint": "lambda01"
+            },
+            "env": {}
+        }
+    ],
+    "datasets": [
+        {
+            "path": null,
+            "name": "terminal-bench",
+            "version": "2.0",
+            "ref": null,
+            "registry_url": null,
+            "registry_path": null,
+            "overwrite": false,
+            "download_dir": null,
+            "task_names": null,
+            "exclude_task_names": null,
+            "n_tasks": null
+        }
+    ],
+    "tasks": [],
+    "artifacts": []
+}
