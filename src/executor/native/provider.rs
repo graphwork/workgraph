@@ -65,14 +65,15 @@ fn build_inline_url_client(
     url: &str,
     api_key_override: Option<&str>,
 ) -> Result<OpenAiClient> {
-    // Strip a trailing `/v1` if present — OpenAiClient appends the
-    // path segments itself, and some local servers advertise their
-    // URL as `http://localhost:1234/v1` while others use just the
-    // host. Normalizing here avoids a double `/v1/v1` in requests.
-    let base = url
-        .trim_end_matches('/')
-        .trim_end_matches("/v1")
-        .to_string();
+    // OpenAiClient constructs `{base_url}/chat/completions`, so
+    // base_url must include the `/v1` path segment. Normalize:
+    // append `/v1` when missing, strip doubled trailing slashes.
+    let trimmed = url.trim_end_matches('/');
+    let base = if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    };
     let key = api_key_override
         .map(String::from)
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
@@ -750,20 +751,18 @@ mod fake_provider_tests {
     }
 
     #[test]
-    fn inline_url_strips_trailing_v1_suffix() {
-        // llama.cpp and some LM Studio configs advertise their base
-        // URL as `http://localhost:1234/v1`. Our OpenAiClient appends
-        // `/v1/chat/completions` internally, so we need to strip the
-        // trailing `/v1` (if any) to avoid double-prefixing.
+    fn inline_url_ensures_v1_suffix() {
+        // OpenAiClient constructs `{base_url}/chat/completions`, so
+        // the base URL must include `/v1`. Bare host URLs get `/v1`
+        // appended; URLs that already have `/v1` are kept as-is.
         let c1 = build_inline_url_client("m", "http://localhost:11434", None).unwrap();
         let c2 = build_inline_url_client("m", "http://localhost:11434/", None).unwrap();
         let c3 = build_inline_url_client("m", "http://localhost:1234/v1", None).unwrap();
         let c4 = build_inline_url_client("m", "http://localhost:1234/v1/", None).unwrap();
-        // All four should end up with the same bare host:port base.
-        assert_eq!(c1.base_url(), "http://localhost:11434");
-        assert_eq!(c2.base_url(), "http://localhost:11434");
-        assert_eq!(c3.base_url(), "http://localhost:1234");
-        assert_eq!(c4.base_url(), "http://localhost:1234");
+        assert_eq!(c1.base_url(), "http://localhost:11434/v1");
+        assert_eq!(c2.base_url(), "http://localhost:11434/v1");
+        assert_eq!(c3.base_url(), "http://localhost:1234/v1");
+        assert_eq!(c4.base_url(), "http://localhost:1234/v1");
     }
 
     #[tokio::test]
