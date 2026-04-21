@@ -1796,3 +1796,146 @@ class ConditionGSmartAgent(WorkgraphAgent):
         kwargs["condition"] = "G-smart"
         kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# NexEvalAgent — lightweight eval-mode adapter (Condition A surface)
+# ---------------------------------------------------------------------------
+
+class NexEvalAgent(BaseAgent):
+    """Harbor agent that shells out to ``wg nex --eval-mode`` inside Docker.
+
+    Designed for Condition A (bare agent, bash + file tools, no wg graph tools).
+    Simpler than WorkgraphAgent — no coordinator, no polling, no service daemon.
+
+    The agent runs as a single synchronous process: ``wg nex --eval-mode``
+    exits when the LLM loop finishes, and the JSON summary is parsed from
+    stdout.  The verify gate is handled by the harness (Harbor), not by
+    eval-mode itself.
+    """
+
+    @staticmethod
+    def name() -> str:
+        return "workgraph-nex-eval"
+
+    def version(self) -> str | None:
+        return "0.1.0"
+
+    def __init__(
+        self,
+        logs_dir: Path | None = None,
+        model_name: str | None = None,
+        endpoint: str = "lambda01",
+        timeout: float = DEFAULT_TRIAL_TIMEOUT,
+        max_turns: int = 200,
+        *args,
+        **kwargs,
+    ):
+        if logs_dir is None:
+            logs_dir = Path("/tmp/wg-nex-eval-logs")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(logs_dir=logs_dir, model_name=model_name, *args, **kwargs)
+        self._model = _normalize_model(model_name or "qwen3-coder-30b")
+        self._endpoint = endpoint
+        self._timeout = timeout
+        self._max_turns = max_turns
+
+    def _find_wg_binary(self) -> str:
+        """Locate the bookworm-compatible wg binary on the host."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        candidates = [
+            str(repo_root / "target" / "bookworm-out" / "wg"),
+            os.path.expanduser("~/.cargo/bin/wg"),
+            str(repo_root / "target" / "release" / "wg"),
+            str(repo_root / "target" / "debug" / "wg"),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return shutil.which("wg") or "wg"
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        """Upload wg binary and create an isolated trial directory."""
+        wg_bin = self._find_wg_binary()
+        await environment.upload_file(wg_bin, "/usr/local/bin/wg")
+        await environment.exec(command="chmod +x /usr/local/bin/wg")
+
+        self._trial_workdir = f"{_TRIAL_WORKDIR_PREFIX}{uuid.uuid4().hex[:12]}"
+        await environment.exec(command=f"mkdir -p {self._trial_workdir}")
+
+        await environment.exec(
+            command=f"cd {self._trial_workdir} && wg init --no-agency"
+        )
+
+        config = f'[agent]\nmodel = "{self._model}"\n'
+        b64 = base64.b64encode(config.encode()).decode()
+        await environment.exec(
+            command=f"echo '{b64}' | base64 -d > "
+                    f"{self._trial_workdir}/.workgraph/config.toml"
+        )
+
+        self._environment = environment
+
+    async def run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        """Run ``wg nex --eval-mode`` and parse the JSON summary."""
+        b64_instr = base64.b64encode(instruction.encode()).decode()
+        await environment.exec(
+            command=f"echo '{b64_instr}' | base64 -d > /tmp/nex-instruction.txt"
+        )
+
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+
+        cmd = (
+            f'export OPENROUTER_API_KEY="{api_key}" && '
+            f'cd {self._trial_workdir} && '
+            f'wg nex --eval-mode '
+            f'--max-turns {self._max_turns} '
+            f'-m "{self._model}" '
+            f'-e {self._endpoint} '
+            f'"$(cat /tmp/nex-instruction.txt)"'
+        )
+
+        result = await environment.exec(
+            command=cmd, timeout_sec=int(self._timeout),
+        )
+
+        metrics: dict[str, Any] = {
+            "status": "unknown",
+            "turns": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "exit_reason": "",
+        }
+
+        if result.stdout:
+            for line in result.stdout.strip().splitlines():
+                try:
+                    parsed = json.loads(line)
+                    metrics.update(parsed)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        context.n_input_tokens = metrics.get("input_tokens", 0)
+        context.n_output_tokens = metrics.get("output_tokens", 0)
+        context.metadata = {
+            "condition": "A",
+            "model": self._model,
+            "endpoint": self._endpoint,
+            "nex_eval_mode": True,
+            "exit_code": result.return_code,
+            "status": metrics["status"],
+            "exit_reason": metrics["exit_reason"],
+            "turns": metrics["turns"],
+        }
+
+        if result.stderr:
+            logger.debug(
+                "nex eval-mode stderr (first 2000 chars): %s",
+                result.stderr[:2000],
+            )
