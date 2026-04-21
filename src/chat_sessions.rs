@@ -397,11 +397,36 @@ pub fn find_by_alias<'a>(reg: &'a Registry, alias: &str) -> Option<(String, &'a 
 /// The target is relative so the whole workgraph dir stays movable.
 fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result<()> {
     let link = workgraph_dir.join("chat").join(alias);
-    if link.exists() || link.is_symlink() {
-        // Replace if already present. An existing link pointing at
-        // the same target is fine; an old stale link for a different
-        // UUID gets overwritten.
-        let _ = fs::remove_file(&link);
+    let target_dir = workgraph_dir.join("chat").join(uuid);
+    let metadata = fs::symlink_metadata(&link).ok();
+    if let Some(md) = metadata {
+        if md.file_type().is_symlink() {
+            // Existing symlink — safe to blow away and recreate.
+            let _ = fs::remove_file(&link);
+        } else if md.file_type().is_dir() {
+            // Real directory sitting where our alias should be. Can
+            // happen when some code path called `append_inbox_for(_, N, …)`
+            // (or similar) before the session was ever registered —
+            // `chat::append_message` creates missing parent dirs, so
+            // the path becomes a regular chat dir. Leaving it there
+            // causes split-brain: the IPC path writes here, the
+            // handler reads the UUID dir via the other alias, and
+            // messages never meet. Merge-and-replace: move the
+            // legacy dir's contents into the UUID dir (which is the
+            // real storage), then replace the legacy dir with a
+            // symlink.
+            merge_legacy_chat_dir(&link, &target_dir).with_context(|| {
+                format!(
+                    "merging legacy chat dir {:?} into UUID dir {:?}",
+                    link, target_dir
+                )
+            })?;
+            fs::remove_dir_all(&link)
+                .with_context(|| format!("removing merged-away legacy chat dir {:?}", link))?;
+        } else {
+            // Regular file — remove and continue.
+            let _ = fs::remove_file(&link);
+        }
     }
     #[cfg(unix)]
     {
@@ -414,6 +439,57 @@ fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result
         // still works; only path-based back-compat is unavailable.
         let _ = uuid;
         bail!("alias symlinks are not supported on non-Unix targets");
+    }
+    Ok(())
+}
+
+/// Move files from a legacy numeric chat dir into the canonical
+/// UUID chat dir, concatenating JSONL logs instead of overwriting.
+/// Used by `create_alias_symlink` to resolve split-brain cases
+/// where `chat/0/` got created as a regular directory before the
+/// alias symlink was installed.
+///
+/// Behavior:
+/// - `inbox.jsonl` / `outbox.jsonl` / `chat.log`: appended to the
+///   UUID dir's copy (so no history is lost).
+/// - Other files (`.streaming`, `.handler.pid`, cursors, compactor
+///   state): copied only if not present in the UUID dir.
+/// - Lock sidecars are skipped — they're per-process and get
+///   recreated on demand.
+fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target).with_context(|| format!("create target dir {:?}", target))?;
+    let Ok(entries) = fs::read_dir(legacy) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".lock") {
+            continue;
+        }
+        let src = entry.path();
+        let dst = target.join(&name);
+        let is_append_target = matches!(
+            name_str.as_ref(),
+            "inbox.jsonl" | "outbox.jsonl" | "chat.log"
+        );
+        if is_append_target {
+            // Append src contents to dst. JSONL concatenation is
+            // safe because every row is self-contained.
+            let bytes = fs::read(&src).with_context(|| format!("read {:?}", src))?;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&dst)
+                .with_context(|| format!("open-for-append {:?}", dst))?;
+            use std::io::Write;
+            file.write_all(&bytes)
+                .with_context(|| format!("append to {:?}", dst))?;
+        } else if !dst.exists() {
+            fs::copy(&src, &dst).with_context(|| format!("copy {:?} -> {:?}", src, dst))?;
+        }
+        // Dst already exists and isn't a log → leave target's copy
+        // intact. Legacy writer's version is discarded.
     }
     Ok(())
 }
@@ -578,6 +654,52 @@ pub fn migrate_numeric_coord_dir(workgraph_dir: &Path, n: u32) -> Result<Option<
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Regression: if `chat/0` was created as a regular directory
+    /// BEFORE `register_coordinator_session` ran (legacy code path
+    /// or early daemon crash), the symlink install used to fail
+    /// silently. `chat/0` and `chat/coordinator-0` then pointed to
+    /// two different filesystem entities, TUI writes went to one,
+    /// handler reads came from the other, and user messages were
+    /// never seen. This test locks in the merge-and-replace fix.
+    #[test]
+    fn register_merges_legacy_regular_chat_dir_into_uuid_dir() {
+        use std::fs;
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+
+        // Simulate a legacy `chat/0` regular dir left by an older
+        // daemon run — a bare inbox with some rows.
+        let legacy = wg.join("chat").join("0");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("inbox.jsonl"),
+            "{\"id\":1,\"timestamp\":\"2026-01-01T00:00:00Z\",\"role\":\"user\",\
+             \"content\":\"legacy-row\",\"request_id\":\"legacy-1\"}\n",
+        )
+        .unwrap();
+
+        // Now register the session — this is what the daemon does
+        // at startup. The `0` alias should end up as a symlink into
+        // the UUID dir, and the legacy row should be preserved in
+        // the UUID dir's inbox.
+        let uuid = register_coordinator_session(wg, 0).unwrap();
+
+        // `chat/0` is now a symlink, not a regular dir.
+        let link_meta = fs::symlink_metadata(wg.join("chat").join("0")).unwrap();
+        assert!(
+            link_meta.file_type().is_symlink(),
+            "chat/0 should be a symlink after register, not a dir"
+        );
+
+        // The legacy row survived the merge.
+        let uuid_inbox = wg.join("chat").join(&uuid).join("inbox.jsonl");
+        let contents = fs::read_to_string(&uuid_inbox).unwrap();
+        assert!(
+            contents.contains("legacy-row"),
+            "merge_legacy_chat_dir should have concatenated the legacy inbox into the UUID dir"
+        );
+    }
 
     #[test]
     fn create_and_resolve_session() {
