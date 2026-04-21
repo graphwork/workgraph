@@ -36,6 +36,7 @@ pub mod critical_path;
 pub mod cycles;
 pub mod dead_agents;
 pub mod discover;
+pub mod doctor;
 pub mod done;
 pub mod edit;
 pub mod endpoints;
