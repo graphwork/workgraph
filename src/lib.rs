@@ -42,6 +42,11 @@ pub mod plan_validator;
 pub mod profile;
 pub mod provenance;
 pub mod query;
+pub mod registry {
+    pub use crate::service::registry::AgentRegistry as Registry;
+    pub use crate::service::registry::AgentEntry as Agent;
+    pub use crate::service::registry::AgentStatus;
+}
 pub mod runs;
 pub mod service;
 pub mod session_lock;
