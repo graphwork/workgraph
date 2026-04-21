@@ -964,7 +964,10 @@ fn main() -> Result<()> {
             reason,
             superseded_by,
         } => commands::abandon::run(&workgraph_dir, &id, reason.as_deref(), &superseded_by),
-        Commands::Retry { id } => commands::retry::run(&workgraph_dir, &id),
+        Commands::Retry {
+            id,
+            preserve_session,
+        } => commands::retry::run(&workgraph_dir, &id, preserve_session),
         Commands::Requeue { id, reason } => commands::requeue::run(&workgraph_dir, &id, &reason),
         Commands::Approve { id } => commands::approve::run(&workgraph_dir, &id),
         Commands::Reject { id, reason } => commands::reject::run(&workgraph_dir, &id, &reason),

@@ -492,6 +492,10 @@ pub enum Commands {
         /// Task ID to retry
         #[arg(value_name = "TASK")]
         id: String,
+
+        /// Keep the stored Claude session ID (default: clear it so the retry starts fresh)
+        #[arg(long)]
+        preserve_session: bool,
     },
 
     /// Requeue an in-progress task for failed-dependency triage (resets to open)

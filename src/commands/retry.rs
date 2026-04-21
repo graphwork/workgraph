@@ -9,7 +9,7 @@ use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
-pub fn run(dir: &Path, id: &str) -> Result<()> {
+pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
@@ -59,6 +59,10 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         task.status = Status::Open;
         task.failure_reason = None;
         task.assigned = None;
+        if !preserve_session {
+            task.session_id = None;
+            task.checkpoint = None;
+        }
         task.tags.retain(|t| t != "converged");
 
         task.log.push(LogEntry {
@@ -151,7 +155,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -166,7 +170,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -185,7 +189,7 @@ mod tests {
             vec![make_task("t1", "Test task", Status::InProgress)],
         );
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not failed"));
     }
@@ -196,7 +200,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not failed"));
     }
@@ -209,7 +213,7 @@ mod tests {
         task.retry_count = 3;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1").unwrap();
+        run(dir_path, "t1", false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -229,7 +233,7 @@ mod tests {
         task.failure_reason = Some("compilation error".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1").unwrap();
+        run(dir_path, "t1", false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -246,7 +250,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1").unwrap();
+        run(dir_path, "t1", false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -263,7 +267,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -282,7 +286,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1");
+        let result = run(dir_path, "t1", false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -299,7 +303,7 @@ mod tests {
         task.retry_count = 2;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1").unwrap();
+        run(dir_path, "t1", false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -324,9 +328,61 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Failed)]);
 
-        let result = run(dir_path, "nonexistent");
+        let result = run(dir_path, "nonexistent", false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_retry_clears_session_id() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.session_id = Some("fce3a8ba-549c-440d-882d-dbfd5d2b371a".to_string());
+        task.checkpoint = Some("Previous checkpoint context".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.session_id, None,
+            "Retry should clear session_id to avoid --resume with dead session"
+        );
+        assert_eq!(
+            task.checkpoint, None,
+            "Retry should clear checkpoint along with session_id"
+        );
+    }
+
+    #[test]
+    fn test_retry_preserve_session_keeps_session_id() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.session_id = Some("keep-me-alive".to_string());
+        task.checkpoint = Some("checkpoint content".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", true).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.session_id,
+            Some("keep-me-alive".to_string()),
+            "--preserve-session should keep session_id"
+        );
+        assert_eq!(
+            task.checkpoint,
+            Some("checkpoint content".to_string()),
+            "--preserve-session should keep checkpoint"
+        );
     }
 
     #[test]
@@ -338,7 +394,7 @@ mod tests {
         task.tags.push("converged".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1").unwrap();
+        run(dir_path, "t1", false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
