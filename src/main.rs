@@ -47,6 +47,11 @@ use cli::*;
 /// The resolver does NOT create any directories — it only locates
 /// one. Auto-creation is the responsibility of individual commands
 /// (`wg init`, `wg nex` when the global fallback is used, etc.).
+/// Dir-name candidates we accept, in priority order.
+/// `.wg` is the modern name (written by `wg init`); `.workgraph` is the
+/// legacy name that pre-existing projects still use.
+const WORKGRAPH_DIR_NAMES: &[&str] = &[".wg", ".workgraph"];
+
 fn resolve_workgraph_dir(
     cli_dir: Option<PathBuf>,
     env_dir: Option<PathBuf>,
@@ -63,13 +68,16 @@ fn resolve_workgraph_dir(
         return p;
     }
 
-    // 3. Walk up from cwd looking for an existing .workgraph directory
+    // 3. Walk up from cwd looking for an existing workgraph dir.
+    //    Prefer `.wg`, fall back to legacy `.workgraph`.
     if let Some(start) = cwd.as_ref() {
         let mut cur: &Path = start;
         loop {
-            let candidate = cur.join(".workgraph");
-            if candidate.is_dir() {
-                return candidate;
+            for name in WORKGRAPH_DIR_NAMES {
+                let candidate = cur.join(name);
+                if candidate.is_dir() {
+                    return candidate;
+                }
             }
             match cur.parent() {
                 Some(parent) => cur = parent,
@@ -78,17 +86,19 @@ fn resolve_workgraph_dir(
         }
     }
 
-    // 4. Global fallback: ~/.workgraph if it exists
+    // 4. Global fallback: ~/.wg, then legacy ~/.workgraph
     if let Some(home) = home_dir.as_ref() {
-        let global = home.join(".workgraph");
-        if global.is_dir() {
-            return global;
+        for name in WORKGRAPH_DIR_NAMES {
+            let global = home.join(name);
+            if global.is_dir() {
+                return global;
+            }
         }
     }
 
-    // 5. Default: ./.workgraph in current directory
-    cwd.map(|c| c.join(".workgraph"))
-        .unwrap_or_else(|| PathBuf::from(".workgraph"))
+    // 5. Default: ./.wg in current directory (new projects get the short name)
+    cwd.map(|c| c.join(".wg"))
+        .unwrap_or_else(|| PathBuf::from(".wg"))
 }
 
 #[cfg(test)]
@@ -132,12 +142,23 @@ mod resolver_tests {
             Some(tmp.path().to_path_buf()),
             Some(PathBuf::from("/fake/home")),
         );
-        // Should fall through to the default
-        assert_eq!(result, tmp.path().join(".workgraph"));
+        // Should fall through to the default (new-project default is `.wg`)
+        assert_eq!(result, tmp.path().join(".wg"));
     }
 
     #[test]
-    fn project_discovery_finds_workgraph_in_cwd() {
+    fn project_discovery_finds_wg_in_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        let wg = project.join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        let result =
+            resolve_workgraph_dir(None, None, Some(project), Some(tmp.path().to_path_buf()));
+        assert_eq!(result, wg);
+    }
+
+    #[test]
+    fn project_discovery_finds_legacy_workgraph_in_cwd() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("project");
         let wg = project.join(".workgraph");
@@ -148,11 +169,24 @@ mod resolver_tests {
     }
 
     #[test]
+    fn wg_wins_over_legacy_workgraph_when_both_exist() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        let wg = project.join(".wg");
+        let legacy = project.join(".workgraph");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let result =
+            resolve_workgraph_dir(None, None, Some(project), Some(tmp.path().to_path_buf()));
+        assert_eq!(result, wg, ".wg must win over .workgraph");
+    }
+
+    #[test]
     fn project_discovery_walks_up_from_subdirectory() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("project");
         let deep = project.join("src/deep/nested");
-        let wg = project.join(".workgraph");
+        let wg = project.join(".wg");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(&wg).unwrap();
         let result = resolve_workgraph_dir(None, None, Some(deep), Some(tmp.path().to_path_buf()));
@@ -160,7 +194,19 @@ mod resolver_tests {
     }
 
     #[test]
-    fn global_fallback_used_when_no_project_and_home_has_workgraph() {
+    fn global_fallback_used_when_no_project_and_home_has_wg() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let global = home.join(".wg");
+        std::fs::create_dir_all(&global).unwrap();
+        let outside = tmp.path().join("somewhere/else");
+        std::fs::create_dir_all(&outside).unwrap();
+        let result = resolve_workgraph_dir(None, None, Some(outside), Some(home));
+        assert_eq!(result, global);
+    }
+
+    #[test]
+    fn global_fallback_accepts_legacy_workgraph() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join("home");
         let global = home.join(".workgraph");
@@ -175,10 +221,10 @@ mod resolver_tests {
     fn project_beats_global_when_both_exist() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let global = home.join(".workgraph");
+        let global = home.join(".wg");
         std::fs::create_dir_all(&global).unwrap();
         let project = tmp.path().join("project");
-        let project_wg = project.join(".workgraph");
+        let project_wg = project.join(".wg");
         std::fs::create_dir_all(&project_wg).unwrap();
         let result = resolve_workgraph_dir(None, None, Some(project), Some(home));
         assert_eq!(result, project_wg);
@@ -189,9 +235,10 @@ mod resolver_tests {
         let tmp = TempDir::new().unwrap();
         let outside = tmp.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        let home = tmp.path().join("home"); // no .workgraph inside
+        let home = tmp.path().join("home"); // no workgraph inside
         let result = resolve_workgraph_dir(None, None, Some(outside.clone()), Some(home));
-        assert_eq!(result, outside.join(".workgraph"));
+        // New default is `.wg`
+        assert_eq!(result, outside.join(".wg"));
     }
 }
 
@@ -574,11 +621,13 @@ fn main() -> Result<()> {
             } else if let Some(ref start) = cwd {
                 let mut cur: &Path = start;
                 let mut found_walk_up: Option<PathBuf> = None;
-                loop {
-                    let candidate = cur.join(".workgraph");
-                    if candidate.is_dir() {
-                        found_walk_up = Some(candidate);
-                        break;
+                'outer: loop {
+                    for name in WORKGRAPH_DIR_NAMES {
+                        let candidate = cur.join(name);
+                        if candidate.is_dir() {
+                            found_walk_up = Some(candidate);
+                            break 'outer;
+                        }
                     }
                     match cur.parent() {
                         Some(p) => cur = p,
@@ -587,15 +636,19 @@ fn main() -> Result<()> {
                 }
                 if let Some(p) = found_walk_up {
                     format!("walked up from cwd and found {}", p.display())
-                } else if let Some(ref h) = home
-                    && h.join(".workgraph").is_dir()
-                {
-                    format!("global fallback {}", h.join(".workgraph").display())
+                } else if let Some((h, p)) = home.as_ref().and_then(|h| {
+                    WORKGRAPH_DIR_NAMES
+                        .iter()
+                        .map(|n| h.join(n))
+                        .find(|p| p.is_dir())
+                        .map(|p| (h, p))
+                }) {
+                    format!("global fallback {} (home={})", p.display(), h.display())
                 } else {
-                    format!("default ./.workgraph (does not exist yet — run `wg init` to create)")
+                    "default ./.wg (does not exist yet — run `wg init` to create)".to_string()
                 }
             } else {
-                "default ./.workgraph (no cwd)".to_string()
+                "default ./.wg (no cwd)".to_string()
             };
             println!("{}", workgraph_dir.display());
             println!("  reason: {}", reason);
@@ -604,18 +657,22 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Init { no_agency, global } => {
+        Commands::Init {
+            no_agency,
+            global,
+            model,
+            endpoint,
+        } => {
             // Init is special: it declares a NEW project at a specific
             // place. Unlike every other command (which walks up from
             // cwd to find an ancestor graph), `wg init` should always
-            // target `cwd/.workgraph` — or `~/.workgraph` when
-            // --global, or the explicit `--dir` if given. Walking up
-            // would make `wg init` inside `~/anything/` refuse
-            // because `~/.workgraph` already exists, even though the
-            // user wants a fresh graph here.
+            // target `cwd/.wg` — or `~/.wg` when --global, or the
+            // explicit `--dir` if given. Walking up would make `wg init`
+            // inside `~/anything/` refuse because `~/.wg` already exists,
+            // even though the user wants a fresh graph here.
             let target_dir = if global {
                 match dirs::home_dir() {
-                    Some(home) => home.join(".workgraph"),
+                    Some(home) => home.join(".wg"),
                     None => {
                         anyhow::bail!(
                             "--global requires a resolvable home directory but HOME is not set"
@@ -625,12 +682,12 @@ fn main() -> Result<()> {
             } else if let Some(ref explicit) = cli.dir {
                 explicit.clone()
             } else {
-                // cwd/.workgraph — do NOT walk up.
+                // cwd/.wg — do NOT walk up.
                 std::env::current_dir()
                     .context("cannot resolve current directory for wg init")?
-                    .join(".workgraph")
+                    .join(".wg")
             };
-            commands::init::run(&target_dir, no_agency)
+            commands::init::run(&target_dir, no_agency, model.as_deref(), endpoint.as_deref())
         }
         Commands::Reset {
             seed,

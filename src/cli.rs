@@ -41,13 +41,27 @@ pub enum Commands {
         #[arg(long)]
         no_agency: bool,
 
-        /// Initialize the GLOBAL workgraph at `~/.workgraph` instead of
+        /// Initialize the GLOBAL workgraph at `~/.wg` instead of
         /// the current directory. Useful for `wg nex`-style interactive
-        /// usage from arbitrary directories without littering `.workgraph`
+        /// usage from arbitrary directories without littering workgraph
         /// dirs everywhere. Resolver precedence: --dir > $WG_DIR >
-        /// project discovery > ~/.workgraph > ./.workgraph
+        /// project discovery (`.wg` preferred, legacy `.workgraph` accepted) >
+        /// global (`~/.wg` preferred) > ./.wg
         #[arg(long)]
         global: bool,
+
+        /// Pre-populate the coordinator/agent model in config.toml.
+        /// Accepts `provider:model` (e.g. `openai:gpt-4o`) or a bare model
+        /// name when combined with `-e URL` (which implies oai-compat).
+        #[arg(short = 'm', long)]
+        model: Option<String>,
+
+        /// Inline LLM endpoint URL. When given, a default oai-compat
+        /// endpoint entry is written to config.toml so every command in
+        /// this project points at that server out of the box.
+        /// Example: `wg init -m nemotron-h-8b -e http://127.0.0.1:8088`
+        #[arg(short = 'e', long)]
+        endpoint: Option<String>,
     },
 
     /// Bulk-reset a subgraph: given one or more seed tasks, close the

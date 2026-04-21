@@ -16,17 +16,47 @@ matrix.toml
 *.credentials
 "#;
 
-pub fn run(dir: &Path, no_agency: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    no_agency: bool,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<()> {
     if dir.exists() {
         anyhow::bail!("Workgraph already initialized at {}", dir.display());
+    }
+    // Refuse if the sibling legacy dir exists — we'd silently shadow it.
+    // e.g. user asks for `.wg` but `.workgraph` already exists next to it.
+    if let Some(parent) = dir.parent()
+        && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
+    {
+        for sibling in [".wg", ".workgraph"] {
+            if sibling == target_name {
+                continue;
+            }
+            let sibling_path = parent.join(sibling);
+            if sibling_path.is_dir() {
+                anyhow::bail!(
+                    "Workgraph already initialized at {} (legacy dir name). \
+                     Either use it as-is, or remove/rename it before running `wg init`.",
+                    sibling_path.display()
+                );
+            }
+        }
     }
 
     fs::create_dir_all(dir).context("Failed to create workgraph directory")?;
 
-    // Add .workgraph to repo-level .gitignore
+    // Add the dir name (`.wg` for new projects, `.workgraph` for legacy init
+    // targets) to repo-level .gitignore.
+    let dir_basename = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".wg")
+        .to_string();
     let repo_gitignore = dir.parent().map(|p| p.join(".gitignore"));
     if let Some(gitignore_path_repo) = repo_gitignore {
-        let entry = ".workgraph";
+        let entry = dir_basename.as_str();
         if gitignore_path_repo.exists() {
             let contents =
                 fs::read_to_string(&gitignore_path_repo).context("Failed to read .gitignore")?;
@@ -42,12 +72,12 @@ pub fn run(dir: &Path, no_agency: bool) -> Result<()> {
                     format!("{contents}{separator}{entry}\n"),
                 )
                 .context("Failed to update .gitignore")?;
-                println!("Added .workgraph to .gitignore");
+                println!("Added {} to .gitignore", entry);
             }
         } else {
             fs::write(&gitignore_path_repo, format!("{entry}\n"))
                 .context("Failed to create .gitignore")?;
-            println!("Added .workgraph to .gitignore");
+            println!("Added {} to .gitignore", entry);
         }
     }
 
@@ -89,6 +119,14 @@ pub fn run(dir: &Path, no_agency: bool) -> Result<()> {
     }
 
     println!("Initialized workgraph at {}", dir.display());
+
+    // If -m / -e were given, seed config.toml so every subsequent
+    // command in this project points at the chosen model/endpoint
+    // out of the box.
+    if model.is_some() || endpoint.is_some() {
+        apply_model_endpoint(dir, model, endpoint)
+            .context("Failed to write model/endpoint config")?;
+    }
 
     // Full agency initialization: roles, tradeoffs, default agents, config
     if !no_agency {
@@ -144,6 +182,80 @@ pub fn run(dir: &Path, no_agency: bool) -> Result<()> {
     Ok(())
 }
 
+/// Write an endpoint + model into the project's `config.toml`.
+///
+/// Inputs:
+/// - `model` sets `coordinator.model` and `agent.model` so every spawned
+///   agent inherits the choice.
+/// - `endpoint` starting with `http://` or `https://` gets written as an
+///   oai-compat no-auth endpoint entry marked `is_default`. That mirrors
+///   the inline `-e URL` behaviour of `wg nex` at the config layer.
+fn apply_model_endpoint(
+    dir: &Path,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<()> {
+    use workgraph::config::{Config, EndpointConfig};
+
+    let mut config = Config::load(dir).unwrap_or_default();
+
+    // Endpoint implies the `local` provider (oai-compat + no auth), which
+    // also fixes the prefix we write into the model fields — the config
+    // validator demands `provider:model`, so bare names would refuse to
+    // reload.
+    let effective_model: Option<String> = if endpoint.is_some() {
+        model.map(|m| {
+            if m.contains(':') {
+                m.to_string()
+            } else {
+                format!("local:{}", m)
+            }
+        })
+    } else {
+        model.map(|m| m.to_string())
+    };
+
+    if let Some(url) = endpoint {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            anyhow::bail!(
+                "Endpoint must be an http:// or https:// URL (got: {})",
+                url
+            );
+        }
+        let name = "default".to_string();
+        config
+            .llm_endpoints
+            .endpoints
+            .retain(|e| e.name != name);
+        for e in config.llm_endpoints.endpoints.iter_mut() {
+            e.is_default = false;
+        }
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name,
+            provider: "local".to_string(),
+            url: Some(url.to_string()),
+            // Store the bare model on the endpoint (provider is known
+            // from `provider: local`), not the prefixed form.
+            model: model.map(|s| s.to_string()),
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            is_default: true,
+            context_window: None,
+        });
+        println!("Configured default endpoint: {}", url);
+    }
+
+    if let Some(ref m) = effective_model {
+        config.coordinator.model = Some(m.clone());
+        config.agent.model = m.clone();
+        println!("Set model: {}", m);
+    }
+
+    config.save(dir).context("Failed to save config.toml")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,7 +266,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         assert!(wg_dir.exists());
         assert!(wg_dir.is_dir());
@@ -165,7 +277,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let graph_path = wg_dir.join("graph.jsonl");
         assert!(graph_path.exists());
@@ -178,7 +290,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let gitignore = wg_dir.join(".gitignore");
         assert!(gitignore.exists());
@@ -194,7 +306,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let repo_gitignore = tmp.path().join(".gitignore");
         assert!(repo_gitignore.exists());
@@ -209,7 +321,7 @@ mod tests {
         fs::write(&repo_gitignore, "node_modules/\n").unwrap();
 
         let wg_dir = tmp.path().join(".workgraph");
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert!(contents.contains("node_modules/"));
@@ -223,7 +335,7 @@ mod tests {
         fs::write(&repo_gitignore, ".workgraph\n").unwrap();
 
         let wg_dir = tmp.path().join(".workgraph");
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert_eq!(
@@ -238,7 +350,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
+        run(&wg_dir, false, None, None).unwrap();
 
         let agency_dir = wg_dir.join("agency");
         assert!(agency_dir.exists());
@@ -279,7 +391,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, true).unwrap();
+        run(&wg_dir, true, None, None).unwrap();
 
         // Workgraph dir and graph.jsonl should exist
         assert!(wg_dir.exists());
@@ -298,11 +410,89 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false).unwrap();
-        let result = run(&wg_dir, false);
+        run(&wg_dir, false, None, None).unwrap();
+        let result = run(&wg_dir, false, None, None);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("already initialized"));
+    }
+
+    #[test]
+    fn test_new_wg_dir_basename_lands_in_gitignore() {
+        // When init targets `.wg` (the new default), the root .gitignore
+        // entry should say `.wg` — not the legacy `.workgraph`.
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        run(&wg_dir, true, None, None).unwrap();
+        let repo_gitignore = tmp.path().join(".gitignore");
+        let contents = fs::read_to_string(&repo_gitignore).unwrap();
+        assert!(contents.lines().any(|l| l.trim() == ".wg"));
+        assert!(!contents.lines().any(|l| l.trim() == ".workgraph"));
+    }
+
+    #[test]
+    fn test_refuses_when_sibling_workgraph_exists() {
+        // Asking for `.wg` but `.workgraph` already sits next door
+        // should error — otherwise subsequent commands would silently
+        // shadow the legacy dir.
+        let tmp = TempDir::new().unwrap();
+        let legacy = tmp.path().join(".workgraph");
+        fs::create_dir_all(&legacy).unwrap();
+        let new_dir = tmp.path().join(".wg");
+        let result = run(&new_dir, true, None, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains(".workgraph"), "error mentions legacy dir: {}", err);
+    }
+
+    #[test]
+    fn test_model_and_endpoint_write_config() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        run(
+            &wg_dir,
+            true,
+            Some("nemotron-h-8b"),
+            Some("http://127.0.0.1:8088"),
+        )
+        .unwrap();
+
+        let config = workgraph::config::Config::load(&wg_dir).unwrap();
+        // With an endpoint given, the model fields get the `local:` prefix
+        // so the provider:model validator accepts them on reload.
+        assert_eq!(
+            config.coordinator.model.as_deref(),
+            Some("local:nemotron-h-8b"),
+            "coordinator.model should be persisted with local: prefix"
+        );
+        assert_eq!(
+            config.agent.model, "local:nemotron-h-8b",
+            "agent.model should be persisted with local: prefix"
+        );
+        let eps = &config.llm_endpoints.endpoints;
+        let default_ep = eps
+            .iter()
+            .find(|e| e.is_default)
+            .expect("a default endpoint should be written");
+        assert_eq!(default_ep.url.as_deref(), Some("http://127.0.0.1:8088"));
+        assert_eq!(default_ep.provider, "local");
+        // The endpoint itself carries the bare model name.
+        assert_eq!(default_ep.model.as_deref(), Some("nemotron-h-8b"));
+    }
+
+    #[test]
+    fn test_endpoint_rejects_non_http() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        let err = run(&wg_dir, true, None, Some("definitely-not-a-url"))
+            .expect_err("non-http endpoint should be rejected");
+        // anyhow context wraps the inner bail, so format with `{:#}` to get the chain.
+        let chain = format!("{:#}", err);
+        assert!(
+            chain.contains("http://") || chain.contains("https://"),
+            "error chain should mention http(s):// — got: {}",
+            chain
+        );
     }
 }
