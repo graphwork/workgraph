@@ -189,8 +189,9 @@ pub fn resolve_handler(
     let executor_kind = pick_executor(&config, task);
 
     // Resume if the session journal exists on disk — same rule
-    // `wg nex` uses internally.
-    let chat_dir = workgraph_dir.join("chat").join(&chat_ref);
+    // `wg nex` uses internally. Route through the registry so
+    // aliases (`coordinator-0`, `0`) resolve to the UUID dir.
+    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, &chat_ref);
     let journal_exists = chat_dir.join("conversation.jsonl").exists();
 
     Ok(match executor_kind {

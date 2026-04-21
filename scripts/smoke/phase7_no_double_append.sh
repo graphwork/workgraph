@@ -37,9 +37,29 @@ pass() { echo "PASS: $*"; }
 
 # Assert: the single request_id `$2` appears exactly ONCE in
 # `coordinator-$1`'s inbox.jsonl. Before the fix: 2.
+# Resolve `coordinator-N`'s UUID from sessions.json — post-full-
+# UUID there's no `chat/coordinator-N` filesystem dir anymore.
+resolve_uuid_for_alias() {
+  local alias=$1
+  jq -r --arg a "$alias" \
+    '.sessions | to_entries[] | select(.value.aliases // [] | index($a)) | .key' \
+    "$WG_DIR/chat/sessions.json" 2>/dev/null | head -1
+}
+
+inbox_path_for_coord() {
+  local cid=$1
+  local uuid
+  uuid=$(resolve_uuid_for_alias "coordinator-$cid")
+  [ -n "$uuid" ] || uuid=$(resolve_uuid_for_alias "$cid")
+  [ -n "$uuid" ] || { echo ""; return; }
+  echo "$WG_DIR/chat/$uuid/inbox.jsonl"
+}
+
 assert_single_inbox_row() {
   local cid=$1 req=$2 label=$3
-  local inbox="$WG_DIR/chat/coordinator-$cid/inbox.jsonl"
+  local inbox
+  inbox=$(inbox_path_for_coord "$cid")
+  [ -n "$inbox" ] || fail "$label: couldn't resolve coordinator-$cid UUID from sessions.json"
   local count
   count=$(jq -r --arg r "$req" 'select(.request_id == $r) | .id' "$inbox" 2>/dev/null | wc -l)
   if [ "$count" = "1" ]; then
@@ -67,13 +87,16 @@ test_executor() {
   wg chat --coordinator 0 "ping-$label" --timeout 30 >/dev/null 2>&1 &
   local chat_pid=$!
 
-  # Wait for the inbox to receive at least one row.
-  local inbox="$WG_DIR/chat/coordinator-0/inbox.jsonl"
+  # Wait for the session registry entry and inbox to materialize.
+  local inbox=""
   for i in {1..60}; do
-    [ -f "$inbox" ] && [ -s "$inbox" ] && break
+    inbox=$(inbox_path_for_coord 0)
+    if [ -n "$inbox" ] && [ -s "$inbox" ]; then
+      break
+    fi
     sleep 0.5
   done
-  [ -s "$inbox" ] || fail "$label: inbox never received a message"
+  [ -n "$inbox" ] && [ -s "$inbox" ] || fail "$label: inbox never received a message"
 
   # Sleep past the daemon's settling_delay_ms (default 2000) +
   # one full coordinator tick so route_chat_to_agent has had a
@@ -96,7 +119,9 @@ test_executor() {
     c=$(cat /proc/$p/comm 2>/dev/null); [ "$c" = "wg" ] && kill "$p" 2>/dev/null
   done
   sleep 1
-  rm -rf "$WG_DIR/chat/coordinator-0" "$WG_DIR/chat/0" 2>/dev/null
+  # Nuke all chat state so next iteration starts fresh (full UUID
+  # mode: delete every `chat/<uuid>/` dir, also sessions.json).
+  rm -rf "$WG_DIR/chat" 2>/dev/null
   # Remove state so next iteration starts fresh.
   rm -f "$WG_DIR/service/coordinator-state-0.json" 2>/dev/null
   echo

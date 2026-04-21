@@ -36,7 +36,9 @@ pub fn run(
 ) -> Result<()> {
     let _ = resume; // accepted for argv symmetry; codex single-shot has no journal
 
-    let chat_dir = workgraph_dir.join("chat").join(chat_ref);
+    // Route through the session registry so aliases resolve to the
+    // UUID-backed storage dir — see `chat::chat_dir_for_ref`.
+    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 

@@ -61,7 +61,12 @@ pub fn run(
     // so the same spawn-task caller works for both executors.
     let _ = resume;
 
-    let chat_dir = workgraph_dir.join("chat").join(chat_ref);
+    // Resolve through the session registry so aliases
+    // (`coordinator-0`, bare `0`, task-agent names) land on the
+    // canonical `chat/<uuid>/` dir. A naive join here used to
+    // create a `chat/<alias>/` directory that got orphaned from
+    // the UUID-backed storage.
+    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 

@@ -21,9 +21,12 @@ use std::path::{Path, PathBuf};
 use crate::chat::{self, ChatMessage};
 use crate::config::{Config, DispatchRole};
 
-/// Directory for a coordinator's chat files.
+/// Directory for a coordinator's chat files. Resolves through
+/// `chat::chat_dir_for_ref` so the UUID-backed sessions.json
+/// registry drives path lookup — previously this did a naive join
+/// and broke when `chat/<n>` wasn't a filesystem alias anymore.
 fn chat_dir_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
-    workgraph_dir.join("chat").join(coordinator_id.to_string())
+    crate::chat::chat_dir_for_ref(workgraph_dir, &coordinator_id.to_string())
 }
 
 /// Path to the generated context-summary.md for a coordinator.

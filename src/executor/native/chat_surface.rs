@@ -66,10 +66,11 @@ pub struct ChatPaths {
 
 impl ChatPaths {
     /// Build paths from a session reference (UUID, alias, or numeric
-    /// coord id). Relies on the `chat/<alias>` → `chat/<uuid>`
-    /// symlinks for resolution.
+    /// coord id). Resolves through `chat::chat_dir_for_ref`, which
+    /// goes through the sessions.json registry — the canonical path
+    /// is always `chat/<uuid>/`, aliases exist only in the registry.
     pub fn for_ref(workgraph_dir: &Path, session_ref: &str) -> Self {
-        let dir = workgraph_dir.join("chat").join(session_ref);
+        let dir = crate::chat::chat_dir_for_ref(workgraph_dir, session_ref);
         Self {
             journal: dir.join("conversation.jsonl"),
             session_summary: dir.join("session-summary.md"),
@@ -162,7 +163,7 @@ impl ChatInboxReader {
     /// Returns `None` only on persistent read errors; callers should
     /// treat that as shutdown.
     pub async fn next_entry(&self, poll_interval: Duration) -> Option<InboxEntry> {
-        let chat_dir = self.workgraph_dir.join("chat").join(&self.session_ref);
+        let chat_dir = crate::chat::chat_dir_for_ref(&self.workgraph_dir, &self.session_ref);
         loop {
             // Check cooperative release marker. If another process
             // (typically the TUI, after a user-send takeover trigger)
