@@ -2604,6 +2604,17 @@ pub struct CoordinatorConfig {
     #[serde(default)]
     pub heartbeat_interval: u64,
 
+    /// When a user has sent a real chat message within this many
+    /// seconds, skip the next heartbeat tick. Heartbeats are for
+    /// autonomous operation; they produce noisy "NOOP — all systems
+    /// nominal" replies that clutter interactive TUI chat. Default
+    /// is 5 minutes: within that window we assume a human is
+    /// actively steering the coordinator and the synthetic prompt
+    /// is just drumbeat noise. Set to 0 to disable suppression
+    /// entirely (every tick fires regardless of activity).
+    #[serde(default = "default_heartbeat_quiet_grace_secs")]
+    pub heartbeat_quiet_grace_secs: u64,
+
     /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
     #[serde(default = "default_compactor_interval")]
     pub compactor_interval: u32,
@@ -2842,6 +2853,10 @@ fn default_compactor_interval() -> u32 {
     5
 }
 
+fn default_heartbeat_quiet_grace_secs() -> u64 {
+    300
+}
+
 fn default_compactor_ops_threshold() -> usize {
     100
 }
@@ -2997,6 +3012,7 @@ impl Default for CoordinatorConfig {
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
             heartbeat_interval: 60, // Default: autonomous heartbeat every 60s (0 = disabled)
+            heartbeat_quiet_grace_secs: default_heartbeat_quiet_grace_secs(),
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
             compaction_token_threshold: default_compaction_token_threshold(),

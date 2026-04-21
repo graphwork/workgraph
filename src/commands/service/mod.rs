@@ -1217,6 +1217,37 @@ pub(crate) struct DaemonConfig {
 /// injection, LLM processing, and outbox writing asynchronously.
 ///
 /// Returns the number of messages routed.
+/// Did a user chat message land in coordinator N's inbox within
+/// the last `window`? Used by the heartbeat loop to suppress
+/// synthetic prompts while a human is actively driving — otherwise
+/// heartbeat NOOP replies pollute the TUI chat pane.
+///
+/// "User" messages are identified by role=user AND a request_id
+/// that doesn't match the `heartbeat-*` prefix (those ARE role=user
+/// too, but synthetic).
+fn user_chat_within(dir: &Path, coordinator_id: u32, window: Duration) -> Result<bool> {
+    let msgs = workgraph::chat::read_inbox_since_for(dir, coordinator_id, 0)?;
+    let now = chrono::Utc::now();
+    let cutoff =
+        now - chrono::Duration::from_std(window).unwrap_or_else(|_| chrono::Duration::seconds(300));
+    for msg in msgs.iter().rev() {
+        // Synthetic heartbeats we inject ourselves.
+        if msg.request_id.starts_with("heartbeat-") {
+            continue;
+        }
+        // Older than cutoff — rev iter so we can stop early.
+        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+            && ts.with_timezone(&chrono::Utc) < cutoff
+        {
+            return Ok(false);
+        }
+        if msg.role == "user" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn route_chat_to_agent(
     dir: &Path,
     coordinator_id: u32,
@@ -2401,35 +2432,55 @@ pub fn run_daemon(
             }
 
             // --- Autonomous heartbeat ---
-            // If heartbeat is enabled and the interval has elapsed, inject a
-            // synthetic prompt into the coordinator agent. This runs inside the
-            // should_tick block so it piggybacks on the coordinator tick timing
-            // but also fires independently when the heartbeat interval is shorter
-            // than the poll interval.
+            // If heartbeat is enabled and the interval has elapsed,
+            // inject a synthetic "check your state" prompt into the
+            // coordinator. This exists for AUTONOMOUS operation —
+            // when nobody's at the TUI and the daemon still wants
+            // the coordinator to notice stuck agents, etc.
+            //
+            // During INTERACTIVE use a heartbeat turn lands between
+            // the user's messages and the coord's replies, polluting
+            // the chat pane with "NOOP — all systems nominal" noise.
+            // The fix: skip the heartbeat when we've seen a real
+            // user chat message recently. The coord is already being
+            // prompted by the human; it doesn't need a second synthetic
+            // drumbeat.
             if let Some(hb_interval) = heartbeat_interval
                 && last_heartbeat.elapsed() >= hb_interval
                 && enable_coordinator_agent
             {
-                last_heartbeat = Instant::now();
-                heartbeat_tick_number += 1;
-                // Send heartbeat to coordinator 0 (primary coordinator).
-                if let Some(agent) = coordinator_agents.get(&0) {
-                    match agent.send_heartbeat(
-                        heartbeat_tick_number,
-                        daemon_start_time,
-                        config.coordinator.trial_budget_secs,
-                    ) {
-                        Ok(()) => {
-                            logger.info(&format!(
-                                "Heartbeat #{} sent to coordinator agent",
-                                heartbeat_tick_number
-                            ));
-                        }
-                        Err(e) => {
-                            logger.warn(&format!(
-                                "Failed to send heartbeat #{}: {}",
-                                heartbeat_tick_number, e
-                            ));
+                let interactive_grace =
+                    Duration::from_secs(config.coordinator.heartbeat_quiet_grace_secs);
+                let skip_due_to_activity =
+                    user_chat_within(&dir, 0, interactive_grace).unwrap_or(false);
+
+                if skip_due_to_activity {
+                    last_heartbeat = Instant::now();
+                    logger.info(&format!(
+                        "Heartbeat suppressed: user activity in last {}s — autonomous heartbeats pause while someone's interacting",
+                        interactive_grace.as_secs()
+                    ));
+                } else {
+                    last_heartbeat = Instant::now();
+                    heartbeat_tick_number += 1;
+                    if let Some(agent) = coordinator_agents.get(&0) {
+                        match agent.send_heartbeat(
+                            heartbeat_tick_number,
+                            daemon_start_time,
+                            config.coordinator.trial_budget_secs,
+                        ) {
+                            Ok(()) => {
+                                logger.info(&format!(
+                                    "Heartbeat #{} sent to coordinator agent",
+                                    heartbeat_tick_number
+                                ));
+                            }
+                            Err(e) => {
+                                logger.warn(&format!(
+                                    "Failed to send heartbeat #{}: {}",
+                                    heartbeat_tick_number, e
+                                ));
+                            }
                         }
                     }
                 }
@@ -3597,6 +3648,35 @@ pub fn send_request(_dir: &Path, _request: &IpcRequest) -> Result<IpcResponse> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn user_chat_within_no_activity_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        // No inbox yet → no activity.
+        assert!(!user_chat_within(dir, 0, Duration::from_secs(300)).unwrap());
+    }
+
+    #[test]
+    fn user_chat_within_recent_user_msg_returns_true() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        // Register the coord session so chat_dir_for_ref resolves.
+        workgraph::chat_sessions::register_coordinator_session(dir, 0).unwrap();
+        workgraph::chat::append_inbox_for(dir, 0, "hi", "chat-test-123").unwrap();
+        assert!(user_chat_within(dir, 0, Duration::from_secs(300)).unwrap());
+    }
+
+    #[test]
+    fn user_chat_within_only_heartbeats_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        workgraph::chat_sessions::register_coordinator_session(dir, 0).unwrap();
+        // Only synthetic heartbeats in the inbox — don't count.
+        workgraph::chat::append_inbox_for(dir, 0, "[HEARTBEAT]", "heartbeat-1").unwrap();
+        workgraph::chat::append_inbox_for(dir, 0, "[HEARTBEAT]", "heartbeat-2").unwrap();
+        assert!(!user_chat_within(dir, 0, Duration::from_secs(300)).unwrap());
+    }
 
     #[test]
     fn test_default_socket_path() {
