@@ -10310,6 +10310,11 @@ impl VizApp {
 
             self.chat.messages.clear();
             for msg in &history {
+                // Skip synthetic heartbeat turns (both the injected
+                // [AUTONOMOUS HEARTBEAT] user message and the NOOP reply).
+                if msg.request_id.starts_with("heartbeat-") {
+                    continue;
+                }
                 let role = match msg.role.as_str() {
                     "user" => ChatRole::User,
                     "coordinator" => ChatRole::Coordinator,
@@ -10569,6 +10574,14 @@ impl VizApp {
         }
 
         for msg in &new_msgs {
+            // Skip heartbeat replies — the coordinator answers synthetic
+            // `[AUTONOMOUS HEARTBEAT]` prompts with "NOOP — all systems
+            // nominal" and those shouldn't pollute the interactive chat.
+            // The outbox still carries them (for agent context + audit),
+            // the TUI just doesn't render them.
+            if msg.request_id.starts_with("heartbeat-") {
+                continue;
+            }
             let att_names: Vec<String> = msg
                 .attachments
                 .iter()
