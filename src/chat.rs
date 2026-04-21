@@ -465,6 +465,11 @@ pub fn inbox_path_ref(workgraph_dir: &Path, session_ref: &str) -> PathBuf {
     chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl")
 }
 
+/// Path to the `outbox.jsonl` file (for inotify watchers etc.).
+pub fn outbox_path_ref(workgraph_dir: &Path, session_ref: &str) -> PathBuf {
+    chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl")
+}
+
 // --- Public API: coordinator_id-aware versions ---
 
 /// Append a user message to a specific coordinator's inbox.

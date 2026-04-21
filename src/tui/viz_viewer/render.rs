@@ -3427,6 +3427,16 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         Style::default().fg(Color::Indexed(239)),
                     ));
                 }
+                // Position in chat sequence for user messages (e.g. "#5/12")
+                // so the user can see where their message landed relative to the
+                // full series of turns.
+                if is_user {
+                    let total = app.chat.messages.len();
+                    spans.push(Span::styled(
+                        format!("  #{}/{}", msg_idx + 1, total),
+                        Style::default().fg(Color::Indexed(239)),
+                    ));
+                }
                 // Delivery status for user messages.
                 if is_user {
                     // Check if a coordinator message follows (= delivered).

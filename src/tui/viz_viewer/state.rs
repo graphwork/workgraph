@@ -5772,11 +5772,10 @@ impl VizApp {
 
             // Chat outbox: check for new coordinator responses.
             if self.right_panel_tab == RightPanelTab::Chat || self.chat.awaiting_response() {
-                let outbox_path = self
-                    .workgraph_dir
-                    .join("chat")
-                    .join(self.active_coordinator_id.to_string())
-                    .join("outbox.jsonl");
+                let outbox_path = workgraph::chat::outbox_path_ref(
+                    &self.workgraph_dir,
+                    &self.active_coordinator_id.to_string(),
+                );
                 let outbox_mtime = std::fs::metadata(&outbox_path)
                     .and_then(|m| m.modified())
                     .ok();
