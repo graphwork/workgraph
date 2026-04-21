@@ -106,8 +106,19 @@ pub fn run(
     dry_run: bool,
 ) -> Result<()> {
     let graph_path = workgraph_dir.join("graph.jsonl");
-    let graph = workgraph::parser::load_graph(&graph_path)
-        .with_context(|| format!("load graph at {:?}", graph_path))?;
+    // A missing graph.jsonl is NOT a fatal error for spawn-task:
+    // the daemon needs to spawn coordinator-0 on startup before any
+    // tasks exist (and before the graph file has even been created
+    // on first run). We treat "no graph file" the same as "empty
+    // graph" and fall through to the synthesized-task branch. Any
+    // OTHER load error (malformed JSONL, permissions, etc.) still
+    // bails.
+    let graph = if graph_path.exists() {
+        workgraph::parser::load_graph(&graph_path)
+            .with_context(|| format!("load graph at {:?}", graph_path))?
+    } else {
+        workgraph::graph::WorkGraph::new()
+    };
     let found = graph.tasks().find(|t| t.id == task_id).cloned();
     let task = match found {
         Some(t) => t,
