@@ -46,9 +46,11 @@ fn test_context_pressure_warning() {
     let budget = ContextBudget {
         window_size: 1000,
         chars_per_token: 4.0,
+        model: None,
         warning_threshold: 0.80,
         compact_threshold: 0.90,
         hard_limit: 0.95,
+        overhead_tokens: 0,
     };
 
     // Below warning threshold: 3000 chars = 750 tokens = 75%
@@ -95,9 +97,11 @@ fn test_context_pressure_compaction() {
     let budget = ContextBudget {
         window_size: 1000,
         chars_per_token: 4.0,
+        model: None,
         warning_threshold: 0.80,
         compact_threshold: 0.90,
         hard_limit: 0.95,
+        overhead_tokens: 0,
     };
 
     // 3600 chars = 900 tokens = 90% → EmergencyCompaction
@@ -193,9 +197,11 @@ fn test_context_pressure_clean_exit() {
     let budget = ContextBudget {
         window_size: 1000,
         chars_per_token: 4.0,
+        model: None,
         warning_threshold: 0.80,
         compact_threshold: 0.90,
         hard_limit: 0.95,
+        overhead_tokens: 0,
     };
 
     // 3800 chars = 950 tokens = 95% → CleanExit

@@ -105,6 +105,7 @@ fn test_scope_context() -> ScopeContext {
         discovered_tests: String::new(),
         decomp_guidance: true,
         telegram_available: false,
+        native_file_tools: false,
     }
 }
 

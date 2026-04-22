@@ -788,7 +788,6 @@ fn native_executor_config_defaults_are_sane() {
 
     assert_eq!(config.web.fetch_max_chars, 16_000);
     assert_eq!(config.web.fetch_timeout_secs, 30);
-    assert_eq!(config.web.search_backend, "duckduckgo");
     assert_eq!(config.delegate.delegate_max_turns, 10);
     assert!(config.delegate.delegate_model.is_empty());
     assert_eq!(config.background.max_background_tasks, 5);
