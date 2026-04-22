@@ -930,14 +930,6 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         parts.push(PATTERN_KEYWORDS_GLOSSARY.to_string());
     }
 
-    // All scopes: verification criteria (R4 from validation synthesis)
-    if let Some(ref verify) = vars.task_verify {
-        parts.push(format!(
-            "## Verification Required\n\nBefore marking done, you MUST verify:\n{}",
-            verify
-        ));
-    }
-
     // Task+ scope: discovered test files
     if scope >= ContextScope::Task && !ctx.discovered_tests.is_empty() {
         parts.push(ctx.discovered_tests.clone());
@@ -1100,7 +1092,6 @@ pub struct TemplateVars {
     pub skills_preamble: String,
     pub model: String,
     pub task_loop_info: String,
-    pub task_verify: Option<String>,
     pub max_child_tasks: u32,
     pub max_task_depth: u32,
     /// True when any dependency of the task has status=Failed (triggers triage mode)
@@ -1177,7 +1168,6 @@ impl TemplateVars {
             skills_preamble,
             model: task.model.clone().unwrap_or_default(),
             task_loop_info,
-            task_verify: task.verify.clone(),
             max_child_tasks: guardrails.max_child_tasks_per_agent,
             max_task_depth: guardrails.max_task_depth,
             has_failed_deps: false,
@@ -1310,7 +1300,6 @@ impl TemplateVars {
             .replace("{{skills_preamble}}", &self.skills_preamble)
             .replace("{{model}}", &self.model)
             .replace("{{task_loop_info}}", &self.task_loop_info)
-            .replace("{{task_verify}}", self.task_verify.as_deref().unwrap_or(""))
             .replace("{{max_child_tasks}}", &self.max_child_tasks.to_string())
             .replace("{{max_task_depth}}", &self.max_task_depth.to_string())
     }
@@ -1636,8 +1625,6 @@ mod tests {
             model: None,
             provider: None,
             endpoint: None,
-            verify: None,
-            verify_timeout: None,
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,
@@ -1660,7 +1647,6 @@ mod tests {
             test_required: false,
             rejection_count: 0,
             max_rejections: None,
-            verify_failures: 0,
             spawn_failures: 0,
             tried_models: vec![],
             superseded_by: vec![],
@@ -2720,43 +2706,6 @@ args = ["--custom-flag"]
     }
 
     #[test]
-    fn test_build_prompt_includes_verify_when_present() {
-        let mut task = make_test_task("task-1", "Test");
-        task.verify = Some("run cargo test and confirm all pass".to_string());
-        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
-        let ctx = ScopeContext::default();
-
-        // Verify section should appear at all scopes (including clean)
-        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
-        assert!(prompt.contains("## Verification Required"));
-        assert!(prompt.contains("run cargo test and confirm all pass"));
-        assert!(prompt.contains("Before marking done, you MUST verify:"));
-    }
-
-    #[test]
-    fn test_build_prompt_omits_verify_when_absent() {
-        let task = make_test_task("task-1", "Test");
-        assert!(task.verify.is_none());
-        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
-        let ctx = ScopeContext::default();
-
-        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
-        assert!(!prompt.contains("## Verification Required"));
-    }
-
-    #[test]
-    fn test_template_vars_verify_from_task() {
-        let mut task = make_test_task("task-1", "Test");
-        task.verify = Some("check output format".to_string());
-        let vars = TemplateVars::from_task(&task, None, None);
-        assert_eq!(vars.task_verify, Some("check output format".to_string()));
-
-        let task2 = make_test_task("task-2", "Test2");
-        let vars2 = TemplateVars::from_task(&task2, None, None);
-        assert_eq!(vars2.task_verify, None);
-    }
-
-    #[test]
     fn test_build_prompt_triage_mode_injected_when_failed_deps() {
         let task = make_test_task("task-1", "Downstream task");
         let mut vars = TemplateVars::from_task(&task, Some("dep context"), None);
@@ -2862,12 +2811,6 @@ args = ["--custom-flag"]
         assert!(
             guide.contains("--after"),
             "Guide must explain --after for dependencies"
-        );
-
-        // Must cover --verify for automated gates
-        assert!(
-            guide.contains("--verify"),
-            "Guide must explain --verify for automated gates"
         );
 
         // Must cover wg log, wg done, wg fail

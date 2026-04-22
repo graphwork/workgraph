@@ -129,15 +129,7 @@ fn test_debug_prompt_logging_enabled() {
     let _ = fs::remove_file(debug_log_path);
 
     // Create a test task
-    wg_ok(
-        &wg_dir,
-        &[
-            "add",
-            "Test debug logging",
-            "--verify",
-            "echo 'test complete'",
-        ],
-    );
+    wg_ok(&wg_dir, &["add", "Test debug logging"]);
 
     // Spawn with debug enabled using WG_DEBUG_PROMPTS=1
     let output = wg_cmd_with_env(
@@ -220,15 +212,7 @@ fn test_debug_prompt_logging_disabled() {
     let _ = fs::remove_file(debug_log_path);
 
     // Create a test task
-    wg_ok(
-        &wg_dir,
-        &[
-            "add",
-            "Test no debug logging",
-            "--verify",
-            "echo 'test complete'",
-        ],
-    );
+    wg_ok(&wg_dir, &["add", "Test no debug logging"]);
 
     // Spawn WITHOUT debug enabled (no WG_DEBUG_PROMPTS env var)
     let output = wg_cmd(

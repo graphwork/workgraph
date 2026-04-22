@@ -90,10 +90,6 @@ pub enum IpcRequest {
         deliverables: Vec<String>,
         #[serde(default)]
         model: Option<String>,
-        #[serde(default)]
-        verify: Option<String>,
-        #[serde(default)]
-        verify_timeout: Option<String>,
         /// Who requested this (for provenance)
         #[serde(default)]
         origin: Option<String>,
@@ -399,8 +395,6 @@ fn handle_request(
             skills,
             deliverables,
             model,
-            verify,
-            verify_timeout,
             origin,
             cron,
         } => {
@@ -418,8 +412,6 @@ fn handle_request(
                 &skills,
                 &deliverables,
                 model.as_deref(),
-                verify.as_deref(),
-                verify_timeout.as_deref(),
                 cron.as_deref(),
                 origin.as_deref(),
             );
@@ -949,8 +941,6 @@ fn handle_add_task(
     skills: &[String],
     deliverables: &[String],
     model: Option<&str>,
-    verify: Option<&str>,
-    verify_timeout: Option<&str>,
     cron: Option<&str>,
     origin: Option<&str>,
 ) -> IpcResponse {
@@ -1059,8 +1049,6 @@ fn handle_add_task(
         model: model.map(String::from),
         provider: None,
         endpoint: None,
-        verify: verify.map(String::from),
-        verify_timeout: verify_timeout.map(String::from),
         agent: None,
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -1083,7 +1071,6 @@ fn handle_add_task(
         rejection_count: 0,
         max_rejections: None,
         exec_mode: None,
-        verify_failures: 0,
         spawn_failures: 0,
         tried_models: vec![],
         superseded_by: vec![],
@@ -2225,8 +2212,6 @@ poll_interval = 120
             &[],
             &[],
             None,
-            None, // verify
-            None, // verify_timeout
             None, // cron
             None, // origin
         );
@@ -2247,8 +2232,6 @@ poll_interval = 120
             &[],
             &[],
             None,
-            None, // verify
-            None, // verify_timeout
             None, // cron
             None, // origin
         );

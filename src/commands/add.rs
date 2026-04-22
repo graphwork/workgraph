@@ -185,8 +185,6 @@ pub fn run(
     max_retries: Option<u32>,
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
-    verify_timeout: Option<&str>,
     max_iterations: Option<u32>,
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
@@ -378,11 +376,6 @@ pub fn run(
         None
     };
 
-    // Validate verify command (warn about descriptive text)
-    if let Some(v) = verify {
-        workgraph::verify_lint::print_warnings(v);
-    }
-
     let log = if paused {
         vec![workgraph::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -526,8 +519,6 @@ pub fn run(
         model: model.map(String::from),
         provider: provider.map(String::from),
         endpoint: None,
-        verify: verify.map(String::from),
-        verify_timeout: verify_timeout.map(String::from),
         agent: None,
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -550,7 +541,6 @@ pub fn run(
         test_required: false,
         rejection_count: 0,
         max_rejections: None,
-        verify_failures: 0,
         spawn_failures: 0,
         tried_models: vec![],
         superseded_by: vec![],
@@ -765,8 +755,6 @@ pub fn run_remote(
     deliverables: &[String],
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
-    verify_timeout: Option<&str>,
     cron: Option<&str>,
 ) -> Result<()> {
     use workgraph::federation::{check_peer_service, resolve_peer};
@@ -795,11 +783,6 @@ pub fn run_remote(
     }
     let model = resolved_model_str.as_deref();
 
-    // Validate verify command (warn about descriptive text)
-    if let Some(v) = verify {
-        workgraph::verify_lint::print_warnings(v);
-    }
-
     // Resolve peer reference to a concrete .workgraph directory
     let resolved = resolve_peer(peer_ref, local_workgraph_dir)?;
 
@@ -823,8 +806,6 @@ pub fn run_remote(
             skills: skills.to_vec(),
             deliverables: deliverables.to_vec(),
             model: model.map(String::from),
-            verify: verify.map(String::from),
-            verify_timeout: verify_timeout.map(String::from),
             origin: Some(origin),
             cron: cron.map(String::from),
         };
@@ -861,8 +842,6 @@ pub fn run_remote(
             deliverables,
             model,
             provider,
-            verify,
-            verify_timeout,
             cron,
             &origin,
         )?;
@@ -888,8 +867,6 @@ fn add_task_directly(
     deliverables: &[String],
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
-    verify_timeout: Option<&str>,
     cron: Option<&str>,
     origin: &str,
 ) -> Result<String> {
@@ -974,8 +951,6 @@ fn add_task_directly(
             model: model.map(String::from),
             provider: provider.map(String::from),
             endpoint: None,
-            verify: verify.map(String::from),
-            verify_timeout: verify_timeout.map(String::from),
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,
@@ -998,7 +973,6 @@ fn add_task_directly(
             test_required: false,
             rejection_count: 0,
             max_rejections: None,
-            verify_failures: 0,
             spawn_failures: 0,
             tried_models: vec![],
             superseded_by: vec![],
@@ -1469,8 +1443,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1524,8 +1496,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1579,8 +1549,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1641,8 +1609,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1700,8 +1666,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1755,8 +1719,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1814,8 +1776,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -1997,8 +1957,6 @@ tier = "standard"
             None,
             None,
             None,
-            None,  // verify
-            None,  // verify_timeout
             None,  // max_iterations
             None,  // cycle_guard
             None,  // cycle_delay
@@ -2059,8 +2017,6 @@ tier = "standard"
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -2121,8 +2077,6 @@ tier = "standard"
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -2227,8 +2181,6 @@ tier = "standard"
             None,
             None,
             None,
-            None,
-            None,
             false,
             false,
             None,
@@ -2286,8 +2238,6 @@ tier = "standard"
             &[],
             &[],
             &[],
-            None,
-            None,
             None,
             None,
             None,
@@ -2380,8 +2330,6 @@ tier = "standard"
             &[],
             &[],
             &[],
-            None,
-            None,
             None,
             None,
             None,

@@ -15,9 +15,8 @@ use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVar
 use workgraph::service::registry::AgentRegistry;
 
 use super::context::{
-    build_auto_verify_command, build_previous_attempt_context, build_scope_context,
-    build_task_context, discover_test_files, format_test_discovery_context, resolve_task_exec_mode,
-    resolve_task_scope,
+    build_previous_attempt_context, build_scope_context, build_task_context,
+    resolve_task_exec_mode, resolve_task_scope,
 };
 use super::worktree;
 use super::{
@@ -156,48 +155,6 @@ pub(crate) fn spawn_agent_inner(
         vars.has_failed_deps = true;
         vars.failed_deps_info = failed_deps_lines.join("\n");
     }
-
-    // Pre-task test discovery: scan for test files and inject into agent context.
-    // Also auto-populate --verify gate when no explicit verify is set.
-    let auto_verify_command: Option<String> = if config.coordinator.auto_test_discovery {
-        let project_root = dir
-            .canonicalize()
-            .ok()
-            .and_then(|abs| abs.parent().map(|p| p.to_path_buf()));
-        if let Some(ref root) = project_root {
-            let test_files = discover_test_files(root);
-            if !test_files.is_empty() {
-                eprintln!(
-                    "[spawn] Test discovery: found {} test file(s) for task '{}'",
-                    test_files.len(),
-                    task_id
-                );
-                // Inject discovered tests into scope context for prompt
-                scope_ctx.discovered_tests = format_test_discovery_context(&test_files);
-                // Auto-set verify if task has no explicit --verify gate
-                if vars.task_verify.is_none() {
-                    if let Some(cmd) = build_auto_verify_command(&test_files) {
-                        eprintln!(
-                            "[spawn] Auto-verify: setting verify gate for '{}': {}",
-                            task_id, cmd
-                        );
-                        vars.task_verify = Some(cmd.clone());
-                        Some(cmd)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
 
     // Get task exec command for shell executor
     let task_exec = task.exec.clone();
@@ -630,8 +587,6 @@ pub(crate) fn spawn_agent_inner(
     let temp_agent_id_clone = temp_agent_id.clone();
     let task_id_str = task_id.to_string();
     let model_validation_warning_clone = model_validation_warning.clone();
-    let auto_verify_clone = auto_verify_command.clone();
-
     let mut claim_error: Option<anyhow::Error> = None;
     modify_graph(&graph_path, |graph| {
         let task = match graph.get_task_mut(&task_id_str) {
@@ -668,18 +623,6 @@ pub(crate) fn spawn_agent_inner(
                 message: format!("Pre-flight model validation: {}", warning),
             });
         }
-
-        // Persist auto-discovered verify gate to the graph so `wg done` enforces it
-        if let Some(ref verify_cmd) = auto_verify_clone
-            && task.verify.is_none() {
-                task.verify = Some(verify_cmd.clone());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("spawn".to_string()),
-                    user: None,
-                    message: format!("Auto-verify: set --verify gate from test discovery: {}", verify_cmd),
-                });
-            }
 
         // Create .assign-* audit trail if missing (defense-in-depth).
         let assign_task_id = format!(".assign-{}", task_id_str);
@@ -2571,7 +2514,6 @@ mod tests {
             skills_preamble: String::new(),
             model: String::new(),
             task_loop_info: String::new(),
-            task_verify: None,
             max_child_tasks: 0,
             max_task_depth: 0,
             has_failed_deps: false,

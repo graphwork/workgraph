@@ -307,8 +307,6 @@ pub struct EvaluatorInput<'a> {
     pub task_description: Option<&'a str>,
     /// Task skills required
     pub task_skills: &'a [String],
-    /// Verification criteria (if any)
-    pub verify: Option<&'a str>,
     /// Agent that worked on the task (if assigned)
     pub agent: Option<&'a Agent>,
     /// Role used by the agent (if identity was assigned)
@@ -383,9 +381,6 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
             let _ = writeln!(out, "- {}", skill);
         }
         out.push('\n');
-    }
-    if let Some(verify) = input.verify {
-        let _ = writeln!(out, "**Verification Criteria:**\n{}\n", verify);
     }
 
     // -- Agent identity --
@@ -1261,7 +1256,6 @@ mod tests {
             task_title: "Implement feature X",
             task_description: Some("Build feature X with full test coverage."),
             task_skills: &["rust".to_string(), "testing".to_string()],
-            verify: Some("All tests pass and code compiles without warnings."),
             agent: None,
             role: Some(&role),
             tradeoff: Some(&tradeoff),
@@ -1291,8 +1285,6 @@ mod tests {
         assert!(output.contains("Build feature X with full test coverage."));
         assert!(output.contains("- rust\n"));
         assert!(output.contains("- testing\n"));
-        assert!(output.contains("**Verification Criteria:**"));
-        assert!(output.contains("All tests pass and code compiles without warnings."));
 
         // Agent identity — IDs are content hashes
         assert!(output.contains("## Agent Identity"));
@@ -1357,7 +1349,6 @@ mod tests {
             task_title: "Simple task",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1401,7 +1392,6 @@ mod tests {
             task_title: "Test order",
             task_description: Some("desc"),
             task_skills: &["rust".to_string()],
-            verify: Some("verify"),
             agent: None,
             role: Some(&role),
             tradeoff: Some(&tradeoff),
@@ -1458,7 +1448,6 @@ mod tests {
             task_title: "Build release package",
             task_description: Some("Create the release package."),
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1504,7 +1493,6 @@ mod tests {
             task_title: "Task with verify",
             task_description: Some("A task that was verified."),
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1542,7 +1530,6 @@ mod tests {
             task_title: "Task without verify",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1588,7 +1575,6 @@ mod tests {
             task_title: "Decomposed task",
             task_description: Some("A task that was decomposed into subtasks."),
             task_skills: &[],
-            verify: Some("cargo test passes"),
             agent: None,
             role: None,
             tradeoff: None,
@@ -1641,7 +1627,6 @@ mod tests {
             task_title: "High FLIP",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,

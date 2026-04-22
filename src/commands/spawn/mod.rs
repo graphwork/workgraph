@@ -465,7 +465,6 @@ mod tests {
         let task_id = format!("t{}", unique_id);
         let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
-        task.verify = None; // Not verified, should use wg done
         setup_graph(temp_dir.path(), vec![task]);
 
         // Pass the .workgraph subdirectory to run(), not the project root
@@ -500,7 +499,6 @@ mod tests {
         let task_id = format!("t{}", unique_id);
         let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
-        task.verify = Some("manual".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
         // Pass the .workgraph subdirectory to run(), not the project root

@@ -259,8 +259,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -312,8 +310,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -364,7 +360,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None,  // verify
             None,  // cron
             false, // allow_phantom
             false, // allow_cycle
@@ -399,8 +394,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -459,8 +452,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -487,7 +478,7 @@ mod provenance_coverage_tests {
         )
         .unwrap();
 
-        super::done::run(dir, "prov-done", false, false).unwrap();
+        super::done::run(dir, "prov-done", false).unwrap();
         let entries = ops_with_type(dir, "done");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].task_id.as_deref(), Some("prov-done"));
@@ -513,8 +504,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -567,8 +556,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -621,8 +608,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -678,8 +663,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -737,8 +720,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -796,8 +777,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -823,7 +802,7 @@ mod provenance_coverage_tests {
             false, // subtask
         )
         .unwrap();
-        super::done::run(dir, "prov-archive", false, false).unwrap();
+        super::done::run(dir, "prov-archive", false).unwrap();
 
         super::archive::run(dir, false, None, false, true, &[], false).unwrap();
         let entries = ops_with_type(dir, "archive");
@@ -852,8 +831,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -911,8 +888,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -963,7 +938,6 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
-            None,  // verify
             None,  // cron
             false, // allow_phantom
             false, // allow_cycle
@@ -984,7 +958,7 @@ mod provenance_coverage_tests {
         // retry
         super::retry::run(dir, "lifecycle", false).unwrap();
         // done
-        super::done::run(dir, "lifecycle", false, false).unwrap();
+        super::done::run(dir, "lifecycle", false).unwrap();
 
         let all = read_all_operations(dir).unwrap();
         let ops: Vec<&str> = all.iter().map(|e| e.op.as_str()).collect();

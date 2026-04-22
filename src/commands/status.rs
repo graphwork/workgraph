@@ -87,14 +87,6 @@ struct DanglingDep {
     relation: String,
 }
 
-/// A task with repeated verify failures
-#[derive(Debug, Clone, serde::Serialize)]
-struct VerifyFailingTask {
-    task_id: String,
-    failures: u32,
-    verify_command: String,
-}
-
 /// Compaction progress info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CompactionInfo {
@@ -149,8 +141,6 @@ struct StatusOutput {
     recent: Vec<RecentActivityEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dangling_deps: Vec<DanglingDep>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    verify_failing: Vec<VerifyFailingTask>,
 }
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
@@ -194,9 +184,6 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     // 8. Dangling dependencies
     let dangling_deps = gather_dangling_deps(dir);
 
-    // 9. Verify-failing tasks
-    let verify_failing = gather_verify_failing(dir);
-
     Ok(StatusOutput {
         service,
         coordinator,
@@ -206,7 +193,6 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
         cycles,
         recent,
         dangling_deps,
-        verify_failing,
     })
 }
 
@@ -553,30 +539,6 @@ fn gather_dangling_deps(dir: &Path) -> Vec<DanglingDep> {
         .collect()
 }
 
-fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
-    let path = super::graph_path(dir);
-    if !path.exists() {
-        return Vec::new();
-    }
-
-    let graph = match load_graph(&path) {
-        Ok(g) => g,
-        Err(_) => return Vec::new(),
-    };
-
-    graph
-        .tasks()
-        .filter(|t| {
-            t.verify_failures > 0 && t.status != Status::Failed && t.status != Status::Abandoned
-        })
-        .map(|t| VerifyFailingTask {
-            task_id: t.id.clone(),
-            failures: t.verify_failures,
-            verify_command: t.verify.clone().unwrap_or_default(),
-        })
-        .collect()
-}
-
 fn print_status(status: &StatusOutput) {
     // Line 1: Service status
     if status.service.running {
@@ -710,22 +672,6 @@ fn print_status(status: &StatusOutput) {
             println!(
                 "  {} [{}] iter {} — {}",
                 cycle.task_id, cycle.status, iter_str, timing
-            );
-        }
-    }
-
-    // Attention: verify-failing tasks
-    if !status.verify_failing.is_empty() {
-        println!();
-        println!(
-            "\x1b[33m⚠ Attention:\x1b[0m {} task(s) have verify failures:",
-            status.verify_failing.len()
-        );
-        for vf in &status.verify_failing {
-            let cmd_snippet: String = vf.verify_command.chars().take(60).collect();
-            println!(
-                "  VERIFY FAILING: \x1b[33m{}\x1b[0m — verify command has failed {} times: {}",
-                vf.task_id, vf.failures, cmd_snippet
             );
         }
     }
@@ -1037,67 +983,6 @@ mod tests {
         assert_eq!(format_tokens(47000), "47k");
         assert_eq!(format_tokens(100000), "100k");
         assert_eq!(format_tokens(160000), "160k");
-    }
-
-    #[test]
-    fn test_gather_verify_failing_none() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("t1", "Normal task")));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(failing.is_empty());
-    }
-
-    #[test]
-    fn test_gather_verify_failing_found() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        let mut task = make_task("t1", "Failing verify");
-        task.status = Status::InProgress;
-        task.verify = Some("cargo test".to_string());
-        task.verify_failures = 2;
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert_eq!(failing.len(), 1);
-        assert_eq!(failing[0].task_id, "t1");
-        assert_eq!(failing[0].failures, 2);
-        assert_eq!(failing[0].verify_command, "cargo test");
-    }
-
-    #[test]
-    fn test_gather_verify_failing_excludes_failed_tasks() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        // Task already failed (circuit breaker tripped) — should not appear
-        let mut task = make_task("t1", "Already failed");
-        task.status = Status::Failed;
-        task.verify_failures = 3;
-        task.verify = Some("cargo test".to_string());
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(
-            failing.is_empty(),
-            "Failed tasks should not be listed as verify-failing"
-        );
-    }
-
-    #[test]
-    fn test_gather_verify_failing_no_graph() {
-        let temp_dir = TempDir::new().unwrap();
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(failing.is_empty());
     }
 
     #[test]

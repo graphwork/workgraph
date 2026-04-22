@@ -74,9 +74,6 @@ pub fn run(
                 if t.paused {
                     obj["paused"] = serde_json::json!(true);
                 }
-                if t.verify_failures > 0 {
-                    obj["verify_failures"] = serde_json::json!(t.verify_failures);
-                }
                 if t.cron_enabled {
                     obj["cron_enabled"] = serde_json::json!(true);
                     if let Some(ref sched) = t.cron_schedule {
@@ -104,11 +101,6 @@ pub fn run(
                 Status::Waiting | Status::PendingValidation => "[W]",
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
-            let verify_str = if task.verify_failures > 0 {
-                format!(" \x1b[33m[V!{}]\x1b[0m", task.verify_failures)
-            } else {
-                String::new()
-            };
             let not_before_str = format_not_before_hint(task.not_before.as_deref());
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
             let priority_str = match task.priority {
@@ -130,13 +122,12 @@ pub fn run(
                 format!(" [{}]", task.tags.join(", "))
             };
             println!(
-                "{} {} - {}{}{}{}{}{}{}{}",
+                "{} {} - {}{}{}{}{}{}{}",
                 status,
                 task.id,
                 task.title,
                 priority_str,
                 pause_str,
-                verify_str,
                 not_before_str,
                 delay_str,
                 cron_str,
@@ -698,65 +689,6 @@ mod tests {
         // run() with both filters
         let result = run(dir.path(), Some("open"), false, &tags, None, false, false);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_list_verify_failures_indicator() {
-        let dir = tempdir().unwrap();
-        let mut task = make_task("t1", "Verify failing", Status::InProgress);
-        task.verify = Some("cargo test".to_string());
-        task.verify_failures = 2;
-        let normal = make_task("t2", "Normal task", Status::Open);
-        setup_workgraph(dir.path(), vec![task, normal]);
-
-        // Should succeed — verify indicator is displayed for t1
-        let result = run(dir.path(), None, false, &[], None, false, false);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_list_json_includes_verify_failures() {
-        let dir = tempdir().unwrap();
-        let mut task = make_task("t1", "Verify failing", Status::InProgress);
-        task.verify_failures = 2;
-        let path = setup_workgraph(dir.path(), vec![task]);
-        let graph = load_graph(&path).unwrap();
-        let t = graph.get_task("t1").unwrap();
-
-        let mut obj = serde_json::json!({
-            "id": t.id,
-            "title": t.title,
-            "status": t.status,
-            "assigned": t.assigned,
-            "after": t.after,
-        });
-        if t.verify_failures > 0 {
-            obj["verify_failures"] = serde_json::json!(t.verify_failures);
-        }
-
-        assert_eq!(obj["verify_failures"], 2);
-    }
-
-    #[test]
-    fn test_list_json_no_verify_failures_when_zero() {
-        let dir = tempdir().unwrap();
-        let task = make_task("t1", "Normal", Status::Open);
-        let path = setup_workgraph(dir.path(), vec![task]);
-        let graph = load_graph(&path).unwrap();
-        let t = graph.get_task("t1").unwrap();
-
-        let mut obj = serde_json::json!({
-            "id": t.id,
-            "title": t.title,
-            "status": t.status,
-            "assigned": t.assigned,
-            "after": t.after,
-        });
-        if t.verify_failures > 0 {
-            obj["verify_failures"] = serde_json::json!(t.verify_failures);
-        }
-
-        assert!(obj.get("verify_failures").is_none());
     }
 
     #[test]

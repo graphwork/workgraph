@@ -18,7 +18,7 @@ fn make_task(
     description: Option<&str>,
     tags: Vec<&str>,
     skills: Vec<&str>,
-    verify: Option<&str>,
+    _verify: Option<&str>,
 ) -> Task {
     Task {
         id: id.to_string(),
@@ -26,7 +26,6 @@ fn make_task(
         description: description.map(|s| s.to_string()),
         tags: tags.into_iter().map(|s| s.to_string()).collect(),
         skills: skills.into_iter().map(|s| s.to_string()).collect(),
-        verify: verify.map(|s| s.to_string()),
         ..Task::default()
     }
 }
@@ -559,7 +558,6 @@ fn test_full_agency_lifecycle_new_design() {
         task_title: &task.title,
         task_description: task.description.as_deref(),
         task_skills: &task.skills,
-        verify: task.verify.as_deref(),
         agent: Some(&agent),
         role: Some(&role),
         tradeoff: Some(&motivation),

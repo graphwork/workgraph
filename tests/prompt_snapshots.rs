@@ -82,7 +82,6 @@ fn test_template_vars() -> TemplateVars {
         skills_preamble: "".into(),
         model: CLAUDE_SONNET_MODEL_ID.into(),
         task_loop_info: "".into(),
-        task_verify: None,
         max_child_tasks: 10,
         max_task_depth: 8,
         has_failed_deps: false,
@@ -105,6 +104,7 @@ fn test_scope_context() -> ScopeContext {
         discovered_tests: String::new(),
         decomp_guidance: true,
         telegram_available: false,
+        native_file_tools: false,
     }
 }
 
@@ -180,7 +180,6 @@ fn snapshot_evaluator_prompt_full() {
         task_title: "Implement widget factory",
         task_description: Some("Build a widget factory with full test coverage."),
         task_skills: &skills,
-        verify: Some("All tests pass. No compiler warnings."),
         agent: None,
         role: Some(&role),
         tradeoff: Some(&tradeoff),
@@ -208,7 +207,6 @@ fn snapshot_evaluator_prompt_minimal() {
         task_title: "Simple task",
         task_description: None,
         task_skills: &[],
-        verify: None,
         agent: None,
         role: None,
         tradeoff: None,
@@ -236,7 +234,6 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
         task_title: "Feature implementation",
         task_description: Some("Implement the feature."),
         task_skills: &[],
-        verify: None,
         agent: None,
         role: None,
         tradeoff: None,
@@ -280,7 +277,6 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
         task_title: "Build API client",
         task_description: Some("Implement the HTTP API client for the external service."),
         task_skills: &skills,
-        verify: Some("API client compiles and unit tests pass."),
         agent: None,
         role: Some(&role),
         tradeoff: Some(&tradeoff),
@@ -336,16 +332,6 @@ fn snapshot_build_prompt_full_scope() {
     let ctx = test_scope_context();
     let output = build_prompt(&vars, ContextScope::Full, &ctx);
     insta::assert_snapshot!("build_prompt_full", output);
-}
-
-#[test]
-fn snapshot_build_prompt_with_verify() {
-    let mut vars = test_template_vars();
-    vars.task_verify =
-        Some("- cargo build passes\n- cargo test passes\n- No clippy warnings".into());
-    let ctx = test_scope_context();
-    let output = build_prompt(&vars, ContextScope::Task, &ctx);
-    insta::assert_snapshot!("build_prompt_with_verify", output);
 }
 
 #[test]

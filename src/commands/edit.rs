@@ -34,7 +34,6 @@ pub fn run(
     exec_mode: Option<&str>,
     delay: Option<&str>,
     not_before: Option<&str>,
-    verify: Option<&str>,
     cron: Option<&str>,
     allow_phantom: bool,
     allow_cycle: bool,
@@ -259,14 +258,6 @@ pub fn run(
         if let Some(new_provider) = provider {
             task.provider = Some(new_provider.to_string());
             println!("Updated provider: {}", new_provider);
-            changed = true;
-        }
-
-        // Update verify command
-        if let Some(new_verify) = verify {
-            workgraph::verify_lint::print_warnings(new_verify);
-            task.verify = Some(new_verify.to_string());
-            println!("Updated verify: {}", new_verify);
             changed = true;
         }
 
@@ -657,8 +648,6 @@ mod tests {
             None,
             Some("claude:sonnet"),
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -709,8 +698,6 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -752,8 +739,6 @@ mod tests {
             None,
             Some("claude:sonnet"),
             None,
-            None, // verify
-            None, // verify_timeout
             None,
             None,
             None,
@@ -811,7 +796,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -853,7 +837,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -889,7 +872,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -938,7 +920,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -974,7 +955,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1023,7 +1003,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1065,7 +1044,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1101,7 +1079,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1150,7 +1127,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1186,7 +1162,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1230,7 +1205,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1261,7 +1235,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1305,7 +1278,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1359,7 +1331,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1385,7 +1356,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1442,7 +1412,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1513,7 +1482,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1559,7 +1527,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false,
@@ -1594,7 +1561,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,
@@ -1669,7 +1635,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             None, // cron
             false,
             false, // allow_cycle = false
@@ -1729,7 +1694,6 @@ mod tests {
             None,
             false,
             false,
-            None,
             None,
             None,
             None,

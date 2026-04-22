@@ -1483,8 +1483,6 @@ fn build_auto_assign_tasks(
                     model: Some(creator_resolved.model),
                     provider: creator_resolved.provider,
                     endpoint: None,
-                    verify: None,
-                    verify_timeout: None,
                     agent: config.agency.creator_agent.clone(),
                     loop_iteration: 0,
                     last_iteration_completed_at: None,
@@ -1507,7 +1505,6 @@ fn build_auto_assign_tasks(
                     test_required: false,
                     rejection_count: 0,
                     max_rejections: None,
-                    verify_failures: 0,
                     spawn_failures: 0,
                     tried_models: vec![],
                     superseded_by: vec![],
@@ -1734,7 +1731,6 @@ fn build_flip_verification_tasks(
         }
 
         // Build verification task description
-        let source_verify_cmd = source_task.verify.clone();
         let source_title = source_task.title.clone();
         let source_desc_snippet = source_task
             .description
@@ -1805,22 +1801,12 @@ fn build_flip_verification_tasks(
         desc.push_str("Independently check whether the work was actually completed.\n");
         desc.push_str("Do NOT trust the original agent's claims.\n\n");
 
-        if let Some(ref verify_cmd) = source_verify_cmd {
-            desc.push_str(&format!(
-                "1. **Run the verification command:** `{}`\n",
-                verify_cmd
-            ));
-            desc.push_str("2. Check git log/diff for actual changes\n");
-            desc.push_str("3. Run relevant tests\n");
-            desc.push_str("4. Verify artifacts exist\n\n");
-        } else {
-            desc.push_str(
-                "1. Check `git log --oneline -10` for recent commits related to this task\n",
-            );
-            desc.push_str("2. Check `git diff` to see if meaningful changes were made\n");
-            desc.push_str("3. Run `cargo build && cargo test` to verify nothing is broken\n");
-            desc.push_str("4. Verify any artifacts mentioned in the task description exist\n\n");
-        }
+        desc.push_str(
+            "1. Check `git log --oneline -10` for recent commits related to this task\n",
+        );
+        desc.push_str("2. Check `git diff` to see if meaningful changes were made\n");
+        desc.push_str("3. Run `cargo build && cargo test` to verify nothing is broken\n");
+        desc.push_str("4. Verify any artifacts mentioned in the task description exist\n\n");
 
         desc.push_str(
             "### Repair & Verdict\n\
@@ -1865,8 +1851,6 @@ fn build_flip_verification_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
-            verify: source_verify_cmd,
-            verify_timeout: None,
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,
@@ -1891,7 +1875,6 @@ fn build_flip_verification_tasks(
             test_required: false,
             rejection_count: 0,
             max_rejections: None,
-            verify_failures: 0,
             spawn_failures: 0,
             tried_models: vec![],
             superseded_by: vec![],
@@ -1950,244 +1933,6 @@ fn build_flip_verification_tasks(
         {
             eval_task.after.push(verify_task_id.clone());
         }
-
-        modified = true;
-    }
-
-    modified
-}
-
-/// Separate-agent verification: when verify_mode=separate, tasks transition to
-/// PendingValidation instead of running their --verify command inline.  This
-/// function finds those tasks and creates a `.sep-verify-{task_id}` agent task
-/// that runs the verify command in an independent context window.
-///
-/// The separate verification agent receives:
-/// - The original task description and --verify criteria
-/// - Task artifacts and file diffs
-/// - NO implementation conversation history (independent context)
-///
-/// On pass: the verify agent calls `wg approve {task_id}` → Done
-/// On fail: the verify agent calls `wg reject {task_id} --reason "..."` → Open (re-dispatch)
-///
-/// Returns `true` if the graph was modified.
-fn build_separate_verify_tasks(
-    _dir: &Path,
-    graph: &mut workgraph::graph::WorkGraph,
-    config: &Config,
-) -> bool {
-    // Find tasks in PendingValidation that have a verify command and were
-    // marked for separate verification (indicated by log entry).
-    let candidates: Vec<(String, String, Option<String>, Vec<String>)> = graph
-        .tasks()
-        .filter(|t| {
-            t.status == Status::PendingValidation
-                && t.verify.is_some()
-                && t.log.iter().any(|entry| {
-                    entry
-                        .message
-                        .contains("Pending separate verification (verify_mode=separate)")
-                })
-        })
-        .map(|t| {
-            (
-                t.id.clone(),
-                t.title.clone(),
-                t.description.clone(),
-                t.artifacts.clone(),
-            )
-        })
-        .collect();
-
-    if candidates.is_empty() {
-        return false;
-    }
-
-    let mut modified = false;
-    let verification_resolved =
-        config.resolve_model_for_role(workgraph::config::DispatchRole::Verification);
-    let verification_model = verification_resolved.model;
-
-    for (source_task_id, source_title, source_desc, source_artifacts) in &candidates {
-        let verify_task_id = format!(".sep-verify-{}", source_task_id);
-
-        // Skip if verification task already exists
-        if graph.get_task(&verify_task_id).is_some() {
-            continue;
-        }
-
-        // Skip system tasks to prevent verification loops
-        if workgraph::graph::is_system_task(source_task_id) {
-            continue;
-        }
-
-        let source_task = match graph.get_task(source_task_id) {
-            Some(t) => t,
-            None => continue,
-        };
-        let verify_cmd = match source_task.verify.clone() {
-            Some(cmd) => cmd,
-            None => continue,
-        };
-        let source_checkpoint = source_task.checkpoint.clone().unwrap_or_default();
-
-        let source_desc_snippet = source_desc
-            .as_deref()
-            .unwrap_or("(no description)")
-            .chars()
-            .take(2000)
-            .collect::<String>();
-
-        // Build the verification task description
-        let mut desc = format!(
-            "## Separate Verification\n\n\
-             You are an **independent verification agent**. Your job is to verify that the \
-             implementation work on task `{}` actually meets its criteria.\n\n\
-             **IMPORTANT:** You have NO access to the implementation agent's conversation. \
-             You must independently assess the work based solely on artifacts, code changes, \
-             and the verification command.\n\n\
-             ### Original Task\n\
-             **ID:** {}\n\
-             **Title:** {}\n\
-             **Description:**\n{}\n\n",
-            source_task_id, source_task_id, source_title, source_desc_snippet,
-        );
-
-        if !source_checkpoint.is_empty() {
-            desc.push_str(&format!(
-                "**Checkpoint (last known state):**\n{}\n\n",
-                source_checkpoint
-            ));
-        }
-
-        if !source_artifacts.is_empty() {
-            desc.push_str("**Artifacts:**\n");
-            for artifact in source_artifacts {
-                desc.push_str(&format!("- `{}`\n", artifact));
-            }
-            desc.push('\n');
-        }
-
-        desc.push_str(&format!(
-            "### Verification Command\n\
-             Run this command and check the results:\n```\n{}\n```\n\n\
-             ### Verification Steps\n\
-             1. Run the verification command above\n\
-             2. Check `git log --oneline -10` for recent commits related to this task\n\
-             3. Review the actual code changes with `git diff`\n\
-             4. Verify any artifacts mentioned in the task description exist\n\
-             5. Do NOT trust the original agent's claims — verify independently\n\n\
-             ### Verdict\n\
-             - If the verification command passes and the work looks correct:\n\
-             ```bash\n\
-             wg approve {source_task_id}\n\
-             ```\n\
-             - If the verification command fails or the work is incomplete/incorrect:\n\
-             ```bash\n\
-             wg reject {source_task_id} --reason \"<specific reason>\"\n\
-             ```\n\
-             Then mark this verification task as done:\n\
-             ```bash\n\
-             wg done {verify_task_id}\n\
-             ```\n",
-            verify_cmd,
-        ));
-        // Replace placeholders
-        desc = desc
-            .replace("{source_task_id}", source_task_id)
-            .replace("{verify_task_id}", &verify_task_id);
-
-        let verify_task = Task {
-            id: verify_task_id.clone(),
-            title: format!("Verify: {}", source_title),
-            description: Some(desc),
-            status: Status::Open,
-            priority: Priority::default(),
-            assigned: None,
-            estimate: None,
-            before: vec![],
-            after: vec![source_task_id.clone()],
-            requires: vec![],
-            tags: vec!["verification".to_string(), "separate-verify".to_string()],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: None,
-            timeout: None,
-            not_before: None,
-            created_at: Some(Utc::now().to_rfc3339()),
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: Some(1),
-            failure_reason: None,
-            model: Some(verification_model.clone()),
-            provider: verification_resolved.provider.clone(),
-            endpoint: None,
-            verify: None, // The verify agent runs the command manually, not via --verify gate
-            verify_timeout: None,
-            agent: None,
-            loop_iteration: 0,
-            last_iteration_completed_at: None,
-            cycle_failure_restarts: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-            cycle_config: None,
-            exec_mode: None,
-            token_usage: None,
-            session_id: None,
-            wait_condition: None,
-            checkpoint: None,
-            triage_count: 0,
-            resurrection_count: 0,
-            last_resurrected_at: None,
-            validation: None,
-            validation_commands: vec![],
-            test_required: false,
-            rejection_count: 0,
-            max_rejections: None,
-            verify_failures: 0,
-            spawn_failures: 0,
-            tried_models: vec![],
-            superseded_by: vec![],
-            supersedes: None,
-            unplaced: false,
-            place_before: vec![],
-            place_near: vec![],
-            independent: false,
-            iteration_round: 0,
-            iteration_anchor: None,
-            iteration_parent: None,
-            iteration_config: None,
-            cron_schedule: None,
-            cron_enabled: false,
-            last_cron_fire: None,
-            next_cron_fire: None,
-        };
-
-        graph.add_node(Node::Task(verify_task));
-
-        // Log the trigger on the source task
-        if let Some(source) = graph.get_task_mut(source_task_id) {
-            source.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: Some("coordinator".to_string()),
-                user: Some(workgraph::current_user()),
-                message: format!(
-                    "Separate verification triggered — spawning .sep-verify-{} agent",
-                    source_task_id,
-                ),
-            });
-        }
-
-        eprintln!(
-            "[coordinator] Created separate verification task '{}' for '{}'",
-            verify_task_id, source_task_id,
-        );
 
         modified = true;
     }
@@ -2317,8 +2062,6 @@ fn build_auto_evolve_task(
         model: Some(evolver_resolved.model),
         provider: evolver_resolved.provider,
         endpoint: None,
-        verify: None,
-        verify_timeout: None,
         agent: config.agency.evolver_agent.clone(),
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -2341,7 +2084,6 @@ fn build_auto_evolve_task(
         test_required: false,
         rejection_count: 0,
         max_rejections: None,
-        verify_failures: 0,
         spawn_failures: 0,
         tried_models: vec![],
         superseded_by: vec![],
@@ -2511,8 +2253,6 @@ fn build_auto_create_task(
         model: Some(creator_resolved.model),
         provider: creator_resolved.provider,
         endpoint: None,
-        verify: None,
-        verify_timeout: None,
         agent: config.agency.creator_agent.clone(),
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -2535,7 +2275,6 @@ fn build_auto_create_task(
         test_required: false,
         rejection_count: 0,
         max_rejections: None,
-        verify_failures: 0,
         spawn_failures: 0,
         tried_models: vec![],
         superseded_by: vec![],
@@ -3873,16 +3612,6 @@ pub fn coordinator_tick(
 
         // Phase 4.5: FLIP verification
         modified |= build_flip_verification_tasks(dir, graph, &config);
-
-        // Phase 4.55: Separate-agent verification for --verify tasks.
-        // Double-gated: requires both (a) the separate-mode explicit config
-        // AND (b) the shadow-task autospawn master switch. Master switch
-        // defaults off as of 2026-04-17 — see AgencyConfig::verify_autospawn_enabled.
-        if config.coordinator.verify_autospawn_enabled
-            && config.coordinator.verify_mode == "separate"
-        {
-            modified |= build_separate_verify_tasks(dir, graph, &config);
-        }
 
         // Phase 4.6: Auto-evolve
         if config.agency.auto_evolve {
@@ -5658,7 +5387,6 @@ mod tests {
         source.title = "Implement feature".to_string();
         source.description = Some("Build the widget".to_string());
         source.status = Status::Done;
-        source.verify = Some("cargo test test_widget".to_string());
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(source));
@@ -6003,7 +5731,6 @@ mod tests {
             Some("full"), // exec_mode — the fix
             None,         // delay
             None,         // not_before
-            None,         // verify
             None,         // cron
             false,        // allow_phantom
             false,        // allow_cycle
@@ -6023,166 +5750,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_separate_verify_task_created_for_pending_validation() {
-        // When verify_mode=separate, tasks in PendingValidation with a verify
-        // command and the right log entry should get a .sep-verify-* task created.
-        let dir = tempdir().unwrap();
-        let graph_path = dir.path().join("graph.jsonl");
-
-        let mut source = Task::default();
-        source.id = "my-task".to_string();
-        source.title = "Implement feature X".to_string();
-        source.status = Status::PendingValidation;
-        source.verify = Some("cargo test test_feature_x".to_string());
-        source.description = Some("Build feature X".to_string());
-        source.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("agent-1".to_string()),
-            user: None,
-            message: "Pending separate verification (verify_mode=separate)".to_string(),
-        });
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(source));
-        save_graph(&graph, &graph_path).unwrap();
-
-        let mut config = Config::default();
-        config.coordinator.verify_mode = "separate".to_string();
-
-        let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
-        let modified = build_separate_verify_tasks(dir.path(), &mut graph, &config);
-        assert!(modified, "should have created a verify task");
-
-        let verify_task = graph.get_task(".sep-verify-my-task").unwrap();
-        assert_eq!(verify_task.status, Status::Open);
-        assert!(
-            verify_task.tags.contains(&"separate-verify".to_string()),
-            "should be tagged as separate-verify"
-        );
-        assert!(
-            verify_task.after.contains(&"my-task".to_string()),
-            "verify task should depend on source task"
-        );
-        assert!(
-            verify_task
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("cargo test test_feature_x"),
-            "description should contain the verify command"
-        );
-        assert!(
-            verify_task
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("wg approve my-task"),
-            "description should tell agent how to approve"
-        );
-        assert!(
-            verify_task
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("wg reject my-task"),
-            "description should tell agent how to reject"
-        );
-    }
-
-    #[test]
-    fn test_separate_verify_not_created_when_inline_mode() {
-        // When verify_mode=inline, no .sep-verify-* tasks should be created
-        let dir = tempdir().unwrap();
-        let graph_path = dir.path().join("graph.jsonl");
-
-        let mut source = Task::default();
-        source.id = "my-task".to_string();
-        source.title = "Implement feature X".to_string();
-        source.status = Status::PendingValidation;
-        source.verify = Some("cargo test".to_string());
-        source.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("agent-1".to_string()),
-            user: None,
-            message: "Pending separate verification (verify_mode=separate)".to_string(),
-        });
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(source));
-        save_graph(&graph, &graph_path).unwrap();
-
-        // Config defaults to "inline"
-        let config = Config::default();
-        assert_eq!(config.coordinator.verify_mode, "inline");
-
-        // build_separate_verify_tasks should not be called when inline,
-        // but even if called it should still create tasks (the guard is
-        // in the coordinator tick). Let's test the coordinator_tick guard:
-        // The function itself creates tasks regardless — the config check
-        // is in coordinator_tick. So let's just verify default config is "inline".
-    }
-
-    #[test]
-    fn test_separate_verify_idempotent() {
-        // Running build_separate_verify_tasks twice should not create duplicates
-        let dir = tempdir().unwrap();
-        let graph_path = dir.path().join("graph.jsonl");
-
-        let mut source = Task::default();
-        source.id = "my-task".to_string();
-        source.title = "Test".to_string();
-        source.status = Status::PendingValidation;
-        source.verify = Some("cargo test".to_string());
-        source.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: None,
-            user: None,
-            message: "Pending separate verification (verify_mode=separate)".to_string(),
-        });
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(source));
-        save_graph(&graph, &graph_path).unwrap();
-
-        let mut config = Config::default();
-        config.coordinator.verify_mode = "separate".to_string();
-
-        let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
-        let modified1 = build_separate_verify_tasks(dir.path(), &mut graph, &config);
-        assert!(modified1);
-
-        let modified2 = build_separate_verify_tasks(dir.path(), &mut graph, &config);
-        assert!(!modified2, "should not create duplicate verify task");
-    }
-
-    #[test]
-    fn test_separate_verify_skips_system_tasks() {
-        // System tasks (dot-prefixed) should not get separate verification
-        let dir = tempdir().unwrap();
-        let graph_path = dir.path().join("graph.jsonl");
-
-        let mut source = Task::default();
-        source.id = ".evaluate-something".to_string();
-        source.title = "Eval".to_string();
-        source.status = Status::PendingValidation;
-        source.verify = Some("echo ok".to_string());
-        source.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: None,
-            user: None,
-            message: "Pending separate verification (verify_mode=separate)".to_string(),
-        });
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(source));
-        save_graph(&graph, &graph_path).unwrap();
-
-        let mut config = Config::default();
-        config.coordinator.verify_mode = "separate".to_string();
-
-        let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
-        let modified = build_separate_verify_tasks(dir.path(), &mut graph, &config);
-        assert!(!modified, "should not create verify task for system tasks");
-    }
 }

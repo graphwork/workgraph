@@ -778,8 +778,6 @@ fn main() -> Result<()> {
             max_retries,
             model,
             provider,
-            verify,
-            verify_timeout,
             max_iterations,
             cycle_guard,
             cycle_delay,
@@ -835,8 +833,6 @@ fn main() -> Result<()> {
                     &deliverable,
                     model.as_deref(),
                     provider.as_deref(),
-                    verify.as_deref(),
-                    verify_timeout.as_deref(),
                     cron.as_deref(),
                 )
             } else {
@@ -856,8 +852,6 @@ fn main() -> Result<()> {
                     max_retries,
                     model.as_deref(),
                     provider.as_deref(),
-                    verify.as_deref(),
-                    verify_timeout.as_deref(),
                     max_iterations,
                     cycle_guard.as_deref(),
                     cycle_delay.as_deref(),
@@ -907,7 +901,6 @@ fn main() -> Result<()> {
             exec_mode,
             delay,
             not_before,
-            verify,
             cron,
             allow_phantom,
             allow_cycle,
@@ -935,7 +928,6 @@ fn main() -> Result<()> {
             exec_mode.as_deref(),
             delay.as_deref(),
             not_before.as_deref(),
-            verify.as_deref(),
             cron.as_deref(),
             allow_phantom,
             allow_cycle,
@@ -943,11 +935,7 @@ fn main() -> Result<()> {
         Commands::Reprioritize { id, priority } => {
             commands::reprioritize::run(&workgraph_dir, &id, &priority)
         }
-        Commands::Done {
-            id,
-            converged,
-            skip_verify,
-        } => commands::done::run(&workgraph_dir, &id, converged, skip_verify),
+        Commands::Done { id, converged } => commands::done::run(&workgraph_dir, &id, converged),
         Commands::Fail {
             id,
             reason,

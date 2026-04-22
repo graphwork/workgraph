@@ -1244,7 +1244,6 @@ mod tests {
             title: "Test".to_string(),
             status: Status::InProgress,
             assigned: Some("agent-1".to_string()),
-            verify: Some("Check tests pass".to_string()),
             ..Default::default()
         };
         let verdict = TriageVerdict {

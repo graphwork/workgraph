@@ -227,14 +227,6 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
-        /// Verification criteria - task requires review before done
-        #[arg(long)]
-        verify: Option<String>,
-
-        /// Verification timeout (e.g., '15m', '900s'). Overrides global WG_VERIFY_TIMEOUT
-        #[arg(long = "verify-timeout")]
-        verify_timeout: Option<String>,
-
         /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
         #[arg(long = "max-iterations")]
         max_iterations: Option<u32>,
@@ -422,10 +414,6 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// Set or update the verify command (shell command that must pass before done)
-        #[arg(long)]
-        verify: Option<String>,
-
         /// Set or clear cron schedule (empty string "" clears; 6-field: "sec min hour day month dow")
         #[arg(long)]
         cron: Option<String>,
@@ -448,10 +436,6 @@ pub enum Commands {
         /// Signal that the task's iterative loop has converged (stops loop edges from firing)
         #[arg(long)]
         converged: bool,
-
-        /// Skip the verify command gate (human escape hatch, blocked when WG_AGENT_ID is set)
-        #[arg(long)]
-        skip_verify: bool,
     },
 
     /// Mark a task as failed (can be retried)

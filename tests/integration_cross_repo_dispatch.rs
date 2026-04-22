@@ -515,8 +515,6 @@ fn cli_add_with_repo_and_task_options() {
             "output.rs",
             "--model",
             "claude:opus",
-            "--verify",
-            "cargo test",
         ])
         .output()
         .expect("Failed to execute wg");
@@ -540,7 +538,6 @@ fn cli_add_with_repo_and_task_options() {
     assert!(task.skills.contains(&"rust".to_string()));
     assert!(task.deliverables.contains(&"output.rs".to_string()));
     assert_eq!(task.model.as_deref(), Some("claude:opus"));
-    assert_eq!(task.verify.as_deref(), Some("cargo test"));
 }
 
 #[test]

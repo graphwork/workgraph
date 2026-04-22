@@ -311,7 +311,7 @@ fn build_template(
         loops_to,
         role_hint,
         deliverables: task.deliverables.clone(),
-        verify: task.verify.clone(),
+        verify: None,
         tags: task.tags.clone(),
     }
 }

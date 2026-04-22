@@ -2649,50 +2649,6 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_registry_refresh_interval")]
     pub registry_refresh_interval: u64,
 
-    /// Verification mode for tasks with `--verify` commands.
-    /// - "inline" (default): verify command runs in the same agent process that did the work
-    /// - "separate": verify runs in a separate agent context (different conversation/context window)
-    ///   This prevents false-PASS rates where the implementation agent rubber-stamps its own work.
-    #[serde(default = "default_verify_mode")]
-    pub verify_mode: String,
-
-    /// Master switch for `.verify-*` / `.verify-deferred-*` shadow-task
-    /// auto-spawning. Deprecated as of 2026-04-17 — default FALSE. The
-    /// pattern generated runaway meta-task cascades (every real task
-    /// accumulating 5–6 shadow tasks). Replacement design: single
-    /// `.evaluate-*` per real task, with `wg rescue` proxy-inserting a
-    /// new task on FAIL. See the rescue-graph-surgery design notes.
-    ///
-    /// When false, the `verify` field on tasks is still stored (so
-    /// inline verification in the same agent still works if explicitly
-    /// invoked) but the coordinator will not create new shadow tasks
-    /// from it. Set to true in config.toml to restore the old behavior.
-    #[serde(default)]
-    pub verify_autospawn_enabled: bool,
-
-    /// Maximum consecutive verify command failures before a task is auto-failed.
-    /// When a task's verify command fails this many times in a row, the task
-    /// transitions to Failed with a descriptive error. Default: 3.
-    /// Set to 0 to disable the circuit breaker (unlimited retries).
-    #[serde(default = "default_max_verify_failures")]
-    pub max_verify_failures: u32,
-
-    /// Default verify timeout for tasks without specific override
-    #[serde(default = "default_verify_default_timeout")]
-    pub verify_default_timeout: Option<String>,
-
-    /// Maximum number of concurrent verify processes to prevent cascade failures
-    #[serde(default = "default_max_concurrent_verifies")]
-    pub max_concurrent_verifies: u32,
-
-    /// Enable intelligent triage instead of hard timeout failure
-    #[serde(default = "default_verify_triage_enabled")]
-    pub verify_triage_enabled: bool,
-
-    /// Time without output before considering process potentially stuck
-    #[serde(default = "default_verify_progress_timeout")]
-    pub verify_progress_timeout: Option<String>,
-
     /// Maximum consecutive spawn failures before a task is auto-failed.
     /// When the coordinator fails to spawn an agent for a task this many times
     /// in a row, the task transitions to Failed with a descriptive error
@@ -2709,21 +2665,6 @@ pub struct CoordinatorConfig {
     /// Set to 0 to disable tier escalation (only rotate within same tier).
     #[serde(default = "default_max_escalation_depth")]
     pub max_escalation_depth: u32,
-
-    /// Whether to scan for test files before spawning agents and inject
-    /// discovered tests into agent context. When enabled, the executor also
-    /// auto-populates `--verify` gates for tasks that have no explicit verify
-    /// command but have discoverable test files. Default: false.
-    #[serde(default = "default_auto_test_discovery")]
-    pub auto_test_discovery: bool,
-
-    /// Enable scoped verify: automatically scope 'cargo test' to only run tests
-    /// relevant to modified files, reducing verify time from minutes to seconds.
-    /// When enabled, detects modified files and maps them to relevant test modules.
-    /// Falls back to full test suite for ambiguous mappings or core file changes.
-    /// Default: true.
-    #[serde(default = "default_scoped_verify_enabled")]
-    pub scoped_verify_enabled: bool,
 
     /// Provider failure handling behavior.
     /// - "pause" (default): pause the service when providers fail consecutively
@@ -2789,14 +2730,6 @@ pub struct ResourceManagementConfig {
     pub recovery_prune_interval: u64,
 }
 
-fn default_auto_test_discovery() -> bool {
-    false
-}
-
-fn default_scoped_verify_enabled() -> bool {
-    true
-}
-
 fn default_on_provider_failure() -> String {
     "pause".to_string()
 }
@@ -2855,30 +2788,6 @@ fn default_max_coordinators() -> usize {
 
 fn default_archive_retention_days() -> u64 {
     7
-}
-
-fn default_verify_mode() -> String {
-    "inline".to_string()
-}
-
-fn default_max_verify_failures() -> u32 {
-    3
-}
-
-fn default_verify_default_timeout() -> Option<String> {
-    Some("900s".to_string())
-}
-
-fn default_max_concurrent_verifies() -> u32 {
-    2
-}
-
-fn default_verify_triage_enabled() -> bool {
-    false // Start disabled, enable gradually
-}
-
-fn default_verify_progress_timeout() -> Option<String> {
-    Some("300s".to_string())
 }
 
 fn default_max_spawn_failures() -> u32 {
@@ -2995,17 +2904,8 @@ impl Default for CoordinatorConfig {
             max_coordinators: default_max_coordinators(),
             archive_retention_days: default_archive_retention_days(),
             registry_refresh_interval: default_registry_refresh_interval(),
-            verify_mode: default_verify_mode(),
-            verify_autospawn_enabled: false,
-            max_verify_failures: default_max_verify_failures(),
             max_spawn_failures: default_max_spawn_failures(),
             max_escalation_depth: default_max_escalation_depth(),
-            auto_test_discovery: default_auto_test_discovery(),
-            scoped_verify_enabled: default_scoped_verify_enabled(),
-            verify_default_timeout: default_verify_default_timeout(),
-            max_concurrent_verifies: default_max_concurrent_verifies(),
-            verify_triage_enabled: default_verify_triage_enabled(),
-            verify_progress_timeout: default_verify_progress_timeout(),
             resource_management: ResourceManagementConfig::default(),
         }
     }

@@ -54,7 +54,6 @@ pub mod stream_event;
 pub mod syntect_convert;
 pub mod telegram_commands;
 pub mod usage;
-pub mod verify_lint;
 
 pub use config::MatrixConfig;
 pub use graph::WorkGraph;

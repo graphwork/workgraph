@@ -134,7 +134,7 @@ pub fn run_archive(dir: &Path, name: Option<&str>) -> Result<()> {
     }
 
     // Delegate to the done command which already handles user board auto-increment
-    super::done::run(dir, &resolved, false, false)?;
+    super::done::run(dir, &resolved, false)?;
 
     Ok(())
 }

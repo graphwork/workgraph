@@ -300,13 +300,6 @@ pub struct Task {
     /// Named endpoint for this task (matches a name in [llm_endpoints])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
-    /// Verification criteria - if set, task requires review before done
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verify: Option<String>,
-    /// Verification timeout override for this specific task (e.g., "15m", "900s")
-    /// Takes priority over global WG_VERIFY_TIMEOUT and coordinator defaults
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verify_timeout: Option<String>,
     /// Agent assigned to this task (content-hash of an Agent in the agency)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -385,9 +378,6 @@ pub struct Task {
     /// Maximum rejections before task fails (default 3)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rejections: Option<u32>,
-    /// Number of consecutive verify command failures (circuit breaker counter)
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub verify_failures: u32,
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
@@ -946,10 +936,6 @@ struct TaskHelper {
     #[serde(default)]
     endpoint: Option<String>,
     #[serde(default)]
-    verify: Option<String>,
-    #[serde(default)]
-    verify_timeout: Option<String>,
-    #[serde(default)]
     agent: Option<String>,
     /// Deprecated: silently ignored on deserialization for backward compatibility.
     /// Accepts both old string format ("loops_to": "b") and array format ("loops_to": ["b"]).
@@ -998,8 +984,6 @@ struct TaskHelper {
     rejection_count: u32,
     #[serde(default)]
     max_rejections: Option<u32>,
-    #[serde(default)]
-    verify_failures: u32,
     #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
@@ -1077,8 +1061,6 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             provider: helper.provider,
             endpoint: helper.endpoint,
-            verify: helper.verify,
-            verify_timeout: helper.verify_timeout,
             agent,
             loop_iteration: helper.loop_iteration,
             last_iteration_completed_at: helper.last_iteration_completed_at,
@@ -1101,7 +1083,6 @@ impl<'de> Deserialize<'de> for Task {
             test_required: helper.test_required,
             rejection_count: helper.rejection_count,
             max_rejections: helper.max_rejections,
-            verify_failures: helper.verify_failures,
             spawn_failures: helper.spawn_failures,
             tried_models: helper.tried_models,
             superseded_by: helper.superseded_by,
