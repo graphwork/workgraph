@@ -4213,7 +4213,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                "    [v] toggle view  [J] json",
+                "    [4] toggle view  [J] json",
                 Style::default().fg(Color::Indexed(239)),
             ),
         ])
