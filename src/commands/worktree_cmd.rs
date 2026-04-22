@@ -156,7 +156,7 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
     Ok(())
 }
 
-fn has_uncommitted_changes(wt_path: &Path) -> bool {
+pub(crate) fn has_uncommitted_changes(wt_path: &Path) -> bool {
     Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(wt_path)

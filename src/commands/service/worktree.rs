@@ -1,11 +1,19 @@
 //! Worktree lifecycle cleanup for agent isolation.
 //!
-//! Handles cleanup of git worktrees created for isolated agents:
-//! - Dead agent worktree recovery and removal
-//! - Orphaned worktree cleanup on service restart
+//! Two-tier cleanup model:
+//! - **Atomic (happy path):** Agent wrapper writes `.wg-cleanup-pending` marker
+//!   at exit; coordinator tick calls [`sweep_cleanup_pending_worktrees`] to reap
+//!   marked worktrees whose agent is dead and task is terminal. Idempotent and
+//!   crash-safe — a missed sweep is retried on the next tick.
+//! - **GC (fallback):** `wg gc --worktrees` (in [`super::super::worktree_gc`])
+//!   handles worktrees orphaned by kills, crashes, or bugs. Same safety predicate
+//!   plus an uncommitted-changes gate. User-invoked, dry-run by default.
+//!
+//! Shared constants ([`HEARTBEAT_LIVENESS_TIMEOUT_SECS`]) and removal machinery
+//! ([`remove_worktree`], [`find_branch_for_worktree`]) live here and are reused
+//! by both paths.
 
 #![allow(dead_code)]
-//! - Age-based pruning of stale worktrees
 
 use anyhow::{Context, Result, anyhow};
 use std::collections::VecDeque;
@@ -47,7 +55,7 @@ pub const CLEANUP_PENDING_MARKER: &str = ".wg-cleanup-pending";
 /// accommodate agents that briefly stall during long tool calls.
 ///
 /// See `AgentEntry::is_live` for the full invariant.
-const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
+pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 
 /// Maximum number of retry attempts for transient failures.
 const MAX_RETRIES: usize = 3;

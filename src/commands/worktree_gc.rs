@@ -1,13 +1,22 @@
 //! `wg gc --worktrees` — safe garbage collection of orphaned agent worktrees.
 //!
-//! Counterpart to `wg gc` (task graph GC): removes `.wg-worktrees/agent-*`
-//! directories whose owning agents are terminal AND whose owning tasks are
-//! terminal. Deliberately conservative — skips anything that might still be
-//! live, anything with uncommitted changes, and anything it can't match to a
-//! registry entry (unless `--force` is passed).
+//! Part of the two-tier worktree cleanup model:
+//!
+//! **Happy path (atomic cleanup):** When an agent finishes normally, its wrapper
+//! drops a `.wg-cleanup-pending` marker. The coordinator's next tick sweeps
+//! marked worktrees whose agent is dead and task is terminal
+//! (see [`super::service::worktree::sweep_cleanup_pending_worktrees`]).
+//!
+//! **Fallback (this module):** When the happy path fails — agent killed before
+//! writing the marker, coordinator crash between marker and sweep, or any
+//! other leak — `wg gc --worktrees` lets operators reclaim orphaned worktrees
+//! on demand. It applies the same safety predicate (agent not live, task
+//! terminal) plus an uncommitted-changes gate, and defaults to dry-run.
+//!
+//! Both paths share the safety constants and removal machinery from
+//! [`super::service::worktree`].
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use workgraph::graph::Status;
@@ -15,11 +24,7 @@ use workgraph::parser::load_graph;
 use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::graph_path;
-
-/// Heartbeat freshness window (seconds) for liveness checks, matching the
-/// service worker constant. An agent whose heartbeat is within this window
-/// is considered still alive and its worktree untouchable.
-const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
+use super::service::worktree::{find_branch_for_worktree, HEARTBEAT_LIVENESS_TIMEOUT_SECS};
 
 /// A per-worktree classification result.
 #[derive(Debug, Clone, PartialEq)]
@@ -181,7 +186,7 @@ pub fn plan(
         }
 
         // Gate 4: uncommitted changes.
-        if has_uncommitted_changes(&path) {
+        if super::worktree_cmd::has_uncommitted_changes(&path) {
             decisions.push(Decision::Uncommitted {
                 agent_id: name.clone(),
                 path,
@@ -332,9 +337,9 @@ pub fn run(workgraph_dir: &Path, apply: bool, force: bool) -> Result<()> {
     let mut ok = 0usize;
     let mut failed = 0usize;
     for (agent_id, path, reason) in &to_remove {
-        let branch = find_branch_for_agent(&project_root, agent_id)
+        let branch = find_branch_for_worktree(&project_root, path)
             .unwrap_or_else(|| format!("wg/{}/unknown", agent_id));
-        match crate::commands::spawn::worktree::remove_worktree(&project_root, path, &branch) {
+        match crate::commands::service::worktree::remove_worktree(&project_root, path, &branch) {
             Ok(()) => {
                 ok += 1;
                 println!("[removed] {} — {}", agent_id, reason);
@@ -367,31 +372,6 @@ fn is_live_at(agent: &AgentEntry, now_secs: u64, heartbeat_timeout_secs: u64) ->
     let now_i = now_secs as i64;
     let diff = now_i.saturating_sub(last);
     diff >= 0 && (diff as u64) <= heartbeat_timeout_secs
-}
-
-fn has_uncommitted_changes(wt_path: &Path) -> bool {
-    Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(wt_path)
-        .output()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false)
-}
-
-fn find_branch_for_agent(project_root: &Path, agent_id: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["branch", "--list", &format!("wg/{}/*", agent_id)])
-        .current_dir(project_root)
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    for line in s.lines() {
-        let trimmed = line.trim_start_matches(['*', '+', ' ']).trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    None
 }
 
 #[cfg(test)]
