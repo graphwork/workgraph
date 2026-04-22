@@ -2237,6 +2237,15 @@ fn default_eval_gate_threshold() -> Option<f64> {
 fn default_auto_rescue_on_eval_fail() -> bool {
     true
 }
+fn default_gate_uncertain_policy() -> String {
+    "escalate".to_string()
+}
+fn default_gate_max_attempts() -> u32 {
+    2
+}
+fn default_gate_confidence_threshold() -> f64 {
+    0.7
+}
 
 fn default_flip_verification_threshold() -> Option<f64> {
     // Deprecated as of 2026-04-17. FLIP-driven autospawn of .verify-* tasks
@@ -2459,6 +2468,39 @@ pub struct AgencyConfig {
     /// URL for upstream agency bureau CSV. Used by `wg agency import --upstream`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_url: Option<String>,
+
+    /// Default model tier for gate + post-hoc evaluations. When set, this
+    /// overrides the coordinator's default evaluator routing for evaluation
+    /// calls. Use to pin evaluations to a specific tier (e.g. "sonnet" or
+    /// "opus") independently of the source task's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_model: Option<String>,
+
+    /// Project-wide default validation mode for tasks that do not set one.
+    /// Values: "none" (default) | "integrated" | "external" | "llm".
+    /// Per-task `validation` always wins; this just flips the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_validation_mode: Option<String>,
+
+    /// Policy when the LLM gate returns decision=uncertain (or any decision
+    /// below the confidence threshold). Values:
+    /// - "escalate" (default): task stays PendingValidation for human
+    /// - "retry": re-run the gate up to `gate_max_attempts` times
+    /// - "fail-closed": treat as reject
+    #[serde(default = "default_gate_uncertain_policy")]
+    pub gate_uncertain_policy: String,
+
+    /// Maximum gate evaluation attempts per task. Once exceeded, the task
+    /// is forced into the escalate path regardless of gate_uncertain_policy.
+    /// Default: 2.
+    #[serde(default = "default_gate_max_attempts")]
+    pub gate_max_attempts: u32,
+
+    /// Confidence floor for auto-approve or auto-reject by the gate. Below
+    /// this threshold the gate behaves per `gate_uncertain_policy`.
+    /// Range 0.0–1.0. Default: 0.7.
+    #[serde(default = "default_gate_confidence_threshold")]
+    pub gate_confidence_threshold: f64,
 }
 
 impl Default for AgencyConfig {
@@ -2501,6 +2543,11 @@ impl Default for AgencyConfig {
             assignment_source: None,
             agency_project_id: None,
             upstream_url: None,
+            evaluator_model: None,
+            default_validation_mode: None,
+            gate_uncertain_policy: default_gate_uncertain_policy(),
+            gate_max_attempts: default_gate_max_attempts(),
+            gate_confidence_threshold: default_gate_confidence_threshold(),
         }
     }
 }

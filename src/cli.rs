@@ -235,6 +235,23 @@ pub enum Commands {
         #[arg(long = "verify-timeout")]
         verify_timeout: Option<String>,
 
+        /// Validation mode: "none", "integrated", "external", or "llm".
+        /// "llm" opts the task in to the LLM verification gate at `wg done`
+        /// time (see docs/design/llm-verification-gate.md).
+        #[arg(long)]
+        validation: Option<String>,
+
+        /// Pin a specific evaluator agent (content hash) for the LLM gate.
+        /// Only meaningful when --validation=llm. Falls back to
+        /// config.agency.evaluator_agent when unset.
+        #[arg(long = "validator-agent")]
+        validator_agent: Option<String>,
+
+        /// Model override for the LLM gate call only (e.g., "opus", "sonnet").
+        /// Parallel to --model but applies only to the validator.
+        #[arg(long = "validator-model")]
+        validator_model: Option<String>,
+
         /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
         #[arg(long = "max-iterations")]
         max_iterations: Option<u32>,

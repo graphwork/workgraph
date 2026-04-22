@@ -187,6 +187,9 @@ pub fn run(
     provider: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
+    validation: Option<&str>,
+    validator_agent: Option<&str>,
+    validator_model: Option<&str>,
     max_iterations: Option<u32>,
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
@@ -383,6 +386,21 @@ pub fn run(
         workgraph::verify_lint::print_warnings(v);
     }
 
+    // Validate --validation mode if provided
+    if let Some(mode) = validation {
+        match mode {
+            "none" | "integrated" | "external" | "llm" => {}
+            _ => anyhow::bail!(
+                "Invalid --validation '{}'. Valid values: none, integrated, external, llm",
+                mode
+            ),
+        }
+    }
+    // --validator-agent / --validator-model only make sense with validation=llm
+    if (validator_agent.is_some() || validator_model.is_some()) && validation != Some("llm") {
+        anyhow::bail!("--validator-agent and --validator-model require --validation=llm");
+    }
+
     let log = if paused {
         vec![workgraph::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -545,8 +563,11 @@ pub fn run(
         triage_count: 0,
         resurrection_count: 0,
         last_resurrected_at: None,
-        validation: None,
+        validation: validation.map(String::from),
         validation_commands: vec![],
+        validator_agent: validator_agent.map(String::from),
+        validator_model: validator_model.map(String::from),
+        gate_attempts: 0,
         test_required: false,
         rejection_count: 0,
         max_rejections: None,
@@ -995,6 +1016,9 @@ fn add_task_directly(
             last_resurrected_at: None,
             validation: None,
             validation_commands: vec![],
+            validator_agent: None,
+            validator_model: None,
+            gate_attempts: 0,
             test_required: false,
             rejection_count: 0,
             max_rejections: None,
@@ -1471,6 +1495,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1526,6 +1553,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1581,6 +1611,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1643,6 +1676,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1702,6 +1738,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1757,6 +1796,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1816,6 +1858,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -1999,6 +2044,9 @@ tier = "standard"
             None,
             None,  // verify
             None,  // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,  // max_iterations
             None,  // cycle_guard
             None,  // cycle_delay
@@ -2061,6 +2109,9 @@ tier = "standard"
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -2123,6 +2174,9 @@ tier = "standard"
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -2224,8 +2278,11 @@ tier = "standard"
             None,
             None,
             None,
-            None,
-            None,
+            None, // verify
+            None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -2289,8 +2346,11 @@ tier = "standard"
             None,
             None,
             None,
-            None,
-            None,
+            None, // verify
+            None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -2383,8 +2443,11 @@ tier = "standard"
             None,
             None,
             None,
-            None,
-            None,
+            None, // verify
+            None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,

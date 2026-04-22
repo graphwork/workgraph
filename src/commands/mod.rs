@@ -262,6 +262,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -315,6 +318,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -402,6 +408,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -462,6 +471,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -516,6 +528,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -570,6 +585,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -624,6 +642,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -681,6 +702,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -740,6 +764,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -799,6 +826,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -855,6 +885,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -914,6 +947,9 @@ mod provenance_coverage_tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,

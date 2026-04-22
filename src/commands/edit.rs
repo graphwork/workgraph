@@ -659,6 +659,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -711,6 +714,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,
@@ -754,6 +760,9 @@ mod tests {
             None,
             None, // verify
             None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
             None,
             None,
             None,

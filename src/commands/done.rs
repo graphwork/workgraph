@@ -1271,6 +1271,81 @@ fn run_inner(
         }
     }
 
+    // LLM validation: transition to PendingValidation, where the coordinator
+    // will dispatch an independent-reviewer evaluator that runs the gate.
+    // See docs/design/llm-verification-gate.md §4.
+    if validation_mode == "llm" {
+        let id_llm = id.to_string();
+        let mut assigned_agent = None;
+        let graph = modify_graph(&path, |graph| {
+            let task = match graph.get_task_mut(&id_llm) {
+                Some(t) => t,
+                None => return false,
+            };
+            if task.status.is_terminal() {
+                return false;
+            }
+            assigned_agent = task.assigned.clone();
+            task.status = Status::PendingValidation;
+            task.completed_at = Some(Utc::now().to_rfc3339());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: task.assigned.clone(),
+                user: Some(workgraph::current_user()),
+                message: "Task pending LLM gate validation".to_string(),
+            });
+            true
+        })
+        .context("Failed to save graph")?;
+        super::notify_graph_changed(dir);
+
+        if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
+            if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
+                agent.status = workgraph::service::registry::AgentStatus::Done;
+                if agent.completed_at.is_none() {
+                    agent.completed_at = Some(Utc::now().to_rfc3339());
+                }
+            }
+            let _ = locked_registry.save_ref();
+        }
+
+        let config = workgraph::config::Config::load_or_default(dir);
+        let _ = workgraph::provenance::record(
+            dir,
+            "done",
+            Some(id),
+            None,
+            serde_json::json!({ "validation": "llm", "status": "pending-validation" }),
+            config.log.rotation_threshold,
+        );
+
+        println!("Task '{}' is pending LLM gate validation", id);
+
+        if let Some(ref agent_id) = assigned_agent {
+            match super::log::archive_agent(dir, id, agent_id) {
+                Ok(archive_dir) => {
+                    eprintln!("Agent archived to {}", archive_dir.display());
+                }
+                Err(e) => {
+                    eprintln!("Warning: agent archive failed: {}", e);
+                }
+            }
+        }
+
+        if let Some(task) = graph.get_task(id) {
+            match capture_task_output(dir, task) {
+                Ok(output_dir) => {
+                    eprintln!("Output captured to {}", output_dir.display());
+                }
+                Err(e) => {
+                    eprintln!("Warning: output capture failed: {}", e);
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
     // External validation: transition to PendingValidation instead of Done
     if validation_mode == "external" {
         let id_ext = id.to_string();
@@ -2332,6 +2407,30 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::PendingValidation);
         assert!(task.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_done_llm_validation_transitions_to_pending() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "LLM gate task", Status::InProgress);
+        task.validation = Some("llm".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false, false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::PendingValidation);
+        assert!(task.completed_at.is_some());
+        let last_log = task.log.last().unwrap();
+        assert!(
+            last_log.message.contains("pending LLM gate validation"),
+            "log should mention LLM gate validation: {}",
+            last_log.message
+        );
     }
 
     #[test]

@@ -370,12 +370,25 @@ pub struct Task {
     /// Timestamp of last resurrection (for cooldown enforcement)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_resurrected_at: Option<String>,
-    /// Validation mode: "none" (default/backward-compat), "integrated", or "external"
+    /// Validation mode: "none" (default/backward-compat), "integrated", "external", or "llm"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<String>,
     /// Commands to run during validation
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub validation_commands: Vec<String>,
+    /// Optional pin for which agent runs the LLM gate for this task (content-hash).
+    /// When None, falls back to config.agency.evaluator_agent then the assigner default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_agent: Option<String>,
+    /// Optional model override for the gate eval call only.
+    /// Resolution: validator_model > config.agency.evaluator_model > task.model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_model: Option<String>,
+    /// Attempt counter for gate evaluations. Increments each time the gate
+    /// runs (pass or uncertain). Used against config.agency.gate_max_attempts
+    /// to bound cost on oscillation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gate_attempts: u32,
     /// If true, validator rejects when no test files were modified
     #[serde(default, skip_serializing_if = "is_bool_false")]
     pub test_required: bool,
@@ -993,6 +1006,12 @@ struct TaskHelper {
     #[serde(default)]
     validation_commands: Vec<String>,
     #[serde(default)]
+    validator_agent: Option<String>,
+    #[serde(default)]
+    validator_model: Option<String>,
+    #[serde(default)]
+    gate_attempts: u32,
+    #[serde(default)]
     test_required: bool,
     #[serde(default)]
     rejection_count: u32,
@@ -1098,6 +1117,9 @@ impl<'de> Deserialize<'de> for Task {
             last_resurrected_at: helper.last_resurrected_at,
             validation: helper.validation,
             validation_commands: helper.validation_commands,
+            validator_agent: helper.validator_agent,
+            validator_model: helper.validator_model,
+            gate_attempts: helper.gate_attempts,
             test_required: helper.test_required,
             rejection_count: helper.rejection_count,
             max_rejections: helper.max_rejections,

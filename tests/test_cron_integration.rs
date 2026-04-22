@@ -296,7 +296,10 @@ fn create_test_task() -> Task {
         last_resurrected_at: None,
         validation: None,
         validation_commands: vec![],
-        test_required: false,
+
+        validator_agent: None,
+        validator_model: None,
+        gate_attempts: 0,        test_required: false,
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,

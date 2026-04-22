@@ -544,6 +544,46 @@ pub fn run(
         println!("  REJECTED: task '{}' failed by evaluation gate", task_id);
     }
 
+    // Step 8.7: LLM verification gate (docs/design/llm-verification-gate.md).
+    // When the source task opted in via validation="llm" and is currently
+    // PendingValidation, translate the evaluation score/notes into a gate
+    // decision and apply approve/reject/escalate accordingly.
+    // `rejected` above means the score gate already failed the task; no need
+    // to double-reject.
+    let is_llm_gated = task.validation.as_deref() == Some("llm");
+    if !rejected && is_llm_gated {
+        // Re-load to see current state (check_eval_gate may have mutated).
+        let path = super::graph_path(dir);
+        let graph2 = workgraph::parser::load_graph(&path).ok();
+        let still_pending = graph2
+            .as_ref()
+            .and_then(|g| g.get_task(task_id))
+            .map(|t| t.status == Status::PendingValidation)
+            .unwrap_or(false);
+        if still_pending {
+            let gate = GateDecision::from_evaluation(&evaluation, &config);
+            match apply_gate_decision(dir, task_id, &gate, &config) {
+                Ok(action) => {
+                    if !json {
+                        match action {
+                            GateAction::Approved => {
+                                println!("  LLM gate: approved '{}' (score {:.2})", task_id, evaluation.score)
+                            }
+                            GateAction::Rejected => {
+                                println!("  LLM gate: rejected '{}' (score {:.2})", task_id, evaluation.score)
+                            }
+                            GateAction::Held => {
+                                println!("  LLM gate: '{}' held for human review (score {:.2})", task_id, evaluation.score)
+                            }
+                            GateAction::Skipped => {}
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Warning: LLM gate application failed: {}", e),
+            }
+        }
+    }
+
     // Step 9: Record evaluator agent performance (if evaluator_agent is configured)
     // This tracks the evaluator's own performance: did it produce valid output,
     // was the score in range, etc. Enables performance history for the evaluator.
@@ -1487,6 +1527,197 @@ fn check_eval_gate(
     Ok(true)
 }
 
+// ---------------------------------------------------------------------------
+// LLM verification gate — per docs/design/llm-verification-gate.md
+// ---------------------------------------------------------------------------
+
+/// The gate verdict produced by the evaluator for `validation = "llm"` tasks.
+///
+/// Maps to the `decision` field in the `gate` block of the evaluator's JSON
+/// output. Derived from the overall score when no explicit gate block is
+/// present (see `GateDecision::from_evaluation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateVerdict {
+    Pass,
+    Fail,
+    Uncertain,
+}
+
+/// Action taken by `apply_gate_decision`. Returned for observability and
+/// used by callers to wire further side effects (notifications, rescue, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAction {
+    /// Source task was approved (transitioned PendingValidation → Done).
+    Approved,
+    /// Source task was rejected (wg reject was called — reopen or fail).
+    Rejected,
+    /// Source task stayed in PendingValidation awaiting human adjudication.
+    Held,
+    /// Source task was not in PendingValidation — gate took no action.
+    Skipped,
+}
+
+/// The structured gate decision the evaluator produces for a gated task.
+///
+/// Parallels the `gate` block of the extended `EvalOutput` in the design.
+#[derive(Debug, Clone)]
+pub struct GateDecision {
+    pub decision: GateVerdict,
+    pub confidence: f64,
+    pub must_fix: Vec<String>,
+    pub rationale: String,
+}
+
+impl GateDecision {
+    /// Derive a gate decision from a plain evaluation score/notes when the
+    /// evaluator did not emit an explicit gate block. Uses the configured
+    /// `eval_gate_threshold` and `gate_confidence_threshold` as bands:
+    /// - score >= gate_confidence_threshold → Pass, confidence = score
+    /// - score < fail_cutoff (0.4 by default)  → Fail, confidence = 1 - score
+    /// - otherwise                             → Uncertain, confidence = low
+    pub fn from_evaluation(evaluation: &Evaluation, config: &Config) -> Self {
+        let pass_threshold = config.agency.gate_confidence_threshold;
+        let fail_cutoff = 0.4f64;
+        if evaluation.score >= pass_threshold {
+            GateDecision {
+                decision: GateVerdict::Pass,
+                confidence: evaluation.score,
+                must_fix: Vec::new(),
+                rationale: evaluation.notes.clone(),
+            }
+        } else if evaluation.score < fail_cutoff {
+            GateDecision {
+                decision: GateVerdict::Fail,
+                confidence: 1.0 - evaluation.score,
+                must_fix: if evaluation.notes.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![evaluation.notes.clone()]
+                },
+                rationale: evaluation.notes.clone(),
+            }
+        } else {
+            GateDecision {
+                decision: GateVerdict::Uncertain,
+                confidence: (pass_threshold - evaluation.score).abs().max(0.1),
+                must_fix: Vec::new(),
+                rationale: evaluation.notes.clone(),
+            }
+        }
+    }
+}
+
+/// Apply a gate decision to a source task that is in PendingValidation
+/// because its `validation = "llm"`.
+///
+/// - Pass + confidence ≥ threshold → approve::run (→ Done)
+/// - Fail + confidence ≥ threshold → reject::run (→ Open or Failed)
+/// - Uncertain or low-confidence    → policy-driven (escalate / retry / fail-closed)
+///
+/// Always increments `gate_attempts` and logs the decision on the task.
+/// Returns the action taken so callers can wire notifications.
+pub fn apply_gate_decision(
+    dir: &Path,
+    task_id: &str,
+    gate: &GateDecision,
+    config: &Config,
+) -> Result<GateAction> {
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        bail!("Workgraph not initialized. Run `wg init` first.");
+    }
+
+    // Snapshot prerequisites and always bump gate_attempts so the caller
+    // (and the escalate / retry policies) see the same counter.
+    let mut is_pending = false;
+    let mut attempts_now: u32 = 0;
+    let mut validation_is_llm = false;
+    let _ = workgraph::parser::modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => return false,
+        };
+        is_pending = matches!(task.status, Status::PendingValidation);
+        validation_is_llm = task.validation.as_deref() == Some("llm");
+        task.gate_attempts = task.gate_attempts.saturating_add(1);
+        attempts_now = task.gate_attempts;
+        let verdict = match gate.decision {
+            GateVerdict::Pass => "pass",
+            GateVerdict::Fail => "fail",
+            GateVerdict::Uncertain => "uncertain",
+        };
+        task.log.push(LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: None,
+            user: Some(workgraph::current_user()),
+            message: format!(
+                "LLM gate decision: {} (confidence {:.2}, attempts {}/{}). {}",
+                verdict,
+                gate.confidence,
+                attempts_now,
+                config.agency.gate_max_attempts,
+                gate.rationale
+            ),
+        });
+        true
+    })
+    .context("Failed to save graph for gate decision")?;
+
+    if !is_pending {
+        return Ok(GateAction::Skipped);
+    }
+    if !validation_is_llm {
+        // The source task is PendingValidation but not llm-mode — leave it
+        // alone; the existing external-validation path controls it.
+        return Ok(GateAction::Held);
+    }
+
+    let threshold = config.agency.gate_confidence_threshold;
+    let high_conf = gate.confidence >= threshold;
+    let over_budget = attempts_now >= config.agency.gate_max_attempts;
+
+    match (gate.decision, high_conf, over_budget) {
+        (GateVerdict::Pass, true, _) => {
+            super::approve::run(dir, task_id)?;
+            Ok(GateAction::Approved)
+        }
+        (GateVerdict::Fail, true, _) => {
+            let reason = if gate.must_fix.is_empty() {
+                gate.rationale.clone()
+            } else {
+                format!(
+                    "LLM gate rejected (confidence {:.2}). Must fix:\n- {}",
+                    gate.confidence,
+                    gate.must_fix.join("\n- ")
+                )
+            };
+            super::reject::run(dir, task_id, &reason)?;
+            Ok(GateAction::Rejected)
+        }
+        _ => {
+            // Uncertain, low-confidence, or over-budget: policy-driven.
+            match config.agency.gate_uncertain_policy.as_str() {
+                "fail-closed" => {
+                    let reason = format!(
+                        "LLM gate uncertain (confidence {:.2}, attempts {}): {}",
+                        gate.confidence, attempts_now, gate.rationale
+                    );
+                    super::reject::run(dir, task_id, &reason)?;
+                    Ok(GateAction::Rejected)
+                }
+                "retry" if !over_budget => {
+                    // Leave in PendingValidation so the coordinator can
+                    // re-dispatch another eval. The gate_attempts counter
+                    // we just bumped prevents runaway.
+                    Ok(GateAction::Held)
+                }
+                // "escalate" (default) or "retry" over budget
+                _ => Ok(GateAction::Held),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1610,5 +1841,215 @@ mod tests {
         let truncated2 = &emoji_text[..end2];
         assert!(truncated2.len() <= 8);
         assert!(emoji_text.is_char_boundary(end2));
+    }
+
+    // -------------------------------------------------------------------
+    // LLM gate decision tests (docs/design/llm-verification-gate.md)
+    // -------------------------------------------------------------------
+
+    use std::fs;
+    use tempfile::tempdir;
+    use workgraph::graph::{Node, Task, WorkGraph};
+    use workgraph::parser::{load_graph, save_graph};
+
+    fn setup_gate_fixture(dir: &Path, validation: Option<&str>) -> std::path::PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let path = super::super::graph_path(dir);
+        let mut graph = WorkGraph::new();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test llm-gated task".to_string(),
+            status: Status::PendingValidation,
+            validation: validation.map(String::from),
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+        path
+    }
+
+    fn cfg_with_threshold(threshold: f64) -> Config {
+        let mut cfg = Config::default();
+        cfg.agency.gate_confidence_threshold = threshold;
+        cfg
+    }
+
+    #[test]
+    fn test_llm_verify_pass() {
+        // Pass decision with confidence above threshold → source task
+        // transitions PendingValidation → Done via approve.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_gate_fixture(dir_path, Some("llm"));
+
+        let config = cfg_with_threshold(0.7);
+        let gate = GateDecision {
+            decision: GateVerdict::Pass,
+            confidence: 0.9,
+            must_fix: vec![],
+            rationale: "all criteria met".to_string(),
+        };
+
+        let action = apply_gate_decision(dir_path, "t1", &gate, &config).unwrap();
+        assert_eq!(action, GateAction::Approved);
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.gate_attempts, 1);
+        assert!(task.log.iter().any(|e| e.message.contains("LLM gate decision: pass")));
+    }
+
+    #[test]
+    fn test_llm_verify_fail() {
+        // Fail decision with confidence above threshold → source task
+        // transitions PendingValidation → Open (for re-dispatch) via reject.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_gate_fixture(dir_path, Some("llm"));
+
+        let config = cfg_with_threshold(0.7);
+        let gate = GateDecision {
+            decision: GateVerdict::Fail,
+            confidence: 0.95,
+            must_fix: vec!["tests are missing".to_string()],
+            rationale: "work does not match task description".to_string(),
+        };
+
+        let action = apply_gate_decision(dir_path, "t1", &gate, &config).unwrap();
+        assert_eq!(action, GateAction::Rejected);
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        // reject::run reopens the task by default (rejection_count < max)
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.rejection_count, 1);
+        assert_eq!(task.gate_attempts, 1);
+        assert!(
+            task.log.iter().any(|e| e.message.contains("LLM gate decision: fail")),
+            "expected fail decision log entry"
+        );
+    }
+
+    #[test]
+    fn test_llm_verify_uncertain() {
+        // Uncertain decision → task stays in PendingValidation (escalate policy),
+        // gate_attempts is bumped so the retry/escalate logic can bound cost.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_gate_fixture(dir_path, Some("llm"));
+
+        let mut config = cfg_with_threshold(0.7);
+        config.agency.gate_uncertain_policy = "escalate".to_string();
+        let gate = GateDecision {
+            decision: GateVerdict::Uncertain,
+            confidence: 0.4,
+            must_fix: vec![],
+            rationale: "insufficient evidence to decide".to_string(),
+        };
+
+        let action = apply_gate_decision(dir_path, "t1", &gate, &config).unwrap();
+        assert_eq!(action, GateAction::Held);
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        // Stays in PendingValidation for human adjudication.
+        assert_eq!(task.status, Status::PendingValidation);
+        assert_eq!(task.gate_attempts, 1);
+        assert!(
+            task.log.iter().any(|e| e.message.contains("LLM gate decision: uncertain")),
+            "expected uncertain decision log entry"
+        );
+    }
+
+    #[test]
+    fn test_llm_verify_fail_closed_policy_rejects_uncertain() {
+        // fail-closed: uncertain verdicts are converted into rejections.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_gate_fixture(dir_path, Some("llm"));
+
+        let mut config = cfg_with_threshold(0.7);
+        config.agency.gate_uncertain_policy = "fail-closed".to_string();
+        let gate = GateDecision {
+            decision: GateVerdict::Uncertain,
+            confidence: 0.4,
+            must_fix: vec![],
+            rationale: "ambiguous".to_string(),
+        };
+
+        let action = apply_gate_decision(dir_path, "t1", &gate, &config).unwrap();
+        assert_eq!(action, GateAction::Rejected);
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Open);
+    }
+
+    #[test]
+    fn test_gate_decision_from_evaluation_score_bands() {
+        let config = cfg_with_threshold(0.7);
+        let mk_eval = |score: f64| Evaluation {
+            id: "e".into(),
+            task_id: "t1".into(),
+            agent_id: String::new(),
+            role_id: String::new(),
+            tradeoff_id: String::new(),
+            score,
+            dimensions: HashMap::new(),
+            notes: String::new(),
+            evaluator: String::new(),
+            timestamp: String::new(),
+            model: None,
+            source: String::new(),
+        };
+        assert_eq!(
+            GateDecision::from_evaluation(&mk_eval(0.9), &config).decision,
+            GateVerdict::Pass
+        );
+        assert_eq!(
+            GateDecision::from_evaluation(&mk_eval(0.3), &config).decision,
+            GateVerdict::Fail
+        );
+        assert_eq!(
+            GateDecision::from_evaluation(&mk_eval(0.55), &config).decision,
+            GateVerdict::Uncertain
+        );
+    }
+
+    #[test]
+    fn test_gate_skips_non_pending_task() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // Task in Done status — gate is a no-op
+        fs::create_dir_all(dir_path).unwrap();
+        let path = super::super::graph_path(dir_path);
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "t1".to_string(),
+            title: "already done".to_string(),
+            status: Status::Done,
+            validation: Some("llm".to_string()),
+            ..Task::default()
+        }));
+        save_graph(&graph, &path).unwrap();
+
+        let config = cfg_with_threshold(0.7);
+        let gate = GateDecision {
+            decision: GateVerdict::Pass,
+            confidence: 0.95,
+            must_fix: vec![],
+            rationale: String::new(),
+        };
+        let action = apply_gate_decision(dir_path, "t1", &gate, &config).unwrap();
+        assert_eq!(action, GateAction::Skipped);
+
+        let graph = load_graph(&path).unwrap();
+        // Status unchanged
+        assert_eq!(graph.get_task("t1").unwrap().status, Status::Done);
     }
 }
