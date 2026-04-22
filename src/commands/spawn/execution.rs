@@ -618,6 +618,18 @@ pub(crate) fn spawn_agent_inner(
             });
         }
     }
+    // Windows equivalent: put the child at the root of its own process
+    // group so console control events (Ctrl+Break, Ctrl+C, window-close)
+    // that reach — or cascade through — the daemon's group don't also
+    // terminate the task agent. The coordinator spawn in
+    // `coordinator_agent::spawn_claude_process` already sets this flag
+    // for the same reason; task agents need the same protection.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
+    }
 
     // Claim the task BEFORE spawning the process to prevent race conditions
     // where two concurrent spawns both pass the status check.
