@@ -2767,6 +2767,20 @@ exit $EXIT_CODE"#,
             });
         }
     }
+    // On Windows, the direct equivalent is `CREATE_NEW_PROCESS_GROUP`: it
+    // puts the child at the root of its own process group so console
+    // control events (Ctrl+Break, Ctrl+C, window-close) sent to — or
+    // cascading through — the daemon's group don't also terminate it.
+    // Without this, inline-spawn bash children die at roughly each 60s
+    // tick because a stray console event in the daemon's group takes them
+    // with it. The regular task-agent spawn path in `spawn/execution`
+    // already uses the same flag for this reason.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
+    }
 
     let child = match cmd.spawn() {
         Ok(child) => child,
@@ -2934,6 +2948,20 @@ exit $EXIT_CODE"#,
                 Ok(())
             });
         }
+    }
+    // On Windows, the direct equivalent is `CREATE_NEW_PROCESS_GROUP`: it
+    // puts the child at the root of its own process group so console
+    // control events (Ctrl+Break, Ctrl+C, window-close) sent to — or
+    // cascading through — the daemon's group don't also terminate it.
+    // Without this, inline-spawn bash children die at roughly each 60s
+    // tick because a stray console event in the daemon's group takes them
+    // with it. The regular task-agent spawn path in `spawn/execution`
+    // already uses the same flag for this reason.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
     }
 
     let child = match cmd.spawn() {
