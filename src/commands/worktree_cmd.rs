@@ -158,7 +158,7 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
 
 pub(crate) fn has_uncommitted_changes(wt_path: &Path) -> bool {
     Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .current_dir(wt_path)
         .output()
         .map(|o| !o.stdout.is_empty())
