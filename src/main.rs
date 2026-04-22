@@ -2164,6 +2164,8 @@ fn main() -> Result<()> {
             install_global,
             force,
             max_coordinators,
+            endpoint,
+            no_reload,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -2379,7 +2381,8 @@ fn main() -> Result<()> {
                     && chat_history.is_none()
                     && chat_history_max.is_none()
                     && tui_counters.is_none()
-                    && retry_context_tokens.is_none())
+                    && retry_context_tokens.is_none()
+                    && endpoint.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -2421,6 +2424,8 @@ fn main() -> Result<()> {
                     chat_history_max,
                     tui_counters.as_deref(),
                     retry_context_tokens,
+                    endpoint.as_deref(),
+                    no_reload,
                 )
             }
         }

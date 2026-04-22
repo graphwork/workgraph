@@ -182,76 +182,21 @@ pub fn run(
     Ok(())
 }
 
-/// Write an endpoint + model into the project's `config.toml`.
-///
-/// Inputs:
-/// - `model` sets `coordinator.model` and `agent.model` so every spawned
-///   agent inherits the choice.
-/// - `endpoint` starting with `http://` or `https://` gets written as an
-///   oai-compat no-auth endpoint entry marked `is_default`. That mirrors
-///   the inline `-e URL` behaviour of `wg nex` at the config layer.
+/// Write an endpoint + model into the project's `config.toml` on init.
+/// Thin wrapper around `Config::apply_model_endpoint` so init shares the
+/// same semantics as `wg config -m/-e`.
 fn apply_model_endpoint(
     dir: &Path,
     model: Option<&str>,
     endpoint: Option<&str>,
 ) -> Result<()> {
-    use workgraph::config::{Config, EndpointConfig};
-
-    let mut config = Config::load(dir).unwrap_or_default();
-
-    // Endpoint implies the `local` provider (oai-compat + no auth), which
-    // also fixes the prefix we write into the model fields — the config
-    // validator demands `provider:model`, so bare names would refuse to
-    // reload.
-    let effective_model: Option<String> = if endpoint.is_some() {
-        model.map(|m| {
-            if m.contains(':') {
-                m.to_string()
-            } else {
-                format!("local:{}", m)
-            }
-        })
-    } else {
-        model.map(|m| m.to_string())
-    };
-
-    if let Some(url) = endpoint {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            anyhow::bail!(
-                "Endpoint must be an http:// or https:// URL (got: {})",
-                url
-            );
-        }
-        let name = "default".to_string();
-        config
-            .llm_endpoints
-            .endpoints
-            .retain(|e| e.name != name);
-        for e in config.llm_endpoints.endpoints.iter_mut() {
-            e.is_default = false;
-        }
-        config.llm_endpoints.endpoints.push(EndpointConfig {
-            name,
-            provider: "local".to_string(),
-            url: Some(url.to_string()),
-            // Store the bare model on the endpoint (provider is known
-            // from `provider: local`), not the prefixed form.
-            model: model.map(|s| s.to_string()),
-            api_key: None,
-            api_key_file: None,
-            api_key_env: None,
-            is_default: true,
-            context_window: None,
-        });
-        println!("Configured default endpoint: {}", url);
+    let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
+    let summary = config
+        .apply_model_endpoint(model, endpoint)
+        .context("apply model/endpoint")?;
+    for line in &summary {
+        println!("{}", line);
     }
-
-    if let Some(ref m) = effective_model {
-        config.coordinator.model = Some(m.clone());
-        config.agent.model = m.clone();
-        println!("Set model: {}", m);
-    }
-
     config.save(dir).context("Failed to save config.toml")?;
     Ok(())
 }

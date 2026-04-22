@@ -6,6 +6,51 @@ use workgraph::config::{
     Config, ConfigSource, EndpointConfig, MatrixConfig, ModelRegistryEntry, Tier,
 };
 
+/// Send an all-None Reconfigure IPC to the daemon to make it re-read
+/// `config.toml` from disk. Returns `Ok(true)` when the daemon
+/// acknowledged, `Ok(false)` when no daemon is running (benign — the
+/// config change is already on disk for the next startup), or `Err`
+/// when the daemon is running but the IPC failed.
+#[cfg(unix)]
+fn try_reload_daemon(dir: &Path) -> Result<bool> {
+    use crate::commands::service;
+    use crate::commands::service::{IpcRequest, ServiceState};
+
+    // Short-circuit if no daemon state file exists — nothing to reload.
+    match ServiceState::load(dir) {
+        Ok(Some(_)) => {}
+        _ => return Ok(false),
+    }
+
+    let req = IpcRequest::Reconfigure {
+        max_agents: None,
+        executor: None,
+        poll_interval: None,
+        model: None,
+    };
+    match service::send_request(dir, &req) {
+        Ok(resp) if resp.ok => Ok(true),
+        Ok(resp) => Err(anyhow::anyhow!(
+            "daemon rejected reconfigure: {}",
+            resp.error.unwrap_or_else(|| "unknown".to_string())
+        )),
+        Err(e) => {
+            // "Service not running" / stale state → treat as no-op.
+            let msg = format!("{:#}", e);
+            if msg.contains("not running") || msg.contains("stale") {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn try_reload_daemon(_dir: &Path) -> Result<bool> {
+    Ok(false)
+}
+
 /// Scope for config operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigScope {
@@ -318,12 +363,31 @@ pub fn update(
     chat_history_max: Option<usize>,
     tui_counters: Option<&str>,
     retry_context_tokens: Option<u32>,
+    endpoint: Option<&str>,
+    no_reload: bool,
 ) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
         ConfigScope::Local => Config::load(dir)?,
     };
     let mut changed = false;
+
+    // Endpoint-driven update: shares semantics with `wg init -m/-e`.
+    // Writes a default oai-compat endpoint entry + applies the `local:`
+    // prefix to the model name so the provider:model validator accepts
+    // it on reload. Model-only sets flow through the existing validated
+    // agent.model / coordinator.model blocks further down (we re-check
+    // here so the existing blocks don't double-apply when we already did).
+    let endpoint_handled_model = if endpoint.is_some() {
+        let summary = config.apply_model_endpoint(model, endpoint)?;
+        for line in &summary {
+            println!("Set {}", line);
+        }
+        changed = true;
+        true
+    } else {
+        false
+    };
 
     // Agent settings
     if let Some(exec) = executor {
@@ -332,7 +396,9 @@ pub fn update(
         changed = true;
     }
 
-    if let Some(m) = model {
+    if let Some(m) = model
+        && !endpoint_handled_model
+    {
         // Validate provider:model format
         if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
             anyhow::bail!(
@@ -587,6 +653,14 @@ pub fn update(
     }
 
     if changed {
+        // Snapshot local config.toml before overwriting — only after all
+        // validation has passed, so a failed `wg config` run doesn't leave
+        // stray backup files behind.
+        if matches!(scope, ConfigScope::Local)
+            && let Some(backup) = Config::backup_on_disk(dir)?
+        {
+            println!("Backed up previous config → {}", backup.display());
+        }
         match scope {
             ConfigScope::Global => {
                 config.save_global()?;
@@ -596,6 +670,26 @@ pub fn update(
             ConfigScope::Local => {
                 config.save(dir)?;
                 println!("Configuration saved.");
+            }
+        }
+
+        // Auto-reload: when the user changed model/endpoint on the local
+        // config and a daemon is running, signal it to re-read config.toml
+        // so the change takes effect without a `wg service reload`. Only
+        // fires for local scope (global config isn't read by a daemon).
+        let wants_reload = !no_reload
+            && matches!(scope, ConfigScope::Local)
+            && (endpoint.is_some() || model.is_some());
+        if wants_reload {
+            match try_reload_daemon(dir) {
+                Ok(true) => println!("Daemon reconfigured (picked up new config)."),
+                Ok(false) => {} // no daemon running; nothing to do
+                Err(e) => {
+                    println!(
+                        "Note: config saved but daemon reload failed ({}). Run `wg service reload` to retry.",
+                        e
+                    );
+                }
             }
         }
     } else {
@@ -1787,6 +1881,8 @@ mod tests {
             None,
             None,
             None,
+            None, // endpoint
+            false, // no_reload
         );
         assert!(result.is_ok());
 
@@ -1837,6 +1933,8 @@ mod tests {
             None,
             None,
             None,
+            None, // endpoint
+            false, // no_reload
         );
         assert!(result.is_ok());
 
@@ -1887,6 +1985,8 @@ mod tests {
             None,
             None,
             None,
+            None, // endpoint
+            false, // no_reload
         );
         assert!(result.is_ok());
 
@@ -1935,6 +2035,8 @@ mod tests {
             None, // chat_history_max
             None, // tui_counters
             None, // retry_context_tokens
+            None, // endpoint
+            false, // no_reload
         );
         assert!(result.is_ok());
 

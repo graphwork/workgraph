@@ -3464,6 +3464,106 @@ impl Config {
         Ok(())
     }
 
+    /// Copy the current `config.toml` to `config.toml.<UTC-iso-timestamp>`
+    /// so subsequent writes are recoverable. Backups sort lexicographically
+    /// by timestamp (`ls config.toml.*` gives chronological order).
+    /// Returns the backup path on success, or `None` if the source file
+    /// didn't exist (nothing to back up on a fresh project).
+    pub fn backup_on_disk(workgraph_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
+        let config_path = workgraph_dir.join("config.toml");
+        if !config_path.exists() {
+            return Ok(None);
+        }
+        // Format avoids colons so the filename works on any FS and sorts
+        // lexicographically identical to chronological.
+        let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+        let backup_path = workgraph_dir.join(format!("config.toml.{}", stamp));
+        fs::copy(&config_path, &backup_path)
+            .map_err(|e| anyhow::anyhow!("Failed to back up config.toml: {}", e))?;
+        Ok(Some(backup_path))
+    }
+
+    /// Apply a model + endpoint pair to this config in memory. Does NOT
+    /// write. Shared by `wg init` and `wg config` so both have identical
+    /// semantics:
+    ///
+    /// - `endpoint` (if Some) becomes the `[[llm_endpoints.endpoints]]`
+    ///   entry named `default`, with `provider = "local"` (oai-compat,
+    ///   no auth) and `is_default = true`. Any preexisting entry named
+    ///   `default` is replaced and all other entries lose `is_default`.
+    /// - `model` (if Some) goes into `agent.model` and
+    ///   `coordinator.model`. When combined with `endpoint`, the model
+    ///   name is prefixed with `local:` so the provider:model validator
+    ///   accepts it on reload; when `model` is provider-prefixed
+    ///   already (`claude:opus`), it's used verbatim.
+    /// - `endpoint` must start with `http://` or `https://`; otherwise
+    ///   this fn returns an error before mutating anything.
+    ///
+    /// Returns a human-readable list of the changes applied (for the
+    /// caller to print).
+    pub fn apply_model_endpoint(
+        &mut self,
+        model: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> anyhow::Result<Vec<String>> {
+        if model.is_none() && endpoint.is_none() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(url) = endpoint
+            && !(url.starts_with("http://") || url.starts_with("https://"))
+        {
+            anyhow::bail!(
+                "Endpoint must be an http:// or https:// URL (got: {})",
+                url
+            );
+        }
+
+        // With an endpoint, bare model names need a `local:` prefix to
+        // pass the provider:model validator.
+        let effective_model: Option<String> = if endpoint.is_some() {
+            model.map(|m| {
+                if m.contains(':') {
+                    m.to_string()
+                } else {
+                    format!("local:{}", m)
+                }
+            })
+        } else {
+            model.map(|m| m.to_string())
+        };
+
+        let mut summary = Vec::new();
+
+        if let Some(url) = endpoint {
+            let name = "default".to_string();
+            self.llm_endpoints.endpoints.retain(|e| e.name != name);
+            for e in self.llm_endpoints.endpoints.iter_mut() {
+                e.is_default = false;
+            }
+            self.llm_endpoints.endpoints.push(EndpointConfig {
+                name,
+                provider: "local".to_string(),
+                url: Some(url.to_string()),
+                model: model.map(|s| s.to_string()),
+                api_key: None,
+                api_key_file: None,
+                api_key_env: None,
+                is_default: true,
+                context_window: None,
+            });
+            summary.push(format!("default endpoint → {}", url));
+        }
+
+        if let Some(m) = effective_model {
+            self.coordinator.model = Some(m.clone());
+            self.agent.model = m.clone();
+            summary.push(format!("model → {}", m));
+        }
+
+        Ok(summary)
+    }
+
     /// Save configuration to the global path (~/.workgraph/config.toml).
     /// Creates the ~/.workgraph/ directory if needed.
     pub fn save_global(&self) -> anyhow::Result<()> {
@@ -6885,5 +6985,100 @@ fetch_max_chars = 16000
 "#;
         let config: Config = toml::from_str(toml_str).expect("legacy field should be ignored");
         assert_eq!(config.native_executor.web.fetch_max_chars, 16_000);
+    }
+
+    #[test]
+    fn apply_model_endpoint_sets_default_endpoint_and_prefixed_model() {
+        let mut config = Config::default();
+        let summary = config
+            .apply_model_endpoint(Some("qwen3-coder"), Some("http://lambda01:8089"))
+            .unwrap();
+        // Both endpoint + model mentions in summary.
+        assert!(summary.iter().any(|s| s.contains("http://lambda01:8089")));
+        assert!(summary.iter().any(|s| s.contains("local:qwen3-coder")));
+        // Model gets the local: prefix.
+        assert_eq!(config.coordinator.model.as_deref(), Some("local:qwen3-coder"));
+        assert_eq!(config.agent.model, "local:qwen3-coder");
+        // Endpoint entry is default.
+        let default_ep = config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .find(|e| e.is_default)
+            .expect("default endpoint written");
+        assert_eq!(default_ep.provider, "local");
+        assert_eq!(default_ep.url.as_deref(), Some("http://lambda01:8089"));
+        assert_eq!(default_ep.model.as_deref(), Some("qwen3-coder"));
+    }
+
+    #[test]
+    fn apply_model_endpoint_preserves_provider_prefix_when_given() {
+        let mut config = Config::default();
+        config
+            .apply_model_endpoint(Some("claude:opus"), None)
+            .unwrap();
+        // No endpoint → model stored verbatim, no local: prefix added.
+        assert_eq!(config.coordinator.model.as_deref(), Some("claude:opus"));
+        assert_eq!(config.agent.model, "claude:opus");
+    }
+
+    #[test]
+    fn apply_model_endpoint_rejects_non_http() {
+        let mut config = Config::default();
+        let err = config
+            .apply_model_endpoint(Some("x"), Some("lambda01"))
+            .expect_err("non-http rejected");
+        assert!(
+            format!("{:#}", err).contains("http://"),
+            "error should mention http(s)"
+        );
+    }
+
+    #[test]
+    fn apply_model_endpoint_replaces_default_entry() {
+        let mut config = Config::default();
+        config
+            .apply_model_endpoint(Some("m1"), Some("http://a:1"))
+            .unwrap();
+        config
+            .apply_model_endpoint(Some("m2"), Some("http://b:2"))
+            .unwrap();
+        // Exactly one `default` entry; `is_default` only on the newest.
+        let defaults: Vec<_> = config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "default")
+            .collect();
+        assert_eq!(defaults.len(), 1, "only one 'default' entry retained");
+        assert_eq!(defaults[0].url.as_deref(), Some("http://b:2"));
+        assert_eq!(
+            config
+                .llm_endpoints
+                .endpoints
+                .iter()
+                .filter(|e| e.is_default)
+                .count(),
+            1,
+            "is_default unique"
+        );
+    }
+
+    #[test]
+    fn backup_on_disk_creates_sortable_snapshot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        // No file yet → None.
+        assert!(Config::backup_on_disk(dir).unwrap().is_none());
+        // Write a config, then back it up.
+        fs::write(dir.join("config.toml"), "[agent]\nexecutor = \"claude\"\n").unwrap();
+        let backup = Config::backup_on_disk(dir).unwrap().expect("backup written");
+        assert!(backup.exists(), "backup file exists");
+        let name = backup.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("config.toml."), "name: {}", name);
+        // Timestamp form `YYYY-MM-DDTHH-MM-SSZ` — sortable lexicographically.
+        let stamp = name.strip_prefix("config.toml.").unwrap();
+        assert_eq!(stamp.len(), "2026-04-22T12-34-56Z".len(), "timestamp fmt");
+        assert!(stamp.ends_with('Z'));
     }
 }

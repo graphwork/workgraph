@@ -1376,9 +1376,25 @@ pub enum Commands {
         #[arg(long)]
         executor: Option<String>,
 
-        /// Set model (opus-4-5, sonnet, haiku)
-        #[arg(long)]
+        /// Set model. Accepts `provider:model` (e.g. `claude:opus`) or
+        /// a bare name when combined with `-e URL` (implies oai-compat).
+        /// Updates `agent.model` and `coordinator.model`.
+        #[arg(short = 'm', long)]
         model: Option<String>,
+
+        /// Rewrite the default LLM endpoint to this URL. Must be
+        /// `http://` or `https://`. Creates/replaces a `[[llm_endpoints.endpoints]]`
+        /// entry named `default` with `provider = "local"`, marked
+        /// `is_default = true`. Pair with `-m MODEL` to also set the
+        /// model in one shot.
+        #[arg(short = 'e', long)]
+        endpoint: Option<String>,
+
+        /// Skip the auto-reload signal to the running daemon. By default
+        /// `wg config -m/-e` sends a reconfigure IPC so the change takes
+        /// effect immediately — set this flag to just write the file.
+        #[arg(long)]
+        no_reload: bool,
 
         /// Set default interval in seconds
         #[arg(long)]
