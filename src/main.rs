@@ -2474,6 +2474,7 @@ fn main() -> Result<()> {
             tree,
             dry_run,
             no_abandon,
+            redispatch,
         } => {
             if tree {
                 if let Some(task_id) = agent {
@@ -2489,9 +2490,9 @@ fn main() -> Result<()> {
                     anyhow::bail!("Must specify a task ID with --tree")
                 }
             } else if all {
-                commands::kill::run_all(&workgraph_dir, force, cli.json)
+                commands::kill::run_all(&workgraph_dir, force, redispatch, cli.json)
             } else if let Some(agent_id) = agent {
-                commands::kill::run(&workgraph_dir, &agent_id, force, cli.json)
+                commands::kill::run(&workgraph_dir, &agent_id, force, redispatch, cli.json)
             } else {
                 anyhow::bail!("Must specify an agent ID or use --all")
             }

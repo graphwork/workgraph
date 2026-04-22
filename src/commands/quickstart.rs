@@ -94,8 +94,9 @@ SERVICE MODE (recommended for parallel work)
   wg service freeze           # SIGSTOP all agents and pause service
   wg service thaw             # SIGCONT agents and resume service
   wg agents                   # Who's working on what
-  wg kill <agent-id>          # Kill a running agent (graceful SIGTERM)
-  wg kill --all               # Kill all running agents
+  wg kill <agent-id>          # Kill agent + pause its task (prevents re-dispatch)
+  wg kill <agent-id> --redispatch  # Kill agent, leave task open for re-dispatch
+  wg kill --all               # Kill all agents + pause their tasks
   wg list                     # What's done, what's pending
   wg tui                      # Interactive dashboard
 
@@ -630,8 +631,9 @@ fn json_output() -> serde_json::Value {
                     "freeze": "wg service freeze (SIGSTOP all agents + pause)",
                     "thaw": "wg service thaw (SIGCONT agents + resume)"
                 },
-                "kill_agent": "wg kill <agent-id>",
-                "kill_all": "wg kill --all"
+                "kill_agent": "wg kill <agent-id> (pauses task by default)",
+                "kill_agent_redispatch": "wg kill <agent-id> --redispatch (leave task open)",
+                "kill_all": "wg kill --all (pauses all tasks)"
             },
             "manual": {
                 "description": "For when no service is running. You claim and work tasks yourself.",

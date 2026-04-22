@@ -1727,6 +1727,10 @@ pub enum Commands {
         /// Kill agents but don't abandon tasks (allows respawn)
         #[arg(long)]
         no_abandon: bool,
+
+        /// Leave the task open for re-dispatch instead of pausing it
+        #[arg(long)]
+        redispatch: bool,
     },
 
     /// Reap dead/done/failed agents from the registry
