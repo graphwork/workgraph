@@ -2035,6 +2035,22 @@ pub enum Commands {
         /// the autonomous task-agent path already uses.
         #[arg(long = "eval-mode")]
         eval_mode: bool,
+
+        /// Streaming idle timeout in seconds (default: 600). How long to
+        /// wait for new chunks before aborting a streaming request.
+        /// Useful for slow local models where prefill can take minutes.
+        /// Also configurable via WG_STREAM_IDLE_TIMEOUT_SECS env var
+        /// (flag takes precedence).
+        #[arg(long = "idle-timeout-secs")]
+        idle_timeout_secs: Option<u64>,
+
+        /// Minimal tool surface: expose only the canonical local-dev
+        /// tool set (Read, Edit, Write, Bash, Grep, Glob, TodoWrite)
+        /// and omit everything else (WebFetch, WebSearch, NotebookEdit,
+        /// Monitor, Task*, Remote*, Cron*, MCP tools). Dramatically
+        /// reduces prefill cost for small local models. Implies --no-mcp.
+        #[arg(long = "minimal-tools")]
+        minimal_tools: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

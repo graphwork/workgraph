@@ -1847,14 +1847,14 @@ impl AgentLoop {
                 //
                 // Idle watchdog (from claude-code-ts pattern): track
                 // the timestamp of the last chunk; if the stream goes
-                // quiet for STREAM_IDLE_TIMEOUT_SECS (90s default),
+                // quiet for STREAM_IDLE_TIMEOUT_SECS (600s default),
                 // abort it. Prevents indefinite hangs on silently
                 // dropped connections. Override via env var
-                // WG_STREAM_IDLE_TIMEOUT_SECS.
+                // WG_STREAM_IDLE_TIMEOUT_SECS or --idle-timeout-secs flag.
                 let idle_timeout_secs = std::env::var("WG_STREAM_IDLE_TIMEOUT_SECS")
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(90);
+                    .unwrap_or(600);
                 let last_chunk =
                     std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
                 let last_chunk_for_callback = last_chunk.clone();

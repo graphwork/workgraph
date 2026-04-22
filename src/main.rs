@@ -2958,6 +2958,8 @@ fn main() -> Result<()> {
             autonomous,
             no_mcp,
             eval_mode,
+            idle_timeout_secs,
+            minimal_tools,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2975,6 +2977,8 @@ fn main() -> Result<()> {
             autonomous,
             no_mcp,
             eval_mode,
+            idle_timeout_secs,
+            minimal_tools,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

@@ -32,6 +32,8 @@ pub fn run(
     autonomous: bool,
     no_mcp: bool,
     eval_mode: bool,
+    idle_timeout_secs: Option<u64>,
+    minimal_tools: bool,
 ) -> Result<()> {
     // --eval-mode is a preset for benchmark-harness invocation:
     //   * implies --autonomous  (one-shot, EndTurn exits the loop)
@@ -44,7 +46,20 @@ pub fn run(
     // CLI surface stays orthogonal — a caller could still pass
     // `--autonomous --eval-mode` redundantly without confusion.
     let autonomous = autonomous || eval_mode;
-    let no_mcp = no_mcp || eval_mode;
+    // --minimal-tools implies --no-mcp (minimal surface excludes all MCP tools)
+    let no_mcp = no_mcp || eval_mode || minimal_tools;
+
+    // Set the idle timeout via env var if provided via flag (flag takes precedence over
+    // existing env var). The agent loop reads WG_STREAM_IDLE_TIMEOUT_SECS; we set it
+    // here so the flag wiring is transparent to downstream code.
+    if let Some(timeout) = idle_timeout_secs {
+        // SAFETY: We're in single-threaded CLI setup before spawning any threads, and
+        // we're setting a process-wide config that the agent loop will read shortly after.
+        // No concurrent access to env vars at this point.
+        unsafe {
+            std::env::set_var("WG_STREAM_IDLE_TIMEOUT_SECS", timeout.to_string());
+        }
+    }
 
     let config = Config::load_or_default(workgraph_dir);
 
@@ -75,6 +90,19 @@ pub fn run(
             // Interactive/skill mode: strip wg mutation tools — there's
             // no task context. wg_show/wg_list kept for browsing.
             reg.remove_tools(&["wg_done", "wg_add", "wg_fail", "wg_rescue", "wg_artifact"]);
+        }
+        if minimal_tools {
+            // Minimal tool surface: keep only the canonical local-dev set.
+            // Dramatically reduces prefill cost for small local models.
+            reg.keep_only_tools(&[
+                "read_file",
+                "edit_file",
+                "write_file",
+                "bash",
+                "grep",
+                "glob",
+                "todo_write",
+            ]);
         }
         if read_only {
             reg.filter_read_only()
