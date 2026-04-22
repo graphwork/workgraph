@@ -1175,7 +1175,16 @@ fn main() -> Result<()> {
             dry_run,
             include_done,
             older,
-        } => commands::gc::run(&workgraph_dir, dry_run, include_done, older.as_deref()),
+            worktrees,
+            apply,
+            force,
+        } => {
+            if worktrees {
+                commands::worktree_gc::run(&workgraph_dir, apply, force)
+            } else {
+                commands::gc::run(&workgraph_dir, dry_run, include_done, older.as_deref())
+            }
+        }
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Trace { command } => match command {
             TraceCommands::Show {

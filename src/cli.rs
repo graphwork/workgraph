@@ -901,19 +901,37 @@ pub enum Commands {
         command: Option<ArchiveCommands>,
     },
 
-    /// Garbage collect terminal tasks (failed, abandoned) from the graph
+    /// Garbage collect terminal tasks (failed, abandoned) from the graph,
+    /// or orphaned worktrees under `.wg-worktrees/` with `--worktrees`.
     Gc {
         /// Show what would be removed without actually removing
         #[arg(long)]
         dry_run: bool,
 
-        /// Also remove done tasks (by default only failed+abandoned)
+        /// Also remove done tasks (by default only failed+abandoned).
+        /// (Ignored when `--worktrees` is passed.)
         #[arg(long)]
         include_done: bool,
 
-        /// Only remove tasks older than this duration (e.g., 30d, 7d, 1w, 24h)
+        /// Only remove tasks older than this duration (e.g., 30d, 7d, 1w, 24h).
+        /// (Ignored when `--worktrees` is passed.)
         #[arg(long)]
         older: Option<String>,
+
+        /// GC orphaned agent worktrees under `.wg-worktrees/` instead of
+        /// graph tasks. Dry-run by default — pair with `--apply` to remove.
+        #[arg(long)]
+        worktrees: bool,
+
+        /// With `--worktrees`: actually remove matched worktrees. Without
+        /// this flag the command prints what would happen and exits.
+        #[arg(long)]
+        apply: bool,
+
+        /// With `--worktrees`: also remove worktrees that have uncommitted
+        /// changes (destroys that work). Use with caution.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show detailed information about a single task
