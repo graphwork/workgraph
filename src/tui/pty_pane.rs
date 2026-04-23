@@ -152,12 +152,25 @@ impl PtyPane {
         let reader_parser = Arc::clone(&parser);
         // Optional: tee PTY output to a file for debugging terminal
         // emulation issues (vt100 parser / tui-term gaps). Activated
-        // by WG_PTY_DUMP=<path>; every PTY child writes raw bytes to
-        // `<path>.<command>.<pid>.bin`.
+        // by WG_PTY_DUMP=<prefix>; every PTY child writes raw bytes
+        // to `<prefix>.<command-basename>.<pid>.bin`.
         let tee_path = std::env::var_os("WG_PTY_DUMP").map(|p| {
             let pid = std::process::id();
-            std::path::PathBuf::from(p)
-                .with_extension(format!("{}.{}.bin", command, pid))
+            // Strip any path from `command` (can be absolute, like
+            // /home/user/.cargo/bin/wg) — `with_extension` panics on
+            // separators in the extension.
+            let basename = std::path::Path::new(command)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("pty");
+            let mut path = std::path::PathBuf::from(p);
+            let current_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            path.set_file_name(format!("{}.{}.{}.bin", current_name, basename, pid));
+            path
         });
         // The reader thread peeks at raw PTY bytes for capability
         // queries and writes the expected replies through this Arc.
@@ -185,15 +198,6 @@ impl PtyPane {
                             // for claude / codex / any CLI that probes
                             // for features at startup.
                             respond_to_queries(&buf[..n], &reader_responder);
-                            // vt100 0.15 has known panics on certain
-                            // wide-char sequences at column boundaries
-                            // (em-dash in our banner, some emoji,
-                            // particular CSI combos). Catch the unwind
-                            // so one malformed byte sequence doesn't
-                            // kill the reader thread — the pane stays
-                            // live even if a chunk failed to render,
-                            // which is much better UX than a locked
-                            // black screen.
                             if let Ok(mut p) = reader_parser.lock() {
                                 p.process(&buf[..n]);
                             }

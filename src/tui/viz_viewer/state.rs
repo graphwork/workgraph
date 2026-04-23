@@ -11428,14 +11428,25 @@ impl VizApp {
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
-                    // `wg nex --chat <ref>` auto-resumes from
-                    // `chat/<ref>/conversation.jsonl`. `spawn-task`
-                    // handles lock acquisition + exec into nex.
-                    // BUG FIX: `wg session attach` takes the session
-                    // alias (no dot, `coordinator-N`), not the task id
-                    // (with dot, `.coordinator-N`). Previous code passed
-                    // task_id to both and observer mode silently failed
-                    // to resolve the session, exiting immediately.
+                    // `wg nex --chat <ref>` via `wg spawn-task`. The
+                    // handler reads inbox, writes outbox; PTY is
+                    // effectively silent. The TUI's composer +
+                    // direct-inbox-write + outbox polling render the
+                    // visible conversation (file-tailing path). We
+                    // keep chat_pty_mode=true so the lock-takeover
+                    // logic fires (daemon's handler gets released),
+                    // but the rendering is file-tailing because the
+                    // PTY content is always essentially empty.
+                    //
+                    // Rationale for this shape (not claude-style
+                    // interactive REPL): wg nex doesn't currently
+                    // render a REPL's responses to stdout in chat
+                    // mode — responses go to outbox. Making the PTY
+                    // show them would require either running
+                    // interactive-mode nex (loses inbox/outbox file
+                    // tracking) or teaching nex chat-mode to mirror
+                    // turn output to stdout. The latter is the clean
+                    // fix; cross-session follow-up.
                     let args = if observer_mode {
                         vec![
                             "session".to_string(),
@@ -11520,12 +11531,12 @@ impl VizApp {
             Ok(pane) => {
                 self.task_panes.insert(task_id, pane);
                 self.chat_pty_mode = true;
-                // Native (`wg nex --chat`) reads user input from
-                // inbox.jsonl, not stdin — the TUI composer still owns
-                // the keyboard in that mode. Vendor CLIs (claude,
-                // codex) ARE the REPL; their stdin IS where user text
-                // needs to land. Route accordingly so the PTY is
-                // actually interactive for claude/codex.
+                // Claude / codex run as interactive REPLs; their
+                // stdin IS the input channel — forward keys directly.
+                // Native runs `wg nex --chat <ref>` which reads inbox
+                // (not stdin) and writes outbox; the TUI composer +
+                // direct-inbox-write path is the correct input
+                // channel, so key-forwarding stays off for native.
                 self.chat_pty_forwards_stdin =
                     matches!(executor.as_str(), "claude" | "codex");
                 // Shift focus into the right panel so keystrokes route
