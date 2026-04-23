@@ -230,7 +230,13 @@ pub fn run(
         fresh_session(workgraph_dir, &stamp)?
     };
 
-    let chat_dir = workgraph_dir.join("chat").join(&session_ref);
+    // Resolve chat_dir through the session registry so aliases
+    // (`coordinator-0`, `0`) land on the SAME UUID dir as other
+    // writers (TUI, external readers, etc.). Previously we hardcoded
+    // the literal join, which created a split-brain when the alias
+    // was registered — nex wrote to `chat/coordinator-N/` while the
+    // TUI looked at `chat/<uuid>/` and couldn't see nex's lock file.
+    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, &session_ref);
     let _ = std::fs::create_dir_all(&chat_dir);
     let journal_path = chat_dir.join("conversation.jsonl");
     let output_log = chat_dir.join("trace.ndjson");

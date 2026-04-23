@@ -11360,6 +11360,70 @@ impl VizApp {
         // sure the dir exists; claude/codex will error otherwise.
         let _ = std::fs::create_dir_all(&chat_dir);
 
+        // Forced takeover: if any handler holds this coordinator's
+        // session lock (usually the daemon's own `wg nex --chat` agent
+        // spawned via `wg service start`), we want it gone. The user
+        // opened `wg tui` to drive chat themselves — the daemon's
+        // autonomous-dispatch handler is in the way. Soft release via
+        // the release-marker can stall indefinitely if the holder is
+        // stuck in a retry loop (broken endpoint, slow LLM turn, etc.)
+        // because the marker is only checked at turn boundaries.
+        //
+        // Policy: request release first (gentler, gives the holder a
+        // chance to flush cleanly), wait briefly, then SIGTERM if
+        // still alive. The TUI session owns the chat surface; this is
+        // the `wg tui` contract now.
+        if observer_mode
+            && let Ok(Some(holder)) = workgraph::session_lock::read_holder(&chat_dir)
+            && holder.alive
+        {
+            let _ = workgraph::session_lock::request_release(&chat_dir);
+            // 300ms grace for clean exit.
+            let mut released = false;
+            for _ in 0..3 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let still_held = workgraph::session_lock::read_holder(&chat_dir)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|info| info.alive);
+                if !still_held {
+                    released = true;
+                    break;
+                }
+            }
+            if !released {
+                // Stuck holder — force quit. Safe because:
+                //   - the marker is already written so the handler
+                //     won't spawn a replacement;
+                //   - we own the lock file path, re-acquiring works;
+                //   - any in-flight work this handler was doing is
+                //     recoverable from outbox on next open.
+                unsafe {
+                    libc::kill(holder.pid as libc::pid_t, libc::SIGTERM);
+                }
+                eprintln!(
+                    "[tui] forced takeover: SIGTERM'd stuck handler pid={} for {}",
+                    holder.pid, chat_ref
+                );
+                // Short wait for the process to exit + lock file to clear.
+                for _ in 0..10 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let still_held = workgraph::session_lock::read_holder(&chat_dir)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|info| info.alive);
+                    if !still_held {
+                        break;
+                    }
+                }
+            }
+        }
+        // Re-check lock state after takeover.
+        let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
+            .ok()
+            .flatten()
+            .is_some_and(|info| info.alive);
+
         // Owned String args per executor.
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
@@ -11367,11 +11431,16 @@ impl VizApp {
                     // `wg nex --chat <ref>` auto-resumes from
                     // `chat/<ref>/conversation.jsonl`. `spawn-task`
                     // handles lock acquisition + exec into nex.
+                    // BUG FIX: `wg session attach` takes the session
+                    // alias (no dot, `coordinator-N`), not the task id
+                    // (with dot, `.coordinator-N`). Previous code passed
+                    // task_id to both and observer mode silently failed
+                    // to resolve the session, exiting immediately.
                     let args = if observer_mode {
                         vec![
                             "session".to_string(),
                             "attach".to_string(),
-                            task_id.clone(),
+                            chat_ref.clone(),
                         ]
                     } else {
                         vec!["spawn-task".to_string(), task_id.clone()]
