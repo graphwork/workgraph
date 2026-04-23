@@ -30,7 +30,31 @@ fn shell_escape(s: &str) -> String {
 /// Generate a command that reads prompt from a file
 /// This is more reliable than heredoc when output redirection is involved
 fn prompt_file_command(prompt_file: &str, command: &str) -> String {
-    format!("cat {} | {}", shell_escape(prompt_file), command)
+    format!("cat {} | {}", shell_escape(&sanitize_bash_path(prompt_file)), command)
+}
+
+/// Strip the Windows extended-length path prefix (`\\?\`) so bash can
+/// open the path. Git-for-Windows' `bash.exe` can WRITE to `\\?\C:\...`
+/// via redirect operators, but it cannot pass such a path as an argument
+/// to a builtin or external command (`cat '\\?\C:\...\prompt.txt'`
+/// fails "No such file or directory"). `PathBuf::canonicalize` on
+/// Windows loves to return the verbatim form, so stripping here keeps
+/// generated shell scripts portable.
+///
+/// No-op on non-Windows.
+#[allow(clippy::manual_map)]
+pub(crate) fn sanitize_bash_path(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        if let Some(rest) = path.strip_prefix(r"\\?\") {
+            // UNC form: `\\?\UNC\server\share\x` → `\\server\share\x`
+            if let Some(unc) = rest.strip_prefix("UNC\\") {
+                return format!(r"\\{}", unc);
+            }
+            return rest.to_string();
+        }
+    }
+    path.to_string()
 }
 
 /// Result of spawning an agent

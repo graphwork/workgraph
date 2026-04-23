@@ -20,6 +20,7 @@ use super::context::{
     resolve_task_scope,
 };
 use super::worktree;
+use super::sanitize_bash_path;
 use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
     shell_escape,
@@ -587,10 +588,15 @@ pub(crate) fn spawn_agent_inner(
 
     // Set working directory: worktree overrides settings.working_dir
     if let Some(ref wt) = worktree_info {
-        cmd.current_dir(&wt.path);
-        cmd.env("WG_WORKTREE_PATH", &wt.path);
+        // Strip `\\?\` verbatim prefix: bash.exe (MinGW/Git-for-Windows) silently
+        // produces no output when its CWD is a verbatim extended-length path like
+        // `\\?\C:\...`. Rust's PathBuf::canonicalize returns these on Windows.
+        let clean_worktree_path = sanitize_bash_path(&wt.path.to_string_lossy());
+        let clean_project_root = sanitize_bash_path(&wt.project_root.to_string_lossy());
+        cmd.current_dir(&clean_worktree_path);
+        cmd.env("WG_WORKTREE_PATH", &clean_worktree_path);
         cmd.env("WG_BRANCH", &wt.branch);
-        cmd.env("WG_PROJECT_ROOT", &wt.project_root);
+        cmd.env("WG_PROJECT_ROOT", &clean_project_root);
         // Signal to Claude Code (and other tools) that this session is already
         // inside a managed worktree — do not create a competing one.
         cmd.env("WG_WORKTREE_ACTIVE", "1");
@@ -1175,11 +1181,12 @@ fn write_wrapper_script(
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
             // Capture JSONL stdout to raw_stream.jsonl and also copy to output.log.
-            // stderr goes to output.log only.
+            // stderr goes to output.log only. `tee -a <path>` opens the file
+            // itself and fails on `\\?\C:\...` verbatim paths, so sanitize.
             let cmd = format!(
                 "{timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
                 timed_command = timed_command,
-                raw = shell_escape(&raw_str),
+                raw = shell_escape(&sanitize_bash_path(&raw_str)),
             );
             (cmd, String::new(), String::new())
         }
@@ -1335,7 +1342,11 @@ fi
 exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),
-        escaped_output_file = shell_escape(output_file_str),
+        // `$OUTPUT_FILE` is used throughout the wrapper as a `>>` redirect
+        // target. Bash on Windows (Git-for-Windows) refuses `\\?\C:\...`
+        // verbatim paths for redirects with "No such file or directory",
+        // so output.log never appears and the agent looks silently dead.
+        escaped_output_file = shell_escape(&sanitize_bash_path(output_file_str)),
         run_command = run_command,
         timeout_note = timeout_note,
         debug_env_vars = debug_env_vars,
