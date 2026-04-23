@@ -3630,6 +3630,14 @@ pub struct VizApp {
     /// Phase 3c of sessions-as-identity-rollout.md.
     pub chat_pty_takeover_pending_since: Option<std::time::Instant>,
 
+    /// When true, keystrokes in the Chat tab forward to the embedded
+    /// PTY child's stdin instead of the TUI's chat composer. Set for
+    /// vendor CLIs (`claude`, `codex`) that ARE their own REPL and
+    /// read stdin directly; cleared for `wg nex --chat` which reads
+    /// inbox.jsonl and expects the TUI to write that via the
+    /// composer + direct-inbox path. Decided at PTY-spawn time.
+    pub chat_pty_forwards_stdin: bool,
+
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
@@ -4001,6 +4009,7 @@ impl VizApp {
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
+            chat_pty_forwards_stdin: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -8206,6 +8215,7 @@ impl VizApp {
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
+            chat_pty_forwards_stdin: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -11419,6 +11429,14 @@ impl VizApp {
             Ok(pane) => {
                 self.task_panes.insert(task_id, pane);
                 self.chat_pty_mode = true;
+                // Native (`wg nex --chat`) reads user input from
+                // inbox.jsonl, not stdin — the TUI composer still owns
+                // the keyboard in that mode. Vendor CLIs (claude,
+                // codex) ARE the REPL; their stdin IS where user text
+                // needs to land. Route accordingly so the PTY is
+                // actually interactive for claude/codex.
+                self.chat_pty_forwards_stdin =
+                    matches!(executor.as_str(), "claude" | "codex");
                 // Shift focus into the right panel so keystrokes route
                 // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
                 // Without this, the graph panel owns keys and hotkeys
@@ -11434,6 +11452,7 @@ impl VizApp {
                     executor, e, bin
                 );
                 self.chat_pty_mode = false;
+                self.chat_pty_forwards_stdin = false;
             }
         }
     }

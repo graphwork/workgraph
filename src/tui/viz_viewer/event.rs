@@ -391,6 +391,35 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Vendor-CLI PTY: forward every keystroke to the embedded child's
+    // stdin. Vendor CLIs (claude, codex) are their own REPL; they read
+    // stdin directly, not inbox.jsonl. Without this branch keys flow
+    // into our own composer and claude/codex never hear from the user.
+    //
+    // Scoping: only fires on the Chat tab when the forward flag is set
+    // (matches vendor-CLI executors, not native wg-nex). Escape
+    // hatches: Ctrl+T still toggles PTY mode off, Ctrl+Q reserved for
+    // host-exit. Everything else — letters, digits, Enter, arrows,
+    // even 'q' on its own — goes to the vendor CLI so slash commands,
+    // vendor hotkeys, etc. work naturally.
+    let vendor_pty_active = app.chat_pty_mode
+        && app.chat_pty_forwards_stdin
+        && app.right_panel_tab == RightPanelTab::Chat
+        && !app.chat_pty_observer;
+    if vendor_pty_active {
+        let is_toggle = matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        let is_host_quit = matches!(code, KeyCode::Char('q')) && modifiers.contains(KeyModifiers::CONTROL);
+        if !is_toggle && !is_host_quit {
+            let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+            if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                let key_event = crossterm::event::KeyEvent::new(code, modifiers);
+                let _ = pane.send_key(key_event);
+                return;
+            }
+        }
+        // Fall through for Ctrl+T / Ctrl+Q so the usual handlers run.
+    }
+
     // Dispatch based on input mode
     match &app.input_mode {
         InputMode::Search => handle_search_input(app, code, modifiers),
