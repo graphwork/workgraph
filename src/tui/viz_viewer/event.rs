@@ -1490,6 +1490,14 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
+        // M: send message to selected task's agent
+        KeyCode::Char('M') => {
+            if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
+                super::state::editor_clear(&mut app.text_prompt.editor);
+                app.input_mode = InputMode::TextPrompt(TextPromptAction::SendMessage(task_id));
+            }
+        }
+
         // c or ':': open chat input (switch to chat tab + enter input mode)
         // Preserves any in-progress input from previous editing.
         KeyCode::Char('c') | KeyCode::Char(':') => {
