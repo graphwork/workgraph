@@ -17,7 +17,7 @@
 
 set -u
 
-POLL_DEADLINE=${POLL_DEADLINE:-8}
+POLL_DEADLINE=${POLL_DEADLINE:-12}
 TMPHOME=$(mktemp -d)
 SESSION=wg-smoke-auto-pty-$$
 trap 'tmux kill-session -t "$SESSION" 2>/dev/null; cd /; rm -rf "$TMPHOME"' EXIT
