@@ -86,3 +86,4 @@ terminal-bench/results/
 
 # Agent issue directories (per-run)
 /issues-*/
+.workgraph
