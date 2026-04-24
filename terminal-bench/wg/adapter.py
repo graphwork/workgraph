@@ -1835,30 +1835,106 @@ class NexEvalAgent(BaseAgent):
             logs_dir = Path("/tmp/wg-nex-eval-logs")
             logs_dir.mkdir(parents=True, exist_ok=True)
         super().__init__(logs_dir=logs_dir, model_name=model_name, *args, **kwargs)
-        self._model = _normalize_model(model_name or "qwen3-coder-30b")
         self._endpoint = endpoint
         self._timeout = timeout
         self._max_turns = max_turns
+        ep_info = self._resolve_endpoint(endpoint)
+        self._endpoint_url = ep_info["url"]
+        self._endpoint_api_key = ep_info["api_key"]
+        self._endpoint_provider = ep_info["provider"]
+
+        raw_model = _normalize_model(model_name or "qwen3-coder-30b")
+        if ":" not in raw_model and self._endpoint_provider:
+            raw_model = f"{self._endpoint_provider}:{raw_model}"
+        self._model = raw_model
+
+    @staticmethod
+    def _resolve_endpoint(name: str) -> dict:
+        """Resolve a named wg endpoint to {url, api_key, provider} on the host.
+
+        Falls back to the name as a bare URL if ``wg endpoint list`` fails.
+        """
+        import subprocess as _sp
+        try:
+            out = _sp.check_output(
+                ["wg", "endpoint", "list", "--json"],
+                timeout=10, stderr=_sp.DEVNULL,
+            )
+            endpoints = json.loads(out)
+            for ep in endpoints:
+                if ep.get("name") == name:
+                    url = ep.get("url", "")
+                    key = ep.get("api_key") or "none"
+                    if key.startswith("****"):
+                        key = "none"
+                    provider = ep.get("provider", "oai-compat")
+                    return {"url": url, "api_key": key, "provider": provider}
+        except Exception:
+            pass
+        if name.startswith("http://") or name.startswith("https://"):
+            return {"url": name, "api_key": "none", "provider": "oai-compat"}
+        return {"url": f"https://{name}:30000/v1", "api_key": "none", "provider": "oai-compat"}
+
+    @staticmethod
+    def _resolve_hosts_for_url(url: str) -> list[tuple[str, str]]:
+        """Extract hostname from URL and resolve to IP for /etc/hosts injection."""
+        import socket
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return []
+        try:
+            socket.inet_aton(hostname)
+            return []
+        except OSError:
+            pass
+        try:
+            ip = socket.gethostbyname(hostname)
+            return [(ip, hostname)]
+        except socket.gaierror:
+            return []
 
     def _find_wg_binary(self) -> str:
-        """Locate the bookworm-compatible wg binary on the host."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        candidates = [
-            str(repo_root / "target" / "bookworm-out" / "wg"),
+        """Locate the bookworm-compatible wg binary on the host.
+
+        When running from a git worktree, __file__ is under
+        .wg-worktrees/<name>/terminal-bench/wg/adapter.py and there is no
+        local target/ directory.  Walk up to find the main repo root that
+        contains the actual build artifacts.
+        """
+        adapter_dir = Path(__file__).resolve().parent.parent.parent
+        roots = [adapter_dir]
+        cur = adapter_dir
+        while cur != cur.parent:
+            if (cur / "Cargo.toml").exists() and cur != adapter_dir:
+                roots.insert(0, cur)
+                break
+            cur = cur.parent
+        candidates = []
+        for root in roots:
+            candidates.append(str(root / "target" / "bookworm-out" / "wg"))
+        candidates += [
             os.path.expanduser("~/.cargo/bin/wg"),
-            str(repo_root / "target" / "release" / "wg"),
-            str(repo_root / "target" / "debug" / "wg"),
         ]
+        for root in roots:
+            candidates.append(str(root / "target" / "release" / "wg"))
+            candidates.append(str(root / "target" / "debug" / "wg"))
         for p in candidates:
             if os.path.isfile(p):
                 return p
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Upload wg binary and create an isolated trial directory."""
+        """Upload wg binary, configure endpoint, and create trial directory."""
         wg_bin = self._find_wg_binary()
         await environment.upload_file(wg_bin, "/usr/local/bin/wg")
         await environment.exec(command="chmod +x /usr/local/bin/wg")
+
+        for ip, hostname in self._resolve_hosts_for_url(self._endpoint_url):
+            await environment.exec(
+                command=f'echo "{ip} {hostname}" >> /etc/hosts'
+            )
 
         self._trial_workdir = f"{_TRIAL_WORKDIR_PREFIX}{uuid.uuid4().hex[:12]}"
         await environment.exec(command=f"mkdir -p {self._trial_workdir}")
@@ -1867,12 +1943,25 @@ class NexEvalAgent(BaseAgent):
             command=f"cd {self._trial_workdir} && wg init --no-agency"
         )
 
-        config = f'[agent]\nmodel = "{self._model}"\n'
+        config_lines = [
+            f'[agent]',
+            f'model = "{self._model}"',
+            f'',
+            f'[[llm_endpoints.endpoints]]',
+            f'name = "{self._endpoint}"',
+            f'provider = "oai-compat"',
+            f'url = "{self._endpoint_url}"',
+            f'api_key = "{self._endpoint_api_key}"',
+            f'is_default = true',
+        ]
+        config = "\n".join(config_lines) + "\n"
         b64 = base64.b64encode(config.encode()).decode()
-        await environment.exec(
-            command=f"echo '{b64}' | base64 -d > "
-                    f"{self._trial_workdir}/.workgraph/config.toml"
+        wg_dir_cmd = (
+            f'WG_DIR=$(ls -d {self._trial_workdir}/.wg '
+            f'{self._trial_workdir}/.workgraph 2>/dev/null | head -1) && '
+            f"echo '{b64}' | base64 -d > \"$WG_DIR/config.toml\""
         )
+        await environment.exec(command=wg_dir_cmd)
 
         self._environment = environment
 
@@ -1888,10 +1977,7 @@ class NexEvalAgent(BaseAgent):
             command=f"echo '{b64_instr}' | base64 -d > /tmp/nex-instruction.txt"
         )
 
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
-
         cmd = (
-            f'export OPENROUTER_API_KEY="{api_key}" && '
             f'cd {self._trial_workdir} && '
             f'wg nex --eval-mode '
             f'--max-turns {self._max_turns} '
