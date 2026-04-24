@@ -388,7 +388,7 @@ fn is_free_text_verify_command(cmd: &str) -> bool {
         "pytest", "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig", "rustc",
         "gcc", "g++", "clang", "clang++", "javac", "java", "test", "[", "true", "false", "exit",
         "echo", "printf", "cat", "grep", "find", "ls", "diff", "cmp", "wc", "head", "tail", "sort",
-        "uniq", "cut", "tr",
+        "uniq", "cut", "tr", "bash", "sh", "zsh", "env",
     ];
 
     if known_commands.contains(&first_word) {
