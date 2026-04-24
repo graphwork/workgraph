@@ -3020,7 +3020,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     handle_iteration_navigator_click(app, column);
                 } else {
                     let col_in_tabs = column.saturating_sub(app.last_tab_bar_area.x);
-                    if let Some(tab) = tab_at_column(col_in_tabs) {
+                    if let Some(tab) = tab_at_column(col_in_tabs, app) {
                         // Special behavior for Log tab: toggle view mode if already active
                         if tab == RightPanelTab::Log && app.right_panel_tab == RightPanelTab::Log {
                             app.toggle_log_view();
@@ -4397,19 +4397,23 @@ fn handle_files_key(app: &mut VizApp, code: KeyCode) {
 
 /// Determine which tab was clicked based on column position within the tab bar.
 /// Returns None if the click is on a divider or beyond the last tab.
-fn tab_at_column(col: u16) -> Option<RightPanelTab> {
-    let labels = [
-        "0:Chat", "1:Detail", "2:Log", "3:Msg", "4:Agency", "5:Config", "6:Files", "7:Coord",
-        "8:Fire",
-    ];
+fn tab_at_column(col: u16, app: &VizApp) -> Option<RightPanelTab> {
     let mut pos: u16 = 0;
-    for (i, label) in labels.iter().enumerate() {
+    for (i, tab) in RightPanelTab::ALL.iter().enumerate() {
         if i > 0 {
             pos += 1; // divider "│" is 1 column wide
         }
-        let tab_width = label.len() as u16 + 2; // " label " padding
+        let base_label = format!("{}:{}", tab.index(), tab.label());
+        let label_width = if *tab == RightPanelTab::Log {
+            // Render adds " ▲" or " ▼" indicator (2 extra columns)
+            let indicator = if app.log_pane.view_top { "▲" } else { "▼" };
+            format!("{} {}", base_label, indicator).len() as u16
+        } else {
+            base_label.len() as u16
+        };
+        let tab_width = label_width + 2; // " label " padding
         if col >= pos && col < pos + tab_width {
-            return RightPanelTab::from_index(i);
+            return Some(*tab);
         }
         pos += tab_width;
     }
@@ -6280,8 +6284,7 @@ mod scrollbar_tests {
         app.last_horizontal_divider_area = Rect::new(0, 14, 120, 3);
 
         // Click on "1:Detail" tab. In the Tabs widget with default padding,
-        // "0:Chat" occupies cols 1..8 (padding + 6-char label + padding),
-        // divider at col 9, then "1:Detail" starts at col 10.
+        // " 0:Chat " (8 cols), divider at col 8, then " 1:Detail " starts at col 9.
         // Click at col 12 (within "1:Detail" label), row 16 (tab bar row).
         handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 12);
 
@@ -6313,13 +6316,16 @@ mod scrollbar_tests {
         app.last_horizontal_divider_area = Rect::new(0, 14, 120, 3);
 
         // Tab positions (relative to tab_bar_area.x = 1):
-        // " 0:Chat " (8 cols) | " 1:Detail " (10 cols) | " 2:Log " (7 cols) | ...
-        // Absolute columns:
-        //   0:Chat => cols 1..8 (tab_bar.x + 0..7)
-        //   divider at col 9
+        // " 0:Chat " (8) │ " 1:Detail " (10) │ " 2:Agency " (10) │
+        // " 3:Config " (10) │ " 4:Log ▲ " (10) │ " 5:Coord " (9) │ " 6:Dash " (8)
+        // Absolute columns (tab_bar.x = 1):
+        //   0:Chat   => cols 1..8
         //   1:Detail => cols 10..19
-        //   divider at col 20
-        //   2:Log => cols 21..27
+        //   2:Agency => cols 21..30
+        //   3:Config => cols 32..41
+        //   4:Log    => cols 43..52
+        //   5:Coord  => cols 54..62
+        //   6:Dash   => cols 64..71
 
         // Click on "0:Chat" (col 4, row 16)
         app.right_panel_tab = RightPanelTab::Log; // start on a different tab
@@ -6339,9 +6345,18 @@ mod scrollbar_tests {
             "Click on Detail tab"
         );
 
-        // Click on "2:Log" (col 24, row 16)
+        // Click on "3:Config" (col 35, row 16)
         app.right_panel_tab = RightPanelTab::Chat;
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 24);
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 35);
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Config,
+            "Click on Config tab"
+        );
+
+        // Click on "4:Log" (col 46, row 16)
+        app.right_panel_tab = RightPanelTab::Chat;
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 46);
         assert_eq!(app.right_panel_tab, RightPanelTab::Log, "Click on Log tab");
     }
 

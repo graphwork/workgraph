@@ -15900,18 +15900,14 @@ mod remap_panel_tests {
         app.right_panel_visible = false;
         app.layout_mode = LayoutMode::Off;
 
-        // 11 tabs + 1 close = 12 presses
+        // 7 live tabs + 1 close = 8 presses
         let expected_tabs = [
             Some(RightPanelTab::Chat),
             Some(RightPanelTab::Detail),
-            Some(RightPanelTab::Log),
-            Some(RightPanelTab::Messages),
             Some(RightPanelTab::Agency),
             Some(RightPanelTab::Config),
-            Some(RightPanelTab::Files),
+            Some(RightPanelTab::Log),
             Some(RightPanelTab::CoordLog),
-            Some(RightPanelTab::Firehose),
-            Some(RightPanelTab::Output),
             Some(RightPanelTab::Dashboard),
             None, // closed
         ];
@@ -16134,12 +16130,8 @@ mod firehose_tests {
 
     #[test]
     fn firehose_tab_in_panel_cycle() {
-        assert_eq!(RightPanelTab::Firehose.index(), 8);
-        assert_eq!(RightPanelTab::Firehose.label(), "Fire");
-        assert_eq!(RightPanelTab::from_index(8), Some(RightPanelTab::Firehose));
-        assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Firehose);
-        assert_eq!(RightPanelTab::Firehose.next(), RightPanelTab::Output);
-        assert_eq!(RightPanelTab::Output.next(), RightPanelTab::Dashboard);
+        assert_eq!(RightPanelTab::Firehose.label(), "");
+        assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Dashboard);
         assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Chat);
         assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Dashboard);
     }
@@ -17894,13 +17886,8 @@ mod dashboard_tests {
     }
 
     #[test]
-    fn dashboard_tab_index_is_10() {
-        assert_eq!(RightPanelTab::Dashboard.index(), 10);
-    }
-
-    #[test]
-    fn output_next_is_dashboard() {
-        assert_eq!(RightPanelTab::Output.next(), RightPanelTab::Dashboard);
+    fn dashboard_tab_index_is_6() {
+        assert_eq!(RightPanelTab::Dashboard.index(), 6);
     }
 
     #[test]
@@ -17914,8 +17901,8 @@ mod dashboard_tests {
     }
 
     #[test]
-    fn dashboard_prev_is_output() {
-        assert_eq!(RightPanelTab::Dashboard.prev(), RightPanelTab::Output);
+    fn dashboard_prev_is_coord_log() {
+        assert_eq!(RightPanelTab::Dashboard.prev(), RightPanelTab::CoordLog);
     }
 
     // ── Activity labels ────────────────────────────────────────────────────
