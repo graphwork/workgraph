@@ -3922,10 +3922,10 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     } else {
         let hint_text = if app.chat.pending_attachments.is_empty() {
-            " \u{2191}\u{2193}: scroll".to_string()
+            " c: chat  \u{2191}\u{2193}: scroll".to_string()
         } else {
             format!(
-                " \u{2191}\u{2193}: scroll  {} attached",
+                " c: chat  \u{2191}\u{2193}: scroll  {} attached",
                 app.chat.pending_attachments.len()
             )
         };

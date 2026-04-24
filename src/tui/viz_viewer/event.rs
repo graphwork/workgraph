@@ -3054,12 +3054,21 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.last_chat_input_area.contains(pos)
                 && (app.right_panel_tab == RightPanelTab::Chat)
             {
-                // Click on chat input area: enter/resume editing and position cursor.
+                // Click on chat input area: only enter editing if the editor
+                // already has text or is already in ChatInput mode.  When the
+                // area shows the keyboard-shortcut hint (empty editor, not
+                // editing), treat the click as a panel focus — don't spawn a
+                // redundant text entry box.
                 app.focused_panel = FocusedPanel::RightPanel;
-                app.chat_input_dismissed = false;
-                app.input_mode = InputMode::ChatInput;
-                app.inspector_sub_focus = InspectorSubFocus::TextEntry;
-                route_mouse_to_editor(app, row, column, EditorTarget::Chat);
+                let already_editing = app.input_mode == InputMode::ChatInput;
+                let has_text =
+                    !super::state::editor_is_empty(&app.chat.editor);
+                if already_editing || has_text {
+                    app.chat_input_dismissed = false;
+                    app.input_mode = InputMode::ChatInput;
+                    app.inspector_sub_focus = InspectorSubFocus::TextEntry;
+                    route_mouse_to_editor(app, row, column, EditorTarget::Chat);
+                }
             } else if app.last_message_input_area.height > 0
                 && app.last_message_input_area.contains(pos)
                 && (app.right_panel_tab == RightPanelTab::Messages)
@@ -6367,6 +6376,89 @@ mod scrollbar_tests {
             app.right_panel_tab,
             RightPanelTab::Detail,
             "Side-by-side: clicking Detail tab should switch tab"
+        );
+    }
+
+    // ── Chat input hint-area click regression tests ──
+
+    /// Clicking the chat input area when the editor is empty (showing the
+    /// "c: chat  ↑↓: scroll" hint) must NOT enter ChatInput mode — that
+    /// would spawn a redundant text entry box.
+    #[test]
+    fn click_on_empty_chat_hint_does_not_enter_input_mode() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.input_mode = InputMode::Normal;
+        // Ensure the editor is empty (default state).
+        super::super::state::editor_clear(&mut app.chat.editor);
+        // Place the chat input area where the hint line would render.
+        app.last_chat_input_area = Rect::new(1, 28, 118, 1);
+        // Clear all other hit regions so only the chat input area matches.
+        app.last_graph_area = Rect::new(0, 0, 120, 15);
+        app.last_right_panel_area = Rect::new(0, 15, 120, 15);
+        app.last_tab_bar_area = Rect::default();
+        app.last_right_content_area = Rect::default();
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+        app.last_coordinator_bar_area = Rect::default();
+        app.last_chat_message_area = Rect::default();
+        app.last_divider_area = Rect::default();
+        app.last_horizontal_divider_area = Rect::default();
+        app.last_minimized_strip_area = Rect::default();
+        app.last_fullscreen_restore_area = Rect::default();
+        app.last_fullscreen_right_border_area = Rect::default();
+        app.last_fullscreen_top_border_area = Rect::default();
+        app.last_fullscreen_bottom_border_area = Rect::default();
+        app.last_text_prompt_area = Rect::default();
+
+        // Click in the middle of the hint area.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 10);
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Clicking on the scroll-hint area should NOT enter ChatInput mode"
+        );
+    }
+
+    /// Clicking the chat input area when the editor has text should still
+    /// enter ChatInput mode (resume editing).
+    #[test]
+    fn click_on_chat_input_with_text_enters_input_mode() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.input_mode = InputMode::Normal;
+        // Put some text in the editor so it's not showing the hint.
+        super::super::state::editor_clear(&mut app.chat.editor);
+        app.chat.editor.lines = edtui::Lines::from("hello");
+        app.last_chat_input_area = Rect::new(1, 27, 118, 2);
+        // Clear all other hit regions.
+        app.last_graph_area = Rect::new(0, 0, 120, 15);
+        app.last_right_panel_area = Rect::new(0, 15, 120, 15);
+        app.last_tab_bar_area = Rect::default();
+        app.last_right_content_area = Rect::default();
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+        app.last_coordinator_bar_area = Rect::default();
+        app.last_chat_message_area = Rect::default();
+        app.last_divider_area = Rect::default();
+        app.last_horizontal_divider_area = Rect::default();
+        app.last_minimized_strip_area = Rect::default();
+        app.last_fullscreen_restore_area = Rect::default();
+        app.last_fullscreen_right_border_area = Rect::default();
+        app.last_fullscreen_top_border_area = Rect::default();
+        app.last_fullscreen_bottom_border_area = Rect::default();
+        app.last_text_prompt_area = Rect::default();
+
+        // Click in the input area.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 10);
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::ChatInput,
+            "Clicking on the chat input area with text should enter ChatInput mode"
         );
     }
 }
