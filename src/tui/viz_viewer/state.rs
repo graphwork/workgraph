@@ -11428,39 +11428,17 @@ impl VizApp {
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
-                    // Interactive `wg nex -m X -e Y` REPL — same as
-                    // the CLI command that works for users. Renders
-                    // banner + prompt + responses in the PTY pane
-                    // because interactive mode writes to stdout
-                    // (chat mode writes to outbox, leaving the pane
-                    // silent except for the banner).
-                    //
-                    // Arg resolution: explicit model+endpoint from
-                    // config. If the coordinator has an override in
-                    // `[coordinator]`, use it; else `[agent].model`;
-                    // else let nex resolve from config itself (empty
-                    // -m won't be appended). Endpoint comes from the
-                    // default `[[llm_endpoints.endpoints]]` entry.
-                    let mut args = vec!["nex".to_string()];
-                    let model = config
-                        .coordinator
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| config.agent.model.clone());
-                    if !model.is_empty() {
-                        args.push("-m".to_string());
-                        args.push(model);
-                    }
-                    if let Some(ep) = config
-                        .llm_endpoints
-                        .endpoints
-                        .iter()
-                        .find(|e| e.is_default)
-                        .and_then(|e| e.url.clone())
-                    {
-                        args.push("-e".to_string());
-                        args.push(ep);
-                    }
+                    // Route through `wg spawn-task .coordinator-N`
+                    // which sets --role coordinator (so nex keeps wg
+                    // mutation tools), maps chat_ref correctly, and
+                    // auto-detects resume from journal existence.
+                    // spawn-task exec's into `wg nex --chat <ref>
+                    // --role coordinator`, inheriting model/endpoint
+                    // from config when the task struct has no override.
+                    let args = vec![
+                        "spawn-task".to_string(),
+                        task_id.clone(),
+                    ];
                     let project_root = self
                         .workgraph_dir
                         .parent()
