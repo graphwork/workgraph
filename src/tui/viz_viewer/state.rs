@@ -11508,26 +11508,29 @@ impl VizApp {
                         .and_then(|n| n.to_str())
                         .unwrap_or("project");
                     let session_name = format!("wg-{}-{}", project_tag, chat_ref);
-                    // Coordinator priming + permission skip: mirror the
-                    // service-spawned claude handler's args (see
-                    // coordinator_agent::build_system_prompt and
-                    // claude_handler.rs:337,371). Without these the TUI
-                    // claude starts up with only CLAUDE.md for context
-                    // and prompts the user for every tool use — the
-                    // full coordinator prompt + bypassPermissions is
-                    // what makes it actually behave as a coordinator.
-                    let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
-                        &self.workgraph_dir,
-                    );
+                    // Coordinator priming + permission skip. `--continue`
+                    // RESUMES the last session (which already has its
+                    // system prompt baked in, plus the conversation
+                    // history). Passing `--system-prompt` alongside
+                    // `--continue` makes claude fork a fresh session
+                    // instead — user then asks "do you see prior
+                    // messages?" and gets "no" because the resume
+                    // silently got dropped. So: inject --system-prompt
+                    // ONLY on fresh sessions.
+                    let has_prior = claude_has_session_for(&project_root);
                     let mut args = vec![
                         "-n".to_string(),
                         session_name,
                         "--dangerously-skip-permissions".to_string(),
-                        "--system-prompt".to_string(),
-                        sys_prompt,
                     ];
-                    if claude_has_session_for(&project_root) {
+                    if has_prior {
                         args.insert(0, "--continue".to_string());
+                    } else {
+                        let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
+                            &self.workgraph_dir,
+                        );
+                        args.push("--system-prompt".to_string());
+                        args.push(sys_prompt);
                     }
                     ("claude".to_string(), args, Some(project_root))
                 }
