@@ -287,6 +287,13 @@ pub fn run(
     }
     let model = resolved_model_str.as_deref();
 
+    // Record model override in launcher history
+    if let Some(m) = model {
+        let _ = workgraph::launcher_history::record_use(
+            &workgraph::launcher_history::HistoryEntry::new("claude", Some(m), None, "cli"),
+        );
+    }
+
     let path = graph_path(dir);
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");

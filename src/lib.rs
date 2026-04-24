@@ -31,6 +31,7 @@ pub mod function;
 pub mod function_memory;
 pub mod graph;
 pub mod json_extract;
+pub mod launcher_history;
 pub mod markdown;
 #[cfg(feature = "matrix")]
 pub mod matrix;

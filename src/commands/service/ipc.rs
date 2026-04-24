@@ -1373,6 +1373,14 @@ fn handle_create_coordinator(
         Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
     }
 
+    // Record executor/model combo in launcher history
+    {
+        let exec = executor.unwrap_or("claude");
+        let _ = workgraph::launcher_history::record_use(
+            &workgraph::launcher_history::HistoryEntry::new(exec, model, None, "tui"),
+        );
+    }
+
     // Write per-coordinator state file with model/executor overrides if specified.
     if model.is_some() || executor.is_some() {
         let mut state = super::CoordinatorState::load_or_default_for(dir, next_id);

@@ -640,6 +640,20 @@ pub fn update(
         }
     }
 
+    // Record executor/model config change in launcher history
+    if coordinator_executor.is_some() || coordinator_model.is_some() || endpoint.is_some() {
+        let exec = coordinator_executor
+            .or_else(|| config.coordinator.executor.as_deref())
+            .unwrap_or(&config.agent.executor);
+        let mdl = coordinator_model
+            .or(model)
+            .or(config.coordinator.model.as_deref());
+        let ep = endpoint;
+        let _ = workgraph::launcher_history::record_use(
+            &workgraph::launcher_history::HistoryEntry::new(exec, mdl, ep, "config"),
+        );
+    }
+
     if changed {
         // Snapshot local config.toml before overwriting — only after all
         // validation has passed, so a failed `wg config` run doesn't leave

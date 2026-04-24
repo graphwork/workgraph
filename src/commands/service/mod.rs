@@ -1957,6 +1957,18 @@ pub fn run_daemon(
     };
     coord_state.save(&dir);
 
+    // Record executor/model combo in launcher history
+    if let Err(e) = workgraph::launcher_history::record_use(
+        &workgraph::launcher_history::HistoryEntry::new(
+            &daemon_cfg.executor,
+            daemon_cfg.model.as_deref(),
+            None,
+            "cli",
+        ),
+    ) {
+        logger.warn(&format!("Failed to record launcher history: {}", e));
+    }
+
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);
 
