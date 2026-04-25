@@ -591,26 +591,26 @@ fn test_fallback_tier_defaults() {
         CLAUDE_HAIKU_MODEL_ID
     );
 
-    // FlipInference → Standard tier → sonnet
+    // FlipInference → Fast tier → haiku
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::FlipInference)
             .model,
-        CLAUDE_SONNET_MODEL_ID
+        CLAUDE_HAIKU_MODEL_ID
     );
 
-    // Verification → Premium tier → opus
+    // Verification → Standard tier → sonnet
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::Verification)
             .model,
-        CLAUDE_OPUS_MODEL_ID
+        CLAUDE_SONNET_MODEL_ID
     );
 
-    // Evaluator → Standard tier → sonnet
+    // Evaluator → Fast tier → haiku
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Evaluator).model,
-        CLAUDE_SONNET_MODEL_ID
+        CLAUDE_HAIKU_MODEL_ID
     );
 }
 

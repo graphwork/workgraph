@@ -1095,6 +1095,10 @@ impl DispatchRole {
     ];
 
     /// Default quality tier for this role.
+    ///
+    /// Metacognition/routing roles (assigner, compactor, triage, etc.) default to Fast
+    /// so they use haiku and don't burn budget on every dispatch. Only task_agent and
+    /// evolver get premium (opus) by default; creator and verification get standard (sonnet).
     pub fn default_tier(&self) -> Tier {
         match self {
             Self::Triage => Tier::Fast,
@@ -1104,12 +1108,12 @@ impl DispatchRole {
             Self::ChatCompactor => Tier::Fast,
             Self::CoordinatorEval => Tier::Fast,
             Self::Placer => Tier::Fast,
-            Self::FlipInference => Tier::Standard,
-            Self::TaskAgent => Tier::Standard,
-            Self::Evaluator => Tier::Standard,
+            Self::FlipInference => Tier::Fast,
+            Self::Evaluator => Tier::Fast,
+            Self::TaskAgent => Tier::Premium,
             Self::Evolver => Tier::Premium,
-            Self::Creator => Tier::Premium,
-            Self::Verification => Tier::Premium,
+            Self::Creator => Tier::Standard,
+            Self::Verification => Tier::Standard,
             Self::Default => Tier::Standard,
         }
     }
@@ -2114,9 +2118,12 @@ impl Config {
         }
 
         // 3. Role default_tier() → tiers.<tier> → registry lookup
-        //    Skipped when agent.model was explicitly set in local config, because
-        //    the user's local model choice should take precedence over tier defaults.
-        if !self.agent_model_is_local
+        //    For task_agent only: skipped when agent.model was set in local config so that
+        //    `wg config --model <m>` routes task_agent to the chosen model. All other roles
+        //    (metacognition, compactors, etc.) always resolve via their tier so they stay
+        //    on cheap models even when the project sets a high-capability agent.model.
+        let skip_tier = self.agent_model_is_local && role == DispatchRole::TaskAgent;
+        if !skip_tier
             && let Some(mut resolved) = self.resolve_tier(role.default_tier())
         {
             // Allow role/default provider to override registry provider
@@ -4677,10 +4684,10 @@ model = "claude:haiku"
 
     #[test]
     fn test_resolve_flip_inference_default() {
-        // With no config, flip_inference resolves via Standard tier → sonnet registry entry
+        // With no config, flip_inference resolves via Fast tier → haiku registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert!(resolved.registry_entry.is_some());
     }
 
@@ -4693,9 +4700,10 @@ model = "claude:haiku"
 
     #[test]
     fn test_resolve_verification_default() {
+        // Verification defaults to Standard tier → sonnet (correctness matters but not opus)
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
     }
 
     #[test]
@@ -4714,11 +4722,11 @@ model = "claude:haiku"
     }
 
     #[test]
-    fn test_resolve_evaluator_uses_standard_tier() {
-        // Evaluator resolves via Standard tier → sonnet registry entry
+    fn test_resolve_evaluator_uses_fast_tier() {
+        // Evaluator resolves via Fast tier → haiku registry entry (cheap metacognition)
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
     }
 
     #[test]
@@ -4742,7 +4750,7 @@ model = "claude:haiku"
         );
 
         let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
 
         let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
@@ -4750,7 +4758,7 @@ model = "claude:haiku"
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
 
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
     }
 
@@ -4808,7 +4816,7 @@ model = "claude:haiku"
 
     #[test]
     fn test_default_provider_cascades_to_global_fallback() {
-        // Evaluator resolves via Standard tier; default provider overrides registry provider
+        // Evaluator resolves via Fast tier; default provider overrides registry provider
         let mut config = Config::default();
         config.models.default = Some(RoleModelConfig {
             model: None,
@@ -4818,7 +4826,7 @@ model = "claude:haiku"
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(
             resolved.provider,
             Some("openrouter".to_string()),
@@ -4976,12 +4984,12 @@ model = "claude:haiku"
         assert_eq!(DispatchRole::Triage.default_tier(), Tier::Fast);
         assert_eq!(DispatchRole::FlipComparison.default_tier(), Tier::Fast);
         assert_eq!(DispatchRole::Assigner.default_tier(), Tier::Fast);
-        assert_eq!(DispatchRole::TaskAgent.default_tier(), Tier::Standard);
-        assert_eq!(DispatchRole::Evaluator.default_tier(), Tier::Standard);
-        assert_eq!(DispatchRole::FlipInference.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::FlipInference.default_tier(), Tier::Fast);
+        assert_eq!(DispatchRole::Evaluator.default_tier(), Tier::Fast);
+        assert_eq!(DispatchRole::TaskAgent.default_tier(), Tier::Premium);
         assert_eq!(DispatchRole::Evolver.default_tier(), Tier::Premium);
-        assert_eq!(DispatchRole::Creator.default_tier(), Tier::Premium);
-        assert_eq!(DispatchRole::Verification.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::Creator.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::Verification.default_tier(), Tier::Standard);
         assert_eq!(DispatchRole::Default.default_tier(), Tier::Standard);
         assert_eq!(DispatchRole::Placer.default_tier(), Tier::Fast);
     }
