@@ -2051,9 +2051,9 @@ tier = "standard"
             None,
             None,  // verify
             None,  // verify_timeout
-            None, // validation
-            None, // validator_agent
-            None, // validator_model
+            None,  // validation
+            None,  // validator_agent
+            None,  // validator_model
             None,  // max_iterations
             None,  // cycle_guard
             None,  // cycle_delay

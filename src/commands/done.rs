@@ -162,7 +162,10 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
     let fd = lock_file.as_raw_fd();
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
     if ret != 0 {
-        anyhow::bail!("Failed to acquire merge lock: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "Failed to acquire merge lock: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     let merge_result = Command::new("git")
@@ -204,10 +207,7 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
 
         WorktreeMergeResult::Conflict { conflicting_files }
     } else {
-        let agent_label = wt
-            .agent_id
-            .as_deref()
-            .unwrap_or("unknown");
+        let agent_label = wt.agent_id.as_deref().unwrap_or("unknown");
         let commit_msg = format!(
             "feat: {} ({})\n\nSquash-merged from worktree branch {}",
             task_id, agent_label, wt.branch
@@ -232,7 +232,9 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
             .output()
             .context("Failed to get commit SHA")?;
 
-        let commit_sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+        let commit_sha = String::from_utf8_lossy(&sha_output.stdout)
+            .trim()
+            .to_string();
         WorktreeMergeResult::Merged { commit_sha }
     };
 
@@ -933,9 +935,22 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
     }
 }
 
-pub fn run(dir: &Path, id: &str, converged: bool, skip_verify: bool, ignore_unmerged_worktree: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    id: &str,
+    converged: bool,
+    skip_verify: bool,
+    ignore_unmerged_worktree: bool,
+) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
-    run_inner(dir, id, converged, skip_verify, ignore_unmerged_worktree, is_agent)
+    run_inner(
+        dir,
+        id,
+        converged,
+        skip_verify,
+        ignore_unmerged_worktree,
+        is_agent,
+    )
 }
 
 fn run_inner(
@@ -1731,12 +1746,16 @@ fn run_inner(
                 mark_worktree_for_cleanup(&wt);
             }
             WorktreeMergeResult::Merged { commit_sha } => {
-                eprintln!("[merge] Squash-merged {} to main ({})", wt.branch, commit_sha);
+                eprintln!(
+                    "[merge] Squash-merged {} to main ({})",
+                    wt.branch, commit_sha
+                );
                 mark_worktree_for_cleanup(&wt);
             }
             WorktreeMergeResult::Conflict { conflicting_files } => {
                 if ignore_unmerged_worktree {
-                    let merge_task_id = create_deferred_merge_task(&path, id, &wt, &conflicting_files)?;
+                    let merge_task_id =
+                        create_deferred_merge_task(&path, id, &wt, &conflicting_files)?;
                     eprintln!(
                         "[merge] Conflict deferred — created '{}' for later resolution",
                         merge_task_id,

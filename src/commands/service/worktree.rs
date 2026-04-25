@@ -813,7 +813,10 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
             Some(branch) => match remove_worktree(project_root, &wt_path, &branch) {
                 Ok(()) => removed += 1,
                 Err(e) => {
-                    eprintln!("[worktree-sweep] remove_worktree failed for {}: {}", name, e);
+                    eprintln!(
+                        "[worktree-sweep] remove_worktree failed for {}: {}",
+                        name, e
+                    );
                     // Fall back to manual cleanup so the worktree doesn't leak.
                     if wt_path.exists() {
                         if let Err(e2) = fs::remove_dir_all(&wt_path) {
@@ -2107,7 +2110,13 @@ mod tests {
         let (wt_path, _branch) = create_test_worktree(&project, "agent-ok", "task-ok");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
         write_graph_with_task(&wg_dir, "task-ok", Status::Done);
-        register_agent(&wg_dir, "agent-ok", "task-ok", 999_999_999, AgentStatus::Done);
+        register_agent(
+            &wg_dir,
+            "agent-ok",
+            "task-ok",
+            999_999_999,
+            AgentStatus::Done,
+        );
 
         assert!(wt_path.exists(), "precondition: worktree exists");
 
@@ -2294,8 +2303,7 @@ mod tests {
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
         // Same as above but task is Done — now it's safe to remove.
-        let (wt_path, _branch) =
-            create_test_worktree(&project, "agent-orph2", "task-orph2");
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-orph2", "task-orph2");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
         write_graph_with_task(&wg_dir, "task-orph2", Status::Done);
         workgraph::service::registry::AgentRegistry::default()

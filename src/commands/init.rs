@@ -16,12 +16,7 @@ matrix.toml
 *.credentials
 "#;
 
-pub fn run(
-    dir: &Path,
-    no_agency: bool,
-    model: Option<&str>,
-    endpoint: Option<&str>,
-) -> Result<()> {
+pub fn run(dir: &Path, no_agency: bool, model: Option<&str>, endpoint: Option<&str>) -> Result<()> {
     if dir.exists() {
         anyhow::bail!("Workgraph already initialized at {}", dir.display());
     }
@@ -185,11 +180,7 @@ pub fn run(
 /// Write an endpoint + model into the project's `config.toml` on init.
 /// Thin wrapper around `Config::apply_model_endpoint` so init shares the
 /// same semantics as `wg config -m/-e`.
-fn apply_model_endpoint(
-    dir: &Path,
-    model: Option<&str>,
-    endpoint: Option<&str>,
-) -> Result<()> {
+fn apply_model_endpoint(dir: &Path, model: Option<&str>, endpoint: Option<&str>) -> Result<()> {
     let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
     let summary = config
         .apply_model_endpoint(model, endpoint)
@@ -388,7 +379,11 @@ mod tests {
         let result = run(&new_dir, true, None, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains(".workgraph"), "error mentions legacy dir: {}", err);
+        assert!(
+            err.contains(".workgraph"),
+            "error mentions legacy dir: {}",
+            err
+        );
     }
 
     #[test]

@@ -242,7 +242,7 @@ pub(crate) fn generate_ascii(
             Status::Failed => "\x1b[31m",                              // red
             Status::Abandoned => "\x1b[90m",                           // gray
             Status::Waiting | Status::PendingValidation => "\x1b[33m", // yellow
-            Status::Incomplete => "\x1b[38;5;208m",                   // orange
+            Status::Incomplete => "\x1b[38;5;208m",                    // orange
         }
     };
     let reset = if use_color { "\x1b[0m" } else { "" };

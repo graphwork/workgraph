@@ -628,10 +628,8 @@ fn collect_response(
                     for line in &lines[..MAX_LINES] {
                         transcript.push_str(&format!("│ {}\n", line));
                     }
-                    transcript.push_str(&format!(
-                        "│ ... ({} more lines)\n",
-                        lines.len() - MAX_LINES
-                    ));
+                    transcript
+                        .push_str(&format!("│ ... ({} more lines)\n", lines.len() - MAX_LINES));
                 } else {
                     for line in &lines {
                         transcript.push_str(&format!("│ {}\n", line));

@@ -57,10 +57,7 @@ pub fn record_use(entry: &HistoryEntry) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     let line = serde_json::to_string(entry)?;
     writeln!(file, "{}", line)?;
     Ok(())
@@ -216,7 +213,12 @@ mod tests {
     fn test_load_all_from_file() {
         let entries = vec![
             HistoryEntry::new("claude", Some("opus"), None, "cli"),
-            HistoryEntry::new("native", Some("sonnet"), Some("http://localhost:8080"), "config"),
+            HistoryEntry::new(
+                "native",
+                Some("sonnet"),
+                Some("http://localhost:8080"),
+                "config",
+            ),
         ];
         let f = write_entries(&entries);
         let loaded = load_all(f.path());
@@ -336,7 +338,12 @@ mod tests {
         let path = dir.path().join("launcher-history.jsonl");
 
         let e1 = HistoryEntry::new("claude", Some("opus"), None, "cli");
-        let e2 = HistoryEntry::new("native", Some("sonnet"), Some("http://localhost:8080"), "tui");
+        let e2 = HistoryEntry::new(
+            "native",
+            Some("sonnet"),
+            Some("http://localhost:8080"),
+            "tui",
+        );
 
         {
             let mut file = OpenOptions::new()

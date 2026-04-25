@@ -281,8 +281,7 @@ fn test_cleanup_orphaned_worktrees_skips_live_agents() {
     );
     registry.save(&wg_dir).expect("Failed to save registry");
 
-    let cleaned_count =
-        cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
+    let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
     assert_eq!(cleaned_count, 0);
     assert!(worktree_dir.exists());
 }
@@ -321,8 +320,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
     );
     registry.save(&wg_dir).expect("Failed to save registry");
 
-    let cleaned_count =
-        cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
+    let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
     assert_eq!(cleaned_count, 1);
     assert!(!worktree_dir.exists());
 }

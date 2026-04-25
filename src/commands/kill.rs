@@ -71,7 +71,10 @@ pub fn run(dir: &Path, agent_id: &str, force: bool, redispatch: bool, json: bool
             println!("Killed {} (PID {})", agent_id, pid);
         }
         if paused {
-            println!("Task '{}' paused (use 'wg resume {}' to re-enable dispatch)", task_id, task_id);
+            println!(
+                "Task '{}' paused (use 'wg resume {}' to re-enable dispatch)",
+                task_id, task_id
+            );
         } else {
             println!("Task '{}' unclaimed (will be re-dispatched)", task_id);
         }
@@ -161,7 +164,11 @@ pub fn run_all(dir: &Path, force: bool, redispatch: bool, json: bool) -> Result<
         if killed.is_empty() {
             println!("No agents were killed.");
         } else {
-            println!("Killed {} agent(s){}:", killed.len(), if pause { " (tasks paused)" } else { "" });
+            println!(
+                "Killed {} agent(s){}:",
+                killed.len(),
+                if pause { " (tasks paused)" } else { "" }
+            );
             for (id, pid, task) in &killed {
                 println!("  {} (PID {}) - task '{}'", id, pid, task);
             }

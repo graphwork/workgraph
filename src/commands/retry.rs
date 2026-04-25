@@ -129,7 +129,8 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
     };
     println!(
         "Reset '{}' from {} to open for retry (attempt #{})",
-        id, source,
+        id,
+        source,
         retry_count + 1
     );
 
@@ -218,7 +219,10 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.ready_after, None, "Retry should clear ready_after cooldown");
+        assert_eq!(
+            task.ready_after, None,
+            "Retry should clear ready_after cooldown"
+        );
     }
 
     #[test]
@@ -248,7 +252,12 @@ mod tests {
 
         let result = run(dir_path, "t1", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed or incomplete"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not failed or incomplete")
+        );
     }
 
     #[test]
@@ -259,7 +268,12 @@ mod tests {
 
         let result = run(dir_path, "t1", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed or incomplete"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not failed or incomplete")
+        );
     }
 
     #[test]

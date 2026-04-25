@@ -190,21 +190,17 @@ impl PtyPane {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            out_path.set_file_name(format!(
-                "{}.{}.{}.bin",
-                current_name, basename, pid
-            ));
+            out_path.set_file_name(format!("{}.{}.{}.bin", current_name, basename, pid));
             let mut in_path = std::path::PathBuf::from(&p);
-            in_path.set_file_name(format!(
-                "{}.{}.{}.in.bin",
-                current_name, basename, pid
-            ));
+            in_path.set_file_name(format!("{}.{}.{}.in.bin", current_name, basename, pid));
             (Some(out_path), Some(in_path))
         } else {
             (None, None)
         };
         let input_tee = input_tee_path.and_then(|p| {
-            std::fs::File::create(&p).ok().map(|f| Arc::new(Mutex::new(f)))
+            std::fs::File::create(&p)
+                .ok()
+                .map(|f| Arc::new(Mutex::new(f)))
         });
         // The reader thread peeks at raw PTY bytes for capability
         // queries and writes the expected replies through this Arc.
@@ -787,7 +783,11 @@ mod tests {
 
     #[test]
     fn scrollback_up_down_clamps() {
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, DEFAULT_SCROLLBACK_LINES)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            24,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
         let growth_rate_warned = Arc::new(AtomicBool::new(false));
         let bytes_processed = Arc::new(AtomicU64::new(0));
         let mut pane_scroll: usize = 0;
@@ -818,7 +818,11 @@ mod tests {
 
     #[test]
     fn scrollback_buffer_cap_honored() {
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(5, 80, DEFAULT_SCROLLBACK_LINES)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            5,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
         {
             let mut p = parser.lock().unwrap();
             // Feed more lines than the scrollback cap to fill the buffer.
@@ -840,7 +844,8 @@ mod tests {
         // beyond it, it clamps. This is the buffer-cap test.
         drop(p);
         let mut p = parser.lock().unwrap();
-        p.screen_mut().set_scrollback(DEFAULT_SCROLLBACK_LINES + 1000);
+        p.screen_mut()
+            .set_scrollback(DEFAULT_SCROLLBACK_LINES + 1000);
         let actual = p.screen().scrollback();
         assert!(
             actual <= DEFAULT_SCROLLBACK_LINES,
@@ -892,7 +897,11 @@ mod tests {
 
     #[test]
     fn send_key_resets_scroll() {
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, DEFAULT_SCROLLBACK_LINES)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            24,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
         let mut offset: usize = 50;
         // Simulate what send_key does: reset to 0
         offset = 0;

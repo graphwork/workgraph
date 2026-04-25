@@ -1179,11 +1179,7 @@ fn build_eval_rationale_context(task_id: &str, workgraph_dir: &Path) -> String {
     let mut eval_files: Vec<_> = match fs::read_dir(&evals_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(&prefix)
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
             .collect(),
         Err(_) => return String::new(),
     };

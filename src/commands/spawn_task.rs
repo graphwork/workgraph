@@ -403,7 +403,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
         let task = mktask(".coordinator-0");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert_eq!(role, Some("coordinator".to_string()));
@@ -420,7 +422,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let task = mktask("my-task");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert!(role.is_none(), "regular task should not have a role");
@@ -437,7 +441,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let task = mktask(".coordinator-0");
         let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
-        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert_eq!(role, Some("evaluator".to_string()));
@@ -457,7 +463,9 @@ mod tests {
         std::fs::create_dir_all(&chat).unwrap();
         std::fs::write(chat.join("conversation.jsonl"), b"").unwrap();
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
         match spec {
             HandlerSpec::Native { resume, .. } => assert!(resume),
             _ => panic!(),
@@ -472,7 +480,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let task = mktask("fresh-task");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
         match spec {
             HandlerSpec::Native { resume, .. } => assert!(!resume),
             _ => panic!(),

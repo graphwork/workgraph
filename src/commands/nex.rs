@@ -141,9 +141,7 @@ pub fn run(
             // service-spawned claude_handler injects via --system-prompt.
             // Falls back to a hardcoded prompt if the agency/
             // coordinator-prompt/ dir is missing.
-            Some(crate::commands::service::coordinator_agent::build_system_prompt(
-                workgraph_dir,
-            ))
+            Some(crate::commands::service::coordinator_agent::build_system_prompt(workgraph_dir))
         } else {
             match load_agency_role(workgraph_dir, role_name) {
                 Some(content) => {

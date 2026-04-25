@@ -848,18 +848,18 @@ fn print_retry_history(dir: &Path, task_id: &str) {
                 std::fs::read_to_string(archive.path().join("output.txt"))
                     .ok()
                     .and_then(|content| {
-                        content
-                            .lines()
-                            .take(5)
-                            .find_map(|line| {
-                                if line.contains("agent-") {
-                                    line.split_whitespace()
-                                        .find(|w| w.starts_with("agent-"))
-                                        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
-                                } else {
-                                    None
-                                }
-                            })
+                        content.lines().take(5).find_map(|line| {
+                            if line.contains("agent-") {
+                                line.split_whitespace()
+                                    .find(|w| w.starts_with("agent-"))
+                                    .map(|s| {
+                                        s.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+                                            .to_string()
+                                    })
+                            } else {
+                                None
+                            }
+                        })
                     })
             })
             .flatten();
@@ -881,7 +881,12 @@ fn print_retry_history(dir: &Path, task_id: &str) {
             .unwrap_or_default();
 
         println!(
-            "  Attempt {}: {}{}{}{}", idx + 1, ts, age, agent_str, eval_str
+            "  Attempt {}: {}{}{}{}",
+            idx + 1,
+            ts,
+            age,
+            agent_str,
+            eval_str
         );
     }
 }
@@ -911,10 +916,7 @@ fn find_eval_for_attempt(
     let eval: serde_json::Value = serde_json::from_str(&content).ok()?;
 
     let score = eval.get("score")?.as_f64()?;
-    let notes = eval
-        .get("notes")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let notes = eval.get("notes").and_then(|v| v.as_str()).unwrap_or("");
 
     let verdict = if !notes.is_empty() {
         let truncated = if notes.len() > 80 {

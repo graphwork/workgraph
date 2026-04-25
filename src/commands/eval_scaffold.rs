@@ -1281,7 +1281,10 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         // .coordinator-* tasks should NOT get eval scaffolding
-        graph.add_node(Node::Task(make_task(".coordinator-test", "Coordinator Test")));
+        graph.add_node(Node::Task(make_task(
+            ".coordinator-test",
+            "Coordinator Test",
+        )));
         assert!(!scaffold_eval_task(
             dir.path(),
             &mut graph,
@@ -1332,8 +1335,15 @@ mod tests {
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
 
-        graph.add_node(Node::Task(make_task(".coordinator-test", "Coordinator Test")));
-        assert!(!scaffold_flip_task(&mut graph, ".coordinator-test", &config));
+        graph.add_node(Node::Task(make_task(
+            ".coordinator-test",
+            "Coordinator Test",
+        )));
+        assert!(!scaffold_flip_task(
+            &mut graph,
+            ".coordinator-test",
+            &config
+        ));
         assert!(graph.get_task(".flip-.coordinator-test").is_none());
 
         graph.add_node(Node::Task(make_task(".archive-test", "Archive Test")));
@@ -1352,12 +1362,18 @@ mod tests {
         let config = Config::default();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("a", "Task A")));
-        graph.add_node(Node::Task(make_task(".coordinator-main", "Coordinator Main")));
+        graph.add_node(Node::Task(make_task(
+            ".coordinator-main",
+            "Coordinator Main",
+        )));
         graph.add_node(Node::Task(make_task(".archive-old", "Archive Old")));
 
         let ids = vec![
             ("a".to_string(), "Task A".to_string()),
-            (".coordinator-main".to_string(), "Coordinator Main".to_string()),
+            (
+                ".coordinator-main".to_string(),
+                "Coordinator Main".to_string(),
+            ),
             (".archive-old".to_string(), "Archive Old".to_string()),
         ];
         let count = scaffold_eval_tasks_batch(dir.path(), &mut graph, &ids, &config);

@@ -264,9 +264,7 @@ pub fn run_history(
     let config = workgraph::config::Config::load_or_default(dir);
     let executor = config.coordinator.effective_executor();
 
-    if let Some(hist) =
-        workgraph::vendor_history::locate(&executor, dir, &chat_ref, &chat_dir)
-    {
+    if let Some(hist) = workgraph::vendor_history::locate(&executor, dir, &chat_ref, &chat_dir) {
         let turns = workgraph::vendor_history::read_turns(&hist)?;
         print_vendor_turns(&turns, &executor, hist.path(), json, history_depth)?;
         return Ok(());
@@ -357,11 +355,7 @@ fn print_vendor_turns(
         return Ok(());
     }
 
-    eprintln!(
-        "# executor: {}  source: {}",
-        executor,
-        path.display()
-    );
+    eprintln!("# executor: {}  source: {}", executor, path.display());
     for turn in slice {
         let time = turn
             .timestamp

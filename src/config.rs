@@ -3582,10 +3582,7 @@ impl Config {
         if let Some(url) = endpoint
             && !(url.starts_with("http://") || url.starts_with("https://"))
         {
-            anyhow::bail!(
-                "Endpoint must be an http:// or https:// URL (got: {})",
-                url
-            );
+            anyhow::bail!("Endpoint must be an http:// or https:// URL (got: {})", url);
         }
 
         // With an endpoint, bare model names need a `local:` prefix to
@@ -7066,7 +7063,10 @@ fetch_max_chars = 16000
         assert!(summary.iter().any(|s| s.contains("http://lambda01:8089")));
         assert!(summary.iter().any(|s| s.contains("local:qwen3-coder")));
         // Model gets the local: prefix.
-        assert_eq!(config.coordinator.model.as_deref(), Some("local:qwen3-coder"));
+        assert_eq!(
+            config.coordinator.model.as_deref(),
+            Some("local:qwen3-coder")
+        );
         assert_eq!(config.agent.model, "local:qwen3-coder");
         // Endpoint entry is default.
         let default_ep = config
@@ -7141,7 +7141,9 @@ fetch_max_chars = 16000
         assert!(Config::backup_on_disk(dir).unwrap().is_none());
         // Write a config, then back it up.
         fs::write(dir.join("config.toml"), "[agent]\nexecutor = \"claude\"\n").unwrap();
-        let backup = Config::backup_on_disk(dir).unwrap().expect("backup written");
+        let backup = Config::backup_on_disk(dir)
+            .unwrap()
+            .expect("backup written");
         assert!(backup.exists(), "backup file exists");
         let name = backup.file_name().unwrap().to_string_lossy().to_string();
         assert!(name.starts_with("config.toml."), "name: {}", name);

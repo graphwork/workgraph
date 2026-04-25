@@ -318,8 +318,15 @@ fn handle_request(
             resp
         }
         IpcRequest::Agents => handle_agents(dir),
-        IpcRequest::Kill { agent_id, force, redispatch } => {
-            logger.info(&format!("IPC Kill: agent_id={}, force={}, redispatch={}", agent_id, force, redispatch));
+        IpcRequest::Kill {
+            agent_id,
+            force,
+            redispatch,
+        } => {
+            logger.info(&format!(
+                "IPC Kill: agent_id={}, force={}, redispatch={}",
+                agent_id, force, redispatch
+            ));
             handle_kill(dir, &agent_id, force, redispatch)
         }
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),

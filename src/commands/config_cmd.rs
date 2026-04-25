@@ -1892,7 +1892,7 @@ mod tests {
             None,
             None,
             None,
-            None, // endpoint
+            None,  // endpoint
             false, // no_reload
         );
         assert!(result.is_ok());
@@ -1944,7 +1944,7 @@ mod tests {
             None,
             None,
             None,
-            None, // endpoint
+            None,  // endpoint
             false, // no_reload
         );
         assert!(result.is_ok());
@@ -1996,7 +1996,7 @@ mod tests {
             None,
             None,
             None,
-            None, // endpoint
+            None,  // endpoint
             false, // no_reload
         );
         assert!(result.is_ok());
@@ -2030,23 +2030,23 @@ mod tests {
             Some("evolver-hash"),
             Some("creator-hash"),
             Some("Retire below 0.3 after 10 evals"),
-            None, // auto_triage
-            None, // auto_place
-            None, // auto_create
-            None, // triage_timeout
-            None, // triage_max_log_bytes
-            None, // max_child_tasks
-            None, // max_task_depth
-            None, // viz_edge_color
-            None, // eval_gate_threshold
-            None, // eval_gate_all
-            None, // flip_enabled
-            None, // flip_verification_threshold
-            None, // chat_history
-            None, // chat_history_max
-            None, // tui_counters
-            None, // retry_context_tokens
-            None, // endpoint
+            None,  // auto_triage
+            None,  // auto_place
+            None,  // auto_create
+            None,  // triage_timeout
+            None,  // triage_max_log_bytes
+            None,  // max_child_tasks
+            None,  // max_task_depth
+            None,  // viz_edge_color
+            None,  // eval_gate_threshold
+            None,  // eval_gate_all
+            None,  // flip_enabled
+            None,  // flip_verification_threshold
+            None,  // chat_history
+            None,  // chat_history_max
+            None,  // tui_counters
+            None,  // retry_context_tokens
+            None,  // endpoint
             false, // no_reload
         );
         assert!(result.is_ok());

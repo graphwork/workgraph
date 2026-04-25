@@ -567,13 +567,22 @@ pub fn run(
                     if !json {
                         match action {
                             GateAction::Approved => {
-                                println!("  LLM gate: approved '{}' (score {:.2})", task_id, evaluation.score)
+                                println!(
+                                    "  LLM gate: approved '{}' (score {:.2})",
+                                    task_id, evaluation.score
+                                )
                             }
                             GateAction::Rejected => {
-                                println!("  LLM gate: rejected '{}' (score {:.2})", task_id, evaluation.score)
+                                println!(
+                                    "  LLM gate: rejected '{}' (score {:.2})",
+                                    task_id, evaluation.score
+                                )
                             }
                             GateAction::Held => {
-                                println!("  LLM gate: '{}' held for human review (score {:.2})", task_id, evaluation.score)
+                                println!(
+                                    "  LLM gate: '{}' held for human review (score {:.2})",
+                                    task_id, evaluation.score
+                                )
                             }
                             GateAction::Skipped => {}
                         }
@@ -1898,7 +1907,11 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
         assert_eq!(task.gate_attempts, 1);
-        assert!(task.log.iter().any(|e| e.message.contains("LLM gate decision: pass")));
+        assert!(
+            task.log
+                .iter()
+                .any(|e| e.message.contains("LLM gate decision: pass"))
+        );
     }
 
     #[test]
@@ -1928,7 +1941,9 @@ mod tests {
         assert_eq!(task.rejection_count, 1);
         assert_eq!(task.gate_attempts, 1);
         assert!(
-            task.log.iter().any(|e| e.message.contains("LLM gate decision: fail")),
+            task.log
+                .iter()
+                .any(|e| e.message.contains("LLM gate decision: fail")),
             "expected fail decision log entry"
         );
     }
@@ -1960,7 +1975,9 @@ mod tests {
         assert_eq!(task.status, Status::PendingValidation);
         assert_eq!(task.gate_attempts, 1);
         assert!(
-            task.log.iter().any(|e| e.message.contains("LLM gate decision: uncertain")),
+            task.log
+                .iter()
+                .any(|e| e.message.contains("LLM gate decision: uncertain")),
             "expected uncertain decision log entry"
         );
     }

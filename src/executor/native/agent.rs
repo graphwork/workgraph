@@ -358,10 +358,7 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
             error_text,
             &rid,
         ) {
-            eprintln!(
-                "[agent-loop] chat error append failed: {} — continuing",
-                e
-            );
+            eprintln!("[agent-loop] chat error append failed: {} — continuing", e);
         }
     }
 }
@@ -1781,8 +1778,7 @@ impl AgentLoop {
                         {
                             match api_err.status {
                                 401 | 403 => {
-                                    let err_text =
-                                        format!("Fatal authentication error: {:#}", e);
+                                    let err_text = format!("Fatal authentication error: {:#}", e);
                                     eprintln!("[native-agent] {}", err_text);
                                     if let Some(ref mut s) = surface {
                                         s.on_error(&err_text);
@@ -1836,8 +1832,7 @@ impl AgentLoop {
                                     continue;
                                 }
                                 _ => {
-                                    let err_text =
-                                        format!("API request failed: {:#}", e);
+                                    let err_text = format!("API request failed: {:#}", e);
                                     eprintln!("[native-agent] {}", err_text);
                                     if let Some(ref mut s) = surface {
                                         s.on_error(&err_text);
@@ -1849,9 +1844,7 @@ impl AgentLoop {
                             consecutive_server_errors += 1;
                             let err_text = format!(
                                 "Request timed out — attempt {}/{}: {:#}",
-                                consecutive_server_errors,
-                                MAX_CONSECUTIVE_SERVER_ERRORS,
-                                e
+                                consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS, e
                             );
                             if let Some(ref mut s) = surface {
                                 s.on_error(&err_text);
@@ -1887,8 +1880,7 @@ impl AgentLoop {
                             messages.push(recovery_msg);
                             continue;
                         } else {
-                            let err_text =
-                                format!("LLM request failed: {:#}", e);
+                            let err_text = format!("LLM request failed: {:#}", e);
                             eprintln!("[native-agent] {}", err_text);
                             if let Some(ref mut s) = surface {
                                 s.on_error(&err_text);

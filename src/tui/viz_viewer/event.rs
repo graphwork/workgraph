@@ -417,7 +417,8 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer;
     if vendor_pty_active {
-        let is_toggle = matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        let is_toggle =
+            matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
         let is_scroll = matches!(
             code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
@@ -1017,11 +1018,17 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 LauncherSection::Recent => {
                     if let Some(entry) = launcher.recent_list.get(launcher.recent_selected) {
                         // Populate fields from selected recent entry
-                        if let Some(pos) = launcher.executor_list.iter().position(|(name, _, _)| name == &entry.executor) {
+                        if let Some(pos) = launcher
+                            .executor_list
+                            .iter()
+                            .position(|(name, _, _)| name == &entry.executor)
+                        {
                             launcher.executor_selected = pos;
                         }
                         if let Some(ref model) = entry.model {
-                            if let Some(pos) = launcher.model_list.iter().position(|(id, _)| id == model) {
+                            if let Some(pos) =
+                                launcher.model_list.iter().position(|(id, _)| id == model)
+                            {
                                 launcher.model_selected = pos;
                                 launcher.model_custom_active = false;
                             } else {
@@ -1031,7 +1038,11 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                             }
                         }
                         if let Some(ref endpoint) = entry.endpoint {
-                            if let Some(pos) = launcher.endpoint_list.iter().position(|(_, url)| url == endpoint) {
+                            if let Some(pos) = launcher
+                                .endpoint_list
+                                .iter()
+                                .position(|(_, url)| url == endpoint)
+                            {
                                 launcher.endpoint_selected = pos;
                                 launcher.endpoint_custom_active = false;
                             } else {
@@ -1055,11 +1066,17 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 launcher.recent_selected = idx;
                 // Populate fields then launch
                 if let Some(entry) = launcher.recent_list.get(idx).cloned() {
-                    if let Some(pos) = launcher.executor_list.iter().position(|(name, _, _)| name == &entry.executor) {
+                    if let Some(pos) = launcher
+                        .executor_list
+                        .iter()
+                        .position(|(name, _, _)| name == &entry.executor)
+                    {
                         launcher.executor_selected = pos;
                     }
                     if let Some(ref model) = entry.model {
-                        if let Some(pos) = launcher.model_list.iter().position(|(id, _)| id == model) {
+                        if let Some(pos) =
+                            launcher.model_list.iter().position(|(id, _)| id == model)
+                        {
                             launcher.model_selected = pos;
                         } else {
                             launcher.model_custom = model.clone();
@@ -1067,7 +1084,11 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                         }
                     }
                     if let Some(ref endpoint) = entry.endpoint {
-                        if let Some(pos) = launcher.endpoint_list.iter().position(|(_, url)| url == endpoint) {
+                        if let Some(pos) = launcher
+                            .endpoint_list
+                            .iter()
+                            .position(|(_, url)| url == endpoint)
+                        {
                             launcher.endpoint_selected = pos;
                         } else {
                             launcher.endpoint_custom = endpoint.clone();
@@ -3362,8 +3383,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // redundant text entry box.
                 app.focused_panel = FocusedPanel::RightPanel;
                 let already_editing = app.input_mode == InputMode::ChatInput;
-                let has_text =
-                    !super::state::editor_is_empty(&app.chat.editor);
+                let has_text = !super::state::editor_is_empty(&app.chat.editor);
                 if already_editing || has_text {
                     app.chat_input_dismissed = false;
                     app.input_mode = InputMode::ChatInput;

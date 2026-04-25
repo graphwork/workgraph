@@ -687,7 +687,12 @@ fn main() -> Result<()> {
                     .context("cannot resolve current directory for wg init")?
                     .join(".wg")
             };
-            commands::init::run(&target_dir, no_agency, model.as_deref(), endpoint.as_deref())
+            commands::init::run(
+                &target_dir,
+                no_agency,
+                model.as_deref(),
+                endpoint.as_deref(),
+            )
         }
         Commands::Reset {
             seed,
@@ -954,7 +959,13 @@ fn main() -> Result<()> {
             converged,
             skip_verify,
             ignore_unmerged_worktree,
-        } => commands::done::run(&workgraph_dir, &id, converged, skip_verify, ignore_unmerged_worktree),
+        } => commands::done::run(
+            &workgraph_dir,
+            &id,
+            converged,
+            skip_verify,
+            ignore_unmerged_worktree,
+        ),
         Commands::Fail {
             id,
             reason,

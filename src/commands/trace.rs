@@ -1067,7 +1067,10 @@ fn print_recursive_tree(
         parts.push(format!("{} open", open_count));
     }
     if incomplete_count > 0 {
-        parts.push(format!("\x1b[38;5;208m{} incomplete{}", incomplete_count, reset));
+        parts.push(format!(
+            "\x1b[38;5;208m{} incomplete{}",
+            incomplete_count, reset
+        ));
     }
     if failed_count > 0 {
         parts.push(format!("{}{} failed{}", red, failed_count, reset));

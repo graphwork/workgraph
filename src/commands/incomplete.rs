@@ -318,7 +318,12 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
-        assert!(task.failure_reason.as_ref().unwrap().contains("Retry exhausted"));
+        assert!(
+            task.failure_reason
+                .as_ref()
+                .unwrap()
+                .contains("Retry exhausted")
+        );
         assert_eq!(task.retry_count, 3);
     }
 
@@ -376,7 +381,10 @@ mod tests {
         let path = dir_path.join("graph.jsonl");
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert!(task.ready_after.is_some(), "Should have ready_after set for cooldown");
+        assert!(
+            task.ready_after.is_some(),
+            "Should have ready_after set for cooldown"
+        );
     }
 
     #[test]
@@ -428,8 +436,15 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         let last = task.log.last().unwrap();
-        assert!(last.message.contains("attempt #2"), "Log should mention attempt #2, got: {}", last.message);
-        assert!(last.message.contains("missing tests"), "Log should contain reason");
+        assert!(
+            last.message.contains("attempt #2"),
+            "Log should mention attempt #2, got: {}",
+            last.message
+        );
+        assert!(
+            last.message.contains("missing tests"),
+            "Log should contain reason"
+        );
     }
 
     #[test]

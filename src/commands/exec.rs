@@ -282,7 +282,10 @@ pub fn run_interactive(
     }
 
     // --- Claim the task ---
-    let needs_claim = matches!(task.status, Status::Open | Status::Blocked | Status::Incomplete);
+    let needs_claim = matches!(
+        task.status,
+        Status::Open | Status::Blocked | Status::Incomplete
+    );
     if needs_claim {
         let actor_s = actor.map(String::from);
         modify_graph(&path, |graph| {

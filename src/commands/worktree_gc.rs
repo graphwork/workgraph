@@ -24,7 +24,7 @@ use workgraph::parser::load_graph;
 use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::graph_path;
-use super::service::worktree::{find_branch_for_worktree, HEARTBEAT_LIVENESS_TIMEOUT_SECS};
+use super::service::worktree::{HEARTBEAT_LIVENESS_TIMEOUT_SECS, find_branch_for_worktree};
 
 /// A per-worktree classification result.
 #[derive(Debug, Clone, PartialEq)]
@@ -179,8 +179,7 @@ pub fn plan(
             decisions.push(Decision::Skip {
                 agent_id: name,
                 path,
-                reason: "no registry entry — conservative skip (use --force to remove)"
-                    .to_string(),
+                reason: "no registry entry — conservative skip (use --force to remove)".to_string(),
             });
             continue;
         }
@@ -230,7 +229,10 @@ pub fn run(workgraph_dir: &Path, apply: bool, force: bool) -> Result<()> {
         .to_path_buf();
     let worktrees_dir = project_root.join(".wg-worktrees");
     if !worktrees_dir.exists() {
-        println!("No worktrees directory found at {}", worktrees_dir.display());
+        println!(
+            "No worktrees directory found at {}",
+            worktrees_dir.display()
+        );
         return Ok(());
     }
 
@@ -304,22 +306,34 @@ pub fn run(workgraph_dir: &Path, apply: bool, force: bool) -> Result<()> {
 
     // List them
     for d in &safe_listed {
-        if let Decision::Remove { agent_id, reason, .. } = d {
+        if let Decision::Remove {
+            agent_id, reason, ..
+        } = d
+        {
             println!("[safe]         {} — {}", agent_id, reason);
         }
     }
     for d in &force_listed {
-        if let Decision::Uncommitted { agent_id, reason, .. } = d {
+        if let Decision::Uncommitted {
+            agent_id, reason, ..
+        } = d
+        {
             println!("[force]        {} — {}", agent_id, reason);
         }
     }
     for d in &uncommitted_skipped {
-        if let Decision::Uncommitted { agent_id, reason, .. } = d {
+        if let Decision::Uncommitted {
+            agent_id, reason, ..
+        } = d
+        {
             println!("[uncommitted]  {} — {}", agent_id, reason);
         }
     }
     for d in &hard_skips {
-        if let Decision::Skip { agent_id, reason, .. } = d {
+        if let Decision::Skip {
+            agent_id, reason, ..
+        } = d
+        {
             println!("[skip]         {} — {}", agent_id, reason);
         }
     }
@@ -472,7 +486,9 @@ mod tests {
         let decisions = plan(&wg_dir, None, now).unwrap();
         assert_eq!(decisions.len(), 1);
         match &decisions[0] {
-            Decision::Skip { agent_id, reason, .. } => {
+            Decision::Skip {
+                agent_id, reason, ..
+            } => {
                 assert_eq!(agent_id, "agent-1");
                 assert!(
                     reason.contains("non-terminal"),
@@ -651,7 +667,12 @@ mod tests {
         make_worktree_dir(&worktrees_dir, "agent-terminal");
         write_registry(
             &wg_dir,
-            vec![agent_entry("agent-terminal", "t-gone", AgentStatus::Done, 9999)],
+            vec![agent_entry(
+                "agent-terminal",
+                "t-gone",
+                AgentStatus::Done,
+                9999,
+            )],
         );
         write_graph(&wg_dir, vec![]);
 

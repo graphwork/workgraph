@@ -5680,7 +5680,9 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Title
     lines.push(Line::from(Span::styled(
         "  New Coordinator",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         format!("  {}", "\u{2500}".repeat(w.saturating_sub(4).min(40))),
@@ -5691,12 +5693,18 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let name_active = launcher.active_section == LauncherSection::Name;
     let name_prefix = if name_active { "  \u{25b8} " } else { "    " };
     let name_style = if name_active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
     let name_display = if launcher.name.is_empty() {
-        if name_active { "\u{2588}" } else { "(optional)" }
+        if name_active {
+            "\u{2588}"
+        } else {
+            "(optional)"
+        }
     } else {
         ""
     };
@@ -5706,7 +5714,9 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             Span::styled(
                 name_display,
                 if name_active {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 },
@@ -5717,7 +5727,12 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             Span::styled(format!("{}Name: ", name_prefix), name_style),
             Span::raw(&launcher.name),
             if name_active {
-                Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK))
+                Span::styled(
+                    "\u{2588}",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                )
             } else {
                 Span::raw("")
             },
@@ -5729,13 +5744,19 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let exec_active = launcher.active_section == LauncherSection::Executor;
     let section_style = |active: bool| {
         if active {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         }
     };
     lines.push(Line::from(Span::styled(
-        if exec_active { "  \u{25b8} Executor" } else { "    Executor" },
+        if exec_active {
+            "  \u{25b8} Executor"
+        } else {
+            "    Executor"
+        },
         section_style(exec_active),
     )));
 
@@ -5745,15 +5766,23 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let style = if !available {
             Style::default().fg(Color::DarkGray)
         } else if selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
         let suffix = if !available { " (not found)" } else { "" };
-        let desc_short: String = desc.chars().take(w.saturating_sub(name.len() + 14)).collect();
+        let desc_short: String = desc
+            .chars()
+            .take(w.saturating_sub(name.len() + 14))
+            .collect();
         lines.push(Line::from(vec![
             Span::styled(format!("    {}{}", bullet, name), style),
-            Span::styled(format!("  {}{}", desc_short, suffix), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {}{}", desc_short, suffix),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
     lines.push(Line::from(""));
@@ -5761,40 +5790,62 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Model section
     let model_active = launcher.active_section == LauncherSection::Model;
     lines.push(Line::from(Span::styled(
-        if model_active { "  \u{25b8} Model" } else { "    Model" },
+        if model_active {
+            "  \u{25b8} Model"
+        } else {
+            "    Model"
+        },
         section_style(model_active),
     )));
 
     for (i, (id, desc)) in launcher.model_list.iter().enumerate() {
-        let selected = model_active && i == launcher.model_selected && !launcher.model_custom_active;
+        let selected =
+            model_active && i == launcher.model_selected && !launcher.model_custom_active;
         let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
         let style = if selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
         let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
         lines.push(Line::from(vec![
             Span::styled(format!("    {}{}", bullet, id), style),
-            Span::styled(format!("  {}", desc_short), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {}", desc_short),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
 
     // Custom model row
-    let custom_model_selected = model_active && launcher.model_selected >= launcher.model_list.len();
+    let custom_model_selected =
+        model_active && launcher.model_selected >= launcher.model_list.len();
     let custom_style = if launcher.model_custom_active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else if custom_model_selected {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let custom_bullet = if custom_model_selected || launcher.model_custom_active { " \u{25cf} " } else { " \u{25cb} " };
+    let custom_bullet = if custom_model_selected || launcher.model_custom_active {
+        " \u{25cf} "
+    } else {
+        " \u{25cb} "
+    };
     if launcher.model_custom_active {
         lines.push(Line::from(vec![
             Span::styled(format!("    {}Custom: ", custom_bullet), custom_style),
             Span::raw(&launcher.model_custom),
-            Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "\u{2588}",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]));
     } else {
         let custom_display = if launcher.model_custom.is_empty() {
@@ -5813,15 +5864,22 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if launcher.show_endpoint() {
         let ep_active = launcher.active_section == LauncherSection::Endpoint;
         lines.push(Line::from(Span::styled(
-            if ep_active { "  \u{25b8} Endpoint" } else { "    Endpoint" },
+            if ep_active {
+                "  \u{25b8} Endpoint"
+            } else {
+                "    Endpoint"
+            },
             section_style(ep_active),
         )));
 
         for (i, (name, url)) in launcher.endpoint_list.iter().enumerate() {
-            let selected = ep_active && i == launcher.endpoint_selected && !launcher.endpoint_custom_active;
+            let selected =
+                ep_active && i == launcher.endpoint_selected && !launcher.endpoint_custom_active;
             let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
             let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -5832,20 +5890,32 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
 
         // Custom endpoint row
-        let custom_ep_selected = ep_active && launcher.endpoint_selected >= launcher.endpoint_list.len();
+        let custom_ep_selected =
+            ep_active && launcher.endpoint_selected >= launcher.endpoint_list.len();
         let custom_ep_style = if launcher.endpoint_custom_active {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else if custom_ep_selected {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let ep_bullet = if custom_ep_selected || launcher.endpoint_custom_active { " \u{25cf} " } else { " \u{25cb} " };
+        let ep_bullet = if custom_ep_selected || launcher.endpoint_custom_active {
+            " \u{25cf} "
+        } else {
+            " \u{25cb} "
+        };
         if launcher.endpoint_custom_active {
             lines.push(Line::from(vec![
                 Span::styled(format!("    {}Custom: ", ep_bullet), custom_ep_style),
                 Span::raw(&launcher.endpoint_custom),
-                Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+                Span::styled(
+                    "\u{2588}",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
             ]));
         } else {
             let custom_display = if launcher.endpoint_custom.is_empty() {
@@ -5865,25 +5935,37 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if !launcher.recent_list.is_empty() {
         let recent_active = launcher.active_section == LauncherSection::Recent;
         lines.push(Line::from(Span::styled(
-            if recent_active { "  \u{25b8} Recent" } else { "    Recent" },
+            if recent_active {
+                "  \u{25b8} Recent"
+            } else {
+                "    Recent"
+            },
             section_style(recent_active),
         )));
 
         for (i, entry) in launcher.recent_list.iter().enumerate() {
             let selected = recent_active && i == launcher.recent_selected;
             let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
             let model_str = entry.model.as_deref().unwrap_or("default");
-            let ep_str = entry.endpoint.as_deref().map(|e| format!(" @ {}", e)).unwrap_or_default();
+            let ep_str = entry
+                .endpoint
+                .as_deref()
+                .map(|e| format!(" @ {}", e))
+                .unwrap_or_default();
             let num = i + 1;
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("    {}. ", num),
                     if selected {
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
                     },

@@ -859,7 +859,8 @@ pub struct LauncherState {
 
 impl LauncherState {
     pub fn selected_executor(&self) -> &str {
-        self.executor_list.get(self.executor_selected)
+        self.executor_list
+            .get(self.executor_selected)
             .map(|(name, _, _)| name.as_str())
             .unwrap_or("claude")
     }
@@ -872,7 +873,8 @@ impl LauncherState {
         if self.model_custom_active && !self.model_custom.is_empty() {
             Some(self.model_custom.clone())
         } else {
-            self.model_list.get(self.model_selected)
+            self.model_list
+                .get(self.model_selected)
                 .map(|(id, _)| id.clone())
         }
     }
@@ -884,7 +886,8 @@ impl LauncherState {
         if self.endpoint_custom_active && !self.endpoint_custom.is_empty() {
             Some(self.endpoint_custom.clone())
         } else {
-            self.endpoint_list.get(self.endpoint_selected)
+            self.endpoint_list
+                .get(self.endpoint_selected)
                 .map(|(_, url)| url.clone())
         }
     }
@@ -10936,10 +10939,7 @@ impl VizApp {
                 &request_id,
                 attachments,
             ) {
-                eprintln!(
-                    "[tui] direct inbox write failed for {}: {}",
-                    request_id, e
-                );
+                eprintln!("[tui] direct inbox write failed for {}: {}", request_id, e);
             }
             // No exec_command + no CommandEffect::ChatResponse — the
             // response arrives by `poll_chat_messages` tailing the
@@ -11528,9 +11528,10 @@ impl VizApp {
                     } else {
                         args.push("--session-id".to_string());
                         args.push(session_uuid.to_string());
-                        let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
-                            &self.workgraph_dir,
-                        );
+                        let sys_prompt =
+                            crate::commands::service::coordinator_agent::build_system_prompt(
+                                &self.workgraph_dir,
+                            );
                         args.push("--system-prompt".to_string());
                         args.push(sys_prompt);
                     }
@@ -11545,9 +11546,10 @@ impl VizApp {
                     // is the supported mechanism. Scoping to chat_dir
                     // keeps per-coordinator priming isolated from any
                     // project-level AGENTS.md.
-                    let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
-                        &self.workgraph_dir,
-                    );
+                    let sys_prompt =
+                        crate::commands::service::coordinator_agent::build_system_prompt(
+                            &self.workgraph_dir,
+                        );
                     let agents_md = chat_dir.join("AGENTS.md");
                     let _ = std::fs::write(&agents_md, sys_prompt);
                     // Resume: three strategies, checked in order:
@@ -11571,11 +11573,7 @@ impl VizApp {
                         let _ = std::fs::write(&pty_marker, "");
                         Vec::new()
                     };
-                    (
-                        "codex".to_string(),
-                        args,
-                        Some(chat_dir.clone()),
-                    )
+                    ("codex".to_string(), args, Some(chat_dir.clone()))
                 }
                 _ => {
                     // Unknown executor — leave file-tailing path in charge.
@@ -11712,9 +11710,8 @@ impl VizApp {
             .map(|e| (e.name.to_string(), e.description.to_string(), e.available))
             .collect();
 
-        let model_list = workgraph::models::load_model_choices_with_descriptions(
-            &self.workgraph_dir,
-        );
+        let model_list =
+            workgraph::models::load_model_choices_with_descriptions(&self.workgraph_dir);
 
         let config = Config::load_or_default(&self.workgraph_dir);
         let endpoint_list: Vec<(String, String)> = config
@@ -11722,7 +11719,10 @@ impl VizApp {
             .endpoints
             .iter()
             .map(|ep| {
-                let desc = ep.url.clone().unwrap_or_else(|| format!("{} (default)", ep.provider));
+                let desc = ep
+                    .url
+                    .clone()
+                    .unwrap_or_else(|| format!("{} (default)", ep.provider));
                 (ep.name.clone(), desc)
             })
             .collect();
@@ -13771,7 +13771,6 @@ fn save_clipboard_image(
     Ok(Some(att))
 }
 
-
 // ── Tree-aware filtering ──
 
 /// Determine the "indent level" of a line: the char-index of the first alphanumeric character.
@@ -14019,7 +14018,11 @@ fn claude_session_exists(cwd: &std::path::Path, session_uuid: &uuid::Uuid) -> bo
         .join("projects")
         .join(slug)
         .join(format!("{}.jsonl", session_uuid));
-    session_file.exists() && session_file.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    session_file.exists()
+        && session_file
+            .metadata()
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
 }
 
 /// Returns the file at `filename` within the given archive directory, if it exists.

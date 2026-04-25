@@ -72,7 +72,8 @@ pub fn locate(
 ) -> Option<VendorHistory> {
     match executor {
         "native" => {
-            let p = crate::chat::chat_dir_for_ref(workgraph_dir, chat_ref).join("conversation.jsonl");
+            let p =
+                crate::chat::chat_dir_for_ref(workgraph_dir, chat_ref).join("conversation.jsonl");
             if p.exists() {
                 Some(VendorHistory::Native(p))
             } else {
@@ -128,7 +129,11 @@ fn read_native(path: &Path) -> Result<Vec<Turn>> {
             .get("timestamp")
             .and_then(|v| v.as_str())
             .map(String::from);
-        out.push(Turn { timestamp, role, text });
+        out.push(Turn {
+            timestamp,
+            role,
+            text,
+        });
     }
     Ok(out)
 }
@@ -169,7 +174,10 @@ fn read_claude(path: &Path) -> Result<Vec<Turn>> {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let timestamp = val.get("timestamp").and_then(|v| v.as_str()).map(String::from);
+                let timestamp = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
                 out.push(Turn {
                     timestamp,
                     role: "user".to_string(),
@@ -186,7 +194,10 @@ fn read_claude(path: &Path) -> Result<Vec<Turn>> {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let timestamp = val.get("timestamp").and_then(|v| v.as_str()).map(String::from);
+                let timestamp = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
                 out.push(Turn {
                     timestamp,
                     role: "assistant".to_string(),
@@ -277,7 +288,10 @@ fn read_codex(path: &Path) -> Result<Vec<Turn>> {
         if text.trim().is_empty() {
             continue;
         }
-        let timestamp = val.get("timestamp").and_then(|v| v.as_str()).map(String::from);
+        let timestamp = val
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         out.push(Turn {
             timestamp,
             role: role.to_string(),
@@ -327,11 +341,7 @@ fn walk_jsonl(root: &Path, sink: &mut dyn FnMut(&Path)) {
 /// short alias like `input_text`/`output_text` for codex), joining with
 /// newlines when both have content. Both claude and codex use blocks
 /// with a `text` field, just under different type strings.
-fn concat_text_blocks(
-    blocks: &[serde_json::Value],
-    _type_key: &str,
-    text_key: &str,
-) -> String {
+fn concat_text_blocks(blocks: &[serde_json::Value], _type_key: &str, text_key: &str) -> String {
     let mut out = String::new();
     for b in blocks {
         // Accept `text` (native, claude), `input_text` / `output_text` (codex).
@@ -391,11 +401,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("conversation.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(
-            f,
-            r#"{{"entry_type":"init","seq":1,"model":"x"}}"#
-        )
-        .unwrap();
+        writeln!(f, r#"{{"entry_type":"init","seq":1,"model":"x"}}"#).unwrap();
         writeln!(
             f,
             r#"{{"entry_type":"message","seq":2,"role":"user","content":[{{"type":"text","text":"say hi"}}],"timestamp":"2026-04-21T03:44:00Z"}}"#
@@ -464,11 +470,7 @@ mod tests {
             r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"hi"}}]}}}}"#
         )
         .unwrap();
-        writeln!(
-            f,
-            r#"{{"type":"event_msg","payload":{{}}}}"#
-        )
-        .unwrap();
+        writeln!(f, r#"{{"type":"event_msg","payload":{{}}}}"#).unwrap();
         let turns = read_codex(&path).unwrap();
         assert_eq!(turns.len(), 2, "developer/event_msg rows filtered out");
         assert_eq!(turns[0].role, "user");

@@ -139,7 +139,10 @@ where
     let ready_ids: HashSet<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
     // Get all open/incomplete tasks (not done, not in-progress)
-    let mut open_tasks: Vec<&Task> = graph.tasks().filter(|t| matches!(t.status, Status::Open | Status::Incomplete)).collect();
+    let mut open_tasks: Vec<&Task> = graph
+        .tasks()
+        .filter(|t| matches!(t.status, Status::Open | Status::Incomplete))
+        .collect();
 
     // Sort: ready tasks first, then by value (cost/hours) ascending
     open_tasks.sort_by(|a, b| {
@@ -415,7 +418,11 @@ pub fn ready_tasks_cycle_aware<'a>(
             .members
             .iter()
             .filter_map(|member_id| graph.get_task(member_id))
-            .filter(|task| matches!(task.status, Status::Open | Status::Incomplete) && !task.paused && is_time_ready(task))
+            .filter(|task| {
+                matches!(task.status, Status::Open | Status::Incomplete)
+                    && !task.paused
+                    && is_time_ready(task)
+            })
             .collect();
 
         if viable_members.is_empty() {

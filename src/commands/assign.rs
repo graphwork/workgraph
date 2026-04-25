@@ -900,7 +900,9 @@ mod tests {
         config.save(dir_path).unwrap();
 
         run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-        if let Some(h) = saved_home { unsafe { std::env::set_var("HOME", h) }; }
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
 
         // No evaluation files should be created for assign-t1
         let evals_dir = dir_path.join("agency/evaluations");
