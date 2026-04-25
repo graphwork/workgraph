@@ -157,7 +157,7 @@ fn test_context_pressure_compaction() {
         },
     ];
 
-    let compacted = ContextBudget::emergency_compact(messages.clone(), 2);
+    let compacted = ContextBudget::emergency_compact(messages.clone(), 0);
 
     // Recent messages preserved
     assert_eq!(compacted.len(), messages.len());

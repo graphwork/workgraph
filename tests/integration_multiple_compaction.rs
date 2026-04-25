@@ -866,7 +866,7 @@ fn test_emergency_compaction_mixed_content() {
         },
     ];
 
-    let compacted = ContextBudget::emergency_compact(messages.clone(), 4);
+    let compacted = ContextBudget::emergency_compact(messages.clone(), 0);
 
     // Recent messages should be preserved
     assert_eq!(
