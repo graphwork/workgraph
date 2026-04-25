@@ -11578,20 +11578,28 @@ impl VizApp {
                     // is the supported mechanism. Scoping to chat_dir
                     // keeps per-coordinator priming isolated from any
                     // project-level AGENTS.md.
-                    //
-                    // Resume flows stay manual via codex's own `/resume`
-                    // in-TUI flow: `codex resume --last` errors on empty
-                    // state, which would blow up first-launch UX. CWD
-                    // pinning still helps because codex tracks its
-                    // history per project dir.
                     let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
                         &self.workgraph_dir,
                     );
                     let agents_md = chat_dir.join("AGENTS.md");
                     let _ = std::fs::write(&agents_md, sys_prompt);
+                    // Resume: read .codex-session-id persisted by the
+                    // codex handler. If present, `codex resume <id>`
+                    // reconnects to the server-side thread. On first
+                    // launch (no file), start fresh.
+                    let session_id_path = chat_dir.join(".codex-session-id");
+                    let prior_session_id = std::fs::read_to_string(&session_id_path)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let args = if let Some(sid) = prior_session_id {
+                        vec!["resume".to_string(), sid]
+                    } else {
+                        Vec::new()
+                    };
                     (
                         "codex".to_string(),
-                        Vec::new(),
+                        args,
                         Some(chat_dir.clone()),
                     )
                 }
