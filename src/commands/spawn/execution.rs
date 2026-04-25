@@ -1275,59 +1275,20 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
     fi
 fi
 
-# --- Merge Back (worktree isolation) ---
-# When the agent ran in an isolated worktree, merge its changes back to the main
-# branch and clean up the worktree. Env vars are set by spawn when worktree
-# isolation is enabled; this section is a no-op otherwise.
+# --- Worktree Cleanup (merge-back is handled by wg done) ---
+# The merge-back squash is now performed inline by `wg done` while the agent is
+# still alive, so it can react to conflicts. This wrapper only handles the
+# cleanup marker for the coordinator sweep.
 if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
-    # Worktree integrity check: verify the .git pointer still exists.
-    # If the agent escaped to a Claude Code worktree, the wg worktree's .git
-    # may have been severed by a competing git worktree add with the same basename.
     if [ ! -e "$WG_WORKTREE_PATH/.git" ]; then
         echo "[wrapper] WARNING: Worktree .git pointer missing at $WG_WORKTREE_PATH — possible worktree escape detected" >> "$OUTPUT_FILE"
     fi
 
     TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
-    if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
-        # Check if agent made any commits on its worktree branch
-        COMMITS=$(git -C "$WG_PROJECT_ROOT" log --oneline "HEAD..$WG_BRANCH" 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$COMMITS" -gt 0 ]; then
-            cd "$WG_PROJECT_ROOT"
-
-            # Acquire merge lock (serialize concurrent merges)
-            MERGE_LOCK="$WG_PROJECT_ROOT/.wg-worktrees/.merge-lock"
-            mkdir -p "$(dirname "$MERGE_LOCK")"
-            exec 9>"$MERGE_LOCK"
-            flock 9
-
-            git merge --squash "$WG_BRANCH" 2>> "$OUTPUT_FILE"
-            MERGE_EXIT=$?
-
-            if [ $MERGE_EXIT -ne 0 ]; then
-                git merge --abort 2>/dev/null
-                echo "[wrapper] Merge conflict on $WG_BRANCH — marking task failed for retry" >> "$OUTPUT_FILE"
-                wg fail "$TASK_ID" --reason "Merge conflict integrating worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
-            else
-                git commit -m "feat: $TASK_ID ($WG_AGENT_ID)
-
-Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
-                echo "[wrapper] Merged $WG_BRANCH to $(git rev-parse --abbrev-ref HEAD)" >> "$OUTPUT_FILE"
-            fi
-
-            # Release merge lock
-            flock -u 9
-        else
-            echo "[wrapper] No commits on $WG_BRANCH, nothing to merge" >> "$OUTPUT_FILE"
-        fi
-    fi
-
-    # Worktrees are sacred — the wrapper must NOT force-remove them.
-    # Two-phase atomic cleanup: drop a marker file here so the coordinator's
-    # next tick can sweep this worktree once it verifies the task is terminal
-    # and the agent is not live. If the wrapper is killed before reaching this
-    # point, the marker won't exist and the orphaned-worktree path handles it
-    # (see cleanup_orphaned_worktrees + sweep_cleanup_pending_worktrees).
+    # Mark worktree for cleanup sweep (wg done already placed this marker on
+    # the happy path, but the wrapper is a safety net for cases where the agent
+    # crashed or was killed before reaching wg done).
     touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
     echo "[wrapper] Task finished with status '$TASK_STATUS_FINAL' — marked worktree $WG_WORKTREE_PATH for sweep (coordinator will reap; override with: wg worktree archive $WG_AGENT_ID --remove)" >> "$OUTPUT_FILE"
 fi

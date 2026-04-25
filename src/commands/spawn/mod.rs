@@ -771,28 +771,27 @@ mod tests {
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Merge-back section is always present but gated by env var check
+        // Worktree cleanup section is present and gated by env var check
+        // (merge-back is now handled by `wg done`, not the wrapper)
         assert!(
-            script.contains("# --- Merge Back (worktree isolation) ---"),
-            "Wrapper should contain merge-back section header"
+            script.contains("# --- Worktree Cleanup (merge-back is handled by wg done) ---"),
+            "Wrapper should contain worktree cleanup section header"
         );
         assert!(
             script.contains(r#"if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]"#),
-            "Merge-back should be gated by worktree env vars"
+            "Worktree cleanup should be gated by worktree env vars"
         );
     }
 
     #[test]
-    fn test_wrapper_merge_back_uses_squash_merge() {
+    fn test_wrapper_no_shell_merge_back() {
         let temp_dir = TempDir::new().unwrap();
-        // Use a unique task ID to avoid branch collisions with parallel tests
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
         let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
-        // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
         run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
@@ -800,59 +799,17 @@ mod tests {
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
         assert!(
-            script.contains("git merge --squash \"$WG_BRANCH\""),
-            "Should use squash merge for clean history"
-        );
-    }
-
-    #[test]
-    fn test_wrapper_merge_back_handles_conflicts() {
-        let temp_dir = TempDir::new().unwrap();
-        // Use a unique task ID to avoid branch collisions with parallel tests
-        let unique_id = get_unique_id();
-        let task_id = format!("t{}", unique_id);
-        let mut task = make_task(&task_id, "Test Task");
-        task.exec = Some("echo hello".to_string());
-        setup_graph(temp_dir.path(), vec![task]);
-
-        // Pass the .workgraph subdirectory to run(), not the project root
-        let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
-
-        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
-        let script = fs::read_to_string(&wrapper_path).unwrap();
-
-        assert!(
-            script.contains("git merge --abort"),
-            "Should abort merge on conflict"
+            !script.contains("git merge --squash"),
+            "Shell wrapper must not contain merge logic (moved to wg done)"
         );
         assert!(
-            script.contains("Merge conflict"),
-            "Should report merge conflict"
+            !script.contains("git merge --abort"),
+            "Shell wrapper must not contain merge abort logic"
         );
         assert!(
-            script.contains(r#"wg fail "$TASK_ID" --reason "Merge conflict"#),
-            "Should fail task on merge conflict"
+            !script.contains("flock 9"),
+            "Shell wrapper must not contain flock acquire (merge lock is in wg done)"
         );
-    }
-
-    #[test]
-    fn test_wrapper_merge_back_uses_flock() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut task = make_task("t1", "Test Task");
-        task.exec = Some("echo hello".to_string());
-        setup_graph(temp_dir.path(), vec![task]);
-
-        // Pass the .workgraph subdirectory to run(), not the project root
-        let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir, "t1", "shell", None, None, false).unwrap();
-
-        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
-        let script = fs::read_to_string(&wrapper_path).unwrap();
-
-        assert!(script.contains(".merge-lock"), "Should use merge lock file");
-        assert!(script.contains("flock 9"), "Should acquire flock");
-        assert!(script.contains("flock -u 9"), "Should release flock");
     }
 
     #[test]
@@ -918,36 +875,14 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapper_merge_back_skips_no_commits() {
+    fn test_wrapper_no_commit_convention_in_shell() {
         let temp_dir = TempDir::new().unwrap();
-        let mut task = make_task("t1", "Test Task");
-        task.exec = Some("echo hello".to_string());
-        setup_graph(temp_dir.path(), vec![task]);
-
-        // Pass the .workgraph subdirectory to run(), not the project root
-        let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir, "t1", "shell", None, None, false).unwrap();
-
-        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
-        let script = fs::read_to_string(&wrapper_path).unwrap();
-
-        assert!(
-            script.contains("No commits on $WG_BRANCH, nothing to merge"),
-            "Should skip merge when no commits exist"
-        );
-    }
-
-    #[test]
-    fn test_wrapper_merge_back_commit_convention() {
-        let temp_dir = TempDir::new().unwrap();
-        // Use a unique task ID to avoid branch collisions with parallel tests
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
         let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
-        // Pass the .workgraph subdirectory to run(), not the project root
         let workgraph_dir = temp_dir.path().join(".workgraph");
         run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
 
@@ -955,12 +890,8 @@ mod tests {
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
         assert!(
-            script.contains("feat: $TASK_ID ($WG_AGENT_ID)"),
-            "Commit message should follow convention"
-        );
-        assert!(
-            script.contains("Squash-merged from worktree branch"),
-            "Commit message should mention squash merge origin"
+            !script.contains("feat: $TASK_ID ($WG_AGENT_ID)"),
+            "Commit message logic should not be in wrapper (moved to wg done)"
         );
     }
 }

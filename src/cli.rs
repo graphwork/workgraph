@@ -469,6 +469,11 @@ pub enum Commands {
         /// Skip the verify command gate (human escape hatch, blocked when WG_AGENT_ID is set)
         #[arg(long)]
         skip_verify: bool,
+
+        /// Defer worktree merge: mark the task done even if the worktree branch
+        /// cannot be cleanly merged, creating a .merge-<id> task for later resolution.
+        #[arg(long)]
+        ignore_unmerged_worktree: bool,
     },
 
     /// Mark a task as failed (can be retried)

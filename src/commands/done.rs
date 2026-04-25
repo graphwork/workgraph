@@ -88,6 +88,227 @@ enum TriageResult {
     UnknownButActive { activity_type: String },
 }
 
+#[derive(Debug)]
+enum WorktreeMergeResult {
+    NotInWorktree,
+    NoCommits,
+    Merged { commit_sha: String },
+    Conflict { conflicting_files: Vec<String> },
+}
+
+struct WorktreeInfo {
+    worktree_path: String,
+    branch: String,
+    project_root: String,
+    agent_id: Option<String>,
+}
+
+fn detect_worktree() -> Option<WorktreeInfo> {
+    let wt_path = std::env::var("WG_WORKTREE_PATH").ok()?;
+    let branch = std::env::var("WG_BRANCH").ok()?;
+    let project_root = std::env::var("WG_PROJECT_ROOT").ok()?;
+    let agent_id = std::env::var("WG_AGENT_ID").ok();
+    Some(WorktreeInfo {
+        worktree_path: wt_path,
+        branch,
+        project_root,
+        agent_id,
+    })
+}
+
+fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMergeResult> {
+    use std::process::Command;
+
+    let wt_git = Path::new(&wt.worktree_path).join(".git");
+    if !wt_git.exists() {
+        eprintln!(
+            "Warning: Worktree .git pointer missing at {} — skipping merge",
+            wt.worktree_path
+        );
+        return Ok(WorktreeMergeResult::NotInWorktree);
+    }
+
+    let commits_output = Command::new("git")
+        .args(["log", "--oneline"])
+        .arg(format!("HEAD..{}", wt.branch))
+        .current_dir(&wt.project_root)
+        .output()
+        .context("Failed to check commits on worktree branch")?;
+
+    let commit_count = String::from_utf8_lossy(&commits_output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .count();
+
+    if commit_count == 0 {
+        return Ok(WorktreeMergeResult::NoCommits);
+    }
+
+    let merge_lock_path = Path::new(&wt.project_root)
+        .join(".wg-worktrees")
+        .join(".merge-lock");
+    if let Some(parent) = merge_lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&merge_lock_path)
+        .context("Failed to open merge lock file")?;
+
+    use std::os::unix::io::AsRawFd;
+    let fd = lock_file.as_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+    if ret != 0 {
+        anyhow::bail!("Failed to acquire merge lock: {}", std::io::Error::last_os_error());
+    }
+
+    let merge_result = Command::new("git")
+        .args(["merge", "--squash", &wt.branch])
+        .current_dir(&wt.project_root)
+        .output()
+        .context("Failed to run git merge --squash")?;
+
+    let result = if !merge_result.status.success() {
+        let diff_output = Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(&wt.project_root)
+            .output();
+
+        let conflicting_files = diff_output
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let conflicting_files = if conflicting_files.is_empty() {
+            String::from_utf8_lossy(&merge_result.stderr)
+                .lines()
+                .filter(|l| l.contains("CONFLICT"))
+                .filter_map(|l| l.rsplit_once(' ').map(|(_, f)| f.to_string()))
+                .collect()
+        } else {
+            conflicting_files
+        };
+
+        let _ = Command::new("git")
+            .args(["reset", "--hard", "HEAD"])
+            .current_dir(&wt.project_root)
+            .output();
+
+        WorktreeMergeResult::Conflict { conflicting_files }
+    } else {
+        let agent_label = wt
+            .agent_id
+            .as_deref()
+            .unwrap_or("unknown");
+        let commit_msg = format!(
+            "feat: {} ({})\n\nSquash-merged from worktree branch {}",
+            task_id, agent_label, wt.branch
+        );
+        let commit_output = Command::new("git")
+            .args(["commit", "-m", &commit_msg])
+            .current_dir(&wt.project_root)
+            .output()
+            .context("Failed to commit squash merge")?;
+
+        if !commit_output.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_output.stderr);
+            if stderr.contains("nothing to commit") {
+                return Ok(WorktreeMergeResult::NoCommits);
+            }
+            anyhow::bail!("git commit failed: {}", stderr);
+        }
+
+        let sha_output = Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&wt.project_root)
+            .output()
+            .context("Failed to get commit SHA")?;
+
+        let commit_sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+        WorktreeMergeResult::Merged { commit_sha }
+    };
+
+    unsafe { libc::flock(fd, libc::LOCK_UN) };
+    drop(lock_file);
+
+    Ok(result)
+}
+
+fn create_deferred_merge_task(
+    path: &Path,
+    task_id: &str,
+    wt: &WorktreeInfo,
+    conflicting_files: &[String],
+) -> Result<String> {
+    let merge_task_id = format!(".merge-{}", task_id);
+    let files_list = conflicting_files
+        .iter()
+        .map(|f| format!("- `{}`", f))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let description = format!(
+        "## Deferred Merge: {}\n\n\
+         The agent's worktree branch could not be cleanly merged at done-time.\n\n\
+         **Source branch:** `{}`\n\
+         **Target branch:** main\n\
+         **Conflicting files:**\n{}\n\n\
+         Resolve the conflicts and squash-merge the branch to main.",
+        task_id, wt.branch, files_list,
+    );
+    let merge_task_id_clone = merge_task_id.clone();
+    let task_id_owned = task_id.to_string();
+    let branch = wt.branch.clone();
+    let agent_id = wt.agent_id.clone().unwrap_or_default();
+    let conflicting_owned: Vec<String> = conflicting_files.to_vec();
+    modify_graph(path, |graph| {
+        if graph.get_task(&merge_task_id_clone).is_some() {
+            return false;
+        }
+        let merge_task = Task {
+            id: merge_task_id_clone.clone(),
+            title: format!("Merge: {}", task_id_owned),
+            description: Some(description.clone()),
+            status: Status::Incomplete,
+            after: vec![task_id_owned.clone()],
+            tags: vec!["merge".to_string(), "deferred".to_string()],
+            exec_mode: Some("full".to_string()),
+            created_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("merge-defer".to_string()),
+                user: None,
+                message: format!(
+                    "Deferred merge created: branch={}, conflicts={:?}, agent={}",
+                    branch, conflicting_owned, agent_id,
+                ),
+            }],
+            ..Default::default()
+        };
+        if let Some(source_task) = graph.get_task_mut(&task_id_owned) {
+            if !source_task.before.contains(&merge_task_id_clone) {
+                source_task.before.push(merge_task_id_clone.clone());
+            }
+        }
+        graph.add_node(Node::Task(merge_task));
+        true
+    })
+    .context("Failed to create deferred merge task")?;
+    Ok(merge_task_id)
+}
+
+fn mark_worktree_for_cleanup(wt: &WorktreeInfo) {
+    let marker = Path::new(&wt.worktree_path).join(".wg-cleanup-pending");
+    let _ = std::fs::write(&marker, "");
+}
+
 /// Get the list of modified files in the current worktree using git diff.
 /// Returns relative paths from the project root.
 fn get_modified_files(project_root: &Path) -> Result<Vec<String>> {
@@ -712,9 +933,9 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
     }
 }
 
-pub fn run(dir: &Path, id: &str, converged: bool, skip_verify: bool) -> Result<()> {
+pub fn run(dir: &Path, id: &str, converged: bool, skip_verify: bool, ignore_unmerged_worktree: bool) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
-    run_inner(dir, id, converged, skip_verify, is_agent)
+    run_inner(dir, id, converged, skip_verify, ignore_unmerged_worktree, is_agent)
 }
 
 fn run_inner(
@@ -722,6 +943,7 @@ fn run_inner(
     id: &str,
     converged: bool,
     skip_verify: bool,
+    ignore_unmerged_worktree: bool,
     is_agent: bool,
 ) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
@@ -1498,6 +1720,57 @@ fn run_inner(
         false
     };
 
+    // --- Worktree merge-back (stigmergic) ---
+    // If running inside an agent worktree, attempt to squash-merge the branch
+    // back to main before marking the task done. On conflict, either refuse
+    // (agent can fix it) or defer (--ignore-unmerged-worktree creates .merge-* task).
+    if let Some(wt) = detect_worktree() {
+        match attempt_worktree_merge(&wt, id)? {
+            WorktreeMergeResult::NotInWorktree | WorktreeMergeResult::NoCommits => {
+                // Nothing to merge — proceed to mark done
+                mark_worktree_for_cleanup(&wt);
+            }
+            WorktreeMergeResult::Merged { commit_sha } => {
+                eprintln!("[merge] Squash-merged {} to main ({})", wt.branch, commit_sha);
+                mark_worktree_for_cleanup(&wt);
+            }
+            WorktreeMergeResult::Conflict { conflicting_files } => {
+                if ignore_unmerged_worktree {
+                    let merge_task_id = create_deferred_merge_task(&path, id, &wt, &conflicting_files)?;
+                    eprintln!(
+                        "[merge] Conflict deferred — created '{}' for later resolution",
+                        merge_task_id,
+                    );
+                    mark_worktree_for_cleanup(&wt);
+                    // Fall through to mark the task done
+                } else {
+                    let files_display = if conflicting_files.is_empty() {
+                        "  (could not determine specific files)".to_string()
+                    } else {
+                        conflicting_files
+                            .iter()
+                            .map(|f| format!("  - {}", f))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    anyhow::bail!(
+                        "Merge conflict — cannot mark '{}' as done.\n\n\
+                         Conflicting files:\n{}\n\n\
+                         Options:\n\
+                         1. Resolve the conflicts in your worktree, commit, then run 'wg done {}' again\n\
+                         2. Run 'wg done {} --ignore-unmerged-worktree' to defer the merge \
+                            (creates a .merge-{} task for later resolution)",
+                        id,
+                        files_display,
+                        id,
+                        id,
+                        id,
+                    );
+                }
+            }
+        }
+    }
+
     // Atomically load the freshest graph, apply the mutation, and save.
     // Using modify_graph prevents the "lost update" race where a concurrent
     // spawn_eval_inline (or any other graph writer) saves between our read
@@ -1693,7 +1966,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1711,7 +1984,7 @@ mod tests {
             vec![make_task("t1", "Test task", Status::InProgress)],
         );
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1727,7 +2000,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
         // Should return Ok (idempotent) rather than error
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
     }
 
@@ -1742,7 +2015,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false);
+        let result = run(dir_path, "blocked", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("blocked by"));
@@ -1760,7 +2033,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false);
+        let result = run(dir_path, "blocked", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1781,7 +2054,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false);
+        let result = run(dir_path, "blocked", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1802,7 +2075,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false);
+        let result = run(dir_path, "blocked", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1821,7 +2094,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1837,7 +2110,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
         let before = Utc::now();
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1860,7 +2133,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1879,7 +2152,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![]);
 
-        let result = run(dir_path, "nonexistent", false, false);
+        let result = run(dir_path, "nonexistent", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -1891,7 +2164,7 @@ mod tests {
         let dir_path = dir.path();
         // Don't initialize workgraph
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));
@@ -1903,7 +2176,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1920,7 +2193,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", true, false);
+        let result = run(dir_path, "t1", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -1955,7 +2228,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false);
+        let result = run(dir_path, "header", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2005,7 +2278,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false);
+        let result = run(dir_path, "worker", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2046,7 +2319,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false);
+        let result = run(dir_path, "header", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2083,7 +2356,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false);
+        let result = run(dir_path, "header", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2104,7 +2377,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2135,7 +2408,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2171,7 +2444,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false);
+        let result = run(dir_path, "header", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2221,7 +2494,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false);
+        let result = run(dir_path, "worker", true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2255,7 +2528,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2273,7 +2546,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2295,7 +2568,7 @@ mod tests {
         task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -2315,7 +2588,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=false to simulate human usage
-        let result = super::run_inner(dir_path, "t1", false, true, false);
+        let result = super::run_inner(dir_path, "t1", false, true, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2334,7 +2607,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=true to simulate agent context
-        let result = super::run_inner(dir_path, "t1", false, true, true);
+        let result = super::run_inner(dir_path, "t1", false, true, false, true);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2360,7 +2633,7 @@ mod tests {
         assert!(task.verify.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2378,7 +2651,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", true, false);
+        let result = run(dir_path, "t1", true, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2399,7 +2672,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2418,7 +2691,7 @@ mod tests {
         task.validation = Some("llm".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2442,7 +2715,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2461,7 +2734,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Should fail: no validation log entry
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation log entry"));
@@ -2482,7 +2755,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2507,7 +2780,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation failed"));
@@ -2523,7 +2796,7 @@ mod tests {
         assert!(task.validation.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2550,7 +2823,7 @@ mod tests {
         registry.register_agent(99999, "t1", "claude", "/tmp/output.log");
         registry.save(dir_path).unwrap();
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         // Verify registry was updated
@@ -2576,7 +2849,7 @@ mod tests {
         task.verify = Some("echo hello | grep hello".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(
             result.is_ok(),
             "Pipe in verify command should work: {:?}",
@@ -2598,7 +2871,7 @@ mod tests {
         task.verify = Some("echo hello | grep nonexistent".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err(), "Failing pipe should propagate error");
 
         let path = graph_path(dir_path);
@@ -2617,7 +2890,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // First failure: should increment verify_failures and bail
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -2647,7 +2920,7 @@ mod tests {
 
         // Default threshold is 3 — fail 3 times
         for i in 0..3 {
-            let result = run(dir_path, "t1", false, false);
+            let result = run(dir_path, "t1", false, false, false);
             if i < 2 {
                 // First two failures: should error (not yet at threshold)
                 assert!(result.is_err(), "attempt {} should fail with error", i);
@@ -2708,7 +2981,7 @@ mod tests {
         task.verify_failures = 2; // previous failures
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2730,7 +3003,7 @@ mod tests {
         task.verify = Some("echo 'stdout line' && echo 'stderr line' >&2 && exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -2766,7 +3039,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let _ = run(dir_path, "t1", false, false);
+        let _ = run(dir_path, "t1", false, false, false);
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2804,11 +3077,11 @@ mod tests {
         std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
 
         // First failure
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
 
         // Second failure — should trip circuit breaker at threshold 2
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
 
         let path = graph_path(dir_path);
@@ -2834,7 +3107,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2865,7 +3138,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // No config file = defaults to inline
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3009,7 +3282,7 @@ mod tests {
 
         // The task should fail because evaluation requires the task to be Done first
         // But importantly, it should NOT fail with exit 127 (command not found)
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -3052,7 +3325,7 @@ mod tests {
         task.verify = Some("test \"$TERM\" = \"dumb\"".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
 
         // The command should succeed, indicating TERM=dumb was set
         assert!(result.is_ok(), "TERM=dumb should be set for shell commands");
@@ -3092,7 +3365,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, child_a, child_b]);
 
         // Parent's `wg done` should succeed because verify is deferred
-        let result = run(dir_path, "parent", false, false);
+        let result = run(dir_path, "parent", false, false, false);
         assert!(
             result.is_ok(),
             "Parent with children should defer verify, got: {:?}",
@@ -3158,7 +3431,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3188,7 +3461,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, flip, eval]);
 
         // Should run verify inline since only system children exist
-        let result = run(dir_path, "parent", false, false);
+        let result = run(dir_path, "parent", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3222,7 +3495,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![parent, child]);
 
-        let result = run(dir_path, "parent", false, false);
+        let result = run(dir_path, "parent", false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
