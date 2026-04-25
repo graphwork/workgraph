@@ -660,6 +660,7 @@ fn main() -> Result<()> {
         Commands::Init {
             no_agency,
             global,
+            executor,
             model,
             endpoint,
         } => {
@@ -690,6 +691,7 @@ fn main() -> Result<()> {
             commands::init::run(
                 &target_dir,
                 no_agency,
+                executor.as_deref(),
                 model.as_deref(),
                 endpoint.as_deref(),
             )

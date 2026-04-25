@@ -50,6 +50,13 @@ pub enum Commands {
         #[arg(long)]
         global: bool,
 
+        /// Agent executor to use (required). Supported values:
+        /// claude, amplifier, codex, shell, nex.
+        /// Example: `wg init --executor claude`
+        /// Use `-x` as a short alias (not `-e`, which is reserved for --endpoint).
+        #[arg(short = 'x', long)]
+        executor: Option<String>,
+
         /// Pre-populate the coordinator/agent model in config.toml.
         /// Accepts `provider:model` (e.g. `openai:gpt-4o`) or a bare model
         /// name when combined with `-e URL` (which implies oai-compat).

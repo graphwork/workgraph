@@ -16,7 +16,32 @@ matrix.toml
 *.credentials
 "#;
 
-pub fn run(dir: &Path, no_agency: bool, model: Option<&str>, endpoint: Option<&str>) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    no_agency: bool,
+    executor: Option<&str>,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<()> {
+    let executor = match executor {
+        Some(e) => e,
+        None => {
+            anyhow::bail!(
+                "Executor is required for `wg init`.\n\
+                \n\
+                Choose one of the supported executors and re-run:\n\
+                \n\
+                  wg init --executor claude      # Anthropic Claude Code (default for most users)\n\
+                  wg init --executor amplifier   # Amplifier multi-agent bundles\n\
+                  wg init --executor codex       # OpenAI Codex\n\
+                  wg init --executor shell       # Plain shell commands\n\
+                  wg init --executor nex         # Native executor (wg nex)\n\
+                \n\
+                Tip: use `wg setup` for an interactive wizard."
+            );
+        }
+    };
+
     if dir.exists() {
         anyhow::bail!("Workgraph already initialized at {}", dir.display());
     }
@@ -115,6 +140,9 @@ pub fn run(dir: &Path, no_agency: bool, model: Option<&str>, endpoint: Option<&s
 
     println!("Initialized workgraph at {}", dir.display());
 
+    // Always write the executor choice to config.toml.
+    apply_executor(dir, executor).context("Failed to write executor config")?;
+
     // If -m / -e were given, seed config.toml so every subsequent
     // command in this project points at the chosen model/endpoint
     // out of the box.
@@ -136,10 +164,8 @@ pub fn run(dir: &Path, no_agency: bool, model: Option<&str>, endpoint: Option<&s
         println!("No global config found. Run `wg setup` to configure defaults.");
     }
 
-    // Check skill/bundle status for the configured executor
-    let config = workgraph::config::Config::load_global()?.unwrap_or_default();
-    let executor = config.coordinator.effective_executor();
-    match executor.as_str() {
+    // Check skill/bundle status for the chosen executor.
+    match executor {
         "claude" => {
             if !super::setup::is_claude_skill_installed() {
                 println!();
@@ -177,6 +203,15 @@ pub fn run(dir: &Path, no_agency: bool, model: Option<&str>, endpoint: Option<&s
     Ok(())
 }
 
+/// Write the chosen executor into the project's `config.toml`.
+fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
+    let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
+    config.coordinator.executor = Some(executor.to_string());
+    config.save(dir).context("Failed to save config.toml")?;
+    println!("Set coordinator.executor = \"{}\"", executor);
+    Ok(())
+}
+
 /// Write an endpoint + model into the project's `config.toml` on init.
 /// Thin wrapper around `Config::apply_model_endpoint` so init shares the
 /// same semantics as `wg config -m/-e`.
@@ -202,7 +237,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         assert!(wg_dir.exists());
         assert!(wg_dir.is_dir());
@@ -213,7 +248,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let graph_path = wg_dir.join("graph.jsonl");
         assert!(graph_path.exists());
@@ -226,7 +261,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let gitignore = wg_dir.join(".gitignore");
         assert!(gitignore.exists());
@@ -242,7 +277,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let repo_gitignore = tmp.path().join(".gitignore");
         assert!(repo_gitignore.exists());
@@ -257,7 +292,7 @@ mod tests {
         fs::write(&repo_gitignore, "node_modules/\n").unwrap();
 
         let wg_dir = tmp.path().join(".workgraph");
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert!(contents.contains("node_modules/"));
@@ -271,7 +306,7 @@ mod tests {
         fs::write(&repo_gitignore, ".workgraph\n").unwrap();
 
         let wg_dir = tmp.path().join(".workgraph");
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert_eq!(
@@ -286,7 +321,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let agency_dir = wg_dir.join("agency");
         assert!(agency_dir.exists());
@@ -327,7 +362,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, true, None, None).unwrap();
+        run(&wg_dir, true, Some("shell"), None, None).unwrap();
 
         // Workgraph dir and graph.jsonl should exist
         assert!(wg_dir.exists());
@@ -346,8 +381,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".workgraph");
 
-        run(&wg_dir, false, None, None).unwrap();
-        let result = run(&wg_dir, false, None, None);
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
+        let result = run(&wg_dir, false, Some("shell"), None, None);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -360,7 +395,7 @@ mod tests {
         // entry should say `.wg` — not the legacy `.workgraph`.
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
-        run(&wg_dir, true, None, None).unwrap();
+        run(&wg_dir, true, Some("shell"), None, None).unwrap();
         let repo_gitignore = tmp.path().join(".gitignore");
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert!(contents.lines().any(|l| l.trim() == ".wg"));
@@ -376,7 +411,7 @@ mod tests {
         let legacy = tmp.path().join(".workgraph");
         fs::create_dir_all(&legacy).unwrap();
         let new_dir = tmp.path().join(".wg");
-        let result = run(&new_dir, true, None, None);
+        let result = run(&new_dir, true, Some("shell"), None, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -393,6 +428,7 @@ mod tests {
         run(
             &wg_dir,
             true,
+            Some("shell"),
             Some("nemotron-h-8b"),
             Some("http://127.0.0.1:8088"),
         )
@@ -425,7 +461,7 @@ mod tests {
     fn test_endpoint_rejects_non_http() {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
-        let err = run(&wg_dir, true, None, Some("definitely-not-a-url"))
+        let err = run(&wg_dir, true, Some("shell"), None, Some("definitely-not-a-url"))
             .expect_err("non-http endpoint should be rejected");
         // anyhow context wraps the inner bail, so format with `{:#}` to get the chain.
         let chain = format!("{:#}", err);

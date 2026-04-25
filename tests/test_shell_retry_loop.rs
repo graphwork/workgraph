@@ -635,7 +635,7 @@ fn test_shell_retry_loop_cli_fail_triggers_restart() {
     let wg_dir = tmp.path().join(".workgraph");
 
     // Set up via wg init + add
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--executor", "shell"]);
 
     // Create shell task that always fails
     let mut run_task = make_task("run-fail", "Run Fail");
@@ -703,7 +703,7 @@ fn test_shell_retry_loop_cli_fail_triggers_restart() {
 fn test_shell_retry_loop_cli_done_converged() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".workgraph");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--executor", "shell"]);
 
     // Create shell task + checker in a cycle
     let mut run_task = make_task("run-ok", "Run OK");
