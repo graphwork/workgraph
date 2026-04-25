@@ -78,23 +78,35 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     }
 }
 
+/// Get the best available terminal timestamp for a task.
+/// For done tasks, uses completed_at. For failed/abandoned, uses the last log
+/// entry timestamp, then falls back to started_at, then created_at.
+fn terminal_timestamp(task: &Task) -> Option<DateTime<chrono::FixedOffset>> {
+    if let Some(ref s) = task.completed_at
+        && let Ok(ts) = DateTime::parse_from_rfc3339(s)
+    {
+        return Some(ts);
+    }
+    if let Some(entry) = task.log.last()
+        && let Ok(ts) = DateTime::parse_from_rfc3339(&entry.timestamp)
+    {
+        return Some(ts);
+    }
+    let ts = task.started_at.as_deref().or(task.created_at.as_deref())?;
+    DateTime::parse_from_rfc3339(ts).ok()
+}
+
 /// Check if a task should be archived based on the --older filter.
-/// Only Done and Abandoned tasks are archivable.
 fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
-    if !matches!(task.status, Status::Done | Status::Abandoned) {
+    if !matches!(task.status, Status::Done | Status::Abandoned | Status::Failed) {
         return false;
     }
 
     if let Some(min_age) = older_than {
-        // Use completed_at for Done tasks, or created_at as fallback for Abandoned
-        let timestamp = task.completed_at.as_deref().or(task.created_at.as_deref());
-        if let Some(ts) = timestamp
-            && let Ok(parsed) = DateTime::parse_from_rfc3339(ts)
-        {
-            let age = Utc::now().signed_duration_since(parsed);
+        if let Some(ts) = terminal_timestamp(task) {
+            let age = Utc::now().signed_duration_since(ts);
             return age > *min_age;
         }
-        // If no timestamp or can't parse, don't archive with --older filter
         return false;
     }
 
@@ -102,12 +114,10 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
 }
 
 /// Check if a task has active (non-terminal) downstream dependents.
-/// Tasks with active dependents should not be archived.
+/// Scans all tasks' `after` lists since `before` is not reliably populated.
 pub fn has_active_dependents(task: &Task, graph: &workgraph::graph::WorkGraph) -> bool {
-    for dep_id in &task.before {
-        if let Some(dep) = graph.get_task(dep_id)
-            && !dep.status.is_terminal()
-        {
+    for other in graph.tasks() {
+        if !other.status.is_terminal() && other.after.contains(&task.id) {
             return true;
         }
     }
@@ -427,12 +437,13 @@ pub fn run(
         let mut tasks = Vec::new();
         for id in ids {
             if let Some(task) = graph.get_task(id) {
-                if !matches!(task.status, Status::Done | Status::Abandoned) {
+                if !matches!(task.status, Status::Done | Status::Abandoned | Status::Failed) {
                     anyhow::bail!(
-                        "Task '{}' has status '{}' — only done/abandoned tasks can be archived. \
-                         Use `wg done {}` first.",
+                        "Task '{}' has status '{}' — only done/abandoned/failed tasks can be archived. \
+                         Use `wg done {}` or `wg fail {}` first.",
                         id,
                         task.status,
+                        id,
                         id
                     );
                 }
@@ -656,6 +667,90 @@ mod tests {
         let task = make_task("t1", "Test", Status::Done, Some(&completed_at));
         let min_age = Duration::days(30);
         assert!(!should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_should_archive_failed_task() {
+        let task = make_task("t1", "Test", Status::Failed, None);
+        assert!(should_archive(&task, None));
+    }
+
+    #[test]
+    fn test_should_archive_failed_with_older_uses_log_timestamp() {
+        let old = (Utc::now() - Duration::days(10)).to_rfc3339();
+        let mut task = make_task("t1", "Test", Status::Failed, None);
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: old,
+            actor: None,
+            user: None,
+            message: "Task marked as failed".to_string(),
+        });
+        let min_age = Duration::days(7);
+        assert!(should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_should_not_archive_recent_failed_via_log() {
+        let recent = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let mut task = make_task("t1", "Test", Status::Failed, None);
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: recent,
+            actor: None,
+            user: None,
+            message: "Task marked as failed".to_string(),
+        });
+        let min_age = Duration::days(7);
+        assert!(!should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_should_archive_abandoned_uses_log_timestamp() {
+        let old = (Utc::now() - Duration::days(10)).to_rfc3339();
+        let recent_created = (Utc::now() - Duration::days(1)).to_rfc3339();
+        let mut task = make_task("t1", "Test", Status::Abandoned, None);
+        task.created_at = Some(recent_created);
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: old.clone(),
+            actor: None,
+            user: None,
+            message: "Task abandoned".to_string(),
+        });
+        let min_age = Duration::days(7);
+        // Should use log timestamp (10d ago) not created_at (1d ago)
+        assert!(should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_has_active_dependents_via_after_scan() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Done", Status::Done, Some("2024-01-01T00:00:00Z"));
+        let mut t2 = Task {
+            id: "t2".to_string(),
+            title: "Open dependent".to_string(),
+            status: Status::Open,
+            after: vec!["t1".to_string()],
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(t1.clone()));
+        graph.add_node(Node::Task(t2));
+        assert!(has_active_dependents(&t1, &graph));
+    }
+
+    #[test]
+    fn test_no_active_dependents_all_terminal() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Done", Status::Done, Some("2024-01-01T00:00:00Z"));
+        let t2 = Task {
+            id: "t2".to_string(),
+            title: "Also done".to_string(),
+            status: Status::Done,
+            after: vec!["t1".to_string()],
+            completed_at: Some("2024-01-02T00:00:00Z".to_string()),
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(t1.clone()));
+        graph.add_node(Node::Task(t2));
+        assert!(!has_active_dependents(&t1, &graph));
     }
 
     #[test]
@@ -1293,7 +1388,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("only done/abandoned tasks")
+                .contains("only done/abandoned/failed tasks")
         );
     }
 
@@ -1441,18 +1536,22 @@ mod tests {
     }
 
     #[test]
-    fn test_has_active_dependents_blocks_archive() {
+    fn test_has_active_dependents_blocks_archive_via_after() {
         let mut graph = WorkGraph::new();
 
-        // t1 is done, t2 (depends on t1 via t1.before) is still open
-        let mut t1 = make_task(
+        let t1 = make_task(
             "t1",
             "Done Task",
             Status::Done,
             Some("2024-01-01T00:00:00Z"),
         );
-        t1.before = vec!["t2".to_string()];
-        let t2 = make_task("t2", "Open Task", Status::Open, None);
+        let mut t2 = Task {
+            id: "t2".to_string(),
+            title: "Open Task".to_string(),
+            status: Status::Open,
+            after: vec!["t1".to_string()],
+            ..Task::default()
+        };
 
         graph.add_node(Node::Task(t1.clone()));
         graph.add_node(Node::Task(t2));
@@ -1461,23 +1560,23 @@ mod tests {
     }
 
     #[test]
-    fn test_no_active_dependents_allows_archive() {
+    fn test_no_active_dependents_allows_archive_via_after() {
         let mut graph = WorkGraph::new();
 
-        // t1 is done, t2 (depends on t1) is also done
-        let mut t1 = make_task(
+        let t1 = make_task(
             "t1",
             "Done Task",
             Status::Done,
             Some("2024-01-01T00:00:00Z"),
         );
-        t1.before = vec!["t2".to_string()];
-        let t2 = make_task(
-            "t2",
-            "Also Done",
-            Status::Done,
-            Some("2024-01-02T00:00:00Z"),
-        );
+        let t2 = Task {
+            id: "t2".to_string(),
+            title: "Also Done".to_string(),
+            status: Status::Done,
+            after: vec!["t1".to_string()],
+            completed_at: Some("2024-01-02T00:00:00Z".to_string()),
+            ..Task::default()
+        };
 
         graph.add_node(Node::Task(t1.clone()));
         graph.add_node(Node::Task(t2));
@@ -1592,16 +1691,17 @@ mod tests {
             Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
         );
         done_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
-        done_task.before = vec!["t2".to_string()];
         graph.add_node(Node::Task(done_task));
 
-        // t2 is still in progress — t1 should not be archived
-        graph.add_node(Node::Task(make_task(
+        // t2 is still in progress and depends on t1 via after — t1 should not be archived
+        let mut t2 = make_task(
             "t2",
             "In Progress Task",
             Status::InProgress,
             None,
-        )));
+        );
+        t2.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(t2));
         save_graph(&graph, &graph_file).unwrap();
 
         let count = run_automatic(wg_dir, 7).unwrap();

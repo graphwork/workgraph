@@ -817,13 +817,10 @@ fn coherency_after_archive_and_gc() {
     wg_ok(&wg_dir, &["done", "done-task"]);
     wg_ok(&wg_dir, &["fail", "fail-task", "--reason", "test"]);
 
-    // Archive done tasks (archives Done + Abandoned, but not Failed)
+    // Archive terminal tasks (archives Done + Abandoned + Failed)
     wg_ok(&wg_dir, &["archive", "--yes"]);
 
-    // GC failed tasks
-    wg_ok(&wg_dir, &["gc"]);
-
-    // Archived and gc'd tasks should NOT be in graph
+    // Archived tasks should NOT be in graph
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(
         graph.get_task("done-task").is_none(),
@@ -831,7 +828,7 @@ fn coherency_after_archive_and_gc() {
     );
     assert!(
         graph.get_task("fail-task").is_none(),
-        "fail-task should be gc'd"
+        "fail-task should be archived"
     );
     assert!(
         graph.get_task("keep-task").is_some(),
@@ -846,7 +843,6 @@ fn coherency_after_archive_and_gc() {
     assert!(ops.contains(&"done"));
     assert!(ops.contains(&"fail"));
     assert!(ops.contains(&"archive"));
-    assert!(ops.contains(&"gc"));
 }
 
 // ── wg log --operations CLI test ──
