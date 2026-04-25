@@ -81,7 +81,7 @@ fast_html2md = "0.0.61"
 url = "2.4"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5"
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 tiktoken-rs = "0.7"
 pulldown-cmark = "0.13.1"
 hmac = "0.12.1"
