@@ -142,7 +142,6 @@ fn test_context_pressure_compaction() {
                 text: "Great, fix it.".to_string(),
             }],
         },
-        // Recent messages (keep_recent=2 → these are kept verbatim)
         Message {
             role: Role::Assistant,
             content: vec![ContentBlock::Text {
@@ -157,7 +156,8 @@ fn test_context_pressure_compaction() {
         },
     ];
 
-    let compacted = ContextBudget::emergency_compact(messages.clone(), 2);
+    // keep_recent_tool_results=0 → compact ALL tool results
+    let compacted = ContextBudget::emergency_compact(messages.clone(), 0);
 
     // Recent messages preserved
     assert_eq!(compacted.len(), messages.len());
