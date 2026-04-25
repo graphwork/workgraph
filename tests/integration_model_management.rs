@@ -1007,11 +1007,11 @@ mod model_management_backward_compat {
             triage.model
         );
 
-        // Evaluator role defaults to Standard tier (sonnet)
+        // Evaluator role defaults to Fast tier (haiku)
         let evaluator = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert!(
-            evaluator.model.contains("sonnet") || evaluator.model.contains("opus"),
-            "Evaluator should default to sonnet or opus, got: {}",
+            evaluator.model.contains("haiku"),
+            "Evaluator should default to haiku, got: {}",
             evaluator.model
         );
     }
