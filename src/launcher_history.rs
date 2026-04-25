@@ -71,7 +71,7 @@ fn load_all(path: &Path) -> Vec<HistoryEntry> {
     let reader = BufReader::new(file);
     reader
         .lines()
-        .filter_map(|line| line.ok())
+        .map_while(|line| line.ok())
         .filter_map(|line| serde_json::from_str::<HistoryEntry>(&line).ok())
         .collect()
 }

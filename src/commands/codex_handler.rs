@@ -326,7 +326,6 @@ fn run_codex_turn(
     // thread_id so subsequent turns can resume.
     let stdout = child.stdout.take().context("codex stdout take")?;
     let reader = BufReader::new(stdout);
-    let mut streaming_text = String::new();
     let mut last_agent_text: Option<String> = None;
 
     for line in reader.lines().map_while(|l| l.ok()) {
@@ -362,7 +361,7 @@ fn run_codex_turn(
                 {
                     last_agent_text = Some(text.to_string());
                     // Stream the text as it grows.
-                    streaming_text = text.to_string();
+                    let mut streaming_text = text.to_string();
                     if !streaming_text.ends_with('\n') {
                         streaming_text.push('\n');
                     }

@@ -20,7 +20,7 @@ pub enum FileBrowserFocus {
     Preview,
 }
 
-/// Cached preview of a file's content.
+#[allow(dead_code)]
 pub struct PreviewCache {
     pub path: PathBuf,
     pub lines: Vec<Line<'static>>,

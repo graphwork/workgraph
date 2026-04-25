@@ -147,7 +147,7 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
     }
 
     // (4) Stale locks
-    for (uuid, _meta) in &reg.sessions {
+    for uuid in reg.sessions.keys() {
         let dir = chat_root.join(uuid);
         if !dir.is_dir() {
             continue;
@@ -221,20 +221,14 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
             }
             // Trigger re-registration by resolving the alias; the
             // alias_symlink path does the merge+remove dance.
-            match workgraph::chat_sessions::resolve_ref(workgraph_dir, &name) {
-                Ok(uuid) => {
-                    // Call into the cleanup indirectly by re-adding
-                    // the alias — add_alias runs create_alias_symlink
-                    // which is now the cleanup path.
-                    if workgraph::chat_sessions::add_alias(workgraph_dir, &uuid, &name).is_ok() {
-                        fixed += 1;
-                        println!(
-                            "  \x1b[32m✓\x1b[0m cleaned legacy alias path {}",
-                            p.display()
-                        );
-                    }
+            if let Ok(uuid) = workgraph::chat_sessions::resolve_ref(workgraph_dir, &name) {
+                if workgraph::chat_sessions::add_alias(workgraph_dir, &uuid, &name).is_ok() {
+                    fixed += 1;
+                    println!(
+                        "  \x1b[32m✓\x1b[0m cleaned legacy alias path {}",
+                        p.display()
+                    );
                 }
-                Err(_) => {}
             }
         }
     }

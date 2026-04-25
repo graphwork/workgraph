@@ -606,7 +606,6 @@ fn collect_response(
                 // defensively before opening a new one.
                 if open_tool.is_some() {
                     transcript.push_str("└─\n");
-                    open_tool = None;
                 }
                 let header_rule = "─".repeat(40usize.saturating_sub(name.len() + 4));
                 transcript.push_str(&format!("\n┌─ {} {}\n", name, header_rule));

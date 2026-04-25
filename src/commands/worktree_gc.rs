@@ -61,6 +61,7 @@ impl Decision {
             | Decision::Skip { agent_id, .. } => agent_id,
         }
     }
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         match self {
             Decision::Remove { path, .. }

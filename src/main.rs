@@ -603,7 +603,7 @@ fn main() -> Result<()> {
                     .unwrap_or_default();
                 println!("{} {:<12} {}{}", status, e.name, e.description, path);
             }
-            return Ok(());
+            Ok(())
         }
         Commands::Which {} => {
             // Print resolved dir + which resolver step won, so users

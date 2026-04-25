@@ -940,7 +940,6 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
     match code {
         KeyCode::Esc => {
             app.close_launcher();
-            return;
         }
         KeyCode::Tab => {
             if modifiers.contains(KeyModifiers::SHIFT) {
@@ -1057,7 +1056,6 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             }
             // Launch the coordinator
             app.launch_from_launcher();
-            return;
         }
         // Quick-select recent entries by number
         KeyCode::Char(c @ '1'..='9') if launcher.active_section == LauncherSection::Recent => {
@@ -1097,12 +1095,10 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                     }
                 }
                 app.launch_from_launcher();
-                return;
             }
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.close_launcher();
-            return;
         }
         _ => {}
     }

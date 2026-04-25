@@ -1361,12 +1361,9 @@ pub fn resolve_tag_routing<'a>(
     routing: &'a [TagRoutingEntry],
     task_tags: &[String],
 ) -> Option<&'a TagRoutingEntry> {
-    for rule in routing {
-        if task_tags.iter().any(|t| t == &rule.tag) {
-            return Some(rule);
-        }
-    }
-    None
+    routing
+        .iter()
+        .find(|rule| task_tags.iter().any(|t| t == &rule.tag))
 }
 
 /// Per-role model+provider assignment.

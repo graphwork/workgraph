@@ -85,9 +85,9 @@ pub struct PtyPane {
     input_tee: Option<Arc<Mutex<std::fs::File>>>,
     /// Current scrollback offset (0 = live, >0 = scrolled back N lines).
     scroll_offset: usize,
-    /// True when the growth-rate guard has fired at least once.
+    #[allow(dead_code)]
     pub growth_rate_warned: Arc<AtomicBool>,
-    /// Cumulative bytes processed by the reader thread (for rate monitoring).
+    #[allow(dead_code)]
     bytes_processed: Arc<AtomicU64>,
 }
 
@@ -360,7 +360,7 @@ impl PtyPane {
         self.scroll_offset = 0;
     }
 
-    /// Returns true if the view is scrolled back from the live position.
+    #[allow(dead_code)]
     pub fn is_scrolled_back(&self) -> bool {
         self.scroll_offset > 0
     }
@@ -369,7 +369,7 @@ impl PtyPane {
         DEFAULT_SCROLLBACK_LINES
     }
 
-    /// Total bytes processed by the reader thread (for monitoring).
+    #[allow(dead_code)]
     pub fn bytes_processed(&self) -> u64 {
         self.bytes_processed.load(Ordering::Relaxed)
     }

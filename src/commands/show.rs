@@ -919,12 +919,11 @@ fn find_eval_for_attempt(
     let notes = eval.get("notes").and_then(|v| v.as_str()).unwrap_or("");
 
     let verdict = if !notes.is_empty() {
-        let truncated = if notes.len() > 80 {
+        if notes.len() > 80 {
             format!(" ({}...)", &notes[..77])
         } else {
             format!(" ({})", notes)
-        };
-        truncated
+        }
     } else {
         String::new()
     };

@@ -651,7 +651,7 @@ pub fn update(
     // Record executor/model config change in launcher history
     if coordinator_executor.is_some() || coordinator_model.is_some() || endpoint.is_some() {
         let exec = coordinator_executor
-            .or_else(|| config.coordinator.executor.as_deref())
+            .or(config.coordinator.executor.as_deref())
             .unwrap_or(&config.agent.executor);
         let mdl = coordinator_model
             .or(model)

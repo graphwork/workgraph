@@ -14012,7 +14012,7 @@ fn claude_session_exists(cwd: &std::path::Path, session_uuid: &uuid::Uuid) -> bo
     };
     // Claude CLI replaces both '/' and '.' with '-' when computing the
     // project slug from the CWD path.
-    let slug = cwd_str.replace('/', "-").replace('.', "-");
+    let slug = cwd_str.replace(['/', '.'], "-");
     let session_file = home
         .join(".claude")
         .join("projects")
