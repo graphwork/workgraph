@@ -640,6 +640,7 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
          ```\n\
          {\n  \
            \"score\": <0.0-1.0>,\n  \
+           \"verdict\": \"pass\" | \"incomplete\" | \"fail\",\n  \
            \"dimensions\": {\n    \
              \"correctness\": <0.0-1.0>,\n    \
              \"completeness\": <0.0-1.0>,\n    \
@@ -651,7 +652,17 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
            },\n  \
            \"notes\": \"<brief explanation of strengths, weaknesses, and suggestions>\"\n\
          }\n\
-         ```\n",
+         ```\n\n\
+         The **verdict** field drives the task's terminal status:\n\
+         - `\"pass\"` — task is confirmed done\n\
+         - `\"incomplete\"` — task needs more work (retryable, agent can be re-dispatched)\n\
+         - `\"fail\"` — task has fundamental problems (marked failed)\n\n\
+         Choose the verdict based on the overall quality. As a guideline:\n\
+         - score >= 0.6 usually warrants \"pass\"\n\
+         - score 0.3–0.6 usually warrants \"incomplete\"\n\
+         - score < 0.3 usually warrants \"fail\"\n\
+         But use your judgment — a task can pass with a lower score if the core\n\
+         deliverables are met, or fail with a higher score if critical items are missing.\n",
     );
 
     out

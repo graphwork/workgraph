@@ -393,6 +393,9 @@ pub fn run(
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
 
+    // Capture the verdict before moving fields out of parsed
+    let verdict = parsed.verdict.clone();
+
     // Build the Evaluation record using the agent/role/tradeoff resolved above
     let agent_id = resolved_agent
         .as_ref()
@@ -580,6 +583,103 @@ pub fn run(
                     }
                 }
                 Err(e) => eprintln!("Warning: LLM gate application failed: {}", e),
+            }
+        }
+    }
+
+    // Step 8.8: Verdict-driven parent task status transition.
+    // The evaluator's verdict (pass / incomplete / fail) is the primary
+    // determinant of the source task's terminal status, replacing --verify.
+    // If no explicit verdict was emitted, derive one from the score:
+    //   score >= 0.6 → pass, score >= 0.3 → incomplete, else fail.
+    if !rejected {
+        let effective_verdict = verdict
+            .as_deref()
+            .map(|v| v.to_lowercase())
+            .unwrap_or_else(|| {
+                if evaluation.score >= 0.6 {
+                    "pass".to_string()
+                } else if evaluation.score >= 0.3 {
+                    "incomplete".to_string()
+                } else {
+                    "fail".to_string()
+                }
+            });
+
+        let graph_path = super::graph_path(dir);
+        let task_id_owned = task_id.to_string();
+        let notes_clone = evaluation.notes.clone();
+        let score = evaluation.score;
+
+        match effective_verdict.as_str() {
+            "pass" => {
+                // Task stays Done (already transitioned by wg done)
+                if !json {
+                    println!("  Verdict: PASS — task '{}' confirmed done", task_id);
+                }
+            }
+            "incomplete" => {
+                let _ = workgraph::parser::modify_graph(&graph_path, |graph| {
+                    if let Some(t) = graph.get_task_mut(&task_id_owned) {
+                        if t.status == Status::Done {
+                            t.status = Status::Incomplete;
+                            t.log.push(LogEntry {
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                actor: Some("evaluate-verdict".to_string()),
+                                user: None,
+                                message: format!(
+                                    "Verdict: INCOMPLETE (score {:.2}). {}",
+                                    score, notes_clone,
+                                ),
+                            });
+                            return true;
+                        }
+                    }
+                    false
+                });
+                if !json {
+                    println!(
+                        "  Verdict: INCOMPLETE — task '{}' marked incomplete (retryable, score {:.2})",
+                        task_id, score
+                    );
+                }
+                super::notify_graph_changed(dir);
+            }
+            "fail" => {
+                let reason = format!(
+                    "Evaluation verdict: fail (score {:.2}). {}",
+                    score, notes_clone,
+                );
+                let _ = workgraph::parser::modify_graph(&graph_path, |graph| {
+                    if let Some(t) = graph.get_task_mut(&task_id_owned) {
+                        if t.status == Status::Done {
+                            t.status = Status::Failed;
+                            t.assigned = None;
+                            t.failure_reason = Some(reason.clone());
+                            t.log.push(LogEntry {
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                actor: Some("evaluate-verdict".to_string()),
+                                user: None,
+                                message: format!("Verdict: FAIL (score {:.2}). {}", score, notes_clone),
+                            });
+                            return true;
+                        }
+                    }
+                    false
+                });
+                if !json {
+                    println!(
+                        "  Verdict: FAIL — task '{}' marked failed (score {:.2})",
+                        task_id, score
+                    );
+                }
+                super::notify_graph_changed(dir);
+            }
+            other => {
+                eprintln!(
+                    "Warning: unrecognized verdict '{}' from evaluator, treating as pass",
+                    other
+                );
             }
         }
     }
@@ -1352,6 +1452,8 @@ struct EvalOutput {
     dimensions: std::collections::HashMap<String, f64>,
     #[serde(default)]
     notes: String,
+    #[serde(default)]
+    verdict: Option<String>,
 }
 
 /// Extract a JSON object from potentially noisy LLM output.

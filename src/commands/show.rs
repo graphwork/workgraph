@@ -509,42 +509,11 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
-    // Verify status
-    if details.verify.is_some() || details.verify_failures > 0 {
+    // Verify metadata (deprecated — no longer a gate)
+    if let Some(ref cmd) = details.verify {
         println!();
-        println!("Verify:");
-        if let Some(ref cmd) = details.verify {
-            println!("  Command: {}", cmd);
-        }
-        if details.verify_failures > 0 {
-            let breaker_tripped = details.status == Status::Failed
-                && details
-                    .log
-                    .iter()
-                    .any(|e| e.actor.as_deref() == Some("verify-circuit-breaker"));
-            println!("  Failures: {}", details.verify_failures);
-            if breaker_tripped {
-                println!("  Circuit breaker: \x1b[31mTRIPPED\x1b[0m");
-            }
-            // Show last verify error from log
-            if let Some(last_err) = details
-                .log
-                .iter()
-                .rev()
-                .find(|e| e.actor.as_deref() == Some("verify"))
-            {
-                // Extract stderr from the log message
-                if let Some(stderr_pos) = last_err.message.find("\nstderr: ") {
-                    let stderr = &last_err.message[stderr_pos + 9..];
-                    // Trim at next section or end
-                    let stderr = stderr
-                        .find("\nstdout: ")
-                        .map(|p| &stderr[..p])
-                        .unwrap_or(stderr);
-                    println!("  Last error: {}", stderr.trim());
-                }
-            }
-        }
+        println!("Verify (deprecated, inert metadata):");
+        println!("  Command: {}", cmd);
     }
 
     // Failure info

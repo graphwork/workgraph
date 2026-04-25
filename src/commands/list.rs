@@ -74,9 +74,6 @@ pub fn run(
                 if t.paused {
                     obj["paused"] = serde_json::json!(true);
                 }
-                if t.verify_failures > 0 {
-                    obj["verify_failures"] = serde_json::json!(t.verify_failures);
-                }
                 if t.cron_enabled {
                     obj["cron_enabled"] = serde_json::json!(true);
                     if let Some(ref sched) = t.cron_schedule {
@@ -104,11 +101,7 @@ pub fn run(
                 Status::Waiting | Status::PendingValidation => "[W]",
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
-            let verify_str = if task.verify_failures > 0 {
-                format!(" \x1b[33m[V!{}]\x1b[0m", task.verify_failures)
-            } else {
-                String::new()
-            };
+            let verify_str = String::new();
             let not_before_str = format_not_before_hint(task.not_before.as_deref());
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
             let priority_str = match task.priority {

@@ -194,8 +194,8 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     // 8. Dangling dependencies
     let dangling_deps = gather_dangling_deps(dir);
 
-    // 9. Verify-failing tasks
-    let verify_failing = gather_verify_failing(dir);
+    // 9. Verify-failing tasks — deprecated (--verify is no longer a gate)
+    let verify_failing = Vec::new();
 
     Ok(StatusOutput {
         service,
@@ -710,22 +710,6 @@ fn print_status(status: &StatusOutput) {
             println!(
                 "  {} [{}] iter {} — {}",
                 cycle.task_id, cycle.status, iter_str, timing
-            );
-        }
-    }
-
-    // Attention: verify-failing tasks
-    if !status.verify_failing.is_empty() {
-        println!();
-        println!(
-            "\x1b[33m⚠ Attention:\x1b[0m {} task(s) have verify failures:",
-            status.verify_failing.len()
-        );
-        for vf in &status.verify_failing {
-            let cmd_snippet: String = vf.verify_command.chars().take(60).collect();
-            println!(
-                "  VERIFY FAILING: \x1b[33m{}\x1b[0m — verify command has failed {} times: {}",
-                vf.task_id, vf.failures, cmd_snippet
             );
         }
     }
