@@ -28,6 +28,7 @@ pub(crate) fn generate_dot(
             Status::Failed => "style=filled, fillcolor=salmon",
             Status::Abandoned => "style=filled, fillcolor=lightgray",
             Status::Waiting | Status::PendingValidation => "style=filled, fillcolor=lightyellow",
+            Status::Incomplete => "style=filled, fillcolor=orange",
         };
 
         // Build label with hours estimate if available
@@ -199,6 +200,7 @@ pub(crate) fn generate_mermaid(
             Status::Waiting | Status::PendingValidation => {
                 format!("  {}[\"{}\"]:::waiting", task.id, label)
             }
+            Status::Incomplete => format!("  {}[\"{}\"]:::incomplete", task.id, label),
         };
         lines.push(node);
     }

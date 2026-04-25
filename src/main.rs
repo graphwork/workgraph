@@ -965,6 +965,9 @@ fn main() -> Result<()> {
                 commands::fail::run(&workgraph_dir, &id, reason.as_deref())
             }
         }
+        Commands::Incomplete { id, reason } => {
+            commands::incomplete::run(&workgraph_dir, &id, reason.as_deref())
+        }
         Commands::Abandon {
             id,
             reason,

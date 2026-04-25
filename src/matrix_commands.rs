@@ -326,7 +326,7 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
         };
 
         match task.status {
-            Status::Open | Status::Blocked => {}
+            Status::Open | Status::Blocked | Status::Incomplete => {}
             Status::InProgress => {
                 let holder = task
                     .assigned

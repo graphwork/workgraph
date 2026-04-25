@@ -225,6 +225,7 @@ impl Tool for WgListTool {
             Some("blocked") => Some(Status::Blocked),
             Some("failed") => Some(Status::Failed),
             Some("abandoned") => Some(Status::Abandoned),
+            Some("incomplete") => Some(Status::Incomplete),
             Some(other) => {
                 return ToolOutput::error(format!("Unknown status filter: {}", other));
             }

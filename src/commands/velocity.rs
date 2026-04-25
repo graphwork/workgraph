@@ -116,7 +116,7 @@ pub fn calculate_velocity(graph: &WorkGraph, num_weeks: usize) -> VelocitySummar
     let mut open_tasks = 0;
     let mut open_hours = 0.0;
     for task in graph.tasks() {
-        if task.status == Status::Open || task.status == Status::InProgress {
+        if matches!(task.status, Status::Open | Status::InProgress | Status::Incomplete) {
             open_tasks += 1;
             if let Some(ref estimate) = task.estimate
                 && let Some(hours) = estimate.hours

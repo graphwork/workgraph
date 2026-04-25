@@ -203,7 +203,7 @@ fn output_text(entry_points: &[&str], dead_ends: &[DeadEndInfo], high_impact: &[
         for d in dead_ends {
             if d.is_final_deliverable {
                 println!("  {} (expected - final deliverable)", d.id);
-            } else if d.status == Status::Open {
+            } else if matches!(d.status, Status::Open | Status::Incomplete) {
                 println!("  {} (WARNING: no dependents, status=open)", d.id);
             } else {
                 println!("  {} (status={:?})", d.id, d.status);

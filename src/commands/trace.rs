@@ -880,6 +880,7 @@ fn print_recursive_tree(
                 | Status::Abandoned
                 | Status::Waiting
                 | Status::PendingValidation => "\x1b[90m",
+                Status::Incomplete => "\x1b[38;5;208m",
             }
         };
 
@@ -892,6 +893,7 @@ fn print_recursive_tree(
                 Status::Blocked => "blocked",
                 Status::Abandoned => "abandoned",
                 Status::Waiting | Status::PendingValidation => "waiting",
+                Status::Incomplete => "incomplete",
             }
         };
 
@@ -1048,6 +1050,10 @@ fn print_recursive_tree(
         .iter()
         .filter(|t| t.status == Status::Open)
         .count();
+    let incomplete_count = descendants
+        .iter()
+        .filter(|t| t.status == Status::Incomplete)
+        .count();
 
     print!("{}Summary: ", dim);
     let mut parts = Vec::new();
@@ -1059,6 +1065,9 @@ fn print_recursive_tree(
     }
     if open_count > 0 {
         parts.push(format!("{} open", open_count));
+    }
+    if incomplete_count > 0 {
+        parts.push(format!("\x1b[38;5;208m{} incomplete{}", incomplete_count, reset));
     }
     if failed_count > 0 {
         parts.push(format!("{}{} failed{}", red, failed_count, reset));
@@ -1100,6 +1109,7 @@ fn print_timeline(
             Status::Blocked | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 "\x1b[90m"
             }
+            Status::Incomplete => "\x1b[38;5;208m",
         }
     };
 

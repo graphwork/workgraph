@@ -98,6 +98,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 Status::Failed => "FAILED (needs retry!)".to_string(),
                 Status::Abandoned => "abandoned".to_string(),
                 Status::Waiting | Status::PendingValidation => "waiting".to_string(),
+                Status::Incomplete => "INCOMPLETE (needs retry!)".to_string(),
             };
             print!("   Status: {}", status_str);
 

@@ -31,7 +31,7 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
 
         // Only allow claiming tasks that are Open or Blocked
         match task.status {
-            Status::Open | Status::Blocked => {}
+            Status::Open | Status::Blocked | Status::Incomplete => {}
             Status::Waiting => {
                 error = Some(anyhow::anyhow!(
                     "Cannot claim task '{}': task is Waiting. Use 'wg resume' first.",
@@ -163,7 +163,7 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
         // Only allow unclaiming tasks that are InProgress (or Open, as a no-op).
         // Terminal states should not be reverted via unclaim.
         match task.status {
-            Status::InProgress | Status::Open | Status::Blocked => {}
+            Status::InProgress | Status::Open | Status::Blocked | Status::Incomplete => {}
             Status::Waiting => {
                 error = Some(anyhow::anyhow!(
                     "Cannot claim task '{}': task is Waiting. Use 'wg resume' first.",

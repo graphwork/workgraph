@@ -86,6 +86,7 @@ pub fn generate_graph_with_overrides(
             Status::Failed => "\x1b[31m",
             Status::Abandoned => "\x1b[90m",
             Status::Waiting | Status::PendingValidation => "\x1b[33m",
+            Status::Incomplete => "\x1b[38;5;208m",
         }
     };
     let reset = if use_color { "\x1b[0m" } else { "" };
@@ -99,6 +100,7 @@ pub fn generate_graph_with_overrides(
             Status::Failed => "failed",
             Status::Abandoned => "abandoned",
             Status::Waiting | Status::PendingValidation => "waiting",
+            Status::Incomplete => "incomplete",
         }
     };
 

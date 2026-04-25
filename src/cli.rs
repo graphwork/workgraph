@@ -489,6 +489,17 @@ pub enum Commands {
         eval_reject: bool,
     },
 
+    /// Mark a task as incomplete (retryable — needs another pass)
+    Incomplete {
+        /// Task ID to mark as incomplete
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Reason the task is incomplete
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
     /// Mark a task as abandoned (will not be retried)
     Abandon {
         /// Task ID to abandon
@@ -4228,6 +4239,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
         Commands::Fail { .. } => "fail",
+        Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
         Commands::Requeue { .. } => "requeue",
