@@ -3933,7 +3933,11 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             );
         }
     } else {
-        let hint_text = if app.chat.pending_attachments.is_empty() {
+        let hint_text = if app.chat_pty_mode && app.chat_pty_forwards_stdin {
+            " Ctrl+T: leave PTY  PgUp/Dn: scroll".to_string()
+        } else if app.chat_pty_mode {
+            " Enter: chat  ↑↓: scroll  Ctrl+T: focus PTY".to_string()
+        } else if app.chat.pending_attachments.is_empty() {
             " c: chat  \u{2191}\u{2193}: scroll".to_string()
         } else {
             format!(
@@ -6559,6 +6563,16 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 };
                 let mut hints: Vec<(&str, &str)> = Vec::new();
                 match tab {
+                    RightPanelTab::Chat if app.chat_pty_mode && app.chat_pty_forwards_stdin => {
+                        hints.push(("Ctrl+T", "leave PTY"));
+                        hints.push(("PgUp/Dn", "scroll"));
+                    }
+                    RightPanelTab::Chat if app.chat_pty_mode => {
+                        hints.push(("Enter", "chat"));
+                        hints.push(("Ctrl+T", "focus PTY"));
+                        hints.push(("↑↓", "scroll"));
+                        hints.push(("←→", "coordinators"));
+                    }
                     RightPanelTab::Chat => {
                         hints.push(("←→", "coordinators"));
                         hints.push(("+", "new"));
@@ -6609,15 +6623,21 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("t", "task detail"));
                     }
                 }
-                // Common hints for all right-panel tabs.
-                if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
-                    hints.push(("Tab/]/[", "panels"));
-                } else {
-                    hints.push(("Tab", "graph"));
+                let vendor_pty_active = app.chat_pty_mode
+                    && app.chat_pty_forwards_stdin
+                    && *tab == RightPanelTab::Chat
+                    && !app.chat_pty_observer;
+                if !vendor_pty_active {
+                    // Common hints for all right-panel tabs (except vendor PTY).
+                    if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
+                        hints.push(("Tab/]/[", "panels"));
+                    } else {
+                        hints.push(("Tab", "graph"));
+                    }
+                    hints.push(("i/v", "resize pane"));
+                    hints.push(("?", "help"));
+                    hints.push(("Alt←→", "cycle views"));
                 }
-                hints.push(("i/v", "resize pane"));
-                hints.push(("?", "help"));
-                hints.push(("Alt←→", "cycle views"));
                 // In compact mode, prefix the tab label with a breadcrumb indicator.
                 let label: &str = if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
                     match app.single_panel_view {
@@ -6628,7 +6648,12 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 } else {
                     tab_label
                 };
-                (label, "NAV", Color::Rgb(120, 120, 120), hints)
+                let (mode_badge, mode_color) = if vendor_pty_active {
+                    ("PTY", Color::Green)
+                } else {
+                    ("NAV", Color::Rgb(120, 120, 120))
+                };
+                (label, mode_badge, mode_color, hints)
             }
         },
         InputMode::Launcher => (

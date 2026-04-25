@@ -2770,8 +2770,14 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
     match app.right_panel_tab {
         RightPanelTab::Detail => app.hud_scroll_up(amount),
         RightPanelTab::Chat => {
+            if app.chat_pty_mode {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_up(amount);
+                    return;
+                }
+            }
             app.chat.scroll += amount;
-            // Lazy-load older messages when scrolling near the top of loaded history.
             maybe_load_more_chat_history(app);
         }
         RightPanelTab::Log => {
@@ -2834,6 +2840,13 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
             app.hud_scroll_down(amount);
         }
         RightPanelTab::Chat => {
+            if app.chat_pty_mode {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_down(amount);
+                    return;
+                }
+            }
             app.chat.scroll = app.chat.scroll.saturating_sub(amount);
         }
         RightPanelTab::Log => {
@@ -2910,13 +2923,18 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
             app.hud_follow = false;
         }
         RightPanelTab::Chat => {
-            // Load all remaining history when jumping to top.
+            if app.chat_pty_mode {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_to_top();
+                    return;
+                }
+            }
             while app.chat.has_more_history {
                 if !app.load_more_chat_history() {
                     break;
                 }
             }
-            // Chat scroll is from bottom (0 = fully scrolled down), so "top" = max.
             app.chat.scroll = usize::MAX;
         }
         RightPanelTab::Log => {
@@ -2970,7 +2988,13 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
             app.hud_scroll_down(usize::MAX);
         }
         RightPanelTab::Chat => {
-            // Chat scroll is from bottom (0 = fully scrolled down), so "bottom" = 0.
+            if app.chat_pty_mode {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_to_bottom();
+                    return;
+                }
+            }
             app.chat.scroll = 0;
         }
         RightPanelTab::Log => {

@@ -11612,7 +11612,7 @@ impl VizApp {
                 // read from stdin: native wg nex (rustyline),
                 // claude, codex. Forward keystrokes directly.
                 self.chat_pty_forwards_stdin =
-                    matches!(executor.as_str(), "native" | "claude" | "codex");
+                    matches!(executor.as_str(), "claude" | "codex");
                 // Shift focus into the right panel so keystrokes route
                 // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
                 // Without this, the graph panel owns keys and hotkeys
