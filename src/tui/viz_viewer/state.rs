@@ -6136,6 +6136,10 @@ impl VizApp {
     /// Compute the ideal poll timeout based on current UI activity.
     /// Short (50ms) during animations for smooth rendering, longer when idle.
     pub fn next_poll_timeout(&self) -> std::time::Duration {
+        if self.chat_pty_mode && self.chat_pty_forwards_stdin {
+            return std::time::Duration::from_millis(16);
+        }
+
         // During animations, keep frame rate high for smooth visuals
         if self.has_active_animations()
             || self.slide_animation.as_ref().is_some_and(|a| !a.is_done())
