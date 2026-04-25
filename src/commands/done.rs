@@ -1801,6 +1801,7 @@ fn run_inner(
     // move forward, blockers can only resolve, not un-resolve).
     let mut cycle_reactivated = Vec::new();
     let mut already_done = false;
+    let mut cycle_info: Option<(u32, u32)> = None; // (loop_iteration, max_iterations)
 
     // Resolve token usage outside the lock (registry read + file I/O).
     let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
@@ -1854,8 +1855,29 @@ fn run_inner(
             task.token_usage = Some(usage.clone());
         }
 
-        // Evaluate structural cycle iteration
+        // Capture cycle info for the output message before evaluating iteration
         let cycle_analysis = graph.compute_cycle_analysis();
+        if cycle_analysis.task_to_cycle.contains_key(&id_owned) {
+            // Task is in a structural cycle — find the config owner for iteration info
+            if let Some(&idx) = cycle_analysis.task_to_cycle.get(&id_owned) {
+                let cycle = &cycle_analysis.cycles[idx];
+                for member_id in &cycle.members {
+                    if let Some(t) = graph.get_task(member_id)
+                        && let Some(ref cc) = t.cycle_config
+                    {
+                        cycle_info = Some((t.loop_iteration, cc.max_iterations));
+                        break;
+                    }
+                }
+            }
+        } else if let Some(t) = graph.get_task(&id_owned)
+            && let Some(ref cc) = t.cycle_config
+        {
+            // Implicit cycle (task has cycle_config but no SCC back-edge)
+            cycle_info = Some((t.loop_iteration, cc.max_iterations));
+        }
+
+        // Evaluate structural cycle iteration
         cycle_reactivated = evaluate_cycle_iteration(graph, &id_owned, &cycle_analysis);
 
         true
@@ -1894,7 +1916,21 @@ fn run_inner(
         config.log.rotation_threshold,
     );
 
-    println!("Marked '{}' as done", id);
+    if let Some((iter, max)) = cycle_info {
+        if converged_accepted {
+            println!(
+                "Marked '{}' as done (cycle iter {}/{}, converged — cycle halted).",
+                id, iter, max
+            );
+        } else {
+            println!(
+                "Marked '{}' as done (cycle iter {}/{}). To halt the cycle here, use 'wg done {} --converged'.",
+                id, iter, max, id
+            );
+        }
+    } else {
+        println!("Marked '{}' as done", id);
+    }
 
     // User board auto-increment: if a user board is archived (done), create the successor.
     if let Some(task) = graph.get_task(id)

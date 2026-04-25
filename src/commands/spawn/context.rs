@@ -68,7 +68,7 @@ pub(crate) fn build_task_context(
         }
     }
 
-    // Inject cycle metadata if this task has cycle_config
+    // Inject cycle metadata and --converged hint
     if let Some(ref cc) = task.cycle_config {
         context_parts.push(format!(
             "Cycle status: iteration {} of this task (max {})",
@@ -76,6 +76,27 @@ pub(crate) fn build_task_context(
         ));
         if let Some(ref delay) = cc.delay {
             context_parts.push(format!("  cycle delay: {}", delay));
+        }
+        context_parts.push(format!(
+            "This task is part of a cycle (iter {}/{}). When your work is complete and the convergence condition is met, call `wg done {} --converged` to halt the cycle. Use plain `wg done {}` only if you want the cycle to continue.",
+            task.loop_iteration, cc.max_iterations, task.id, task.id
+        ));
+    } else {
+        // Non-header cycle member: check if this task belongs to a cycle via SCC analysis
+        let ca = graph.compute_cycle_analysis();
+        if let Some(&cycle_idx) = ca.task_to_cycle.get(&task.id) {
+            let cycle = &ca.cycles[cycle_idx];
+            let header_info = cycle.members.iter().find_map(|mid| {
+                graph.get_task(mid).and_then(|t| {
+                    t.cycle_config.as_ref().map(|cc| (t.loop_iteration, cc.max_iterations))
+                })
+            });
+            if let Some((iter, max)) = header_info {
+                context_parts.push(format!(
+                    "This task is part of a cycle (iter {}/{}). When your work is complete and the convergence condition is met, call `wg done {} --converged` to halt the cycle. Use plain `wg done {}` only if you want the cycle to continue.",
+                    iter, max, task.id, task.id
+                ));
+            }
         }
     }
 
