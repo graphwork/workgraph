@@ -2994,6 +2994,125 @@ exit $EXIT_CODE"#,
     Ok((agent_id, pid))
 }
 
+/// Spawn a shell-mode task inline: fork `wg exec --shell <task_id>` as a
+/// lightweight subprocess instead of going through the full agent spawn path.
+fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
+    use std::process::{Command, Stdio};
+
+    let graph_path = graph_path(dir);
+
+    let mut locked_registry = AgentRegistry::load_locked(dir)?;
+    let agent_id = format!("agent-{}", locked_registry.next_agent_id);
+
+    let output_dir = dir.join("agents").join(&agent_id);
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create shell output dir: {:?}", output_dir))?;
+    let output_file = output_dir.join("output.log");
+    let output_file_str = output_file.to_string_lossy().to_string();
+
+    let escaped_task_id = task_id.replace('\'', "'\\''");
+    let escaped_output = output_file_str.replace('\'', "'\\''");
+
+    let mut claim_error: Option<String> = None;
+    let agent_id_clone = agent_id.clone();
+
+    modify_graph(&graph_path, |graph| {
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                claim_error = Some(format!("Shell task '{}' not found", task_id));
+                return false;
+            }
+        };
+
+        if task.status != Status::Open {
+            claim_error = Some(format!(
+                "Shell task '{}' is not open (status: {:?})",
+                task_id, task.status
+            ));
+            return false;
+        }
+
+        task.status = Status::InProgress;
+        task.started_at = Some(Utc::now().to_rfc3339());
+        task.assigned = Some(agent_id_clone.clone());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(agent_id_clone.clone()),
+            user: Some(workgraph::current_user()),
+            message: "Spawned shell task inline".to_string(),
+        });
+
+        true
+    })
+    .context("Failed to load/save graph for shell spawn")?;
+
+    if let Some(err) = claim_error {
+        anyhow::bail!("{}", err);
+    }
+
+    let script = format!(
+        r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+_WG_STDERR=$(mktemp)
+wg exec '{escaped_task_id}' --shell >> '{escaped_output}' 2>"$_WG_STDERR"
+EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
+rm -f "$_WG_STDERR"
+exit $EXIT_CODE"#,
+    );
+
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(&script);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let agent_id_rollback = agent_id.clone();
+            let err_msg = e.to_string();
+            let _ = modify_graph(&graph_path, |graph| {
+                if let Some(t) = graph.get_task_mut(task_id) {
+                    t.status = Status::Open;
+                    t.started_at = None;
+                    t.assigned = None;
+                    t.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some(agent_id_rollback.clone()),
+                        user: Some(workgraph::current_user()),
+                        message: format!("Shell spawn failed, reverting claim: {}", err_msg),
+                    });
+                    true
+                } else {
+                    false
+                }
+            });
+            return Err(anyhow::anyhow!("Failed to spawn shell process: {}", e));
+        }
+    };
+
+    let pid = child.id();
+
+    locked_registry.register_agent_with_model(pid, task_id, "shell", &output_file_str, None);
+    locked_registry
+        .save()
+        .context("Failed to save agent registry after shell spawn")?;
+
+    Ok((agent_id, pid))
+}
+
 /// Priority-aware task sorting with starvation prevention and priority inheritance.
 ///
 /// Features:
@@ -3387,6 +3506,44 @@ fn spawn_agents_for_ready_tasks(
                 );
                 continue;
             }
+        }
+
+        // Shell-mode tasks run inline: fork `wg exec --shell` directly instead
+        // of going through the full agent spawn path. Must be checked before the
+        // auto_assign gate because shell tasks are intentionally excluded from
+        // auto-assign (they run commands, not agents) and thus have no agent field.
+        let is_shell_task = task.exec_mode.as_deref() == Some("shell") && task.exec.is_some();
+        if is_shell_task {
+            let task_id = task.id.clone();
+            let title = task.title.clone();
+            eprintln!(
+                "[coordinator] Spawning shell task inline for: {} - {}",
+                task_id, title,
+            );
+            match spawn_shell_inline(dir, &task_id) {
+                Ok((agent_id, pid)) => {
+                    eprintln!(
+                        "[coordinator] Spawned shell {} (PID {})",
+                        agent_id, pid
+                    );
+                    spawned += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[coordinator] Failed to spawn shell for {}: {}",
+                        task_id, e
+                    );
+                    record_spawn_failure(
+                        &gp,
+                        &task_id,
+                        &format!("{}", e),
+                        "inline-shell",
+                        task.exec_mode.as_deref(),
+                        config.coordinator.max_spawn_failures,
+                    );
+                }
+            }
+            continue;
         }
 
         // Defense-in-depth: when auto_assign is enabled, non-system tasks
