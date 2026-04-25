@@ -457,13 +457,10 @@ pub enum RightPanelTab {
     Log,       // 4  — per-task agent output + structured log entries
     CoordLog,  // 5
     Dashboard, // 6
+    Messages,  // 7  — wg msg traffic for the selected task
     // Dead tabs — kept so historical match arms compile, not reachable
-    // from the tab bar. Files was dropped because the Detail view
-    // already surfaces the working dir path; users can open a terminal
-    // for file inspection. Messages/Firehose/Output were Phase-4
-    // casualties.
+    // from the tab bar.
     Files,
-    Messages,
     Firehose,
     Output,
 }
@@ -478,7 +475,8 @@ impl RightPanelTab {
             Self::Log => "Log",
             Self::CoordLog => "Coord",
             Self::Dashboard => "Dash",
-            Self::Files | Self::Messages | Self::Firehose | Self::Output => "",
+            Self::Messages => "Msg",
+            Self::Files | Self::Firehose | Self::Output => "",
         }
     }
 
@@ -491,8 +489,8 @@ impl RightPanelTab {
             Self::Log => 4,
             Self::CoordLog => 5,
             Self::Dashboard => 6,
-            Self::Files => usize::MAX - 3,
-            Self::Messages => usize::MAX - 2,
+            Self::Messages => 7,
+            Self::Files => usize::MAX - 2,
             Self::Firehose => usize::MAX - 1,
             Self::Output => usize::MAX,
         }
@@ -507,6 +505,7 @@ impl RightPanelTab {
             4 => Some(Self::Log),
             5 => Some(Self::CoordLog),
             6 => Some(Self::Dashboard),
+            7 => Some(Self::Messages),
             _ => None,
         }
     }
@@ -519,7 +518,7 @@ impl RightPanelTab {
         Self::from_index((self.index() + Self::ALL.len() - 1) % Self::ALL.len()).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 7] = [
+    pub const ALL: [RightPanelTab; 8] = [
         Self::Chat,
         Self::Detail,
         Self::Agency,
@@ -527,6 +526,7 @@ impl RightPanelTab {
         Self::Log,
         Self::CoordLog,
         Self::Dashboard,
+        Self::Messages,
     ];
 }
 
@@ -2967,9 +2967,7 @@ pub enum MessageDirection {
 }
 
 /// A single parsed message with direction metadata for rendering.
-/// Phase 4 dead code — Messages tab removed.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct MessageEntry {
     /// Sender identifier as stored in the message.
     pub sender: String,
@@ -2993,9 +2991,7 @@ pub struct MessageEntry {
 }
 
 /// Summary stats for the messages panel header.
-/// Phase 4 dead code — Messages tab removed.
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)]
 pub struct MessageSummary {
     /// Number of incoming messages (sent to the task).
     pub incoming: usize,
@@ -15939,7 +15935,7 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::TwoThirdsInspector;
-        app.right_panel_tab = RightPanelTab::Dashboard; // last tab
+        app.right_panel_tab = RightPanelTab::Messages; // last tab
 
         app.cycle_inspector_view_forward();
 
@@ -15958,7 +15954,7 @@ mod remap_panel_tests {
         app.cycle_inspector_view_backward();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Messages);
         assert!(app.slide_animation.is_some());
     }
 
@@ -15983,7 +15979,7 @@ mod remap_panel_tests {
         app.right_panel_visible = false;
         app.layout_mode = LayoutMode::Off;
 
-        // 7 live tabs + 1 close = 8 presses
+        // 8 live tabs + 1 close = 9 presses
         let expected_tabs = [
             Some(RightPanelTab::Chat),
             Some(RightPanelTab::Detail),
@@ -15992,6 +15988,7 @@ mod remap_panel_tests {
             Some(RightPanelTab::Log),
             Some(RightPanelTab::CoordLog),
             Some(RightPanelTab::Dashboard),
+            Some(RightPanelTab::Messages),
             None, // closed
         ];
 
@@ -16215,8 +16212,9 @@ mod firehose_tests {
     fn firehose_tab_in_panel_cycle() {
         assert_eq!(RightPanelTab::Firehose.label(), "");
         assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Dashboard);
-        assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Chat);
-        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Dashboard);
+        assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Messages);
+        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Chat);
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Messages);
     }
 
     #[test]
@@ -17977,13 +17975,18 @@ mod dashboard_tests {
     }
 
     #[test]
-    fn dashboard_next_wraps_to_chat() {
-        assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Chat);
+    fn dashboard_next_is_messages() {
+        assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Messages);
     }
 
     #[test]
-    fn chat_prev_is_dashboard() {
-        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Dashboard);
+    fn messages_next_wraps_to_chat() {
+        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Chat);
+    }
+
+    #[test]
+    fn chat_prev_is_messages() {
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Messages);
     }
 
     #[test]

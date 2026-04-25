@@ -2304,12 +2304,13 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         RightPanelTab::Dashboard => {
             draw_dashboard_tab(frame, app, content_area);
         }
+        RightPanelTab::Messages => {
+            app.load_messages_panel();
+            draw_messages_tab(frame, app, content_area);
+        }
         // Dead tabs — not reachable from the bar. No-op here so stray
         // state still renders as empty rather than crashing.
-        RightPanelTab::Files
-        | RightPanelTab::Messages
-        | RightPanelTab::Firehose
-        | RightPanelTab::Output => {}
+        RightPanelTab::Files | RightPanelTab::Firehose | RightPanelTab::Output => {}
     }
 }
 
@@ -4291,6 +4292,189 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .wrap(Wrap { trim: false })
         .scroll((scroll_y, 0));
     frame.render_widget(para, body_area);
+}
+
+/// Draw the Messages tab — wg msg traffic for the currently selected task.
+fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    use ratatui::widgets::{Paragraph, Wrap};
+    use super::state::MessageDirection;
+
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let task_label = app
+        .messages_panel
+        .task_id
+        .clone()
+        .unwrap_or_else(|| "(no task selected)".to_string());
+    let summary = &app.messages_panel.summary;
+    let header_line = Line::from(vec![
+        Span::styled(
+            format!(" {} ", task_label),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                " in:{} out:{} unanswered:{}",
+                summary.incoming, summary.outgoing, summary.unanswered
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "    [Enter] compose  [7] switch",
+            Style::default().fg(Color::Indexed(239)),
+        ),
+    ]);
+
+    let is_editing = app.input_mode == InputMode::MessageInput;
+    let editor_text_str = super::state::editor_text(&app.messages_panel.editor);
+    let has_input_text = !editor_text_str.is_empty();
+
+    let input_height: u16 = if is_editing || has_input_text {
+        let prompt_prefix = 2;
+        let usable = (area.width as usize).saturating_sub(prompt_prefix).max(1);
+        let visual_lines = count_visual_lines(&editor_text_str, usable);
+        let wrapped_lines = (visual_lines as u16).max(1);
+        let max_input = (area.height * 3 / 4).max(2);
+        wrapped_lines.min(max_input) + 1 // +1 for separator
+    } else {
+        1
+    };
+
+    let [header_area, body_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(Paragraph::new(header_line), header_area);
+
+    let body_h = body_area.height;
+    let msg_area_height = body_h.saturating_sub(input_height);
+    let msg_area = Rect {
+        x: body_area.x,
+        y: body_area.y,
+        width: body_area.width,
+        height: msg_area_height,
+    };
+    let input_area = Rect {
+        x: body_area.x,
+        y: body_area.y + msg_area_height,
+        width: body_area.width,
+        height: input_height,
+    };
+    app.last_message_input_area = input_area;
+
+    // Render message list.
+    let lines: Vec<Line> = if app.messages_panel.entries.is_empty() {
+        vec![Line::from(Span::styled(
+            "(no messages — press Enter to compose)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        app.messages_panel
+            .entries
+            .iter()
+            .map(|entry| {
+                let (arrow, color) = match entry.direction {
+                    MessageDirection::Incoming => ("←", Color::Cyan),
+                    MessageDirection::Outgoing => ("→", Color::Green),
+                };
+                let urgent_marker = if entry.is_urgent { " [!]" } else { "" };
+                Line::from(vec![
+                    Span::styled(
+                        format!("[{}] ", entry.timestamp),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("{} {} ", arrow, entry.display_label),
+                        Style::default().fg(color),
+                    ),
+                    Span::styled(
+                        format!("{}{}", entry.body, urgent_marker),
+                        Style::default().fg(Color::White),
+                    ),
+                ])
+            })
+            .collect()
+    };
+
+    app.messages_panel.total_wrapped_lines = lines.len();
+    app.messages_panel.viewport_height = msg_area.height as usize;
+
+    let viewport = msg_area.height as usize;
+    let max_scroll = lines.len().saturating_sub(viewport);
+    app.messages_panel.scroll = app.messages_panel.scroll.min(max_scroll);
+    let scroll_y = app.messages_panel.scroll as u16;
+
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_y, 0));
+    frame.render_widget(para, msg_area);
+
+    // Render input area.
+    if input_area.height > 0 {
+        // Separator line.
+        let sep = Paragraph::new(Line::from(Span::styled(
+            "─".repeat(input_area.width as usize),
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(
+            sep,
+            Rect {
+                x: input_area.x,
+                y: input_area.y,
+                width: input_area.width,
+                height: 1,
+            },
+        );
+
+        let editor_area = Rect {
+            x: input_area.x + 2,
+            y: input_area.y + 1,
+            width: input_area.width.saturating_sub(2),
+            height: input_area.height.saturating_sub(1),
+        };
+
+        // Prompt indicator.
+        if editor_area.height > 0 {
+            let prompt_char = if is_editing { ">" } else { " " };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!("{} ", prompt_char),
+                    Style::default().fg(if is_editing {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }),
+                )),
+                Rect {
+                    x: input_area.x,
+                    y: input_area.y + 1,
+                    width: 2,
+                    height: 1,
+                },
+            );
+
+            let text_color = if is_editing {
+                Color::White
+            } else {
+                Color::DarkGray
+            };
+            let cursor_style = if is_editing {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default().fg(text_color)
+            };
+            render_editor_word_wrap(
+                frame,
+                &app.messages_panel.editor,
+                editor_area,
+                Style::default().fg(text_color),
+                cursor_style,
+                is_editing,
+            );
+        }
+    }
 }
 
 /// Draw the Coordinator Log tab (panel 7) — activity feed from operations.jsonl.
@@ -6555,9 +6739,9 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     RightPanelTab::Log => "4:Log",
                     RightPanelTab::CoordLog => "5:Coord",
                     RightPanelTab::Dashboard => "6:Dash",
+                    RightPanelTab::Messages => "7:Msg",
                     // Dead tabs, not reachable from the bar.
                     RightPanelTab::Files => "Files",
-                    RightPanelTab::Messages => "Msg",
                     RightPanelTab::Firehose => "Fire",
                     RightPanelTab::Output => "Out",
                 };
