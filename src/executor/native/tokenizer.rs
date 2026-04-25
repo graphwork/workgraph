@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn cl100k_loads_and_counts() {
-        let count = count_tokens("hello world", "claude-haiku-latest");
+        let count = count_tokens("hello world", "claude-haiku-4-latest");
         // Real count should be > 0 and much smaller than `len / 4`
         // heuristic for a short English phrase (~2 tokens).
         assert!(count > 0);
@@ -103,7 +103,7 @@ mod tests {
         assert!(uses_o200k("openai:gpt-4o"));
         assert!(uses_o200k("openai/gpt-4.1-mini"));
         assert!(uses_o200k("o3-mini"));
-        assert!(!uses_o200k("claude-sonnet-latest"));
+        assert!(!uses_o200k("claude-sonnet-4-latest"));
         assert!(!uses_o200k("oai-compat:qwen3-coder-30b"));
     }
 
@@ -112,7 +112,7 @@ mod tests {
         // A dense snippet of Rust source: real tokenization produces
         // more tokens than chars/4 suggests.
         let rust = "pub fn foo(x: i32) -> Result<Vec<Option<&str>>, anyhow::Error> {\n    let y: HashMap<String, Vec<u8>> = HashMap::new();\n    Ok(vec![])\n}";
-        let real = count_tokens(rust, "claude-sonnet-latest");
+        let real = count_tokens(rust, "claude-sonnet-4-latest");
         let heuristic = rust.len() / 4;
         // Real should be at least 15% more than the heuristic for
         // code — the whole point of replacing chars/4.

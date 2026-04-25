@@ -1143,15 +1143,15 @@ mod auto_routing_tests {
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet", "description": ""},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet", "description": ""},
                 {"id": "openai/gpt-4o", "name": "GPT-4o", "description": ""},
             ]
         });
         fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        let result = validate_openrouter_model("anthropic/claude-sonnet-latest", tmp.path());
+        let result = validate_openrouter_model("anthropic/claude-sonnet-4-latest", tmp.path());
         assert!(result.was_valid);
-        assert_eq!(result.model, "anthropic/claude-sonnet-latest");
+        assert_eq!(result.model, "anthropic/claude-sonnet-4-latest");
     }
 
     #[test]
@@ -1161,7 +1161,7 @@ mod auto_routing_tests {
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest"},
+                {"id": "anthropic/claude-sonnet-4-latest"},
                 {"id": opus_key},
                 {"id": "openai/gpt-4o"},
             ]
@@ -1188,7 +1188,7 @@ mod auto_routing_tests {
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest"},
+                {"id": "anthropic/claude-sonnet-4-latest"},
                 {"id": opus_key},
                 {"id": "openai/gpt-4o"},
                 {"id": "deepseek/deepseek-r1"},
@@ -1202,13 +1202,13 @@ mod auto_routing_tests {
         assert!(
             result
                 .suggestions
-                .contains(&"anthropic/claude-sonnet-latest".to_string()),
+                .contains(&"anthropic/claude-sonnet-4-latest".to_string()),
             "Should suggest the closest match, got: {:?}",
             result.suggestions
         );
         let warning = result.warning.as_ref().unwrap();
         assert!(warning.contains("Did you mean"));
-        assert!(warning.contains("anthropic/claude-sonnet-latest"));
+        assert!(warning.contains("anthropic/claude-sonnet-4-latest"));
     }
 
     #[test]
@@ -1227,7 +1227,7 @@ mod auto_routing_tests {
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest"},
+                {"id": "anthropic/claude-sonnet-4-latest"},
                 {"id": "openai/gpt-4o"},
             ]
         });
@@ -1257,7 +1257,7 @@ mod auto_routing_tests {
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
                 {"id": "minimax/minimax-m2.7"},
-                {"id": "anthropic/claude-sonnet-latest"},
+                {"id": "anthropic/claude-sonnet-4-latest"},
             ]
         });
         fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();

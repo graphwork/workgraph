@@ -302,7 +302,7 @@ A new evolution strategy `condition-analysis` could:
   "notes": "...",
   "evaluator": "claude:haiku",
   "timestamp": "2026-04-05T03:42:24.050203461+00:00",
-  "model": "claude-opus-latest",
+  "model": "claude-opus-4-latest",
   "source": "llm"
 }
 ```

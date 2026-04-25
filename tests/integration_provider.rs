@@ -139,16 +139,16 @@ fn setup_workgraph_dir() -> TempDir {
 #[test]
 fn test_bare_model_routes_to_anthropic() {
     // A bare model name (no slash) should route to Anthropic API
-    let mock_body = anthropic_mock_response("claude-sonnet-latest");
+    let mock_body = anthropic_mock_response("claude-sonnet-4-latest");
     let (base_url, paths) = start_recording_mock_server(mock_body, 1);
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-sonnet-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-sonnet-4-latest")
         .unwrap()
         .with_base_url(&base_url);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let request = workgraph::executor::native::client::MessagesRequest {
-        model: "claude-sonnet-latest".to_string(),
+        model: "claude-sonnet-4-latest".to_string(),
         max_tokens: 100,
         system: None,
         messages: vec![workgraph::executor::native::client::Message {
@@ -214,7 +214,7 @@ fn test_create_provider_bare_is_anthropic() {
     unsafe { std::env::remove_var("WG_LLM_PROVIDER") };
 
     // Write config with endpoint pointing to our mock server
-    let mock_body = anthropic_mock_response("claude-haiku-latest");
+    let mock_body = anthropic_mock_response("claude-haiku-4-latest");
     let base_url = start_mock_server(mock_body, 1);
 
     let config_content = format!(
@@ -236,9 +236,9 @@ api_key = "test-openai-key"
     );
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
-    let provider = create_provider(tmp.path(), "claude-haiku-latest").unwrap();
+    let provider = create_provider(tmp.path(), "claude-haiku-4-latest").unwrap();
     assert_eq!(provider.name(), "anthropic");
-    assert_eq!(provider.model(), "claude-haiku-latest");
+    assert_eq!(provider.model(), "claude-haiku-4-latest");
 }
 
 #[test]
@@ -401,7 +401,7 @@ fn test_per_role_different_providers() {
     // Evaluator → Anthropic (high-capability model)
     config
         .models
-        .set_model(DispatchRole::Evaluator, "claude-sonnet-latest");
+        .set_model(DispatchRole::Evaluator, "claude-sonnet-4-latest");
     config
         .models
         .set_provider(DispatchRole::Evaluator, "anthropic");
@@ -421,7 +421,7 @@ fn test_per_role_different_providers() {
     assert_eq!(triage.provider, Some("openai".to_string()));
 
     let evaluator = config.resolve_model_for_role(DispatchRole::Evaluator);
-    assert_eq!(evaluator.model, "claude-sonnet-latest");
+    assert_eq!(evaluator.model, "claude-sonnet-4-latest");
     assert_eq!(evaluator.provider, Some("anthropic".to_string()));
 
     let task_agent = config.resolve_model_for_role(DispatchRole::TaskAgent);
@@ -454,7 +454,7 @@ fn test_per_role_with_mock_servers() {
     // End-to-end: create providers for different roles using mock servers
     let tmp = setup_workgraph_dir();
 
-    let anthropic_body = anthropic_mock_sse_response("claude-sonnet-latest");
+    let anthropic_body = anthropic_mock_sse_response("claude-sonnet-4-latest");
     let openai_body = openai_mock_response("gpt-4o-mini");
 
     let anthropic_url = start_mock_server(anthropic_body.clone(), 1);
@@ -477,7 +477,7 @@ api_key = "test-oai-key"
 is_default = true
 
 [models.evaluator]
-model = "native:claude-sonnet-latest"
+model = "native:claude-sonnet-4-latest"
 
 [models.triage]
 model = "openai:gpt-4o-mini"
@@ -488,7 +488,7 @@ model = "openai:gpt-4o-mini"
     // The evaluator should route to Anthropic
     let eval_provider = create_provider_ext(
         tmp.path(),
-        "claude-sonnet-latest",
+        "claude-sonnet-4-latest",
         Some("anthropic"),
         None,
         None,
@@ -652,10 +652,10 @@ fn test_model_registry_tier_classification() {
         .unwrap();
     assert_eq!(opus.tier, ModelTier::Frontier);
 
-    let haiku = registry.get("anthropic/claude-haiku-latest").unwrap();
+    let haiku = registry.get("anthropic/claude-haiku-4-latest").unwrap();
     assert_eq!(haiku.tier, ModelTier::Budget);
 
-    let sonnet = registry.get("anthropic/claude-sonnet-latest").unwrap();
+    let sonnet = registry.get("anthropic/claude-sonnet-4-latest").unwrap();
     assert_eq!(sonnet.tier, ModelTier::Mid);
 }
 
@@ -706,16 +706,16 @@ fn test_model_registry_provider_filtering() {
 
 #[tokio::test]
 async fn test_anthropic_provider_send_via_mock() {
-    let mock_body = anthropic_mock_sse_response("claude-haiku-latest");
+    let mock_body = anthropic_mock_sse_response("claude-haiku-4-latest");
     let base_url = start_mock_server(mock_body, 1);
 
-    let client = AnthropicClient::new("mock-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("mock-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url);
 
     use workgraph::executor::native::provider::Provider;
     let request = workgraph::executor::native::client::MessagesRequest {
-        model: "claude-haiku-latest".to_string(),
+        model: "claude-haiku-4-latest".to_string(),
         max_tokens: 100,
         system: None,
         messages: vec![workgraph::executor::native::client::Message {

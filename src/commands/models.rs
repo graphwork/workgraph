@@ -574,7 +574,7 @@ mod tests {
     fn sample_models() -> Vec<OpenRouterModel> {
         vec![
             OpenRouterModel {
-                id: "anthropic/claude-sonnet-latest".into(),
+                id: "anthropic/claude-sonnet-4-latest".into(),
                 name: "Claude Sonnet 4.6".into(),
                 description: "A balanced model for coding and analysis".into(),
                 context_length: Some(200_000),
@@ -644,7 +644,7 @@ mod tests {
             })
             .collect();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].id, "anthropic/claude-sonnet-latest");
+        assert_eq!(matches[0].id, "anthropic/claude-sonnet-4-latest");
     }
 
     #[test]
@@ -742,7 +742,7 @@ mod tests {
     fn test_model_to_json() {
         let models = sample_models();
         let json = model_to_json(&models[0]);
-        assert_eq!(json["id"], "anthropic/claude-sonnet-latest");
+        assert_eq!(json["id"], "anthropic/claude-sonnet-4-latest");
         assert_eq!(json["supports_tools"], true);
         assert!((json["cost_per_1m_input"].as_f64().unwrap() - 3.0).abs() < 0.01);
     }

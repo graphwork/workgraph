@@ -72,10 +72,10 @@ Resolution priority (already implemented):
 1. Task-level: `task.model` field
 2. Role-level: `role.default_model`
 3. Coordinator-level: `coordinator.model` in config
-4. Default: `claude-sonnet-latest-20250514`
+4. Default: `claude-sonnet-4-latest-20250514`
 
 The generic executor extends this by allowing the model string to encode the provider. Convention:
-- `claude-sonnet-latest-20250514` → Anthropic provider (native API)
+- `claude-sonnet-4-latest-20250514` → Anthropic provider (native API)
 - `openai/gpt-4o` → OpenAI provider (Chat Completions API, base_url from config)
 - `anthropic/claude-sonnet-4` → OpenAI provider via OpenRouter
 - `deepseek/deepseek-chat-v3-0324` → OpenAI provider via OpenRouter
@@ -508,7 +508,7 @@ pub fn create_provider(
 
 ```toml
 [native_executor]
-# Anthropic API (used for bare model names like "claude-sonnet-latest-20250514")
+# Anthropic API (used for bare model names like "claude-sonnet-4-latest-20250514")
 # api_key = "sk-ant-..."  # or set ANTHROPIC_API_KEY env var
 # anthropic_base_url = "https://api.anthropic.com"
 
@@ -517,7 +517,7 @@ pub fn create_provider(
 # openai_base_url = "https://openrouter.ai/api/v1"
 
 # Default model
-model = "claude-sonnet-latest-20250514"
+model = "claude-sonnet-4-latest-20250514"
 
 # Max tokens per response
 max_tokens = 16384
@@ -542,7 +542,7 @@ max_turns = 200
 
 ```bash
 # Use Claude via native Anthropic API (default)
-wg config --model claude-sonnet-latest-20250514
+wg config --model claude-sonnet-4-latest-20250514
 
 # Use GPT-4o via OpenRouter
 wg config --model openai/gpt-4o
@@ -567,7 +567,7 @@ The existing model hierarchy already supports this:
 
 ```bash
 # This implementation task should use a capable model
-wg add "Implement feature X" --model claude-sonnet-latest-20250514
+wg add "Implement feature X" --model claude-sonnet-4-latest-20250514
 
 # This research task can use a cheap model
 wg add "Research: look up API docs" --model deepseek/deepseek-chat-v3-0324

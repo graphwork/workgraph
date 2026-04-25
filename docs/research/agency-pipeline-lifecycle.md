@@ -295,18 +295,18 @@ Each auxiliary agent type maps to a `DispatchRole` (`src/config.rs:431`), which 
 
 | DispatchRole | Default Tier | Default Model | Used by |
 |---|---|---|---|
-| `Triage` | Fast | claude-haiku-latest | Dead-agent triage, checkpoint summaries |
-| `FlipComparison` | Fast | claude-haiku-latest | FLIP Phase 2 |
-| `Assigner` | Fast | claude-haiku-latest | `.assign-*` tasks |
-| `Compactor` | Fast | claude-haiku-latest | Context compaction |
-| `CoordinatorEval` | Fast | claude-haiku-latest | Coordinator per-turn scoring |
-| `Placer` | Fast | claude-haiku-latest | `.place-*` tasks |
+| `Triage` | Fast | claude-haiku-4-latest | Dead-agent triage, checkpoint summaries |
+| `FlipComparison` | Fast | claude-haiku-4-latest | FLIP Phase 2 |
+| `Assigner` | Fast | claude-haiku-4-latest | `.assign-*` tasks |
+| `Compactor` | Fast | claude-haiku-4-latest | Context compaction |
+| `CoordinatorEval` | Fast | claude-haiku-4-latest | Coordinator per-turn scoring |
+| `Placer` | Fast | claude-haiku-4-latest | `.place-*` tasks |
 | `FlipInference` | Standard | claude-sonnet-4 | FLIP Phase 1 |
 | `TaskAgent` | Standard | claude-sonnet-4 | Main task agents |
 | `Evaluator` | Standard | claude-sonnet-4 | `.evaluate-*` tasks |
 | `Evolver` | Standard | claude-sonnet-4 | `.evolve-*` tasks |
-| `Creator` | Premium | claude-opus-latest | `.create-*` tasks |
-| `Verification` | Premium | claude-opus-latest | `.verify-flip-*` tasks |
+| `Creator` | Premium | claude-opus-4-latest | `.create-*` tasks |
+| `Verification` | Premium | claude-opus-4-latest | `.verify-flip-*` tasks |
 
 *(Source: `src/config.rs:524`, `default_tier()` method)*
 

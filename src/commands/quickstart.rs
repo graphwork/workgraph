@@ -414,8 +414,8 @@ EXECUTORS & MODELS
 
   Set a default model for all agents:
 
-  wg service start --model anthropic:claude-sonnet-latest   # CLI override
-  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic:claude-sonnet-latest"
+  wg service start --model anthropic:claude-sonnet-4-latest   # CLI override
+  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic:claude-sonnet-4-latest"
 
   Per-task model selection (overrides the default):
 
@@ -779,8 +779,8 @@ fn json_output() -> serde_json::Value {
         ],
         "executors_and_models": {
             "switch_executor": "wg config --coordinator-executor amplifier",
-            "set_model_cli": "wg service start --model anthropic:claude-sonnet-latest",
-            "set_model_config": "[coordinator] model = \"anthropic:claude-sonnet-latest\"",
+            "set_model_cli": "wg service start --model anthropic:claude-sonnet-4-latest",
+            "set_model_config": "[coordinator] model = \"anthropic:claude-sonnet-4-latest\"",
             "per_task_model": "wg add \"task\" --model openrouter:google/gemini-2.5-flash",
             "model_format": "provider:model (e.g., openrouter:deepseek/deepseek-v3.2). Short names (opus, sonnet, haiku) also accepted.",
             "hierarchy": "task --model > executor model > coordinator model > 'default'"

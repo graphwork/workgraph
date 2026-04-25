@@ -89,7 +89,7 @@ pub struct Agent {
     pub executor: String,
 
     /// Preferred model for this agent (e.g., "opus", "sonnet", "haiku",
-    /// or a full model ID like "claude-opus-latest").
+    /// or a full model ID like "claude-opus-4-latest").
     /// Used as a fallback when no task-level or role-level model is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model: Option<String>,
@@ -105,7 +105,7 @@ pub struct Agent {
 
 **Why `Option<String>`:** Most agents won't need a model preference — they'll use whatever the config/tier system resolves. Making it optional keeps the common case zero-cost and preserves backward compatibility.
 
-**Why not `preferred_tier`:** A tier (fast/standard/premium) is tempting but too coarse. An agent that works well with `claude-opus-latest` specifically shouldn't be silently downgraded when the tier mapping changes. Direct model IDs or registry short-names give precision. Tier-based preferences can be expressed via the existing tier config if needed.
+**Why not `preferred_tier`:** A tier (fast/standard/premium) is tempting but too coarse. An agent that works well with `claude-opus-4-latest` specifically shouldn't be silently downgraded when the tier mapping changes. Direct model IDs or registry short-names give precision. Tier-based preferences can be expressed via the existing tier config if needed.
 
 ### 2. Updated Precedence Chain
 

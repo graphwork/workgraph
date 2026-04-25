@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 /// Default Anthropic API model IDs — moving aliases that track the current frontier.
 /// Pricing in the registry is best-known-at-build-time (can't query live pricing).
-pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-latest";
-pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-latest";
-pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-latest";
+pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-4-latest";
+pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-latest";
+pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-latest";
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2034,7 +2034,7 @@ impl Config {
 
         // Infer provider from coordinator.model and agent.model prefixes as
         // final fallbacks.  This ensures that when a user sets e.g.
-        // `coordinator.model = "openrouter:anthropic/claude-sonnet-latest"`
+        // `coordinator.model = "openrouter:anthropic/claude-sonnet-4-latest"`
         // the OpenRouter provider cascades to ALL roles (eval, FLIP, verification)
         // without needing explicit `[models.default].provider` config.
         let coordinator_model_provider = self.coordinator.model.as_deref().and_then(|m| {
@@ -6297,14 +6297,14 @@ provider = "openrouter"
     fn test_resolve_model_for_role_claude_prefix_strips_for_api() {
         let mut config = Config::default();
         config.models.evaluator = Some(RoleModelConfig {
-            model: Some("claude:claude-sonnet-latest".into()),
+            model: Some("claude:claude-sonnet-4-latest".into()),
             provider: None,
             tier: None,
             endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         // Model ID should be the bare part without the claude: prefix
-        assert_eq!(resolved.model, "claude-sonnet-latest");
+        assert_eq!(resolved.model, "claude-sonnet-4-latest");
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
     }
 
@@ -6998,7 +6998,7 @@ background_timeout_secs = 1200
 
 [native_executor.delegate]
 delegate_max_turns = 15
-delegate_model = "claude-haiku-latest"
+delegate_model = "claude-haiku-4-latest"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(
@@ -7015,7 +7015,7 @@ delegate_model = "claude-haiku-latest"
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 15);
         assert_eq!(
             config.native_executor.delegate.delegate_model,
-            "claude-haiku-latest"
+            "claude-haiku-4-latest"
         );
     }
 

@@ -31,9 +31,9 @@ This file stores benchmark and popularity data fetched from external APIs. It is
     "artificial_analysis_api": "https://artificialanalysis.ai/api/v2/data/llms/models"
   },
   "models": {
-    "anthropic/claude-opus-latest": {
+    "anthropic/claude-opus-4-latest": {
       // === Identity (from OpenRouter /api/v1/models) ===
-      "id": "anthropic/claude-opus-latest",
+      "id": "anthropic/claude-opus-4-latest",
       "name": "Anthropic: Claude Opus 4.6",
 
       // === Pricing (from OpenRouter, per million tokens, USD) ===
@@ -169,8 +169,8 @@ reliability = min(provider_count / 5, 1.0) * 50
 | Model | coding | intelligence | agentic | quality | cost_factor | value | reliability | **fitness** |
 |-------|--------|-------------|---------|---------|-------------|-------|-------------|-------------|
 | openai/gpt-5.4 | 57.3 | 57.2 | 69.4 | 59.5 | 3.2x | 18.6 | 8.0 | **46.0** |
-| anthropic/claude-opus-latest | 48.1 | 53.0 | 67.6 | 53.0 | 2.8x | 18.9 | 7.5 | **39.9** |
-| anthropic/claude-sonnet-latest | 50.9 | 51.7 | 63.0 | 53.5 | 1.4x | 38.2 | 8.0 | **46.0** |
+| anthropic/claude-opus-4-latest | 48.1 | 53.0 | 67.6 | 53.0 | 2.8x | 18.9 | 7.5 | **39.9** |
+| anthropic/claude-sonnet-4-latest | 50.9 | 51.7 | 63.0 | 53.5 | 1.4x | 38.2 | 8.0 | **46.0** |
 | google/gemini-3.1-pro | 55.5 | 57.2 | — | 56.3* | 1.0x | 56.3 | 7.0 | **51.1** |
 | deepseek/deepseek-chat | — | — | — | null | 0.1x | null | 6.0 | **null** |
 
@@ -284,8 +284,8 @@ Implementation in `config.rs::resolve_model_for_role()`:
 1. **Placement prompt enrichment.** The `.place-*` task's system prompt can include a summary of available models per tier:
    ```
    Available models by tier:
-   - frontier: claude-opus-latest (fitness: 72.3), gpt-5.4 (fitness: 70.1)
-   - mid: claude-sonnet-latest (fitness: 46.0), gemini-3.1-pro (fitness: 51.1)
+   - frontier: claude-opus-4-latest (fitness: 72.3), gpt-5.4 (fitness: 70.1)
+   - mid: claude-sonnet-4-latest (fitness: 46.0), gemini-3.1-pro (fitness: 51.1)
    - budget: gemini-2.0-flash (fitness: 28.4), deepseek-chat (fitness: null)
    ```
    This helps the LLM make informed tier selections rather than guessing.
@@ -323,9 +323,9 @@ wg model resolve <role>
 ```
 $ wg models search claude
 MODEL                                  IN/1M       OUT/1M     CTX  FITNESS  TIER
-anthropic/claude-opus-latest             $15.00      $75.00       200k   72.3  frontier
-anthropic/claude-sonnet-latest            $3.00      $15.00      1M     46.0  mid
-anthropic/claude-haiku-latest             $0.80       $4.00      200k   32.1  budget
+anthropic/claude-opus-4-latest             $15.00      $75.00       200k   72.3  frontier
+anthropic/claude-sonnet-4-latest            $3.00      $15.00      1M     46.0  mid
+anthropic/claude-haiku-4-latest             $0.80       $4.00      200k   32.1  budget
 ```
 
 ---
@@ -379,7 +379,7 @@ OpenRouter and Artificial Analysis use slightly different model IDs. The researc
 3. **Canonical alias table** (manually maintained in `model_benchmarks.json`):
    ```json
    "aliases": {
-     "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-latest",
+     "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-4-latest",
      "openai/chatgpt-4o-latest": "openai/gpt-4o"
    }
    ```

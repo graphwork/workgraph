@@ -52,7 +52,7 @@ is due to concurrent agent activity in shared working tree (not regressions).
 ```bash
 $ wg endpoints add my-or --provider openrouter \
     --url https://openrouter.ai/api/v1 \
-    --model anthropic/claude-sonnet-latest \
+    --model anthropic/claude-sonnet-4-latest \
     --api-key-file ~/.openrouter-key
 Added endpoint 'my-or' [openrouter] (set as default)
 ```
@@ -65,25 +65,25 @@ Configured endpoints:
   my-or (default)
     provider: openrouter
     url:      https://openrouter.ai/api/v1
-    model:    anthropic/claude-sonnet-latest
+    model:    anthropic/claude-sonnet-4-latest
     api_key:  (from file)
 ```
 
 ### Step 3: Create an agent with OpenRouter preferences
 ```bash
 $ wg agent create or-sonnet --role 52335de1 --tradeoff 2dc69b33 \
-    --model anthropic/claude-sonnet-latest --provider openrouter
+    --model anthropic/claude-sonnet-4-latest --provider openrouter
 Created agent 'or-sonnet' (a4724ba7)
   role:       Programmer (52335de1)
   tradeoff:   Thorough (2dc69b33)
   executor:   claude
-  model:      anthropic/claude-sonnet-latest (preferred)
+  model:      anthropic/claude-sonnet-4-latest (preferred)
   provider:   openrouter (preferred)
 ```
 
 ### Step 4: Create a task with model/provider
 ```bash
-$ wg add 'test task' --model anthropic/claude-sonnet-latest --provider openrouter
+$ wg add 'test task' --model anthropic/claude-sonnet-4-latest --provider openrouter
 Added task: test task (test-task)
 ```
 
@@ -95,7 +95,7 @@ The spawn pipeline (`src/commands/spawn/execution.rs`) sets these env vars for a
 
 | Env Var | Source | Value |
 |---------|--------|-------|
-| `WG_MODEL` | task.model > agent.preferred_model > executor.model > coordinator.model | `anthropic/claude-sonnet-latest` |
+| `WG_MODEL` | task.model > agent.preferred_model > executor.model > coordinator.model | `anthropic/claude-sonnet-4-latest` |
 | `WG_LLM_PROVIDER` | task.provider > agent.preferred_provider > role config | `openrouter` |
 | `WG_ENDPOINT` | task.endpoint > provider match > agent provider match > role config | `my-or` |
 | `WG_ENDPOINT_URL` | Resolved from endpoint config | `https://openrouter.ai/api/v1` |

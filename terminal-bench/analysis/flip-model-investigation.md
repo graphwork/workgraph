@@ -57,18 +57,18 @@ Checked 10+ TB evaluation records. Every FLIP evaluation shows the same evaluato
 
 | Task | Source | Evaluator | Task Model | FLIP Score |
 |------|--------|-----------|------------|------------|
-| tb-a-algorithm-r0 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.03 |
-| tb-a-algorithm-r1 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.065 |
-| tb-a-algorithm-r2 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.0 |
-| tb-d-algorithm-r0 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.826 |
-| tb-d-algorithm-r1 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.82 |
-| tb-e-algorithm-r0 | flip | flip:claude-sonnet-latest+claude-haiku-latest | claude-sonnet-latest | 0.9 |
+| tb-a-algorithm-r0 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.03 |
+| tb-a-algorithm-r1 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.065 |
+| tb-a-algorithm-r2 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.0 |
+| tb-d-algorithm-r0 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.826 |
+| tb-d-algorithm-r1 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.82 |
+| tb-e-algorithm-r0 | flip | flip:claude-sonnet-4-latest+claude-haiku-4-latest | claude-sonnet-4-latest | 0.9 |
 
 **All FLIP evals use the same Sonnet+Haiku evaluator pair.** The task model (Sonnet 4.6) is recorded but not used for probing.
 
 ## Finding 4: No minimax m2.7 trials exist yet
 
-The full-sweep-01 manifest (`terminal-bench/trials/manifest-full-sweep-01.json`) shows all conditions (A/C/D/E) used `model: "claude:claude-sonnet-latest"`. No minimax m2.7 trials have been run. The planned Condition F sweep (`tb-run-condition-f-sweep`) intends to use minimax m2.7.
+The full-sweep-01 manifest (`terminal-bench/trials/manifest-full-sweep-01.json`) shows all conditions (A/C/D/E) used `model: "claude:claude-sonnet-4-latest"`. No minimax m2.7 trials have been run. The planned Condition F sweep (`tb-run-condition-f-sweep`) intends to use minimax m2.7.
 
 ## Analysis: Why FLIP scores are low for Condition A
 

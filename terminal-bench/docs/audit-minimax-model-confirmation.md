@@ -194,7 +194,7 @@ The workgraph system uses different models for different roles. This is **by des
 
 The registry shows 3932 total agent entries. Of these:
 - **77 use `openrouter:minimax/minimax-m2.7`** — these are the actual trial execution agents
-- **1623 use `claude-sonnet-latest`** — evaluation/FLIP agents
+- **1623 use `claude-sonnet-4-latest`** — evaluation/FLIP agents
 - **884 use `opus`** — coordinator agents
 - Others — various system tasks
 

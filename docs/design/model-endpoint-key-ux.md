@@ -25,7 +25,7 @@ The codebase has **three partially overlapping systems** for model management:
 | System | Storage | Purpose | Status |
 |--------|---------|---------|--------|
 | `config.toml` `[models.*]` | `ModelRoutingConfig` | Per-role model+provider routing (evaluator→sonnet, triage→haiku) | Mature, well-integrated |
-| `config.toml` `model_registry` | `ModelRegistryEntry` | Built-in + user short IDs with cost/tier data (haiku→claude-haiku-latest) | Mature, used by cost tracking |
+| `config.toml` `model_registry` | `ModelRegistryEntry` | Built-in + user short IDs with cost/tier data (haiku→claude-haiku-4-latest) | Mature, used by cost tracking |
 | `models.yaml` | `ModelRegistry` / `ModelEntry` | Browsable catalog with capabilities, OpenRouter discovery | Newer, partially redundant |
 
 **Endpoints** (`wg endpoints add/list/remove/set-default/test`) are fully implemented.
@@ -167,9 +167,9 @@ Wraps existing `show_registry`. Shows the effective registry (built-in + user):
 ```
   ID           PROVIDER     MODEL                          TIER       COST (in/out per MTok)
   -----------------------------------------------------------------------------------------
-  haiku        anthropic    claude-haiku-latest      fast       $0.25/$1.25
-  sonnet       anthropic    claude-sonnet-latest       standard   $3.00/$15.00
-  opus         anthropic    claude-opus-latest                premium    $15.00/$75.00
+  haiku        anthropic    claude-haiku-4-latest      fast       $0.25/$1.25
+  sonnet       anthropic    claude-sonnet-4-latest       standard   $3.00/$15.00
+  opus         anthropic    claude-opus-4-latest                premium    $15.00/$75.00
 * gpt-4o       openai       gpt-4o                         standard   $2.50/$10.00
 
   * = default model
@@ -202,9 +202,9 @@ Added registry entry: gpt-4o
   gpt-4o / openai / gpt-4o (tier: standard)
 
 $ wg model add claude-via-openrouter --provider openrouter \
-    --model-id anthropic/claude-sonnet-latest --endpoint openrouter --tier standard
+    --model-id anthropic/claude-sonnet-4-latest --endpoint openrouter --tier standard
 Added registry entry: claude-via-openrouter
-  claude-via-openrouter / openrouter / anthropic/claude-sonnet-latest (tier: standard)
+  claude-via-openrouter / openrouter / anthropic/claude-sonnet-4-latest (tier: standard)
 ```
 
 **Error messages:**
@@ -392,9 +392,9 @@ The existing `ConfigPanelState` with its sections (Endpoints, ApiKeys, ModelTier
 │                                                           │
 │  ID           PROVIDER     MODEL                   TIER   │
 │  ─────────────────────────────────────────────────────────│
-│  haiku        anthropic    claude-haiku-latest        fast   │
-│  sonnet       anthropic    claude-sonnet-latest       std    │
-│  opus         anthropic    claude-opus-latest         prem   │
+│  haiku        anthropic    claude-haiku-4-latest        fast   │
+│  sonnet       anthropic    claude-sonnet-4-latest       std    │
+│  opus         anthropic    claude-opus-4-latest         prem   │
 │▸ gpt-4o       openai       gpt-4o                  std   │
 │                                                           │
 │  [+] Add    [x] Remove    [Enter] Edit    [*] Default     │
@@ -687,7 +687,7 @@ Coordinator: Setting up OpenRouter...
   ✓ Added endpoint 'openrouter' [openrouter]
   ✓ Stored API key securely
   ✓ Key validated — $12.34 credits remaining
-  ✓ Added model 'claude-sonnet' (anthropic/claude-sonnet-latest via openrouter)
+  ✓ Added model 'claude-sonnet' (anthropic/claude-sonnet-4-latest via openrouter)
   ✓ Set as default model
 
 Ready to go! Your tasks will now use Claude Sonnet via OpenRouter.
@@ -715,8 +715,8 @@ Welcome to workgraph setup!
 ? Testing connection... ✓ Connected (12.34 credits)
 
 ? Select default model:
-  > anthropic/claude-sonnet-latest ($3.00/$15.00 per MTok)
-    anthropic/claude-opus-latest ($15.00/$75.00 per MTok)
+  > anthropic/claude-sonnet-4-latest ($3.00/$15.00 per MTok)
+    anthropic/claude-opus-4-latest ($15.00/$75.00 per MTok)
     openai/gpt-4o ($2.50/$10.00 per MTok)
 
 Setup complete! Run 'wg service start' to begin.

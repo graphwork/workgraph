@@ -33,9 +33,9 @@ standard = "sonnet"
 
 | ID | Provider | Full Model | Tier | Cost (in/out per MTok) |
 |----|----------|-----------|------|----------------------|
-| `haiku` | anthropic | `claude-haiku-latest` | fast | $0.25/$1.25 |
-| `sonnet` | anthropic | `claude-sonnet-latest` | standard | $3.00/$15.00 |
-| `opus` | anthropic | `claude-opus-latest` | premium | $15.00/$75.00 |
+| `haiku` | anthropic | `claude-haiku-4-latest` | fast | $0.25/$1.25 |
+| `sonnet` | anthropic | `claude-sonnet-4-latest` | standard | $3.00/$15.00 |
+| `opus` | anthropic | `claude-opus-4-latest` | premium | $15.00/$75.00 |
 
 **Merging logic** (`effective_registry()` at `src/config.rs:1113-1126`):
 User entries override built-in entries with the same ID. Built-in entries not
@@ -67,7 +67,7 @@ Anthropic, OpenAI, Google, DeepSeek, Meta-Llama, and Qwen models — all using
 `provider: "openrouter"` by default.
 
 **Key difference:** The YAML registry uses `provider/model-name` format IDs (e.g.,
-`anthropic/claude-opus-latest`) and a 3-tier system (`frontier`/`mid`/`budget`), while
+`anthropic/claude-opus-4-latest`) and a 3-tier system (`frontier`/`mid`/`budget`), while
 the config registry uses short IDs (`haiku`/`sonnet`/`opus`) and a 3-tier system
 (`fast`/`standard`/`premium`).
 

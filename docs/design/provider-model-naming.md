@@ -46,7 +46,7 @@ model_id := <opaque string passed to the provider's API>
 | User writes | Provider | Executor | API model ID sent |
 |---|---|---|---|
 | `claude:opus` | anthropic | claude (CLI) | `opus` |
-| `claude:claude-sonnet-latest` | anthropic | claude (CLI) | `claude-sonnet-latest` |
+| `claude:claude-sonnet-4-latest` | anthropic | claude (CLI) | `claude-sonnet-4-latest` |
 | `openrouter:deepseek/deepseek-v3.2` | openrouter | native | `deepseek/deepseek-v3.2` |
 | `openrouter:minimax/minimax-m2.5` | openrouter | native | `minimax/minimax-m2.5` |
 | `openai:gpt-5` | openai | native | `gpt-5` |

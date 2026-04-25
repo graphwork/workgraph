@@ -1941,7 +1941,7 @@ mod tests {
             "fetched_at": "2026-04-01T00:00:00Z",
             "models": [
                 {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
-                {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet"},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet"},
             ]
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();

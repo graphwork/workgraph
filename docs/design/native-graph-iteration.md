@@ -45,7 +45,7 @@ This preserves backward compatibility: existing `Status` serialization, CLI outp
 An agent signals self-retry by emitting a special directive in its output:
 
 ```
-__WG_ITERATE__:{"reason":"quality below threshold","agent":"opus","model":"claude-opus-latest"}
+__WG_ITERATE__:{"reason":"quality below threshold","agent":"opus","model":"claude-opus-4-latest"}
 ```
 
 The coordinator detects this directive when the task transitions to `Done`. On detection:
@@ -249,7 +249,7 @@ When an agent is assigned to an iterating task, the prompt includes:
 
 This task has been iterated {N} time(s).
 
-Iteration 1: agent=opus model=claude-opus-latest reason="initial attempt"
+Iteration 1: agent=opus model=claude-opus-4-latest reason="initial attempt"
   Summary: "Implemented X, Y, Z but performance was poor"
 
 Iteration 2: agent=sonnet model=claude-sonnet-4 reason="performance below threshold"
@@ -324,9 +324,9 @@ task-c     ● Done
 ```
 Status: Done (iteration 3 of 3)
 Iteration History:
-  1. agent=opus model=claude-opus-latest  2026-04-10  "Initial implementation"
+  1. agent=opus model=claude-opus-4-latest  2026-04-10  "Initial implementation"
   2. agent=sonnet model=claude-sonnet-4  2026-04-10  "Performance fix — introduced bug in W"
-  3. agent=opus model=claude-opus-latest  2026-04-10  "Bug fix for W"
+  3. agent=opus model=claude-opus-4-latest  2026-04-10  "Bug fix for W"
 ```
 
 **Downstream iteration notification:**

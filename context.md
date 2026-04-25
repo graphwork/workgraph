@@ -49,7 +49,7 @@ The system treats coordinators as ephemeral agents that can be discarded and rep
 - Tradeoffs: constraints/priorities (e.g., "Careful" → reliability over speed)
 - Evaluation: four-dimensional scoring + FLIP (fidelity via latent intent probing)
 - FLIP threshold: 0.70; sub-threshold triggers Opus verification agent
-- **CRITICAL BUG**: FLIP hard-codes `claude-opus-latest` model — not configurable through executor or per-task model settings. This caused coordinator-21 exhaustion.
+- **CRITICAL BUG**: FLIP hard-codes `claude-opus-4-latest` model — not configurable through executor or per-task model settings. This caused coordinator-21 exhaustion.
 - Evolution: performance data → role/tradeoff creation/retirement
 
 **Executor & Model Selection**

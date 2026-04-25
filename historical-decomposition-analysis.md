@@ -21,7 +21,7 @@ This pattern is driven by **executor routing logic** rather than model capabilit
 
 1. **agent-14967: research-why-opus**
    - **Executor**: claude  
-   - **Model**: claude-sonnet-latest
+   - **Model**: claude-sonnet-4-latest
    - **Behavior**: Created 4 subtasks using `wg add`:
      - "Trace agent spawning paths" (trace-agent-spawning)
      - "Analyze prompt construction differences" (analyze-prompt-construction) 
@@ -36,7 +36,7 @@ This pattern is driven by **executor routing logic** rather than model capabilit
 
 2. **agent-15047: trace-agent-spawning** 
    - **Executor**: claude
-   - **Model**: claude-sonnet-latest
+   - **Model**: claude-sonnet-4-latest
    - **Status**: In progress (spawned by decomposition from research-why-opus)
    - **Evidence**: Task was created as a subtask and properly assigned
 
@@ -69,7 +69,7 @@ This pattern is driven by **executor routing logic** rather than model capabilit
 
 **Decomposition Pattern:**
 - **Executor**: claude
-- **Models**: claude-sonnet-latest (Anthropic)
+- **Models**: claude-sonnet-4-latest (Anthropic)
 - **Routing logic**: Anthropic models → claude executor
 
 **Monolithic Pattern:**  
@@ -151,5 +151,5 @@ The behavior difference **IS** about:
 ---
 
 **Analysis completed**: April 11, 2026  
-**Agent**: agent-15050 (claude executor, claude-sonnet-latest)  
+**Agent**: agent-15050 (claude executor, claude-sonnet-4-latest)  
 **Note**: This analysis itself demonstrates decomposition behavior - it was created as a subtask by research-why-opus

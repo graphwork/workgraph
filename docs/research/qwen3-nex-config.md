@@ -171,7 +171,7 @@ The coordinator sets these env vars for spawned agents:
 - `WG_ENDPOINT_URL=https://lambda01.tail334fe6.ts.net:30000/v1` — overrides endpoint URLs
 - `WG_LLM_PROVIDER=anthropic` — forces Anthropic provider for bare model names
 - `WG_API_KEY=none` — dummy API key
-- `WG_MODEL=claude-opus-latest` — default model for the agent
+- `WG_MODEL=claude-opus-4-latest` — default model for the agent
 
 These must be unset or overridden when targeting local models from agent context.
 

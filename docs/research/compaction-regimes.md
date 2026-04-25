@@ -26,9 +26,9 @@
 
 | Model | Context Window | Max Output | Notes |
 |-------|---------------|------------|-------|
-| claude-opus-latest | 200K (1M beta) | 128K | 1M requires `context-1m-2025-08-07` beta header, usage tier 4 |
-| claude-sonnet-latest | 200K (1M beta) | 64K | Same 1M beta requirement |
-| claude-haiku-latest | 200K | 64K | No 1M beta |
+| claude-opus-4-latest | 200K (1M beta) | 128K | 1M requires `context-1m-2025-08-07` beta header, usage tier 4 |
+| claude-sonnet-4-latest | 200K (1M beta) | 64K | Same 1M beta requirement |
+| claude-haiku-4-latest | 200K | 64K | No 1M beta |
 | (legacy) claude-sonnet-4.5, opus-4.5, opus-4.1 | 200K | 64K / 32K | |
 
 ### Auto-Compaction Behavior
@@ -40,7 +40,7 @@
 ```python
 response = client.beta.messages.create(
     betas=["compact-2026-01-12"],
-    model="claude-opus-latest",
+    model="claude-opus-4-latest",
     max_tokens=4096,
     messages=messages,
     context_management={
@@ -76,7 +76,7 @@ response = client.beta.messages.create(
 }
 ```
 
-**Supported models:** claude-opus-latest and claude-sonnet-latest only (as of 2026-03).
+**Supported models:** claude-opus-4-latest and claude-sonnet-4-latest only (as of 2026-03).
 
 **Streaming:** Compaction block arrives as `content_block_start` with type `compaction`, followed by a single `content_block_delta` with the complete summary (no incremental streaming), then `content_block_stop`.
 
@@ -93,7 +93,7 @@ Content-Type: application/json
 anthropic-version: 2023-06-01
 
 {
-  "model": "claude-opus-latest",
+  "model": "claude-opus-4-latest",
   "messages": [{"role": "user", "content": "..."}]
 }
 # Response: {"input_tokens": 1234}
@@ -298,10 +298,10 @@ OpenAI recommends client-side context management:
 # Anthropic: no model metadata API for context size
 # Must hardcode or use this mapping:
 ANTHROPIC_CONTEXT_WINDOWS = {
-    "claude-opus-latest": 200_000,
-    "claude-sonnet-latest": 200_000,
-    "claude-haiku-latest": 200_000,
-    "claude-haiku-latest": 200_000,
+    "claude-opus-4-latest": 200_000,
+    "claude-sonnet-4-latest": 200_000,
+    "claude-haiku-4-latest": 200_000,
+    "claude-haiku-4-latest": 200_000,
 }
 
 # OpenRouter: programmatic API available

@@ -380,7 +380,7 @@ TB tasks run in custom Docker images. The F condition needs the wg binary availa
 
 ### 6.3 Model Sensitivity
 
-Results are model-dependent. minimax-m2.7 is the benchmark model, but the tasks may have very different pass rates on other models. Run calibration with at least one other model (e.g., claude-sonnet-latest) to check robustness.
+Results are model-dependent. minimax-m2.7 is the benchmark model, but the tasks may have very different pass rates on other models. Run calibration with at least one other model (e.g., claude-sonnet-4-latest) to check robustness.
 
 ### 6.4 Task Selection Bias
 

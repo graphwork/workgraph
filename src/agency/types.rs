@@ -323,7 +323,7 @@ pub struct Agent {
     )]
     pub executor: String,
     /// Preferred model for this agent (e.g., "opus", "sonnet", "haiku",
-    /// or a full model ID like "claude-opus-latest").
+    /// or a full model ID like "claude-opus-4-latest").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model: Option<String>,
     /// Preferred provider for this agent (e.g., "anthropic", "openrouter").

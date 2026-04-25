@@ -6,7 +6,7 @@
 //! uniform interface.
 //!
 //! Use `create_provider()` to route a model string to the appropriate backend:
-//! - Bare name (`claude-sonnet-latest`) → Anthropic native API
+//! - Bare name (`claude-sonnet-4-latest`) → Anthropic native API
 //! - Prefixed (`openai/gpt-4o`, `deepseek/deepseek-chat`) → OpenAI-compatible
 
 use std::path::Path;
@@ -96,12 +96,12 @@ pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Prov
 /// and no endpoint is set — these bare names fall through to the
 /// provider-resolution default, which is `"openai"`, so we need an
 /// escape hatch for well-known Anthropic models like `"opus"`,
-/// `"sonnet"`, `"haiku"`, and `"claude-sonnet-latest"`.
+/// `"sonnet"`, `"haiku"`, and `"claude-sonnet-4-latest"`.
 ///
 /// Case-insensitive. Returns true for:
 /// - `"opus"`, `"sonnet"`, `"haiku"` (short aliases for the three tiers)
-/// - Anything starting with `"claude"` (e.g. `"claude-sonnet-latest"`,
-///   `"claude-opus-latest"`, `"claude3"`, `"Claude-Sonnet"`)
+/// - Anything starting with `"claude"` (e.g. `"claude-sonnet-4-latest"`,
+///   `"claude-opus-4-latest"`, `"claude3"`, `"Claude-Sonnet"`)
 fn looks_like_claude_model(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     matches!(lower.as_str(), "opus" | "sonnet" | "haiku") || lower.starts_with("claude")
@@ -519,9 +519,9 @@ mod tests {
 
     #[test]
     fn claude_heuristic_matches_claude_prefix() {
-        assert!(looks_like_claude_model("claude-sonnet-latest"));
-        assert!(looks_like_claude_model("claude-opus-latest"));
-        assert!(looks_like_claude_model("claude-haiku-latest"));
+        assert!(looks_like_claude_model("claude-sonnet-4-latest"));
+        assert!(looks_like_claude_model("claude-opus-4-latest"));
+        assert!(looks_like_claude_model("claude-haiku-4-latest"));
         assert!(looks_like_claude_model("claude3"));
         assert!(looks_like_claude_model("claude-3-5-sonnet-20241022"));
     }

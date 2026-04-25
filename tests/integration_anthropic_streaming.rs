@@ -102,7 +102,7 @@ async fn anthropic_streaming_text_content_accumulation() {
     let events = vec![
         (
             "message_start",
-            r#"{"type":"message_start","message":{"id":"msg_test1","type":"message","role":"assistant","content":[],"model":"claude-haiku-latest","stop_reason":null,"usage":{"input_tokens":15,"output_tokens":0}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_test1","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-latest","stop_reason":null,"usage":{"input_tokens":15,"output_tokens":0}}}"#,
         ),
         (
             "content_block_start",
@@ -134,13 +134,13 @@ async fn anthropic_streaming_text_content_accumulation() {
     let sse_body = build_anthropic_sse(&events);
     let base_url = mock_server_one_shot(200, "text/event-stream", sse_body);
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(true);
 
     let response = client
-        .send(&test_request("claude-haiku-latest"))
+        .send(&test_request("claude-haiku-4-latest"))
         .await
         .unwrap();
 
@@ -165,7 +165,7 @@ async fn anthropic_streaming_tool_call_assembly() {
     let events = vec![
         (
             "message_start",
-            r#"{"type":"message_start","message":{"id":"msg_tool1","type":"message","role":"assistant","content":[],"model":"claude-haiku-latest","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":0}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_tool1","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-latest","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":0}}}"#,
         ),
         (
             "content_block_start",
@@ -197,13 +197,13 @@ async fn anthropic_streaming_tool_call_assembly() {
     let sse_body = build_anthropic_sse(&events);
     let base_url = mock_server_one_shot(200, "text/event-stream", sse_body);
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(true);
 
     let response = client
-        .send(&test_request_with_tools("claude-haiku-latest"))
+        .send(&test_request_with_tools("claude-haiku-4-latest"))
         .await
         .unwrap();
 
@@ -236,7 +236,7 @@ async fn anthropic_streaming_text_and_tool_call() {
     let events = vec![
         (
             "message_start",
-            r#"{"type":"message_start","message":{"id":"msg_mixed","type":"message","role":"assistant","content":[],"model":"claude-haiku-latest","stop_reason":null,"usage":{"input_tokens":25,"output_tokens":0}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_mixed","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-latest","stop_reason":null,"usage":{"input_tokens":25,"output_tokens":0}}}"#,
         ),
         // Text block first
         (
@@ -274,13 +274,13 @@ async fn anthropic_streaming_text_and_tool_call() {
     let sse_body = build_anthropic_sse(&events);
     let base_url = mock_server_one_shot(200, "text/event-stream", sse_body);
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(true);
 
     let response = client
-        .send(&test_request_with_tools("claude-haiku-latest"))
+        .send(&test_request_with_tools("claude-haiku-4-latest"))
         .await
         .unwrap();
 
@@ -316,20 +316,20 @@ async fn anthropic_non_streaming_fallback() {
         "type": "message",
         "role": "assistant",
         "content": [{"type": "text", "text": "Hello from non-streaming!"}],
-        "model": "claude-haiku-latest",
+        "model": "claude-haiku-4-latest",
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 10, "output_tokens": 5}
     });
 
     let base_url = mock_server_one_shot(200, "application/json", response_body.to_string());
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(false);
 
     let response = client
-        .send(&test_request("claude-haiku-latest"))
+        .send(&test_request("claude-haiku-4-latest"))
         .await
         .unwrap();
 
@@ -357,20 +357,20 @@ async fn anthropic_non_streaming_tool_call() {
         "content": [
             {"type": "tool_use", "id": "toolu_ns1", "name": "bash", "input": {"command": "echo hello"}}
         ],
-        "model": "claude-haiku-latest",
+        "model": "claude-haiku-4-latest",
         "stop_reason": "tool_use",
         "usage": {"input_tokens": 25, "output_tokens": 12}
     });
 
     let base_url = mock_server_one_shot(200, "application/json", response_body.to_string());
 
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(false);
 
     let response = client
-        .send(&test_request_with_tools("claude-haiku-latest"))
+        .send(&test_request_with_tools("claude-haiku-4-latest"))
         .await
         .unwrap();
 
@@ -399,7 +399,7 @@ async fn anthropic_streaming_is_default() {
     let events = vec![
         (
             "message_start",
-            r#"{"type":"message_start","message":{"id":"msg_default_stream","type":"message","role":"assistant","content":[],"model":"claude-haiku-latest","stop_reason":null,"usage":{"input_tokens":5,"output_tokens":0}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_default_stream","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-latest","stop_reason":null,"usage":{"input_tokens":5,"output_tokens":0}}}"#,
         ),
         (
             "content_block_start",
@@ -424,12 +424,12 @@ async fn anthropic_streaming_is_default() {
     let base_url = mock_server_one_shot(200, "text/event-stream", sse_body);
 
     // No .with_streaming() call — should default to streaming
-    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url);
 
     let response = client
-        .send(&test_request("claude-haiku-latest"))
+        .send(&test_request("claude-haiku-4-latest"))
         .await
         .unwrap();
     assert_eq!(response.id, "msg_default_stream");
@@ -511,12 +511,12 @@ async fn anthropic_streaming_api_error_propagates() {
 
     let base_url = mock_server_one_shot(401, "application/json", error_body.to_string());
 
-    let client = AnthropicClient::new("bad-key".to_string(), "claude-haiku-latest")
+    let client = AnthropicClient::new("bad-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&base_url)
         .with_streaming(true);
 
-    let result = client.send(&test_request("claude-haiku-latest")).await;
+    let result = client.send(&test_request("claude-haiku-4-latest")).await;
     assert!(result.is_err());
     let err_msg = format!("{:#}", result.unwrap_err());
     assert!(
@@ -545,7 +545,7 @@ async fn anthropic_and_openai_produce_identical_canonical_format() {
     let anthropic_events = vec![
         (
             "message_start",
-            r#"{"type":"message_start","message":{"id":"msg_journal","type":"message","role":"assistant","content":[],"model":"claude-haiku-latest","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}"#,
+            r#"{"type":"message_start","message":{"id":"msg_journal","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-latest","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}"#,
         ),
         (
             "content_block_start",
@@ -579,7 +579,7 @@ async fn anthropic_and_openai_produce_identical_canonical_format() {
     });
     let openai_url = mock_server_one_shot(200, "application/json", openai_body.to_string());
 
-    let anthropic_client = AnthropicClient::new("test-key".to_string(), "claude-haiku-latest")
+    let anthropic_client = AnthropicClient::new("test-key".to_string(), "claude-haiku-4-latest")
         .unwrap()
         .with_base_url(&anthropic_url);
 

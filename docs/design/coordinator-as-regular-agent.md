@@ -349,14 +349,14 @@ The coordinator's job — interpreting user intent, decomposing tasks, monitorin
 **Configuration hierarchy** (same as regular agents):
 
 ```
-coordinator_model (explicit) > wg config --model > executor default > claude-sonnet-latest
+coordinator_model (explicit) > wg config --model > executor default > claude-sonnet-4-latest
 ```
 
 Add a `coordinator_model` field to config.toml:
 
 ```toml
 [coordinator]
-model = "claude-opus-latest"    # Optional override for coordinator specifically
+model = "claude-opus-4-latest"    # Optional override for coordinator specifically
 max_agents = 4
 poll_interval = 60
 ```

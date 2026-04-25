@@ -32,7 +32,7 @@ X-OpenRouter-Title: <YOUR_APP_NAME>
 `provider/model-name` format:
 ```
 openai/gpt-5.2
-anthropic/claude-sonnet-latest-20250514
+anthropic/claude-sonnet-4-latest-20250514
 minimax/minimax-m2.5-20260211
 deepseek/deepseek-chat-v3
 google/gemini-2.5-pro-preview

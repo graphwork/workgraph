@@ -65,8 +65,8 @@ No API key needed for local models.
 │                     Model Registry                          │
 │  "What models exist and what do they cost?"                 │
 │                                                             │
-│  anthropic/claude-opus-latest    frontier  $5.00/$25.00/MTok   │
-│  anthropic/claude-sonnet-latest  mid       $3.00/$15.00/MTok   │
+│  anthropic/claude-opus-4-latest    frontier  $5.00/$25.00/MTok   │
+│  anthropic/claude-sonnet-4-latest  mid       $3.00/$15.00/MTok   │
 │  openai/gpt-4o               mid       $2.50/$10.00/MTok   │
 │  ...                                                        │
 └─────────────┬───────────────────────────────────────────────┘
@@ -138,15 +138,15 @@ Example output:
 ```
 MODEL                               TIER          IN/1M      OUT/1M        CTX CAPABILITIES
 ----------------------------------------------------------------------------------------------------
-anthropic/claude-haiku-latest          budget        0.80       4.00       200k coding, analysis
-anthropic/claude-opus-latest           frontier      5.00      25.00         1M coding, analysis, creative, reasoning
-anthropic/claude-sonnet-latest *       mid           3.00      15.00         1M coding, analysis, creative
+anthropic/claude-haiku-4-latest          budget        0.80       4.00       200k coding, analysis
+anthropic/claude-opus-4-latest           frontier      5.00      25.00         1M coding, analysis, creative, reasoning
+anthropic/claude-sonnet-4-latest *       mid           3.00      15.00         1M coding, analysis, creative
 openai/gpt-4o                       mid           2.50      10.00       128k coding, analysis, creative
 google/gemini-2.5-pro               mid           1.25      10.00         1M coding, analysis, creative, reasoning
 deepseek/deepseek-chat-v3           budget        0.30       0.88       164k coding, analysis
 ...
 
-  * = default model (anthropic/claude-sonnet-latest)
+  * = default model (anthropic/claude-sonnet-4-latest)
 ```
 
 **Tiers:**
@@ -222,7 +222,7 @@ wg models add "mistral/mistral-large" \
 Set the default model for the coordinator.
 
 ```bash
-wg models set-default "anthropic/claude-sonnet-latest"
+wg models set-default "anthropic/claude-sonnet-4-latest"
 ```
 
 The model must exist in the registry (built-in or custom).
@@ -257,7 +257,7 @@ wg endpoints add myep --provider openai --api-key-file ~/.secrets/openai.key
 wg endpoints add ollama --provider local --url http://localhost:11434/v1
 
 # Set a default model for the endpoint
-wg endpoints add openrouter --provider openrouter --model anthropic/claude-sonnet-latest
+wg endpoints add openrouter --provider openrouter --model anthropic/claude-sonnet-4-latest
 
 # Add to global config (shared across all projects)
 wg endpoints add openrouter --provider openrouter --global
@@ -672,8 +672,8 @@ The native executor auto-detects the provider from the model string:
 
 | Model string format | Detected provider | Example |
 |---|---|---|
-| Bare name (no `/`) | `anthropic` | `claude-sonnet-latest` |
-| `anthropic/` prefix | `anthropic` (prefix stripped) | `anthropic/claude-sonnet-latest` |
+| Bare name (no `/`) | `anthropic` | `claude-sonnet-4-latest` |
+| `anthropic/` prefix | `anthropic` (prefix stripped) | `anthropic/claude-sonnet-4-latest` |
 | Other `provider/model` | `openai`-compatible | `openai/gpt-4o`, `deepseek/deepseek-chat-v3` |
 
 You can override auto-detection per role:
@@ -684,7 +684,7 @@ model = "gpt-4o-mini"
 provider = "openai"         # Force OpenAI-compatible provider
 
 [models.evaluator]
-model = "claude-sonnet-latest"
+model = "claude-sonnet-4-latest"
 provider = "anthropic"      # Explicit Anthropic (same as auto-detected)
 ```
 

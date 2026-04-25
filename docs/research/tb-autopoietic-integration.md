@@ -310,7 +310,7 @@ issues), `timeout` sends SIGALRM (signal 14, exit 124).
 **Error**: `Failed to extract valid JSON from evaluator output after 3 attempts.
 Last response: The cargo test command I ran earlier has completed successfully...`
 
-**Root cause**: The evaluator model (claude-sonnet-latest) is returning
+**Root cause**: The evaluator model (claude-sonnet-4-latest) is returning
 conversational text instead of the expected JSON evaluation object
 `{"score": 0.85, "dimensions": {...}, "notes": "..."}`. This happens because:
 

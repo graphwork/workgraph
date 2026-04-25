@@ -558,7 +558,7 @@ export OPENROUTER_API_KEY=<key>
 
 # Calibration model: Claude Haiku via Anthropic (optional)
 export ANTHROPIC_API_KEY=<key>
-# Model string: "claude-haiku-latest"
+# Model string: "claude-haiku-4-latest"
 
 # Workgraph native executor config
 # In .workgraph/config.toml:

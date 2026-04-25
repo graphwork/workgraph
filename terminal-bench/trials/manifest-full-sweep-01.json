@@ -16,7 +16,7 @@
     "ml"
   ],
   "replicas": 3,
-  "model": "claude:claude-sonnet-latest",
+  "model": "claude:claude-sonnet-4-latest",
   "trial_task_ids": [
     "tb-a-file-ops-r0",
     "tb-a-file-ops-r1",

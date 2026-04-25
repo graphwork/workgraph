@@ -179,7 +179,7 @@ impl Tool for SummarizeTool {
             std::env::var("WG_MODEL")
                 .ok()
                 .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "claude-sonnet-latest".to_string())
+                .unwrap_or_else(|| "claude-sonnet-4-latest".to_string())
         };
 
         let provider =

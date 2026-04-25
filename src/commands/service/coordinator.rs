@@ -3230,7 +3230,7 @@ pub(crate) fn requires_native_executor(model: &str, config: &Config) -> bool {
         return entry.provider != "anthropic";
     }
     // Bare model names without registry entries are assumed Anthropic-compatible
-    // (e.g. "claude-sonnet-latest", "haiku", "sonnet", "opus")
+    // (e.g. "claude-sonnet-4-latest", "haiku", "sonnet", "opus")
     false
 }
 
@@ -5337,11 +5337,11 @@ mod tests {
     fn test_does_not_require_native_for_anthropic_models() {
         let config = Config::default();
         assert!(!requires_native_executor(
-            "anthropic/claude-sonnet-latest",
+            "anthropic/claude-sonnet-4-latest",
             &config
         ));
         assert!(!requires_native_executor(
-            "anthropic/claude-opus-latest",
+            "anthropic/claude-opus-4-latest",
             &config
         ));
         assert!(!requires_native_executor(
@@ -5354,7 +5354,7 @@ mod tests {
     fn test_does_not_require_native_for_bare_model_names() {
         // Bare model names (no slash) are assumed Anthropic / Claude CLI compatible
         let config = Config::default();
-        assert!(!requires_native_executor("claude-sonnet-latest", &config));
+        assert!(!requires_native_executor("claude-sonnet-4-latest", &config));
         assert!(!requires_native_executor("haiku", &config));
         assert!(!requires_native_executor("sonnet", &config));
         assert!(!requires_native_executor("opus", &config));
@@ -5405,7 +5405,7 @@ mod tests {
         assert!(!requires_native_executor("claude:opus", &config));
         assert!(!requires_native_executor("claude:sonnet", &config));
         assert!(!requires_native_executor(
-            "claude:claude-sonnet-latest",
+            "claude:claude-sonnet-4-latest",
             &config
         ));
     }

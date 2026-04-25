@@ -14,7 +14,7 @@
     "debugging"
   ],
   "replicas": 3,
-  "model": "claude:claude-sonnet-latest",
+  "model": "claude:claude-sonnet-4-latest",
   "trial_task_ids": [
     "tb-rerun-01-a-ml-r0",
     "tb-rerun-01-a-ml-r1",

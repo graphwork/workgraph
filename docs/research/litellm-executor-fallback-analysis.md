@@ -161,7 +161,7 @@ This path **never touches wg's executor pipeline at all**. It's a self-contained
 
 When the TB adapter runs **inside** a wg agent (i.e., wg spawns an agent that runs the TB benchmark), the parent service sets env vars:
 ```
-WG_MODEL=claude-opus-latest    # parent service's model
+WG_MODEL=claude-opus-4-latest    # parent service's model
 WG_EXECUTOR_TYPE=claude       # parent's executor
 WG_AGENT_ID=agent-NNN        # parent's agent ID
 ```

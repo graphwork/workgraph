@@ -110,11 +110,11 @@ Arena results should feed back into the registry or a separate stats file:
 ```yaml
 # .workgraph/arena-stats.yaml
 win_rates:
-  anthropic/claude-sonnet-latest:
+  anthropic/claude-sonnet-4-latest:
     tasks_entered: 42
     wins: 28
     avg_flip_score: 0.73
-  anthropic/claude-haiku-latest:
+  anthropic/claude-haiku-4-latest:
     tasks_entered: 42
     wins: 8
     avg_flip_score: 0.61

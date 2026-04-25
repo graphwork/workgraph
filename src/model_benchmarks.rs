@@ -38,7 +38,7 @@ pub struct RegistrySource {
 /// Benchmark + fitness data for a single model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelBenchmark {
-    /// OpenRouter model ID (e.g. "anthropic/claude-opus-latest").
+    /// OpenRouter model ID (e.g. "anthropic/claude-opus-4-latest").
     pub id: String,
     /// Human-readable name.
     pub name: String,
@@ -327,8 +327,8 @@ fn median(values: &[f64]) -> Option<f64> {
 ///
 /// Each entry is keyed by a **prefix** of the OpenRouter model ID so it
 /// matches across version suffixes and -latest aliases (e.g.
-/// "anthropic/claude-sonnet" matches both "anthropic/claude-sonnet-latest"
-/// and "anthropic/claude-sonnet-latest").
+/// "anthropic/claude-sonnet" matches both "anthropic/claude-sonnet-4-latest"
+/// and "anthropic/claude-sonnet-4-latest").
 struct CuratedEntry {
     prefix: &'static str,
     benchmarks: Benchmarks,
@@ -2573,14 +2573,14 @@ mod tests {
     #[test]
     fn test_apply_curated_benchmarks_exact_match() {
         let mut registry = make_test_registry(vec![make_test_model(
-            "anthropic/claude-sonnet-latest",
+            "anthropic/claude-sonnet-4-latest",
             "budget",
             None,
         )]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 1);
 
-        let model = registry.models.get("anthropic/claude-sonnet-latest").unwrap();
+        let model = registry.models.get("anthropic/claude-sonnet-4-latest").unwrap();
         assert!(model.benchmarks.coding_index.is_some());
         assert!(model.benchmarks.intelligence_index.is_some());
         assert!(model.benchmarks.agentic.is_some());
@@ -2616,7 +2616,7 @@ mod tests {
 
     #[test]
     fn test_apply_curated_benchmarks_does_not_overwrite() {
-        let mut model = make_test_model("anthropic/claude-sonnet-latest", "frontier", None);
+        let mut model = make_test_model("anthropic/claude-sonnet-4-latest", "frontier", None);
         model.benchmarks = Benchmarks {
             coding_index: Some(99.0),
             intelligence_index: Some(99.0),
@@ -2633,7 +2633,7 @@ mod tests {
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 0, "Should not overwrite existing benchmark data");
 
-        let model = registry.models.get("anthropic/claude-sonnet-latest").unwrap();
+        let model = registry.models.get("anthropic/claude-sonnet-4-latest").unwrap();
         assert_eq!(model.benchmarks.coding_index, Some(99.0));
         assert_eq!(model.popularity.weekly_rank, Some(1));
     }
@@ -2644,7 +2644,7 @@ mod tests {
 
         let models = vec![
             OpenRouterModel {
-                id: "anthropic/claude-sonnet-latest".into(),
+                id: "anthropic/claude-sonnet-4-latest".into(),
                 name: "Claude Sonnet 4.6".into(),
                 description: "".into(),
                 context_length: Some(200_000),
@@ -2674,7 +2674,7 @@ mod tests {
         let registry = build_from_openrouter(&models);
 
         // Claude Sonnet should have curated benchmarks.
-        let sonnet = registry.models.get("anthropic/claude-sonnet-latest").unwrap();
+        let sonnet = registry.models.get("anthropic/claude-sonnet-4-latest").unwrap();
         assert!(
             sonnet.benchmarks.coding_index.is_some(),
             "Known model should have curated benchmark data"
@@ -2708,7 +2708,7 @@ mod tests {
         use crate::executor::native::openai_client::{OpenRouterModel, OpenRouterPricing};
 
         let models = vec![OpenRouterModel {
-            id: "anthropic/claude-sonnet-latest".into(),
+            id: "anthropic/claude-sonnet-4-latest".into(),
             name: "Claude Sonnet 4.6".into(),
             description: "".into(),
             context_length: Some(200_000),
@@ -2724,7 +2724,7 @@ mod tests {
         let mut registry = build_from_openrouter(&models);
         compute_fitness_scores(&mut registry);
 
-        let sonnet = registry.models.get("anthropic/claude-sonnet-latest").unwrap();
+        let sonnet = registry.models.get("anthropic/claude-sonnet-4-latest").unwrap();
         assert!(
             sonnet.fitness.score.is_some(),
             "Curated model should get a fitness score"

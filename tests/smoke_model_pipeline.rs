@@ -319,7 +319,7 @@ fn smoke_fresh_repo_short_name_resolution() {
         &wg_dir,
         &[
             "minimax/minimax-m2.7",
-            "anthropic/claude-sonnet-latest",
+            "anthropic/claude-sonnet-4-latest",
             "openai/gpt-4o",
         ],
     );
@@ -392,7 +392,7 @@ fn smoke_no_silent_claude_fallback_on_add() {
 
     write_model_cache(
         &wg_dir,
-        &["minimax/minimax-m2.7", "anthropic/claude-sonnet-latest"],
+        &["minimax/minimax-m2.7", "anthropic/claude-sonnet-4-latest"],
     );
 
     // Add task with explicit non-Claude model.
@@ -670,7 +670,7 @@ fn smoke_ranking_tier_buckets_reasonable() {
 fn smoke_curated_benchmarks_populate_scores() {
     // Create a model with curated-style benchmark data (like Claude Sonnet).
     let mut registry = make_registry(vec![ModelBenchmark {
-        id: "anthropic/claude-sonnet-latest".to_string(),
+        id: "anthropic/claude-sonnet-4-latest".to_string(),
         name: "Claude Sonnet 4".to_string(),
         pricing: BenchmarkPricing {
             input_per_mtok: 3.0,
@@ -701,7 +701,7 @@ fn smoke_curated_benchmarks_populate_scores() {
     // Compute fitness — benchmark data should produce real scores.
     model_benchmarks::compute_fitness_scores(&mut registry);
 
-    let model = registry.models.get("anthropic/claude-sonnet-latest").unwrap();
+    let model = registry.models.get("anthropic/claude-sonnet-4-latest").unwrap();
     assert!(
         model.fitness.score.is_some(),
         "Model with benchmark data should have a fitness score after computation"
@@ -729,7 +729,7 @@ fn smoke_short_name_resolution_unit() {
         "fetched_at": "2026-04-01T00:00:00Z",
         "models": [
             {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
-            {"id": "anthropic/claude-sonnet-latest", "name": "Claude Sonnet"},
+            {"id": "anthropic/claude-sonnet-4-latest", "name": "Claude Sonnet"},
             {"id": "openai/gpt-4o", "name": "GPT-4o"},
         ]
     });

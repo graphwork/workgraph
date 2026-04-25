@@ -36,7 +36,7 @@ The multi-model live trial tested 5 models on real workgraph tasks through the n
 
 | Model | Strengths | Weaknesses | Best For |
 |-------|-----------|------------|----------|
-| **claude-sonnet-latest** | Excellent tool use, cache-efficient (35k input), high quality output | Higher cost per token, requires Claude executor path | Quality-critical tasks, complex reasoning |
+| **claude-sonnet-4-latest** | Excellent tool use, cache-efficient (35k input), high quality output | Higher cost per token, requires Claude executor path | Quality-critical tasks, complex reasoning |
 | **gemini-2.5-flash** | Fastest (15s completion), correct tool use, very cheap ($0.30/MTok input) | Slightly lower output quality than Claude/MiniMax | High-volume tasks, cost-sensitive workloads, simple-to-medium tasks |
 
 ### Tier 2: Viable with Caveats
@@ -60,7 +60,7 @@ The multi-model trial validated that automatic model routing works end-to-end:
 - Verify gates work for all models
 
 **Default routing policy:**
-- `claude-sonnet-latest` for complex tasks (reasoning, multi-step, quality-critical)
+- `claude-sonnet-4-latest` for complex tasks (reasoning, multi-step, quality-critical)
 - `gemini-2.5-flash` for simple tasks (documentation, config, straightforward code changes)
 - `minimax-m2.7` as a fallback/alternative for reasoning tasks where Claude is unavailable
 - Avoid `qwen3-coder` entirely until tool use reliability improves
@@ -128,7 +128,7 @@ The multi-model trial validated that automatic model routing works end-to-end:
 1. **Separate-agent verification (`verify_mode = "separate"`)** — Run a coordinator-level experiment, not a TB adapter trial. Design:
    - Same 7 tasks from H2H trial
    - Two conditions: `verify_mode = "inline"` vs `verify_mode = "separate"`
-   - Same model (claude-sonnet-latest or opus)
+   - Same model (claude-sonnet-4-latest or opus)
    - Primary metric: false-PASS rate reduction
    - Secondary: pass rate, cost overhead, latency
    - Minimum 10 trials/task/condition (70 per condition) for adequate power
@@ -177,4 +177,4 @@ Together, they paint a clear picture:
    - Adaptive decomposition classifier ON
    - Test discovery + auto-verify ON
    - Planning phase: included but not relied upon
-   - Default model: claude-sonnet-latest (complex) / gemini-2.5-flash (simple)
+   - Default model: claude-sonnet-4-latest (complex) / gemini-2.5-flash (simple)

@@ -241,8 +241,8 @@ fn native_coordinator_model_registry_has_openrouter_models() {
         "Registry should contain qwen/qwen3-235b-a22b"
     );
     assert!(
-        registry.models.contains_key("anthropic/claude-sonnet-latest"),
-        "Registry should contain anthropic/claude-sonnet-latest"
+        registry.models.contains_key("anthropic/claude-sonnet-4-latest"),
+        "Registry should contain anthropic/claude-sonnet-4-latest"
     );
 
     // Verify deepseek-chat-v3 has tool_use capability
@@ -322,7 +322,7 @@ fn native_coordinator_provider_routing_anthropic() {
     // bare model name (no slash) → routes to Anthropic provider
     let result = workgraph::executor::native::provider::create_provider_ext(
         &wg_dir,
-        "claude-sonnet-latest",
+        "claude-sonnet-4-latest",
         Some("anthropic"),
         None,
         Some("test-api-key-not-real"),
@@ -349,7 +349,7 @@ fn native_coordinator_provider_routing_explicit_override() {
     // Force openai provider even for an anthropic-looking model
     let result = workgraph::executor::native::provider::create_provider_ext(
         &wg_dir,
-        "anthropic/claude-sonnet-latest",
+        "anthropic/claude-sonnet-4-latest",
         Some("openai"),
         None,
         Some("test-api-key-not-real"),

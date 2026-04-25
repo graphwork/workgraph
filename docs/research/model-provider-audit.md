@@ -74,7 +74,7 @@ model/provider dispatch point in the workgraph codebase.
 
 | Dispatch Point | File:Line | Description |
 |---|---|---|
-| Default model constant | `src/commands/native_exec.rs:23` | `const DEFAULT_MODEL: &str = "claude-sonnet-latest-20250514"` — **hardcoded Anthropic model ID** |
+| Default model constant | `src/commands/native_exec.rs:23` | `const DEFAULT_MODEL: &str = "claude-sonnet-4-latest-20250514"` — **hardcoded Anthropic model ID** |
 | Model resolution | `src/commands/native_exec.rs:118-121` | `model.or(WG_MODEL env).unwrap_or(DEFAULT_MODEL)` |
 | Provider resolution | `src/commands/native_exec.rs:32-54` | Resolves provider from: config `[native_executor].provider` > `WG_LLM_PROVIDER` env > heuristic (model contains `/` → openai, else anthropic) |
 | API base URL | `src/commands/native_exec.rs:57-60` | `[native_executor].api_base` config — supports OpenAI-compatible endpoints |
@@ -167,7 +167,7 @@ model/provider dispatch point in the workgraph codebase.
 | `"haiku"` | `src/commands/evaluate.rs:603` | FLIP comparison fallback |
 | `"haiku"` | `src/commands/service/triage.rs:406` | Triage fallback |
 | `"haiku"` | `src/commands/service/coordinator.rs:2056` | Checkpoint summary fallback |
-| `"claude-sonnet-latest-20250514"` | `src/commands/native_exec.rs:23` | Native executor default model |
+| `"claude-sonnet-4-latest-20250514"` | `src/commands/native_exec.rs:23` | Native executor default model |
 | `"claude"` binary | `src/commands/service/triage.rs:414`, `coordinator.rs:2078`, `coordinator_agent.rs` | Hardcoded to claude CLI in triage, checkpoints, coordinator agent |
 | `"openrouter"` | `src/models.rs:73` | Default provider for model registry entries |
 | `"claude --model {model} ..."` | `src/config.rs:1046` | Default command template |
@@ -191,7 +191,7 @@ model/provider dispatch point in the workgraph codebase.
 
 6. **TUI config editor**: `src/tui/viz_viewer/state.rs` (5 places) — model choice dropdowns hardcoded to `["opus", "sonnet", "haiku"]`.
 
-7. **Native executor DEFAULT_MODEL**: `src/commands/native_exec.rs:23` — `"claude-sonnet-latest-20250514"` is a full Anthropic model ID.
+7. **Native executor DEFAULT_MODEL**: `src/commands/native_exec.rs:23` — `"claude-sonnet-4-latest-20250514"` is a full Anthropic model ID.
 
 ### 3.2 Already Abstracted
 
@@ -309,7 +309,7 @@ assigner_model = "haiku"          # → use [models.assigner] instead
 [native_executor]
 provider = "anthropic"            # Already exists
 api_base = "https://..."          # Already exists
-default_model = "claude-sonnet-latest-20250514"  # Replace hardcoded DEFAULT_MODEL
+default_model = "claude-sonnet-4-latest-20250514"  # Replace hardcoded DEFAULT_MODEL
 ```
 
 ### Resolution order (already implemented, no change needed):

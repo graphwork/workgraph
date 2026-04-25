@@ -153,7 +153,7 @@ After raw resolution, the result goes through **registry alias resolution**:
 
 2. **Full model ID passthrough** (line ~1099-1106): When a task specifies a model containing `/` that's not in the registry, it passes through instead of erroring. The native executor's provider auto-detection handles these correctly.
 
-3. **Updated test** `test_registry_passes_through_non_task_model`: Updated expectations since `claude-opus-latest` now correctly matches the builtin opus entry's model field.
+3. **Updated test** `test_registry_passes_through_non_task_model`: Updated expectations since `claude-opus-4-latest` now correctly matches the builtin opus entry's model field.
 
 4. **New tests**: Added 4 new tests covering the new behaviors.
 

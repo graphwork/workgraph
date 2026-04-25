@@ -211,7 +211,7 @@ content-type: application/json
 2. `.workgraph/config.toml` field: `[native_executor] api_key = "..."`
 3. `~/.config/anthropic/api_key` file (single line)
 
-**Model resolution**: Same hierarchy as existing executors — `task.model > executor.model > coordinator.model > "claude-sonnet-latest"`
+**Model resolution**: Same hierarchy as existing executors — `task.model > executor.model > coordinator.model > "claude-sonnet-4-latest"`
 
 ## Tool-Use Loop
 
@@ -624,7 +624,7 @@ type = "native"
 # No command/args needed — runs in-process
 
 # Default model for native executor
-model = "claude-sonnet-latest"
+model = "claude-sonnet-4-latest"
 
 # Timeout per agent (seconds). 0 = disabled.
 timeout = 3600
@@ -642,7 +642,7 @@ WG_AGENT_ID = "{{agent_id}}"
 # api_key = "sk-ant-..."
 
 # Default model
-model = "claude-sonnet-latest"
+model = "claude-sonnet-4-latest"
 
 # Max tokens per response
 max_tokens = 16384

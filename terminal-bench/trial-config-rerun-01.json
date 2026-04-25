@@ -7,7 +7,7 @@
     "C": ["file-ops"]
   },
   "replicas": 3,
-  "model": "claude:claude-sonnet-latest",
+  "model": "claude:claude-sonnet-4-latest",
   "model_overrides": {
     "file-ops": "gemini:gemini-2.5-flash",
     "text-processing": "gemini:gemini-2.5-flash"

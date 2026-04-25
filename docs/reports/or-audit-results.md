@@ -162,7 +162,7 @@ All spawn paths correctly propagate OpenRouter-related configuration.
 ### Status: ✅ Working (with design note)
 
 **Registry design:**
-- `ModelRegistry` with `BTreeMap<String, ModelEntry>` keyed by model ID (e.g., `anthropic/claude-opus-latest`)
+- `ModelRegistry` with `BTreeMap<String, ModelEntry>` keyed by model ID (e.g., `anthropic/claude-opus-4-latest`)
 - 13 default models spanning 5 providers: Anthropic, OpenAI, Google, DeepSeek, Meta, Qwen
 - All defaults use `provider: "openrouter"` — OpenRouter is the assumed routing layer
 - 3-tier system: `frontier`, `mid`, `budget`
@@ -170,18 +170,18 @@ All spawn paths correctly propagate OpenRouter-related configuration.
 - `supports_tool_use()` correctly returns false for `deepseek/deepseek-r1`
 
 **Model IDs use `provider/model-name` format** — matches OpenRouter's naming convention:
-- `anthropic/claude-opus-latest` ✅ (valid OpenRouter ID)
+- `anthropic/claude-opus-4-latest` ✅ (valid OpenRouter ID)
 - `openai/gpt-4o` ✅ (valid OpenRouter ID)
 - `google/gemini-2.5-pro` ✅ (valid OpenRouter ID)
 - `deepseek/deepseek-chat-v3` ✅ (valid OpenRouter ID)
 - `meta-llama/llama-4-maverick` ✅ (valid OpenRouter ID)
 - `qwen/qwen3-235b-a22b` ✅ (valid OpenRouter ID)
 
-**Live models.yaml** matches code defaults with one addition: `custom/test-model` and a default model set to `anthropic/claude-sonnet-latest`.
+**Live models.yaml** matches code defaults with one addition: `custom/test-model` and a default model set to `anthropic/claude-sonnet-4-latest`.
 
 **Design note:** The registry's `provider` field defaults to `"openrouter"` everywhere (line 84-86 of models.rs: `fn default_provider() -> String { "openrouter".to_string() }`). This is the correct behavior — the registry represents model availability via OpenRouter as the multi-provider gateway. The separate `EndpointConfig.provider` and `ModelRoutingConfig` provider fields handle actual API routing.
 
-**Potential gap:** Some model IDs in the registry (e.g., `anthropic/claude-haiku-latest`) may not exactly match the version-pinned IDs used by OpenRouter (which often use dated suffixes like `anthropic/claude-haiku-latest`). The system handles this gracefully because:
+**Potential gap:** Some model IDs in the registry (e.g., `anthropic/claude-haiku-4-latest`) may not exactly match the version-pinned IDs used by OpenRouter (which often use dated suffixes like `anthropic/claude-haiku-4-latest`). The system handles this gracefully because:
 1. The registry ID is informational; actual model ID sent to the API comes from config resolution, not the registry
 2. OpenRouter accepts both base IDs and version-pinned IDs
 

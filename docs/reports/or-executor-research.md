@@ -9,7 +9,7 @@
 
 | File | Line | Reference | Context |
 |------|------|-----------|---------|
-| `src/commands/native_exec.rs` | 24 | `claude-sonnet-latest-20250514` | `DEFAULT_MODEL` for native executor fallback |
+| `src/commands/native_exec.rs` | 24 | `claude-sonnet-4-latest-20250514` | `DEFAULT_MODEL` for native executor fallback |
 | `src/executor/native/openai_client.rs` | 212 | `https://openrouter.ai/api/v1` | `DEFAULT_BASE_URL` for OpenAI-compatible client |
 | `src/executor/native/client.rs` | 182 | `https://api.anthropic.com` | `DEFAULT_BASE_URL` for Anthropic client |
 | `src/config.rs` | 459 | `https://openrouter.ai/api/v1` | `default_url_for_provider("openrouter")` |
@@ -32,7 +32,7 @@ User specifies model via:
   2. Per-role: config.toml [models.<role>] model = "..."
   3. Global: config.toml [agent] model = "..."
   4. Env var: WG_MODEL
-  5. Fallback: DEFAULT_MODEL (claude-sonnet-latest-20250514)
+  5. Fallback: DEFAULT_MODEL (claude-sonnet-4-latest-20250514)
 
      ┌─────────────────────┐
      │ Config Resolution   │
@@ -114,7 +114,7 @@ These two systems are **not connected**. The `ModelRegistry` in `src/models.rs` 
 {
   "data": [
     {
-      "id": "provider/model-name",        // e.g., "anthropic/claude-sonnet-latest"
+      "id": "provider/model-name",        // e.g., "anthropic/claude-sonnet-4-latest"
       "name": "Human Readable Name",
       "description": "Model description",
       "context_length": 200000,            // nullable
@@ -143,7 +143,7 @@ OpenRouter supports `openrouter/auto` as a model ID, which auto-selects the best
 ### Model ID Format
 
 OpenRouter model IDs follow the `provider/model-name` pattern:
-- `anthropic/claude-sonnet-latest`
+- `anthropic/claude-sonnet-4-latest`
 - `openai/gpt-4o`
 - `deepseek/deepseek-chat-v3`
 - `meta-llama/llama-4-maverick`

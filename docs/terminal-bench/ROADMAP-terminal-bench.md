@@ -39,7 +39,7 @@ The native executor **works for simple tasks with Claude**. It has not been stre
    ```bash
    wg add "Hello world test: create a file called hello.txt containing 'hello world', then read it back" \
      --exec-mode full
-   wg config --coordinator-executor native --model claude-sonnet-latest
+   wg config --coordinator-executor native --model claude-sonnet-4-latest
    wg service start
    ```
    Watch the agent complete. Check `.workgraph/agents/*/output.log` for clean execution.

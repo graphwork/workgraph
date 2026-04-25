@@ -3302,7 +3302,7 @@ mod tests {
 
     #[test]
     fn test_openrouter_request_includes_cache_control() {
-        let client = OpenAiClient::new("test-key".into(), "anthropic/claude-sonnet-latest", None)
+        let client = OpenAiClient::new("test-key".into(), "anthropic/claude-sonnet-4-latest", None)
             .unwrap()
             .with_provider_hint("openrouter");
         let cc = client.cache_control_value();
@@ -3322,7 +3322,7 @@ mod tests {
     #[test]
     fn test_cache_control_serialized_in_request() {
         let request = OaiRequest {
-            model: "anthropic/claude-sonnet-latest".to_string(),
+            model: "anthropic/claude-sonnet-4-latest".to_string(),
             messages: vec![],
             max_tokens: Some(1024),
             tools: vec![],
@@ -3393,7 +3393,7 @@ mod tests {
             is_default: false,
             context_window: None,
         };
-        let client = OpenAiClient::from_endpoint(&ep, "anthropic/claude-sonnet-latest", None).unwrap();
+        let client = OpenAiClient::from_endpoint(&ep, "anthropic/claude-sonnet-4-latest", None).unwrap();
         assert_eq!(client.base_url, "https://openrouter.ai/api/v1");
         assert_eq!(client.provider_hint.as_deref(), Some("openrouter"));
         assert!(client.use_streaming); // OpenRouter enables streaming
@@ -3444,7 +3444,7 @@ mod tests {
     #[test]
     fn test_streaming_request_includes_stream_options() {
         let request = OaiRequest {
-            model: "anthropic/claude-sonnet-latest".to_string(),
+            model: "anthropic/claude-sonnet-4-latest".to_string(),
             messages: vec![],
             max_tokens: Some(1024),
             tools: vec![],
@@ -4136,15 +4136,15 @@ Done."#;
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet", "description": ""},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet", "description": ""},
                 {"id": "openai/gpt-4o", "name": "GPT-4o", "description": ""},
             ]
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        let result = validate_openrouter_model("anthropic/claude-sonnet-latest", dir.path());
+        let result = validate_openrouter_model("anthropic/claude-sonnet-4-latest", dir.path());
         assert!(result.was_valid);
-        assert_eq!(result.model, "anthropic/claude-sonnet-latest");
+        assert_eq!(result.model, "anthropic/claude-sonnet-4-latest");
         assert!(result.warning.is_none());
     }
 
@@ -4154,8 +4154,8 @@ Done."#;
         let cache = serde_json::json!({
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
-                {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet"},
-                {"id": "anthropic/claude-opus-latest", "name": "Opus"},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet"},
+                {"id": "anthropic/claude-opus-4-latest", "name": "Opus"},
                 {"id": "openai/gpt-4o", "name": "GPT-4o"},
                 {"id": "deepseek/deepseek-r1", "name": "R1"},
                 {"id": "meta-llama/llama-4-maverick", "name": "Llama 4"},
@@ -4171,7 +4171,7 @@ Done."#;
         assert!(
             result
                 .suggestions
-                .contains(&"anthropic/claude-sonnet-latest".to_string()),
+                .contains(&"anthropic/claude-sonnet-4-latest".to_string()),
             "suggestions should include close match, got: {:?}",
             result.suggestions
         );
@@ -4207,7 +4207,7 @@ Done."#;
             "fetched_at": "2026-03-25T12:00:00Z",
             "models": [
                 {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
-                {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet"},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet"},
             ]
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
@@ -4279,14 +4279,14 @@ Done."#;
     #[test]
     fn test_find_closest_models() {
         let candidates = vec![
-            "anthropic/claude-sonnet-latest",
-            "anthropic/claude-opus-latest",
+            "anthropic/claude-sonnet-4-latest",
+            "anthropic/claude-opus-4-latest",
             "openai/gpt-4o",
             "deepseek/deepseek-r1",
         ];
         let closest = find_closest_models("anthropic/claude-sonet-4-6", &candidates, 3);
         assert!(!closest.is_empty());
-        assert_eq!(closest[0], "anthropic/claude-sonnet-latest");
+        assert_eq!(closest[0], "anthropic/claude-sonnet-4-latest");
     }
 
     #[test]
@@ -4588,7 +4588,7 @@ Done."#;
             "fetched_at": "2026-04-01T00:00:00Z",
             "models": [
                 {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
-                {"id": "anthropic/claude-sonnet-latest", "name": "Claude Sonnet 4.6"},
+                {"id": "anthropic/claude-sonnet-4-latest", "name": "Claude Sonnet 4.6"},
                 {"id": "openai/gpt-4o", "name": "GPT-4o"},
                 {"id": "deepseek/deepseek-r1", "name": "DeepSeek R1"},
                 {"id": "meta-llama/llama-4-maverick", "name": "Llama 4 Maverick"},

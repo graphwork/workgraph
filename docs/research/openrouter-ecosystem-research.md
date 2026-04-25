@@ -28,7 +28,7 @@ Returns `{ "data": [Model, ...] }` where each `Model` has:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Unique identifier (e.g., `anthropic/claude-sonnet-latest`) |
+| `id` | string | Unique identifier (e.g., `anthropic/claude-sonnet-4-latest`) |
 | `canonical_slug` | string | URL-safe slug |
 | `name` | string | Display name |
 | `created` | number | Unix timestamp |
@@ -100,7 +100,7 @@ OpenRouter supports prompt caching across multiple providers. The key mechanism 
 1. **Top-level auto-caching**: Add `cache_control` at request level — OpenRouter auto-applies to last cacheable block:
    ```json
    {
-     "model": "anthropic/claude-sonnet-latest",
+     "model": "anthropic/claude-sonnet-4-latest",
      "cache_control": {"type": "ephemeral"},
      "messages": [...]
    }
@@ -191,7 +191,7 @@ OpenRouter standardizes the tool calling interface across all providers.
 
 ```json
 {
-  "model": "anthropic/claude-sonnet-latest",
+  "model": "anthropic/claude-sonnet-4-latest",
   "messages": [...],
   "tools": [
     {
@@ -448,7 +448,7 @@ Without provider preferences, OpenRouter uses:
 
 **Gap — No model variant suffix support:**
 - Users can manually specify `:nitro` or `:floor` suffixes in model names, but there's no first-class UI for it
-- Could add `wg config --set-model evaluator anthropic/claude-haiku-latest:nitro`
+- Could add `wg config --set-model evaluator anthropic/claude-haiku-4-latest:nitro`
 
 ---
 

@@ -213,7 +213,7 @@ A simpler version of coordinator scoping: use tags to drive model selection with
 # In config.toml
 [model_routing]
 "qwen3" = "openrouter:qwen/qwen3-local"
-"opus-branch" = "anthropic:claude-opus-latest"
+"opus-branch" = "anthropic:claude-opus-4-latest"
 ```
 
 When spawning, the coordinator checks if a task (or its ancestors) have a tag that maps to a model route. This is conceptually cleaner than coordinator scoping and achieves the same goal.

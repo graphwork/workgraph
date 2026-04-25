@@ -37,21 +37,21 @@
 | tb-f-text-processing-r0 | text-processing | easy | done | 0 | 12 | gemini:gemini-2.5-flash | ad888e3d |
 | tb-f-text-processing-r1 | text-processing | easy | done | 0 | 21 | gemini:gemini-2.5-flash | 3ede50bb |
 | tb-f-text-processing-r2 | text-processing | easy | done | 0 | 8 | gemini:gemini-2.5-flash | a4724ba7 |
-| tb-f-debugging-r0 | debugging | medium | done | 0 | 49 | claude-sonnet-latest | a4724ba7 |
-| tb-f-debugging-r1 | debugging | medium | done | 0 | 95 | claude-sonnet-latest | a4724ba7 |
-| tb-f-debugging-r2 | debugging | medium | done | 0 | 73 | claude-sonnet-latest | a4724ba7 |
-| tb-f-shell-scripting-r0 | shell-scripting | medium | done | 0 | 112 | claude-sonnet-latest | a4724ba7 |
-| tb-f-shell-scripting-r1 | shell-scripting | medium | done | 0 | 59 | claude-sonnet-latest | 3ede50bb |
-| tb-f-shell-scripting-r2 | shell-scripting | medium | done | 0 | 89 | claude-sonnet-latest | 3ede50bb |
-| tb-f-data-processing-r0 | data-processing | medium | done | 0 | 71 | claude-sonnet-latest | 3ede50bb |
-| tb-f-data-processing-r1 | data-processing | medium | done | 0 | 117 | claude-sonnet-latest | 3ede50bb |
-| tb-f-data-processing-r2 | data-processing | medium | done | 0 | 82 | claude-sonnet-latest | 3ede50bb |
-| tb-f-algorithm-r0 | algorithm | hard | done | 0 | 89 | claude-sonnet-latest | 3ede50bb |
-| tb-f-algorithm-r1 | algorithm | hard | done | 0 | 122 | claude-sonnet-latest | 3ede50bb |
-| tb-f-algorithm-r2 | algorithm | hard | done | 0 | 70 | claude-sonnet-latest | 3ede50bb |
-| tb-f-ml-r0 | ml | hard | done | 0 | 105 | claude-sonnet-latest | 3ede50bb |
-| tb-f-ml-r1 | ml | hard | done | 0 | 87 | claude-sonnet-latest | 3ede50bb |
-| tb-f-ml-r2 | ml | hard | done | 0 | 78 | claude-sonnet-latest | f5143935 |
+| tb-f-debugging-r0 | debugging | medium | done | 0 | 49 | claude-sonnet-4-latest | a4724ba7 |
+| tb-f-debugging-r1 | debugging | medium | done | 0 | 95 | claude-sonnet-4-latest | a4724ba7 |
+| tb-f-debugging-r2 | debugging | medium | done | 0 | 73 | claude-sonnet-4-latest | a4724ba7 |
+| tb-f-shell-scripting-r0 | shell-scripting | medium | done | 0 | 112 | claude-sonnet-4-latest | a4724ba7 |
+| tb-f-shell-scripting-r1 | shell-scripting | medium | done | 0 | 59 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-shell-scripting-r2 | shell-scripting | medium | done | 0 | 89 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-data-processing-r0 | data-processing | medium | done | 0 | 71 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-data-processing-r1 | data-processing | medium | done | 0 | 117 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-data-processing-r2 | data-processing | medium | done | 0 | 82 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-algorithm-r0 | algorithm | hard | done | 0 | 89 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-algorithm-r1 | algorithm | hard | done | 0 | 122 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-algorithm-r2 | algorithm | hard | done | 0 | 70 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-ml-r0 | ml | hard | done | 0 | 105 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-ml-r1 | ml | hard | done | 0 | 87 | claude-sonnet-4-latest | 3ede50bb |
+| tb-f-ml-r2 | ml | hard | done | 0 | 78 | claude-sonnet-4-latest | f5143935 |
 
 ### 2.2 Per-Task Pass Rates
 
@@ -137,7 +137,7 @@ F's token usage is comparable to C and slightly less than E. This is driven prim
 | Model | Trials | Task Types | Avg Tokens (K) | Avg Duration (s) |
 |-------|--------|------------|-----------------|-------------------|
 | gemini:gemini-2.5-flash | 6 | file-ops, text-processing | 119 | 17 |
-| claude-sonnet-latest | 15 | debugging, shell-scripting, data-processing, algorithm, ml | 21 | 86 |
+| claude-sonnet-4-latest | 15 | debugging, shell-scripting, data-processing, algorithm, ml | 21 | 86 |
 
 Gemini Flash was 6x more expensive in tokens but 5x faster in wall time compared to Claude Sonnet. This is a consequence of Gemini Flash's large input contexts (the native executor appears to inject more context) combined with its faster inference speed.
 
@@ -212,7 +212,7 @@ F used adaptive model routing (Gemini Flash for easy tasks, Claude Sonnet for me
 | Model | F Tasks | Notes |
 |-------|---------|-------|
 | gemini:gemini-2.5-flash | file-ops (easy), text-processing (easy) | Fast but token-heavy |
-| claude-sonnet-latest | debugging, shell-scripting, data-processing, algorithm, ml | Slower but token-efficient |
+| claude-sonnet-4-latest | debugging, shell-scripting, data-processing, algorithm, ml | Slower but token-efficient |
 
 This differs from the pilot (which used minimax-m2.7 for all tasks) and from the original F design (which specified minimax-m2.7). The switch to Gemini Flash + Claude Sonnet is a confound when comparing with pilot data, but is controlled within the full-sweep comparison since all conditions used the same model routing.
 

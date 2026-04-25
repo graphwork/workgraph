@@ -2258,7 +2258,7 @@ pub enum Commands {
         #[arg(long)]
         task_id: String,
 
-        /// Model to use (e.g., anthropic/claude-sonnet-latest)
+        /// Model to use (e.g., anthropic/claude-sonnet-4-latest)
         #[arg(long)]
         model: Option<String>,
 
@@ -2487,7 +2487,7 @@ pub enum ModelsCommands {
 
     /// Add a custom model to the local registry
     Add {
-        /// Model ID (e.g. "anthropic/claude-opus-latest")
+        /// Model ID (e.g. "anthropic/claude-opus-4-latest")
         id: String,
 
         /// Provider name

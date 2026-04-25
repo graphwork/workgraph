@@ -109,7 +109,7 @@ premium = "opus"            # model ID from registry
 [[model_registry]]
 id = "haiku"
 provider = "anthropic"
-model = "claude-haiku-latest"
+model = "claude-haiku-4-latest"
 tier = "fast"
 context_window = 200000
 max_output_tokens = 8192
@@ -123,7 +123,7 @@ descriptors = ["classification", "triage", "simple-edits", "comparison"]
 [[model_registry]]
 id = "sonnet"
 provider = "anthropic"
-model = "claude-sonnet-latest"
+model = "claude-sonnet-4-latest"
 tier = "standard"
 context_window = 200000
 max_output_tokens = 16384
@@ -137,7 +137,7 @@ descriptors = ["implementation", "analysis", "code-review", "general"]
 [[model_registry]]
 id = "opus"
 provider = "anthropic"
-model = "claude-opus-latest"
+model = "claude-opus-4-latest"
 tier = "premium"
 context_window = 200000
 max_output_tokens = 32000
@@ -303,7 +303,7 @@ tier → tiers.<tier> config → model ID → registry entry → ResolvedModel
 ```
 
 Example: `Triage` role → `default_tier() = Fast` → `tiers.fast = "haiku"` →
-registry lookup for `id = "haiku"` → `ResolvedModel { model: "claude-haiku-latest", provider: Some("anthropic") }`.
+registry lookup for `id = "haiku"` → `ResolvedModel { model: "claude-haiku-4-latest", provider: Some("anthropic") }`.
 
 ### 4.3 Registry Lookup
 
@@ -510,21 +510,21 @@ impl Config {
             ModelRegistryEntry {
                 id: "haiku".into(),
                 provider: "anthropic".into(),
-                model: "claude-haiku-latest".into(),
+                model: "claude-haiku-4-latest".into(),
                 tier: Tier::Fast,
                 ..Default::default()
             },
             ModelRegistryEntry {
                 id: "sonnet".into(),
                 provider: "anthropic".into(),
-                model: "claude-sonnet-latest".into(),
+                model: "claude-sonnet-4-latest".into(),
                 tier: Tier::Standard,
                 ..Default::default()
             },
             ModelRegistryEntry {
                 id: "opus".into(),
                 provider: "anthropic".into(),
-                model: "claude-opus-latest".into(),
+                model: "claude-opus-4-latest".into(),
                 tier: Tier::Premium,
                 ..Default::default()
             },
@@ -693,7 +693,7 @@ premium = "opus"
 [[model_registry]]
 id = "haiku"
 provider = "anthropic"
-model = "claude-haiku-latest"
+model = "claude-haiku-4-latest"
 tier = "fast"
 cost_per_input_mtok = 0.25
 cost_per_output_mtok = 1.25
@@ -709,7 +709,7 @@ cost_per_output_mtok = 10.0
 [[model_registry]]
 id = "opus"
 provider = "anthropic"
-model = "claude-opus-latest"
+model = "claude-opus-4-latest"
 tier = "premium"
 cost_per_input_mtok = 15.0
 cost_per_output_mtok = 75.0
@@ -735,7 +735,7 @@ cost_per_output_mtok = 0.0
 [[model_registry]]
 id = "sonnet"
 provider = "anthropic"
-model = "claude-sonnet-latest"
+model = "claude-sonnet-4-latest"
 tier = "standard"
 cost_per_input_mtok = 3.0
 cost_per_output_mtok = 15.0

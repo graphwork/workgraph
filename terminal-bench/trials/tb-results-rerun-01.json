@@ -15,7 +15,7 @@
   ],
   "replicas": 3,
   "total_trials": 24,
-  "model": "claude:claude-sonnet-latest",
+  "model": "claude:claude-sonnet-4-latest",
   "trials": [
     {
       "task_id": "tb-rerun-01-a-ml-r0",

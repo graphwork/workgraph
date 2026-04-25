@@ -53,7 +53,7 @@ Debug logs are written to: `/tmp/wg_debug_prompts.log`
 === WG DEBUG: Spawning Agent ===
 Task ID: test-task
 Executor: claude
-Model: claude-sonnet-latest
+Model: claude-sonnet-4-latest
 Context Scope: Task
 Execution Mode: full
 Agent Identity: Default (no specific agent assigned)
@@ -61,7 +61,7 @@ Agent Identity: Default (no specific agent assigned)
 
 === WG DEBUG: Assembled Prompt for Task test-task ===
 Scope: Task
-Model: claude-sonnet-latest
+Model: claude-sonnet-4-latest
 Prompt length: 12345 characters
 Prompt content:
 [Full prompt content here...]

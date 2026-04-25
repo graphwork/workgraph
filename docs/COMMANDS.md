@@ -3166,7 +3166,7 @@ wg models search gemini --tools
 wg models add "custom/my-model" --cost-in 1.0 --cost-out 5.0 --tier mid
 
 # Set default
-wg models set-default "anthropic/claude-sonnet-latest"
+wg models set-default "anthropic/claude-sonnet-4-latest"
 ```
 
 ---

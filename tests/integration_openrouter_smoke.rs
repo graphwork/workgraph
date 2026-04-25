@@ -865,7 +865,7 @@ fn model_discovery_fetch_and_cache_via_mock() {
 
     let models_payload = serde_json::json!({
         "data": [
-            {"id": "anthropic/claude-sonnet-latest", "name": "Sonnet", "description": "fast"},
+            {"id": "anthropic/claude-sonnet-4-latest", "name": "Sonnet", "description": "fast"},
             {"id": "openai/gpt-4o", "name": "GPT-4o", "description": "flagship"},
         ]
     });
@@ -877,7 +877,7 @@ fn model_discovery_fetch_and_cache_via_mock() {
     let models = fetch_openrouter_models_blocking("sk-test-key", Some(&base_url))
         .expect("fetch should succeed against mock");
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0].id, "anthropic/claude-sonnet-latest");
+    assert_eq!(models[0].id, "anthropic/claude-sonnet-4-latest");
     assert_eq!(models[1].id, "openai/gpt-4o");
 
     // Write to cache file and verify validation works with it
@@ -890,9 +890,9 @@ fn model_discovery_fetch_and_cache_via_mock() {
 
     // Validate a known model against the cache we just built
     use workgraph::executor::native::openai_client::validate_openrouter_model;
-    let result = validate_openrouter_model("anthropic/claude-sonnet-latest", tmp.path());
+    let result = validate_openrouter_model("anthropic/claude-sonnet-4-latest", tmp.path());
     assert!(result.was_valid);
-    assert_eq!(result.model, "anthropic/claude-sonnet-latest");
+    assert_eq!(result.model, "anthropic/claude-sonnet-4-latest");
 }
 
 #[test]
@@ -906,7 +906,7 @@ fn model_discovery_auto_routing_accepted_as_default() {
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
-            {"id": "anthropic/claude-sonnet-latest"},
+            {"id": "anthropic/claude-sonnet-4-latest"},
             {"id": "openai/gpt-4o"},
         ]
     });
@@ -928,7 +928,7 @@ fn invalid_model_triggers_validation_suggestion_no_fallback() {
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
-            {"id": "anthropic/claude-sonnet-latest"},
+            {"id": "anthropic/claude-sonnet-4-latest"},
             {"id": opus_key},
             {"id": "openai/gpt-4o"},
             {"id": "deepseek/deepseek-r1"},
@@ -947,7 +947,7 @@ fn invalid_model_triggers_validation_suggestion_no_fallback() {
     assert!(
         result
             .suggestions
-            .contains(&"anthropic/claude-sonnet-latest".to_string()),
+            .contains(&"anthropic/claude-sonnet-4-latest".to_string()),
         "Expected suggestion for typo, got: {:?}",
         result.suggestions
     );
@@ -1017,7 +1017,7 @@ fn concurrent_cache_read_is_safe() {
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
-            {"id": "anthropic/claude-sonnet-latest"},
+            {"id": "anthropic/claude-sonnet-4-latest"},
             {"id": opus_key},
             {"id": "openai/gpt-4o"},
         ]
@@ -1032,7 +1032,7 @@ fn concurrent_cache_read_is_safe() {
         let dir = Arc::clone(&dir);
         let handle = std::thread::spawn(move || {
             let model = if i % 3 == 0 {
-                "anthropic/claude-sonnet-latest"
+                "anthropic/claude-sonnet-4-latest"
             } else if i % 3 == 1 {
                 "openai/gpt-4o"
             } else {
@@ -1072,19 +1072,19 @@ fn concurrent_cache_write_and_read() {
                 let cache = serde_json::json!({
                     "fetched_at": chrono::Utc::now().to_rfc3339(),
                     "models": [
-                        {"id": "anthropic/claude-sonnet-latest"},
+                        {"id": "anthropic/claude-sonnet-4-latest"},
                         {"id": format!("dynamic/model-{}", i)},
                     ]
                 });
                 let _ = fs::write(dir.path().join("model_cache.json"), cache.to_string());
             } else {
                 // Reader: validate against whatever cache exists
-                let result = validate_openrouter_model("anthropic/claude-sonnet-latest", dir.path());
+                let result = validate_openrouter_model("anthropic/claude-sonnet-4-latest", dir.path());
                 // Should either be valid (cache exists with this model) or
                 // pass-through (no cache yet) — never panic
                 assert!(
                     result.was_valid,
-                    "claude-sonnet-latest should always be valid or pass-through"
+                    "claude-sonnet-4-latest should always be valid or pass-through"
                 );
             }
         });
@@ -1118,7 +1118,7 @@ fn create_provider_ext_validates_openrouter_model() {
     let cache = serde_json::json!({
         "fetched_at": chrono::Utc::now().to_rfc3339(),
         "models": [
-            {"id": "anthropic/claude-sonnet-latest"},
+            {"id": "anthropic/claude-sonnet-4-latest"},
             {"id": "openai/gpt-4o"},
         ]
     });
@@ -1127,14 +1127,14 @@ fn create_provider_ext_validates_openrouter_model() {
     // Valid model should work
     let provider = create_provider_ext(
         &wg_dir,
-        "anthropic/claude-sonnet-latest",
+        "anthropic/claude-sonnet-4-latest",
         Some("openrouter"),
         None,
         Some("sk-or-test-key"),
     );
     assert!(provider.is_ok(), "Valid model should create provider");
     let p = provider.unwrap();
-    assert_eq!(p.model(), "anthropic/claude-sonnet-latest");
+    assert_eq!(p.model(), "anthropic/claude-sonnet-4-latest");
 
     // Invalid model should now fail with a clear error (no fallback to openrouter/auto)
     let provider2 = create_provider_ext(

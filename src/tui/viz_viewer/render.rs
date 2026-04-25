@@ -8473,7 +8473,7 @@ fn draw_add_model_form(frame: &mut Frame, app: &VizApp, area: Rect) {
             format!("[{}▏]", app.config_panel.edit_buffer)
         } else if value.is_empty() {
             match i {
-                0 => "(e.g. anthropic/claude-sonnet-latest)".to_string(),
+                0 => "(e.g. anthropic/claude-sonnet-4-latest)".to_string(),
                 1 => "(openrouter)".to_string(),
                 2 => "(budget/mid/frontier)".to_string(),
                 3 => "(USD per 1M tokens)".to_string(),
