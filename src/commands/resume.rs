@@ -58,10 +58,8 @@ fn run_inner(dir: &Path, id: &str, only: bool, is_publish: bool) -> Result<()> {
             unpause_task(graph, id, action);
             unpaused.push(id.to_string());
 
-            // Eagerly scaffold eval task at publish time
-            if is_publish {
-                scaffold_eval_for_published(dir, graph, &[id.to_string()]);
-            }
+            // Eagerly scaffold agency pipeline (idempotent — skips if already scaffolded)
+            scaffold_eval_for_unpaused(dir, graph, &[id.to_string()], action);
         } else {
             // Propagating mode: discover subgraph, validate all, unpause all
             let subgraph = discover_downstream(graph, id);
@@ -84,10 +82,8 @@ fn run_inner(dir: &Path, id: &str, only: bool, is_publish: bool) -> Result<()> {
                 unpause_task(graph, task_id, action);
             }
 
-            // Eagerly scaffold eval tasks at publish time
-            if is_publish {
-                scaffold_eval_for_published(dir, graph, &unpaused);
-            }
+            // Eagerly scaffold agency pipeline (idempotent — skips if already scaffolded)
+            scaffold_eval_for_unpaused(dir, graph, &unpaused, action);
         }
 
         true
@@ -281,11 +277,12 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
 }
 
 /// Create the full agency pipeline (`.assign-*`, `.flip-*`,
-/// `.evaluate-*`) for each published task in one atomic pass.
+/// `.evaluate-*`) for each unpaused task in one atomic pass.
 ///
-/// All five tasks and their edges are written together into the same graph
+/// All tasks and their edges are written together into the same graph
 /// object before the caller saves — guaranteeing a single, atomic write.
-fn scaffold_eval_for_published(dir: &Path, graph: &mut WorkGraph, task_ids: &[String]) {
+/// Idempotent: skips tasks that already have scaffold siblings.
+fn scaffold_eval_for_unpaused(dir: &Path, graph: &mut WorkGraph, task_ids: &[String], action: &str) {
     let config = workgraph::config::Config::load_or_default(dir);
 
     // Collect (id, title) pairs, filtering out system tasks
@@ -299,8 +296,8 @@ fn scaffold_eval_for_published(dir: &Path, graph: &mut WorkGraph, task_ids: &[St
     let count = eval_scaffold::scaffold_full_pipeline_batch(dir, graph, &candidates, &config);
     if count > 0 {
         eprintln!(
-            "[publish] Eagerly scaffolded full agency pipeline for {} task(s)",
-            count
+            "[{}] Eagerly scaffolded full agency pipeline for {} task(s)",
+            action, count
         );
     }
 }
@@ -720,5 +717,104 @@ mod tests {
             graph.get_task(".evaluate-my-task").is_some(),
             ".evaluate-my-task must be created at publish time"
         );
+    }
+
+    // --- Resume scaffolding tests ---
+
+    #[test]
+    fn test_resume_scaffolds_agency_pipeline_for_draft_task() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("my-task", "My Task", Status::Open);
+        task.paused = true;
+        setup_workgraph(dir.path(), vec![task]);
+
+        fs::write(
+            dir.path().join("config.toml"),
+            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n",
+        )
+        .unwrap();
+
+        let result = run(dir.path(), "my-task", false);
+        assert!(result.is_ok());
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert!(
+            graph.get_task(".assign-my-task").is_some(),
+            ".assign-my-task must be created at resume time"
+        );
+        assert!(
+            graph.get_task(".evaluate-my-task").is_some(),
+            ".evaluate-my-task must be created at resume time"
+        );
+    }
+
+    #[test]
+    fn test_resume_scaffolds_agency_pipeline_only_mode() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("my-task", "My Task", Status::Open);
+        task.paused = true;
+        setup_workgraph(dir.path(), vec![task]);
+
+        fs::write(
+            dir.path().join("config.toml"),
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n",
+        )
+        .unwrap();
+
+        let result = run(dir.path(), "my-task", true);
+        assert!(result.is_ok());
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert!(
+            graph.get_task(".assign-my-task").is_some(),
+            ".assign-my-task must be created at resume time (--only)"
+        );
+        assert!(
+            graph.get_task(".evaluate-my-task").is_some(),
+            ".evaluate-my-task must be created at resume time (--only)"
+        );
+    }
+
+    #[test]
+    fn test_resume_does_not_double_scaffold_already_published_task() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("my-task", "My Task", Status::Open);
+        task.paused = true;
+        setup_workgraph(dir.path(), vec![task]);
+
+        fs::write(
+            dir.path().join("config.toml"),
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n",
+        )
+        .unwrap();
+
+        // First: publish (creates scaffold tasks)
+        publish(dir.path(), "my-task", false).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        let assign_created_at = assign.created_at.clone();
+        let eval = graph.get_task(".evaluate-my-task").unwrap();
+        let eval_created_at = eval.created_at.clone();
+
+        // Now pause and resume the task
+        {
+            let path = graph_path(dir.path());
+            workgraph::parser::modify_graph(&path, |g| {
+                let t = g.get_task_mut("my-task").unwrap();
+                t.paused = true;
+                true
+            })
+            .unwrap();
+        }
+
+        run(dir.path(), "my-task", false).unwrap();
+
+        // Scaffold tasks should still be the same (not recreated)
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(assign.created_at, assign_created_at);
+        let eval = graph.get_task(".evaluate-my-task").unwrap();
+        assert_eq!(eval.created_at, eval_created_at);
     }
 }
