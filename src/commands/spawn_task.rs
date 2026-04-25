@@ -382,6 +382,7 @@ fn dispatch_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn mktask(id: &str) -> Task {
         Task {
@@ -391,12 +392,18 @@ mod tests {
         }
     }
 
+    // These tests expect Native handler; isolate from WG_EXECUTOR_TYPE env var
+    // which the coordinator daemon sets per-agent.
     #[test]
+    #[serial]
     fn coordinator_task_gets_coordinator_role() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
         let task = mktask(".coordinator-0");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert_eq!(role, Some("coordinator".to_string()));
@@ -406,10 +413,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn non_coordinator_task_gets_no_role() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
         let dir = tempfile::tempdir().unwrap();
         let task = mktask("my-task");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert!(role.is_none(), "regular task should not have a role");
@@ -419,10 +430,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn role_override_wins() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
         let dir = tempfile::tempdir().unwrap();
         let task = mktask(".coordinator-0");
         let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
+        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
         match spec {
             HandlerSpec::Native { role, .. } => {
                 assert_eq!(role, Some("evaluator".to_string()));
@@ -432,13 +447,17 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resume_true_when_journal_exists() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
         let dir = tempfile::tempdir().unwrap();
         let task = mktask("have-journal");
         let chat = dir.path().join("chat").join(&task.id);
         std::fs::create_dir_all(&chat).unwrap();
         std::fs::write(chat.join("conversation.jsonl"), b"").unwrap();
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
         match spec {
             HandlerSpec::Native { resume, .. } => assert!(resume),
             _ => panic!(),
@@ -446,10 +465,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resume_false_when_fresh() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
         let dir = tempfile::tempdir().unwrap();
         let task = mktask("fresh-task");
         let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        if let Some(v) = saved { unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) }; }
         match spec {
             HandlerSpec::Native { resume, .. } => assert!(!resume),
             _ => panic!(),

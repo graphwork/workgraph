@@ -471,6 +471,19 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 }
 
 fn handle_paste(app: &mut VizApp, text: &str) {
+    let vendor_pty_active = app.chat_pty_mode
+        && app.chat_pty_forwards_stdin
+        && app.right_panel_tab == RightPanelTab::Chat
+        && app.focused_panel == FocusedPanel::RightPanel
+        && !app.chat_pty_observer;
+    if vendor_pty_active {
+        let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+        if let Some(pane) = app.task_panes.get_mut(&task_id) {
+            let _ = pane.send_text(text);
+            return;
+        }
+    }
+
     match &app.input_mode {
         InputMode::ChatInput => {
             // Insert pasted text at cursor position, preserving newlines.

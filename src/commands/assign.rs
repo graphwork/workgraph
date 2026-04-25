@@ -378,6 +378,7 @@ fn list_available_agent_ids(dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
     use workgraph::agency::{Lineage, PerformanceRecord};
@@ -881,9 +882,15 @@ mod tests {
 
     /// Verify no evaluation is recorded when no assigner_agent is configured.
     #[test]
+    #[serial]
     fn test_no_evaluation_when_no_assigner_configured() {
+        // Isolate from global config (~/.workgraph/config.toml) which may
+        // set assigner_agent — that value leaks through config merge when
+        // the local config omits it (skip_serializing_if on Option::None).
+        let saved_home = std::env::var("HOME").ok();
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
+        unsafe { std::env::set_var("HOME", dir_path) };
         setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
         let (actor_id, _assigner_id) = setup_agency_with_assigner(dir_path);
 
@@ -893,6 +900,7 @@ mod tests {
         config.save(dir_path).unwrap();
 
         run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
+        if let Some(h) = saved_home { unsafe { std::env::set_var("HOME", h) }; }
 
         // No evaluation files should be created for assign-t1
         let evals_dir = dir_path.join("agency/evaluations");
