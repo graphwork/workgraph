@@ -681,7 +681,16 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
     // Confirmation dialog overlay
     if let InputMode::Confirm(ref action) = app.input_mode {
-        draw_confirm_dialog(frame, action);
+        app.last_dialog_area = draw_confirm_dialog(frame, action);
+    } else if let InputMode::ChoiceDialog(ref state) = app.input_mode {
+        app.last_dialog_area = draw_choice_dialog(frame, state);
+    } else if matches!(app.input_mode, InputMode::CoordinatorPicker) {
+        if let Some(ref picker) = app.coordinator_picker {
+            app.last_dialog_area =
+                draw_coordinator_picker(frame, picker, app.active_coordinator_id);
+        }
+    } else {
+        app.last_dialog_area = Rect::default();
     }
 
     // Text prompt overlay
@@ -689,11 +698,6 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.last_text_prompt_area = draw_text_prompt(frame, action, &mut app.text_prompt.editor);
     } else {
         app.last_text_prompt_area = Rect::default();
-    }
-
-    // Choice dialog overlay
-    if let InputMode::ChoiceDialog(ref state) = app.input_mode {
-        draw_choice_dialog(frame, state);
     }
 
     // Task creation form overlay
@@ -5586,8 +5590,8 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 // Overlay widgets
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Draw a confirmation dialog overlay.
-fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
+/// Draw a confirmation dialog overlay. Returns the dialog area for click-outside detection.
+fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) -> Rect {
     let message = match action {
         ConfirmAction::MarkDone(id) => format!("Mark '{}' done?", id),
         ConfirmAction::Retry(id) => format!("Retry '{}'?", id),
@@ -5634,10 +5638,11 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
         ]),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
+    area
 }
 
-/// Draw a choice dialog overlay with multiple selectable options.
-fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) {
+/// Draw a choice dialog overlay with multiple selectable options. Returns the dialog area.
+fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     use super::state::ChoiceDialogAction;
 
     let title = match &state.action {
@@ -5700,6 +5705,89 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) {
     ]));
 
     frame.render_widget(Paragraph::new(lines), inner);
+    area
+}
+
+/// Draw the coordinator picker overlay. Returns the dialog area.
+fn draw_coordinator_picker(
+    frame: &mut Frame,
+    picker: &super::state::CoordinatorPickerState,
+    active_cid: u32,
+) -> Rect {
+    let size = frame.area();
+    let width: u16 = 50.min(size.width.saturating_sub(4));
+    let height: u16 =
+        (3 + picker.entries.len() as u16 + 2).min(size.height.saturating_sub(2)); // border + entries + footer + border
+    let x = (size.width.saturating_sub(width)) / 2;
+    let y = (size.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Switch Coordinator ")
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (cid, label, status, alive)) in picker.entries.iter().enumerate() {
+        let is_selected = i == picker.selected;
+        let is_active = *cid == active_cid;
+
+        let bg = if is_selected {
+            Color::DarkGray
+        } else {
+            Color::Reset
+        };
+        let fg = if *alive { Color::Green } else { Color::Gray };
+        let marker = if is_active { ">" } else { " " };
+
+        let status_indicator = if *alive { "●" } else { "○" };
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", marker),
+                Style::default()
+                    .bg(bg)
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} ", status_indicator),
+                Style::default().bg(bg).fg(fg),
+            ),
+            Span::styled(
+                format!("{:<10}", label),
+                Style::default()
+                    .bg(bg)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {}", status), Style::default().bg(bg).fg(fg)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" [↑↓]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Nav  "),
+        Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Open  "),
+        Span::styled("[+]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" New  "),
+        Span::styled("[−]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Close  "),
+        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Cancel"),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+    area
 }
 
 fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
@@ -6524,6 +6612,18 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             "EDIT",
             Color::Yellow,
             vec![("↑↓", "navigate"), ("Enter", "select"), ("Esc", "cancel")],
+        ),
+        InputMode::CoordinatorPicker => (
+            "Picker",
+            "NAV",
+            Color::Cyan,
+            vec![
+                ("↑↓", "select"),
+                ("Enter", "open"),
+                ("+", "new"),
+                ("−", "close"),
+                ("Esc", "cancel"),
+            ],
         ),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::Graph if app.archive_browser.active => {
@@ -7965,6 +8065,14 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("A", "Toggle archive browser"),
         binding("c", "Open chat input"),
         binding("Ctrl-C", "Kill agent on focused task"),
+        blank(),
+        heading("Chat Panel (coordinators)"),
+        binding("~ / `", "Open coordinator picker"),
+        binding("+", "Add new coordinator"),
+        binding("-", "Close/archive coordinator"),
+        binding("[ / ]", "Prev / next coordinator"),
+        binding("←/→", "Prev / next coordinator"),
+        binding("Ctrl-T", "Toggle PTY mode"),
         blank(),
         heading("Search (vim-style)"),
         binding("/", "Start search"),

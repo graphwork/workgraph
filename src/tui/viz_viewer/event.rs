@@ -456,6 +456,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::Confirm(_) => handle_confirm_input(app, code),
         InputMode::TextPrompt(_) => handle_text_prompt_input(app, code, modifiers),
         InputMode::ChoiceDialog(_) => handle_choice_dialog_input(app, code),
+        InputMode::CoordinatorPicker => handle_coordinator_picker_input(app, code),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
@@ -745,6 +746,79 @@ fn execute_choice_dialog_option(app: &mut VizApp, action: &ChoiceDialogAction, i
                 _ => {}
             }
         }
+    }
+}
+
+fn handle_coordinator_picker_input(app: &mut VizApp, code: KeyCode) {
+    let entry_count = app
+        .coordinator_picker
+        .as_ref()
+        .map(|p| p.entries.len())
+        .unwrap_or(0);
+    if entry_count == 0 {
+        app.close_coordinator_picker();
+        return;
+    }
+
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(ref mut picker) = app.coordinator_picker {
+                if picker.selected > 0 {
+                    picker.selected -= 1;
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(ref mut picker) = app.coordinator_picker {
+                if picker.selected + 1 < picker.entries.len() {
+                    picker.selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(ref picker) = app.coordinator_picker {
+                if let Some((cid, _, _, _)) = picker.entries.get(picker.selected) {
+                    let target = *cid;
+                    app.close_coordinator_picker();
+                    app.switch_coordinator(target);
+                    app.right_panel_tab = RightPanelTab::Chat;
+                    return;
+                }
+            }
+            app.close_coordinator_picker();
+        }
+        KeyCode::Esc | KeyCode::Char('~') | KeyCode::Char('`') => {
+            app.close_coordinator_picker();
+        }
+        KeyCode::Char('-') => {
+            if let Some(ref picker) = app.coordinator_picker {
+                if let Some((cid, _, _, _)) = picker.entries.get(picker.selected) {
+                    let cid = *cid;
+                    app.close_coordinator_picker();
+                    let options = vec![
+                        ('a', "Archive".into(), "Mark as done — work complete".into()),
+                        (
+                            's',
+                            "Stop".into(),
+                            "Pause coordinator — resume later".into(),
+                        ),
+                        ('x', "Abandon".into(), "Permanently discard".into()),
+                    ];
+                    app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                        action: ChoiceDialogAction::RemoveCoordinator(cid),
+                        selected: 0,
+                        options,
+                    });
+                    return;
+                }
+            }
+            app.close_coordinator_picker();
+        }
+        KeyCode::Char('+') => {
+            app.close_coordinator_picker();
+            app.open_launcher();
+        }
+        _ => {}
     }
 }
 
@@ -2469,7 +2543,13 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.output_pane.has_new_content = false;
             }
         }
-        // Chat tab: '+' opens the coordinator launcher pane
+        // Chat tab: '~' or '`' opens coordinator picker (switch-to list)
+        KeyCode::Char('~') | KeyCode::Char('`')
+            if app.right_panel_tab == RightPanelTab::Chat =>
+        {
+            app.open_coordinator_picker();
+        }
+        // Chat tab: '+' opens the coordinator launcher pane (add new)
         KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
             app.open_launcher();
         }
@@ -3104,6 +3184,21 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         MouseEventKind::Down(MouseButton::Left) => {
             // Touch echo: record click position for visual feedback overlay.
             app.add_touch_echo(column, row);
+
+            // Click-outside-to-dismiss for overlay dialogs.
+            let in_dialog = app.last_dialog_area.width > 0 && app.last_dialog_area.contains(pos);
+            match &app.input_mode {
+                InputMode::ChoiceDialog(_)
+                | InputMode::Confirm(_)
+                | InputMode::CoordinatorPicker => {
+                    if !in_dialog {
+                        app.coordinator_picker = None;
+                        app.input_mode = InputMode::Normal;
+                        return;
+                    }
+                }
+                _ => {}
+            }
 
             // Service health badge click
             let in_service_badge =

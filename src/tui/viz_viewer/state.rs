@@ -803,6 +803,8 @@ pub enum InputMode {
     TextPrompt(TextPromptAction),
     /// Choice dialog (e.g., coordinator removal options).
     ChoiceDialog(ChoiceDialogState),
+    /// Coordinator picker overlay (list of all coordinators).
+    CoordinatorPicker,
     /// Config panel text editing mode.
     ConfigEdit,
     /// Chat search mode (/ key in chat tab). Keys go to chat search input.
@@ -956,6 +958,15 @@ pub struct ChoiceDialogState {
     pub selected: usize,
     /// Each option: (hotkey, label, description).
     pub options: Vec<(char, String, String)>,
+}
+
+/// State for the coordinator picker overlay.
+#[derive(Clone, Debug)]
+pub struct CoordinatorPickerState {
+    /// Index of the currently highlighted coordinator.
+    pub selected: usize,
+    /// List of (coordinator_id, label, status_description, is_alive).
+    pub entries: Vec<(u32, String, String, bool)>,
 }
 
 /// What kind of entry a tab bar hit represents.
@@ -3516,6 +3527,8 @@ pub struct VizApp {
 
     /// The text prompt overlay area from the last render frame (for mouse scroll).
     pub last_text_prompt_area: Rect,
+    /// The choice/confirm dialog overlay area from the last render frame (for click-outside dismiss).
+    pub last_dialog_area: Rect,
 
     /// The file browser tree pane area from the last render frame (for mouse clicks).
     pub last_file_tree_area: Rect,
@@ -3628,6 +3641,8 @@ pub struct VizApp {
     // ── Coordinator launcher ──
     /// Full-pane launcher state (replaces chat view when Some).
     pub launcher: Option<LauncherState>,
+    /// State for the coordinator picker overlay.
+    pub coordinator_picker: Option<CoordinatorPickerState>,
 
     // ── Text prompt ──
     /// Text prompt input buffer (for fail reason, message, etc.)
@@ -3991,6 +4006,7 @@ impl VizApp {
             coordinator_plus_hit: CoordinatorPlusHit::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
+            last_dialog_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
             config_entry_y_positions: Vec::new(),
@@ -4038,6 +4054,7 @@ impl VizApp {
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
             launcher: None,
+            coordinator_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -8208,6 +8225,7 @@ impl VizApp {
             coordinator_plus_hit: CoordinatorPlusHit::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
+            last_dialog_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
             config_entry_y_positions: Vec::new(),
@@ -8251,6 +8269,7 @@ impl VizApp {
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
             launcher: None,
+            coordinator_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -11820,6 +11839,60 @@ impl VizApp {
     /// Close the launcher pane without creating a coordinator.
     pub fn close_launcher(&mut self) {
         self.launcher = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the coordinator picker overlay.
+    pub fn open_coordinator_picker(&mut self) {
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = workgraph::parser::load_graph(&graph_path).ok();
+
+        let ids_and_labels = self.list_coordinator_ids_and_labels();
+        let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
+
+        for (cid, label) in &ids_and_labels {
+            let task_id = if *cid == 0 {
+                ".coordinator".to_string()
+            } else {
+                format!(".coordinator-{}", cid)
+            };
+
+            let (status_desc, is_alive) = if let Some(ref g) = graph {
+                if let Some(task) = g.get_task(&task_id) {
+                    let alive = matches!(task.status, Status::InProgress);
+                    let status_str = format!("{:?}", task.status).to_lowercase();
+                    let name = task.title.clone();
+                    let desc = if name != task_id {
+                        format!("{} ({})", name, status_str)
+                    } else {
+                        status_str
+                    };
+                    (desc, alive)
+                } else {
+                    ("no task".to_string(), false)
+                }
+            } else {
+                ("unknown".to_string(), false)
+            };
+
+            entries.push((*cid, label.clone(), status_desc, is_alive));
+        }
+
+        let current_idx = entries
+            .iter()
+            .position(|(id, _, _, _)| *id == self.active_coordinator_id)
+            .unwrap_or(0);
+
+        self.coordinator_picker = Some(CoordinatorPickerState {
+            selected: current_idx,
+            entries,
+        });
+        self.input_mode = InputMode::CoordinatorPicker;
+    }
+
+    /// Close the coordinator picker without switching.
+    pub fn close_coordinator_picker(&mut self) {
+        self.coordinator_picker = None;
         self.input_mode = InputMode::Normal;
     }
 
