@@ -132,6 +132,7 @@ pub enum Status {
     Failed,
     Abandoned,
     PendingValidation,
+    Incomplete,
 }
 
 impl std::fmt::Display for Status {
@@ -145,6 +146,7 @@ impl std::fmt::Display for Status {
             Status::Failed => write!(f, "failed"),
             Status::Abandoned => write!(f, "abandoned"),
             Status::PendingValidation => write!(f, "pending-validation"),
+            Status::Incomplete => write!(f, "incomplete"),
         }
     }
 }
@@ -165,6 +167,7 @@ impl<'de> serde::Deserialize<'de> for Status {
             "failed" => Ok(Status::Failed),
             "abandoned" => Ok(Status::Abandoned),
             "pending-validation" => Ok(Status::PendingValidation),
+            "incomplete" => Ok(Status::Incomplete),
             // Migration: pending-review is treated as done
             "pending-review" => Ok(Status::Done),
             other => Err(serde::de::Error::unknown_variant(
@@ -178,6 +181,7 @@ impl<'de> serde::Deserialize<'de> for Status {
                     "failed",
                     "abandoned",
                     "pending-validation",
+                    "incomplete",
                 ],
             )),
         }

@@ -96,6 +96,9 @@ pub fn project_summary(graph: &WorkGraph) -> ProjectSummary {
                 // Explicit blocked status also counts
                 blocked_count += 1;
             }
+            Status::Incomplete => {
+                open += 1;
+            }
             Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Failed, abandoned, and waiting tasks are not counted as open
             }
@@ -135,8 +138,8 @@ where
     let ready = ready_tasks(graph);
     let ready_ids: HashSet<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
-    // Get all open tasks (not done, not in-progress)
-    let mut open_tasks: Vec<&Task> = graph.tasks().filter(|t| t.status == Status::Open).collect();
+    // Get all open/incomplete tasks (not done, not in-progress)
+    let mut open_tasks: Vec<&Task> = graph.tasks().filter(|t| matches!(t.status, Status::Open | Status::Incomplete)).collect();
 
     // Sort: ready tasks first, then by value (cost/hours) ascending
     open_tasks.sort_by(|a, b| {
@@ -255,8 +258,8 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
     graph
         .tasks()
         .filter(|task| {
-            // Must be open
-            if task.status != Status::Open {
+            // Must be open or incomplete (retryable)
+            if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
             // Must not be paused
@@ -318,7 +321,7 @@ pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) ->
     graph
         .tasks()
         .filter(|task| {
-            if task.status != Status::Open {
+            if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
             if task.paused {
@@ -347,7 +350,7 @@ pub fn ready_tasks_cycle_aware<'a>(
     let mut ready_tasks: Vec<&'a Task> = graph
         .tasks()
         .filter(|task| {
-            if task.status != Status::Open {
+            if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
             if task.paused {
@@ -412,7 +415,7 @@ pub fn ready_tasks_cycle_aware<'a>(
             .members
             .iter()
             .filter_map(|member_id| graph.get_task(member_id))
-            .filter(|task| task.status == Status::Open && !task.paused && is_time_ready(task))
+            .filter(|task| matches!(task.status, Status::Open | Status::Incomplete) && !task.paused && is_time_ready(task))
             .collect();
 
         if viable_members.is_empty() {
@@ -447,7 +450,7 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
     graph
         .tasks()
         .filter(|task| {
-            if task.status != Status::Open {
+            if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
             if task.paused {

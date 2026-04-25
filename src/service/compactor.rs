@@ -230,6 +230,7 @@ struct StatusCounts {
     blocked: usize,
     abandoned: usize,
     waiting: usize,
+    incomplete: usize,
 }
 
 struct TaskSummary {
@@ -247,6 +248,7 @@ fn build_graph_snapshot(graph: &WorkGraph, workgraph_dir: &Path) -> GraphSnapsho
         blocked: 0,
         abandoned: 0,
         waiting: 0,
+        incomplete: 0,
     };
 
     let mut recent_completions = Vec::new();
@@ -265,6 +267,7 @@ fn build_graph_snapshot(graph: &WorkGraph, workgraph_dir: &Path) -> GraphSnapsho
             Status::Abandoned => counts.abandoned += 1,
             Status::Waiting => counts.waiting += 1,
             Status::PendingValidation => counts.waiting += 1,
+            Status::Incomplete => counts.incomplete += 1,
         }
 
         let summary = TaskSummary {
@@ -365,7 +368,7 @@ fn build_compactor_prompt(snapshot: &GraphSnapshot, context_window: u64) -> Stri
          with EXACTLY three sections. Stay within the token budgets.\n\n\
          ## Input: Current Graph State\n\n\
          Total tasks: {}\n\
-         - Open: {}, In-progress: {}, Done: {}, Failed: {}, Blocked: {}, Abandoned: {}, Waiting: {}\n\n",
+         - Open: {}, In-progress: {}, Done: {}, Failed: {}, Blocked: {}, Abandoned: {}, Waiting: {}, Incomplete: {}\n\n",
         snapshot.total_tasks,
         c.open,
         c.in_progress,
@@ -374,6 +377,7 @@ fn build_compactor_prompt(snapshot: &GraphSnapshot, context_window: u64) -> Stri
         c.blocked,
         c.abandoned,
         c.waiting,
+        c.incomplete,
     );
 
     if !snapshot.active_tasks.is_empty() {
@@ -632,6 +636,7 @@ mod tests {
                 blocked: 0,
                 abandoned: 0,
                 waiting: 0,
+                incomplete: 0,
             },
             recent_completions: vec![TaskSummary {
                 id: "task-1".into(),

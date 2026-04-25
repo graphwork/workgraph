@@ -62,7 +62,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         }
 
         // Claim the task if open
-        if task.status == Status::Open {
+        if matches!(task.status, Status::Open | Status::Incomplete) {
             let task = graph.get_task_mut(task_id).expect("task verified above");
             task.status = Status::InProgress;
             task.started_at = Some(Utc::now().to_rfc3339());
@@ -96,7 +96,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         return Ok(());
     }
 
-    if task_status == Status::Open {
+    if matches!(task_status, Status::Open | Status::Incomplete) {
         super::notify_graph_changed(dir);
         println!("Claimed task '{}' for execution", task_id);
     }
@@ -184,7 +184,7 @@ pub fn run_interactive(
 
     // Validate task status
     match task.status {
-        Status::Open | Status::Blocked => {}
+        Status::Open | Status::Blocked | Status::Incomplete => {}
         Status::InProgress => {
             // Allow re-entering an in-progress task (the user might be resuming)
             eprintln!(
@@ -282,7 +282,7 @@ pub fn run_interactive(
     }
 
     // --- Claim the task ---
-    let needs_claim = task.status == Status::Open || task.status == Status::Blocked;
+    let needs_claim = matches!(task.status, Status::Open | Status::Blocked | Status::Incomplete);
     if needs_claim {
         let actor_s = actor.map(String::from);
         modify_graph(&path, |graph| {
