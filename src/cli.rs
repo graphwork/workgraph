@@ -296,9 +296,9 @@ pub enum Commands {
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
 
-        /// Create the task in paused state (default for interactive use)
-        #[arg(long)]
-        paused: bool,
+        /// Create the task as a draft (paused, requires 'wg publish' to dispatch)
+        #[arg(long, alias = "paused")]
+        draft: bool,
 
         /// Skip automatic placement — make task immediately available for dispatch
         #[arg(long = "no-place", alias = "immediate", alias = "ready")]

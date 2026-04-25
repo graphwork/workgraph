@@ -794,7 +794,7 @@ fn main() -> Result<()> {
             visibility,
             context_scope,
             exec_mode,
-            paused,
+            draft,
             no_place,
             place_near,
             place_before,
@@ -808,23 +808,13 @@ fn main() -> Result<()> {
             subtask,
         } => {
             // Determine effective paused/unplaced state:
-            // - --paused always pauses (user-managed draft, skips placement)
+            // - --draft always pauses (user-managed draft, skips placement)
             // - --no-place: unplaced=true, paused=false (immediate dispatch)
             // - System tasks (dot-prefix): never draft, never placed
-            // - Agent context (WG_TASK_ID set): default to --no-place behavior
-            // - Default (interactive): paused=true (draft-by-default, needs placement)
+            // - Default: published (status=open, immediately dispatchable)
             let is_system_task = title.starts_with('.');
-            let is_agent_context =
-                std::env::var("WG_TASK_ID").is_ok() || std::env::var("WG_AGENT_ID").is_ok();
-            let effective_no_place = no_place || is_system_task || is_agent_context;
-            let effective_paused = if paused {
-                true
-            } else if effective_no_place {
-                false
-            } else {
-                // Draft by default for interactive use
-                true
-            };
+            let effective_no_place = no_place || is_system_task;
+            let effective_paused = draft;
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
                     &workgraph_dir,
