@@ -11513,54 +11513,29 @@ impl VizApp {
                     (self_exe.clone(), args, Some(project_root))
                 }
                 "claude" => {
-                    // CWD: project root (parent of workgraph_dir). The
-                    // user almost certainly has Claude Code already
-                    // trusted there from regular use; a per-coord
-                    // chat_dir would re-trigger the trust prompt on
-                    // every launch.
-                    //
-                    // Resume: if any prior claude session exists in
-                    // `~/.claude/projects/<cwd-slug>/` for this CWD,
-                    // pass `--continue` to reconnect to the most
-                    // recent one. On a truly fresh CWD, `--continue`
-                    // exits with "No conversation found to continue"
-                    // and terminates the REPL — so we only add it
-                    // when we know a session file exists. `-n
-                    // wg-<ref>` names the session for visibility in
-                    // claude's own /resume picker.
                     let project_root = self
                         .workgraph_dir
                         .parent()
                         .unwrap_or(&self.workgraph_dir)
                         .to_path_buf();
-                    // Session display name: `wg-<project-dir>-<coord-ref>`.
-                    // Including the project dir basename makes Claude's
-                    // own `/resume` picker usable when the user has
-                    // multiple workgraph projects (otherwise every
-                    // project's coord-0 shows up as `wg-coordinator-0`).
                     let project_tag = project_root
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("project");
                     let session_name = format!("wg-{}-{}", project_tag, chat_ref);
-                    // Coordinator priming + permission skip. `--continue`
-                    // RESUMES the last session (which already has its
-                    // system prompt baked in, plus the conversation
-                    // history). Passing `--system-prompt` alongside
-                    // `--continue` makes claude fork a fresh session
-                    // instead — user then asks "do you see prior
-                    // messages?" and gets "no" because the resume
-                    // silently got dropped. So: inject --system-prompt
-                    // ONLY on fresh sessions.
-                    let has_prior = claude_has_session_for(&project_root);
+                    let session_uuid = claude_session_uuid(&project_root, &session_name);
+                    let has_prior = claude_session_exists(&project_root, &session_uuid);
                     let mut args = vec![
                         "-n".to_string(),
                         session_name,
                         "--dangerously-skip-permissions".to_string(),
                     ];
                     if has_prior {
-                        args.insert(0, "--continue".to_string());
+                        args.push("--resume".to_string());
+                        args.push(session_uuid.to_string());
                     } else {
+                        args.push("--session-id".to_string());
+                        args.push(session_uuid.to_string());
                         let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
                             &self.workgraph_dir,
                         );
@@ -13992,14 +13967,15 @@ fn find_all_archives(
     entries
 }
 
-/// Returns the file at `filename` within the given archive directory, if it exists.
-/// Falls back to common alternative names (e.g. output.log → output.txt).
-/// Does Claude Code have any saved session for this CWD? Checked by
-/// looking at `~/.claude/projects/<cwd-slug>/` where Claude persists
-/// its session JSONLs. The slug is the absolute CWD with `/` → `-`.
-/// Used to decide whether `claude --continue` will find a session to
-/// resume (else it'd exit immediately with "No conversation found").
-fn claude_has_session_for(cwd: &std::path::Path) -> bool {
+/// Deterministic session UUID for a coordinator, derived from CWD + session name.
+/// Ensures each coordinator always maps to the same Claude session ID.
+fn claude_session_uuid(cwd: &std::path::Path, session_name: &str) -> uuid::Uuid {
+    let key = format!("{}:{}", cwd.display(), session_name);
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes())
+}
+
+/// Does a specific Claude session JSONL exist for the given UUID?
+fn claude_session_exists(cwd: &std::path::Path, session_uuid: &uuid::Uuid) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
@@ -14007,16 +13983,16 @@ fn claude_has_session_for(cwd: &std::path::Path) -> bool {
         return false;
     };
     let slug = cwd_str.replace('/', "-");
-    let dir = home.join(".claude").join("projects").join(slug);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return false;
-    };
-    entries
-        .flatten()
-        .any(|e| e.path().extension().is_some_and(|x| x == "jsonl")
-            && e.metadata().map(|m| m.len() > 0).unwrap_or(false))
+    let session_file = home
+        .join(".claude")
+        .join("projects")
+        .join(slug)
+        .join(format!("{}.jsonl", session_uuid));
+    session_file.exists() && session_file.metadata().map(|m| m.len() > 0).unwrap_or(false)
 }
 
+/// Returns the file at `filename` within the given archive directory, if it exists.
+/// Falls back to common alternative names (e.g. output.log → output.txt).
 fn find_archive_file(archive_dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
     let candidate = archive_dir.join(filename);
     if candidate.exists() {
@@ -20326,5 +20302,43 @@ mod chat_delivery_tests {
         assert_eq!(coord_msg.text, md_content);
         assert!(coord_msg.text.contains("```rust"));
         assert!(coord_msg.text.contains("**Bold**"));
+    }
+}
+
+#[cfg(test)]
+mod test_claude_session {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_claude_session_uuid_deterministic() {
+        let cwd = Path::new("/home/user/myproject");
+        let name = "wg-myproject-coordinator-0";
+        let u1 = claude_session_uuid(cwd, name);
+        let u2 = claude_session_uuid(cwd, name);
+        assert_eq!(u1, u2);
+    }
+
+    #[test]
+    fn test_claude_session_uuid_differs_per_coordinator() {
+        let cwd = Path::new("/home/user/myproject");
+        let u0 = claude_session_uuid(cwd, "wg-myproject-coordinator-0");
+        let u1 = claude_session_uuid(cwd, "wg-myproject-coordinator-1");
+        assert_ne!(u0, u1);
+    }
+
+    #[test]
+    fn test_claude_session_uuid_differs_per_project() {
+        let name = "wg-proj-coordinator-0";
+        let ua = claude_session_uuid(Path::new("/home/user/project-a"), name);
+        let ub = claude_session_uuid(Path::new("/home/user/project-b"), name);
+        assert_ne!(ua, ub);
+    }
+
+    #[test]
+    fn test_claude_session_exists_missing() {
+        let cwd = Path::new("/nonexistent/path/that/wont/exist");
+        let uuid = claude_session_uuid(cwd, "test-session");
+        assert!(!claude_session_exists(cwd, &uuid));
     }
 }
