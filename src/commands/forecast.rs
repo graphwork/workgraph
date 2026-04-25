@@ -151,6 +151,10 @@ fn calculate_remaining_work(graph: &WorkGraph) -> RemainingWork {
                 }
             }
             Status::Done => {}
+            Status::Incomplete => {
+                open_tasks += 1;
+                open_hours += hours;
+            }
             Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Failed/abandoned/waiting tasks don't count toward remaining work
             }

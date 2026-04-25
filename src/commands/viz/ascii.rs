@@ -242,6 +242,7 @@ pub(crate) fn generate_ascii(
             Status::Failed => "\x1b[31m",                              // red
             Status::Abandoned => "\x1b[90m",                           // gray
             Status::Waiting | Status::PendingValidation => "\x1b[33m", // yellow
+            Status::Incomplete => "\x1b[38;5;208m",                   // orange
         }
     };
     let reset = if use_color { "\x1b[0m" } else { "" };
@@ -255,6 +256,7 @@ pub(crate) fn generate_ascii(
             Status::Failed => "failed",
             Status::Abandoned => "abandoned",
             Status::Waiting | Status::PendingValidation => "waiting",
+            Status::Incomplete => "incomplete",
         }
     };
 
@@ -406,7 +408,7 @@ pub(crate) fn generate_ascii(
             .unwrap_or_default();
         // Delay indicator for tasks with not_before in the future
         let delay_hint = task
-            .filter(|t| t.status == Status::Open)
+            .filter(|t| matches!(t.status, Status::Open | Status::Incomplete))
             .and_then(|t| {
                 t.not_before.as_deref().and_then(|nb| {
                     nb.parse::<chrono::DateTime<Utc>>().ok().and_then(|ts| {

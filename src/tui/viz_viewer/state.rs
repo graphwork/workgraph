@@ -277,6 +277,7 @@ fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
         Status::Blocked => (180, 120, 60),    // orange
         Status::Abandoned => (140, 100, 160), // muted purple
         Status::Waiting | Status::PendingValidation => (60, 160, 220), // blue
+        Status::Incomplete => (255, 165, 0),  // orange
     }
 }
 
@@ -5386,6 +5387,7 @@ impl VizApp {
                 Status::Blocked => counts.blocked += 1,
                 Status::Abandoned => counts.done += 1, // count with done
                 Status::Waiting | Status::PendingValidation => counts.blocked += 1, // count with blocked
+                Status::Incomplete => counts.open += 1,
             }
 
             // Use stored token_usage if available, otherwise check live agent data
@@ -6298,7 +6300,8 @@ impl VizApp {
                                 Status::Blocked => 3,
                                 Status::Done => 4,
                                 Status::Abandoned => 5,
-                                Status::Waiting | Status::PendingValidation => 3, // same priority as blocked
+                                Status::Waiting | Status::PendingValidation => 3,
+                                Status::Incomplete => 1, // high priority like failed
                             };
                             (t.id.clone(), priority)
                         })

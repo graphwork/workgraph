@@ -54,7 +54,7 @@ pub fn calculate_utilization(graph: &WorkGraph) -> Vec<ResourceUtilization> {
                 let cost = task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
 
                 match task.status {
-                    Status::Open | Status::InProgress | Status::Blocked => {
+                    Status::Open | Status::InProgress | Status::Blocked | Status::Incomplete => {
                         committed += cost;
                         if cost > 0.0 {
                             open_tasks.push(task.id.clone());

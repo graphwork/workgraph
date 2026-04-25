@@ -353,7 +353,8 @@ fn count_tasks_in_graph(graph_path: &Path) -> Result<TaskCounts> {
             workgraph::graph::Status::Abandoned
             | workgraph::graph::Status::Blocked
             | workgraph::graph::Status::Waiting
-            | workgraph::graph::Status::PendingValidation => {}
+            | workgraph::graph::Status::PendingValidation
+            | workgraph::graph::Status::Incomplete => {}
         }
     }
 

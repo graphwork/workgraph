@@ -192,6 +192,7 @@ TASK STATE COMMANDS
   wg wait <task-id> --until "condition"  # Park task until condition is met
   wg resume <task-id>         # Resume a paused/waiting task
   wg unclaim <task-id>        # Release a claimed task (back to open)
+  wg incomplete <task-id> --reason "..." # Mark incomplete (retryable — needs another pass)
   wg requeue <task-id> --reason "..."  # Requeue in-progress task for triage
 
   Wait conditions:
@@ -218,6 +219,24 @@ VALIDATION (--verify gate)
   wg reject <task-id> --reason "Tests failing"  # Reject → reopens task
 
   After max rejections, the task transitions to Failed instead of reopening.
+
+INCOMPLETE STATUS (retryable work)
+─────────────────────────────────────────
+  Use 'incomplete' when an agent's work landed but isn't quite right and
+  should be retried rather than failed:
+
+  wg incomplete <task-id> --reason "Tests pass but edge case X not handled"
+
+  Incomplete vs Failed:
+    incomplete = retryable, work needs another pass (rendered orange)
+    failed     = hard failure, abandon or escalate
+
+  Incomplete vs pending-validation:
+    pending-validation = awaiting evaluation (hasn't been judged yet)
+    incomplete         = evaluated and found wanting (needs redo)
+
+  Incomplete tasks appear in 'wg ready' and get automatically dispatched
+  by the coordinator like open tasks, but with the prior agent's context.
 
 MESSAGING
 ─────────────────────────────────────────

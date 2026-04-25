@@ -13,7 +13,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let waiting: Vec<_> = graph
         .tasks()
         .filter(|task| {
-            if task.status != Status::Open {
+            if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
             // Must have a future ready_after

@@ -47,6 +47,7 @@ pub mod evolve;
 pub mod exec;
 pub mod fail;
 pub mod forecast;
+pub mod incomplete;
 pub mod func_apply;
 pub mod func_bootstrap;
 pub mod func_cmd;

@@ -21,8 +21,9 @@ pub fn run(
         Some("blocked") => Some(Status::Blocked),
         Some("failed") => Some(Status::Failed),
         Some("abandoned") => Some(Status::Abandoned),
+        Some("incomplete") => Some(Status::Incomplete),
         Some(s) => anyhow::bail!(
-            "Unknown status: '{}'. Valid values: open, in-progress, done, blocked, failed, abandoned",
+            "Unknown status: '{}'. Valid values: open, in-progress, done, blocked, failed, abandoned, incomplete",
             s
         ),
         None => None,
@@ -102,6 +103,7 @@ pub fn run(
                 Status::Failed => "[F]",
                 Status::Abandoned => "[A]",
                 Status::Waiting | Status::PendingValidation => "[W]",
+                Status::Incomplete => "[I]",
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
             let verify_str = if task.verify_failures > 0 {

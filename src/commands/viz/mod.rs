@@ -483,6 +483,7 @@ pub fn generate_viz_output_from_graph(
             Status::Failed => "failed",
             Status::Abandoned => "abandoned",
             Status::Waiting | Status::PendingValidation => "waiting",
+            Status::Incomplete => "incomplete",
         }
     };
 

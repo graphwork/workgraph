@@ -68,7 +68,7 @@ pub(crate) fn spawn_agent_inner(
 
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
-        Status::Open | Status::Blocked => {}
+        Status::Open | Status::Blocked | Status::Incomplete => {}
         Status::InProgress => {
             let since = task
                 .started_at
