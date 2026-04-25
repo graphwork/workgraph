@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Default Anthropic API model IDs.
-/// Update these constants when new Claude model versions are released.
-pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-4-5-20251001";
-pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-20250514";
-pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-6";
+/// Default Anthropic API model IDs — moving aliases that track the current frontier.
+/// Pricing in the registry is best-known-at-build-time (can't query live pricing).
+pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-latest";
+pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-latest";
+pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-latest";
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -326,8 +326,9 @@ fn median(values: &[f64]) -> Option<f64> {
 /// a sensible fallback when the OpenRouter API doesn't supply scores.
 ///
 /// Each entry is keyed by a **prefix** of the OpenRouter model ID so it
-/// matches across version suffixes (e.g. "anthropic/claude-sonnet-4" matches
-/// "anthropic/claude-sonnet-4-6").
+/// matches across version suffixes and -latest aliases (e.g.
+/// "anthropic/claude-sonnet" matches both "anthropic/claude-sonnet-4-6"
+/// and "anthropic/claude-sonnet-latest").
 struct CuratedEntry {
     prefix: &'static str,
     benchmarks: Benchmarks,
@@ -338,7 +339,7 @@ fn curated_benchmarks() -> Vec<CuratedEntry> {
     vec![
         // ── Frontier: Anthropic ───────────────────────────────────────
         CuratedEntry {
-            prefix: "anthropic/claude-opus-4",
+            prefix: "anthropic/claude-opus",
             benchmarks: Benchmarks {
                 coding_index: Some(75.0),
                 intelligence_index: Some(78.0),
@@ -352,7 +353,7 @@ fn curated_benchmarks() -> Vec<CuratedEntry> {
             },
         },
         CuratedEntry {
-            prefix: "anthropic/claude-sonnet-4",
+            prefix: "anthropic/claude-sonnet",
             benchmarks: Benchmarks {
                 coding_index: Some(72.0),
                 intelligence_index: Some(74.0),
@@ -366,7 +367,7 @@ fn curated_benchmarks() -> Vec<CuratedEntry> {
             },
         },
         CuratedEntry {
-            prefix: "anthropic/claude-haiku-4",
+            prefix: "anthropic/claude-haiku",
             benchmarks: Benchmarks {
                 coding_index: Some(52.0),
                 intelligence_index: Some(55.0),
@@ -1261,7 +1262,7 @@ fn curated_benchmarks() -> Vec<CuratedEntry> {
 /// Apply curated benchmark data to models in the registry.
 ///
 /// Uses longest-prefix matching against OpenRouter model IDs so entries
-/// like "anthropic/claude-sonnet-4" match "anthropic/claude-sonnet-4-6".
+/// like "anthropic/claude-sonnet" match both dated and -latest aliases.
 /// Only fills in fields that are currently `None`/`default` — never
 /// overwrites data that was already populated (e.g. from a previous manual edit).
 fn apply_curated_benchmarks(registry: &mut BenchmarkRegistry) -> usize {
@@ -2589,7 +2590,7 @@ mod tests {
 
     #[test]
     fn test_apply_curated_benchmarks_prefix_match() {
-        // "anthropic/claude-opus-4" prefix should match the full opus model ID
+        // "anthropic/claude-opus" prefix should match the -latest alias
         let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
         let mut registry = make_test_registry(vec![make_test_model(&opus_key, "budget", None)]);
         let applied = apply_curated_benchmarks(&mut registry);

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 
-use crate::config::CLAUDE_OPUS_MODEL_ID;
+use crate::config::{CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID};
 use std::path::Path;
 
 /// Tier classification for models
@@ -137,7 +137,7 @@ impl ModelRegistry {
                 tier: ModelTier::Frontier,
             },
             ModelEntry {
-                id: "anthropic/claude-sonnet-4-6".into(),
+                id: format!("anthropic/{CLAUDE_SONNET_MODEL_ID}"),
                 provider: "openrouter".into(),
                 cost_per_1m_input: 3.0,
                 cost_per_1m_output: 15.0,
@@ -151,7 +151,7 @@ impl ModelRegistry {
                 tier: ModelTier::Mid,
             },
             ModelEntry {
-                id: "anthropic/claude-haiku-4-5".into(),
+                id: format!("anthropic/{CLAUDE_HAIKU_MODEL_ID}"),
                 provider: "openrouter".into(),
                 cost_per_1m_input: 0.80,
                 cost_per_1m_output: 4.0,
@@ -443,7 +443,7 @@ pub fn load_model_choices_with_descriptions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CLAUDE_OPUS_MODEL_ID;
+    use crate::config::{CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID};
     use tempfile::TempDir;
 
     #[test]
