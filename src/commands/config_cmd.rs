@@ -92,6 +92,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             "  incomplete_retry_delay = \"{}\"",
             config.coordinator.incomplete_retry_delay
         );
+        println!(
+            "  escalate_on_retry = {}",
+            config.coordinator.escalate_on_retry
+        );
         println!();
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);

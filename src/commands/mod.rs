@@ -285,6 +285,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -341,6 +342,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -431,6 +433,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -494,6 +497,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -551,6 +555,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -608,6 +613,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -665,6 +671,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -725,6 +732,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -787,6 +795,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -849,6 +858,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -908,6 +918,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -970,6 +981,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron

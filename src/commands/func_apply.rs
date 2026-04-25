@@ -296,6 +296,8 @@ pub fn run(
                 exec_mode: None,
                 verify_failures: 0,
                 spawn_failures: 0,
+                tier: None,
+                no_tier_escalation: false,
                 tried_models: vec![],
                 superseded_by: vec![],
                 supersedes: None,

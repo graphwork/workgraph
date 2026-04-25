@@ -682,6 +682,7 @@ mod tests {
             None,
             true,  // allow_phantom: test graph uses phantom deps
             false, // independent
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -737,6 +738,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -783,6 +785,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron

@@ -229,6 +229,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -276,6 +277,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -323,6 +325,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron

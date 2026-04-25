@@ -343,6 +343,10 @@ pub enum Commands {
         #[arg(long = "retry-strategy")]
         retry_strategy: Option<String>,
 
+        /// Opt out of tier escalation on retry for this task
+        #[arg(long = "no-tier-escalation")]
+        no_tier_escalation: bool,
+
         /// Cron schedule expression (6-field format: "sec min hour day month dow")
         #[arg(long)]
         cron: Option<String>,

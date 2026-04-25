@@ -209,6 +209,7 @@ pub fn run(
     not_before: Option<&str>,
     allow_phantom: bool,
     independent: bool,
+    no_tier_escalation: bool,
     iteration_config: Option<workgraph::agency::IterationConfig>,
     priority: Option<&str>,
     cron: Option<&str>,
@@ -593,6 +594,8 @@ pub fn run(
         max_rejections: None,
         verify_failures: 0,
         spawn_failures: 0,
+        tier: None,
+        no_tier_escalation,
         tried_models: vec![],
         superseded_by: vec![],
         supersedes: None,
@@ -1047,6 +1050,8 @@ fn add_task_directly(
             max_rejections: None,
             verify_failures: 0,
             spawn_failures: 0,
+            tier: None,
+            no_tier_escalation: false,
             tried_models: vec![],
             superseded_by: vec![],
             supersedes: None,
@@ -1540,6 +1545,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -1598,6 +1604,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -1656,6 +1663,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -1721,6 +1729,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -1783,6 +1792,7 @@ mod tests {
             None,
             true,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -1841,6 +1851,7 @@ mod tests {
             None,
             false, // allow_phantom=false, but paused=true defers validation
             false,
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -1903,6 +1914,7 @@ mod tests {
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -2089,6 +2101,7 @@ tier = "standard"
             None,
             false, // allow_phantom
             false, // independent
+            false, // no_tier_escalation
             None,  // iteration_config
             None,  // priority
             None,  // cron
@@ -2154,6 +2167,7 @@ tier = "standard"
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -2219,6 +2233,7 @@ tier = "standard"
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,  // priority
             None,  // cron
@@ -2325,6 +2340,7 @@ tier = "standard"
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,
             None,
@@ -2393,6 +2409,7 @@ tier = "standard"
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,
             None,
@@ -2490,6 +2507,7 @@ tier = "standard"
             None,
             false,
             false,
+            false, // no_tier_escalation
             None,
             None,
             None,

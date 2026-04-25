@@ -12889,6 +12889,17 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::Agency,
         });
+        entries.push(ConfigEntry {
+            key: "coordinator.escalate_on_retry".into(),
+            label: "Escalate tier on retry".into(),
+            value: if config.coordinator.escalate_on_retry {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::Agency,
+        });
 
         // ── 7. Guardrails ──
         entries.push(ConfigEntry {
@@ -13275,6 +13286,9 @@ impl VizApp {
             "coordinator.incomplete_retry_delay" => {
                 config.coordinator.incomplete_retry_delay = new_value;
             }
+            "coordinator.escalate_on_retry" => {
+                config.coordinator.escalate_on_retry = new_value == "on";
+            }
             "tiers.fast" => {
                 config.tiers.fast = Some(new_value);
             }
@@ -13522,6 +13536,9 @@ impl VizApp {
             }
             "agency.flip_enabled" => config.agency.flip_enabled = new_val == "on",
             "agency.eval_gate_all" => config.agency.eval_gate_all = new_val == "on",
+            "coordinator.escalate_on_retry" => {
+                config.coordinator.escalate_on_retry = new_val == "on";
+            }
             _ => {}
         }
         if config.save(&self.workgraph_dir).is_ok() {
@@ -16950,6 +16967,7 @@ mod tui_config_panel_tests {
             "checkpoint.retry_context_tokens",
             "coordinator.max_incomplete_retries",
             "coordinator.incomplete_retry_delay",
+            "coordinator.escalate_on_retry",
             // Guardrails
             "guardrails.max_child_tasks_per_agent",
             "guardrails.max_task_depth",

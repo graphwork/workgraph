@@ -179,12 +179,22 @@ pub(crate) fn spawn_agent_inner(
     let task_exec = task.exec.clone();
     // Get per-task timeout override
     let task_timeout = task.timeout.clone();
+    // Capture the task's quality tier (may be set by tier escalation on retry)
+    let task_tier = task.tier.clone();
     // Get task model preference. When unset, consult tag_routing
     // rules so a whole subgraph tagged `frontend` (etc.) can pick
     // up a specific model without editing each task. Explicit
     // per-task models always win — tag routing is only the fallback
     // when nothing else is set on the task.
     let task_model = task.model.clone().or_else(|| {
+        // Task-level tier override (set by tier escalation on retry)
+        if let Some(ref tier_str) = task.tier {
+            if let Ok(tier) = tier_str.parse::<workgraph::config::Tier>() {
+                if let Some(resolved) = config.resolve_tier(tier) {
+                    return Some(resolved.model);
+                }
+            }
+        }
         workgraph::config::resolve_tag_routing(&config.tag_routing, &task.tags)
             .map(|rule| rule.model.clone())
     });
@@ -539,6 +549,18 @@ pub(crate) fn spawn_agent_inner(
     cmd.env("WG_USER", workgraph::current_user());
     if let Some(ref m) = effective_model {
         cmd.env("WG_MODEL", m);
+    }
+    {
+        let tier_str = task_tier
+            .as_deref()
+            .unwrap_or_else(|| {
+                match workgraph::config::DispatchRole::TaskAgent.default_tier() {
+                    workgraph::config::Tier::Fast => "fast",
+                    workgraph::config::Tier::Standard => "standard",
+                    workgraph::config::Tier::Premium => "premium",
+                }
+            });
+        cmd.env("WG_TIER", tier_str);
     }
     if let Some(ref ep) = effective_endpoint {
         cmd.env("WG_ENDPOINT", ep);

@@ -408,6 +408,13 @@ pub struct Task {
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
+    /// Quality tier override set by tier escalation on retry.
+    /// When present, overrides the role's default_tier() during dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    /// Opt out of tier escalation for cost-sensitive tasks.
+    #[serde(default, skip_serializing_if = "is_bool_false")]
+    pub no_tier_escalation: bool,
     /// Models already tried for this task (for tier escalation on retry).
     /// Each entry is the model ID string that was used for a failed attempt.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1026,6 +1033,10 @@ struct TaskHelper {
     #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
+    tier: Option<String>,
+    #[serde(default)]
+    no_tier_escalation: bool,
+    #[serde(default)]
     tried_models: Vec<String>,
     #[serde(default)]
     superseded_by: Vec<String>,
@@ -1129,6 +1140,8 @@ impl<'de> Deserialize<'de> for Task {
             max_rejections: helper.max_rejections,
             verify_failures: helper.verify_failures,
             spawn_failures: helper.spawn_failures,
+            tier: helper.tier,
+            no_tier_escalation: helper.no_tier_escalation,
             tried_models: helper.tried_models,
             superseded_by: helper.superseded_by,
             supersedes: helper.supersedes,

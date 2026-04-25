@@ -1110,10 +1110,10 @@ impl DispatchRole {
             Self::Placer => Tier::Fast,
             Self::FlipInference => Tier::Fast,
             Self::Evaluator => Tier::Fast,
-            Self::TaskAgent => Tier::Premium,
+            Self::TaskAgent => Tier::Standard,
             Self::Evolver => Tier::Premium,
-            Self::Creator => Tier::Standard,
-            Self::Verification => Tier::Standard,
+            Self::Creator => Tier::Premium,
+            Self::Verification => Tier::Premium,
             Self::Default => Tier::Standard,
         }
     }
@@ -1243,6 +1243,15 @@ impl Tier {
             Self::Fast => "haiku",
             Self::Standard => "sonnet",
             Self::Premium => "opus",
+        }
+    }
+
+    /// Return the next tier up, capping at Premium.
+    pub fn escalate(&self) -> Tier {
+        match self {
+            Self::Fast => Self::Standard,
+            Self::Standard => Self::Premium,
+            Self::Premium => Self::Premium,
         }
     }
 }
@@ -2809,6 +2818,12 @@ pub struct CoordinatorConfig {
     /// Default: "30s".
     #[serde(default = "default_incomplete_retry_delay")]
     pub incomplete_retry_delay: String,
+
+    /// Bump the quality tier on retry: fast→standard→premium.
+    /// When enabled, a task that fails or is marked incomplete will be
+    /// re-dispatched at the next tier up. Default: false.
+    #[serde(default)]
+    pub escalate_on_retry: bool,
 }
 
 /// Resource management configuration for cleanup operations and recovery branches.
@@ -3078,6 +3093,7 @@ impl Default for CoordinatorConfig {
             resource_management: ResourceManagementConfig::default(),
             max_incomplete_retries: default_max_incomplete_retries(),
             incomplete_retry_delay: default_incomplete_retry_delay(),
+            escalate_on_retry: false,
         }
     }
 }
@@ -4698,10 +4714,10 @@ model = "claude:haiku"
 
     #[test]
     fn test_resolve_verification_default() {
-        // Verification defaults to Standard tier → sonnet (correctness matters but not opus)
+        // Verification defaults to Premium tier → opus
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
     }
 
     #[test]
@@ -4756,7 +4772,7 @@ model = "claude:haiku"
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
 
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
     }
 
@@ -4984,10 +5000,10 @@ model = "claude:haiku"
         assert_eq!(DispatchRole::Assigner.default_tier(), Tier::Fast);
         assert_eq!(DispatchRole::FlipInference.default_tier(), Tier::Fast);
         assert_eq!(DispatchRole::Evaluator.default_tier(), Tier::Fast);
-        assert_eq!(DispatchRole::TaskAgent.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::TaskAgent.default_tier(), Tier::Standard);
         assert_eq!(DispatchRole::Evolver.default_tier(), Tier::Premium);
-        assert_eq!(DispatchRole::Creator.default_tier(), Tier::Standard);
-        assert_eq!(DispatchRole::Verification.default_tier(), Tier::Standard);
+        assert_eq!(DispatchRole::Creator.default_tier(), Tier::Premium);
+        assert_eq!(DispatchRole::Verification.default_tier(), Tier::Premium);
         assert_eq!(DispatchRole::Default.default_tier(), Tier::Standard);
         assert_eq!(DispatchRole::Placer.default_tier(), Tier::Fast);
     }

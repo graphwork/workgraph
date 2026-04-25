@@ -39,6 +39,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
     let config = workgraph::config::Config::load_or_default(dir);
     let max_incomplete_retries = config.coordinator.max_incomplete_retries;
+    let escalate_on_retry = config.coordinator.escalate_on_retry;
     let retry_delay = &config.coordinator.incomplete_retry_delay;
 
     let ready_after = if !retry_delay.is_empty() && retry_delay != "0s" && retry_delay != "0" {
@@ -101,6 +102,29 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
             if let Some(ref ra) = ready_after_owned {
                 task.ready_after = Some(ra.clone());
+            }
+
+            // Tier escalation on retry: bump fast→standard→premium
+            if escalate_on_retry && !task.no_tier_escalation {
+                use workgraph::config::Tier;
+                let current_tier: Tier = task
+                    .tier
+                    .as_deref()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(Tier::Standard);
+                let next_tier = current_tier.escalate();
+                if next_tier != current_tier {
+                    task.tier = Some(next_tier.to_string());
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: agent_id_for_archive.clone(),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Tier escalated on retry: {} → {}",
+                            current_tier, next_tier
+                        ),
+                    });
+                }
             }
 
             let remaining = if effective_max > 0 {

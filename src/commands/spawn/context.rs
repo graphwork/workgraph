@@ -808,6 +808,12 @@ wg add "Subtask" --after $WG_TASK_ID
 - `$WG_AGENT_ID` — your unique agent identifier
 - `$WG_EXECUTOR_TYPE` — executor type (native, claude, etc.)
 - `$WG_MODEL` — the model you are running as
+- `$WG_TIER` — your quality tier (fast, standard, or premium)
+
+You are a **$WG_TIER-tier** agent. Tiers control capability and cost:
+- **fast**: lightweight tasks (triage, routing, compaction)
+- **standard**: typical implementation work
+- **premium**: complex reasoning, verification, evolution
 
 {}
 
