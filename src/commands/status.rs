@@ -153,8 +153,8 @@ struct StatusOutput {
     verify_failing: Vec<VerifyFailingTask>,
 }
 
-pub fn run(dir: &Path, json: bool) -> Result<()> {
-    let status = gather_status(dir)?;
+pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
+    let status = gather_status(dir, show_all)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -165,7 +165,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn gather_status(dir: &Path) -> Result<StatusOutput> {
+fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     // 1. Service status
     let service = gather_service_status(dir)?;
 
@@ -176,7 +176,7 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     let agents = gather_agent_summary(dir);
 
     // 4. Task summary
-    let tasks = gather_task_summary(dir)?;
+    let tasks = gather_task_summary(dir, show_all)?;
 
     // 5. Compaction progress (only when service is running)
     let compaction = if service.running {
@@ -189,13 +189,13 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     let cycles = gather_cycle_timing(dir);
 
     // 7. Recent activity
-    let recent = gather_recent_activity(dir)?;
+    let recent = gather_recent_activity(dir, show_all)?;
 
     // 8. Dangling dependencies
     let dangling_deps = gather_dangling_deps(dir);
 
     // 9. Verify-failing tasks
-    let verify_failing = gather_verify_failing(dir);
+    let verify_failing = gather_verify_failing(dir, show_all);
 
     Ok(StatusOutput {
         service,
@@ -295,7 +295,7 @@ fn gather_agent_summary(dir: &Path) -> AgentSummaryInfo {
     }
 }
 
-fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
+fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let path = graph_path(dir);
     if !path.exists() {
         return Ok(TaskSummaryInfo {
@@ -315,6 +315,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
 
     let now = Utc::now();
     let mut in_progress = 0;
+    let mut ready_count = 0;
     let mut blocked = 0;
     let mut delayed = 0;
     let mut done_today = 0;
@@ -327,9 +328,14 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
         .and_utc();
 
     for task in graph.tasks() {
+        if !show_all && task.id.starts_with('.') {
+            continue;
+        }
         match task.status {
             Status::Open => {
-                if !ready_ids.contains(task.id.as_str()) {
+                if ready_ids.contains(task.id.as_str()) {
+                    ready_count += 1;
+                } else {
                     // Distinguish delayed (waiting on ready_after) from blocked (waiting on deps)
                     let has_future_ready_after = task.ready_after.as_ref().is_some_and(|ra| {
                         ra.parse::<DateTime<Utc>>()
@@ -384,7 +390,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
 
     Ok(TaskSummaryInfo {
         in_progress,
-        ready: ready_tasks_list.len(),
+        ready: ready_count,
         blocked,
         delayed,
         done_today,
@@ -392,7 +398,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
     })
 }
 
-fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
+fn gather_recent_activity(dir: &Path, show_all: bool) -> Result<Vec<RecentActivityEntry>> {
     let path = graph_path(dir);
     if !path.exists() {
         return Ok(Vec::new());
@@ -403,6 +409,7 @@ fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
     // Collect done tasks with completion timestamps
     let mut completed: Vec<_> = graph
         .tasks()
+        .filter(|t| show_all || !t.id.starts_with('.'))
         .filter(|t| t.status == Status::Done && t.completed_at.is_some())
         .filter_map(|t| {
             let completed_at = t.completed_at.as_ref()?;
@@ -556,7 +563,7 @@ fn gather_dangling_deps(dir: &Path) -> Vec<DanglingDep> {
         .collect()
 }
 
-fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
+fn gather_verify_failing(dir: &Path, show_all: bool) -> Vec<VerifyFailingTask> {
     let path = super::graph_path(dir);
     if !path.exists() {
         return Vec::new();
@@ -569,6 +576,7 @@ fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
 
     graph
         .tasks()
+        .filter(|t| show_all || !t.id.starts_with('.'))
         .filter(|t| {
             t.verify_failures > 0 && t.status != Status::Failed && t.status != Status::Abandoned
         })
@@ -797,7 +805,7 @@ mod tests {
     #[test]
     fn test_gather_status_empty() {
         let temp_dir = TempDir::new().unwrap();
-        let result = gather_status(temp_dir.path());
+        let result = gather_status(temp_dir.path(), true);
         assert!(result.is_ok());
         let status = result.unwrap();
         assert!(!status.service.running);
@@ -833,7 +841,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.ready, 1);
         assert_eq!(summary.in_progress, 1);
         assert_eq!(summary.done_total, 1);
@@ -859,7 +867,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let recent = gather_recent_activity(temp_dir.path()).unwrap();
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
         // Should return 5 most recent
         assert_eq!(recent.len(), 5);
         // Most recent should be first (t1 is most recent)
@@ -873,7 +881,7 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.ready, 0);
         assert_eq!(summary.in_progress, 0);
         assert_eq!(summary.done_total, 0);
@@ -903,7 +911,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.delayed, 1);
         assert_eq!(summary.blocked, 1);
         assert_eq!(summary.ready, 1); // blocker is ready
@@ -916,7 +924,7 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let recent = gather_recent_activity(temp_dir.path()).unwrap();
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
         assert_eq!(recent.len(), 0);
     }
 
@@ -1051,7 +1059,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Normal task")));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(failing.is_empty());
     }
 
@@ -1068,7 +1076,7 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert_eq!(failing.len(), 1);
         assert_eq!(failing[0].task_id, "t1");
         assert_eq!(failing[0].failures, 2);
@@ -1089,7 +1097,7 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(
             failing.is_empty(),
             "Failed tasks should not be listed as verify-failing"
@@ -1099,7 +1107,7 @@ mod tests {
     #[test]
     fn test_gather_verify_failing_no_graph() {
         let temp_dir = TempDir::new().unwrap();
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(failing.is_empty());
     }
 
@@ -1115,5 +1123,63 @@ mod tests {
         assert!(info.threshold > 0);
         assert_eq!(info.percent, 0);
         assert!(info.last_compaction.is_none());
+    }
+
+    #[test]
+    fn test_gather_task_summary_hides_dot_prefixed() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("real-task", "Real task")));
+
+        let mut dot_task = make_task(".assign-real-task", "Assign real task");
+        dot_task.status = Status::InProgress;
+        graph.add_node(Node::Task(dot_task));
+
+        let mut dot_done = make_task(".flip-real-task", "FLIP real task");
+        dot_done.status = Status::Done;
+        dot_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(dot_done));
+
+        save_graph(&graph, &path).unwrap();
+
+        // show_all=false: only count non-dot-prefixed tasks
+        let summary = gather_task_summary(temp_dir.path(), false).unwrap();
+        assert_eq!(summary.ready, 1);
+        assert_eq!(summary.in_progress, 0);
+        assert_eq!(summary.done_total, 0);
+
+        // show_all=true: count everything
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
+        assert_eq!(summary.ready, 1);
+        assert_eq!(summary.in_progress, 1);
+        assert_eq!(summary.done_total, 1);
+    }
+
+    #[test]
+    fn test_gather_recent_activity_hides_dot_prefixed() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut real_done = make_task("real-done", "Real done");
+        real_done.status = Status::Done;
+        real_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(real_done));
+
+        let mut dot_done = make_task(".flip-real-done", "FLIP done");
+        dot_done.status = Status::Done;
+        dot_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(dot_done));
+
+        save_graph(&graph, &path).unwrap();
+
+        let recent = gather_recent_activity(temp_dir.path(), false).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].task_id, "real-done");
+
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
+        assert_eq!(recent.len(), 2);
     }
 }

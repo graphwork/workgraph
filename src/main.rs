@@ -1019,6 +1019,7 @@ fn main() -> Result<()> {
             paused,
             tags,
             cron,
+            all,
         } => commands::list::run(
             &workgraph_dir,
             status.as_deref(),
@@ -1027,6 +1028,7 @@ fn main() -> Result<()> {
             None,
             cron,
             cli.json,
+            all,
         ),
         Commands::Viz {
             focus,
@@ -2751,7 +2753,7 @@ fn main() -> Result<()> {
             commands::setup::run_with_args(&args)
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
-        Commands::Status => commands::status::run(&workgraph_dir, cli.json),
+        Commands::Status { all } => commands::status::run(&workgraph_dir, cli.json, all),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
         Commands::Metrics { json } => commands::metrics::run(&workgraph_dir, json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]

@@ -711,6 +711,10 @@ pub enum Commands {
         /// Only show cron-scheduled tasks
         #[arg(long)]
         cron: bool,
+
+        /// Show all tasks including dot-prefixed system tasks (hidden by default)
+        #[arg(long)]
+        all: bool,
     },
 
     /// Visualize the dependency graph (ASCII tree by default)
@@ -1887,7 +1891,11 @@ pub enum Commands {
     Quickstart,
 
     /// Quick one-screen status overview
-    Status,
+    Status {
+        /// Include dot-prefixed system tasks in counts (hidden by default)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Show time counters and agent statistics
     Stats,
@@ -4326,7 +4334,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiDump { .. } => "tui-dump",
         Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
-        Commands::Status => "status",
+        Commands::Status { .. } => "status",
         Commands::Stats => "stats",
         Commands::Metrics { .. } => "metrics",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -4420,7 +4428,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Cleanup { .. }
             | Commands::Cycles
             | Commands::Quickstart
-            | Commands::Status
+            | Commands::Status { .. }
             | Commands::Stats
             | Commands::Metrics { .. }
             | Commands::Chat { .. }
