@@ -56,7 +56,7 @@ Edit `.workgraph/config.toml`:
 name = "OpenRouter"
 provider = "openrouter"
 url = "https://openrouter.ai/api/v1"
-model = "anthropic/claude-sonnet-4-20250514"
+model = "anthropic/claude-sonnet-4-latest"
 api_key = "sk-or-v1-..."
 is_default = false
 ```
@@ -73,8 +73,8 @@ is_default = false
 
 **To use OpenRouter for evaluator/assigner roles (lightweight dispatch):**
 ```bash
-wg config --set-model evaluator "anthropic/claude-sonnet-4-20250514" --set-provider evaluator openrouter
-wg config --set-model assigner "anthropic/claude-sonnet-4-20250514" --set-provider assigner openrouter
+wg config --set-model evaluator "anthropic/claude-sonnet-4-latest" --set-provider evaluator openrouter
+wg config --set-model assigner "anthropic/claude-sonnet-4-latest" --set-provider assigner openrouter
 ```
 This works today for lightweight calls. The `call_openai_native()` function will use `OpenAiClient::from_env()`, which requires `OPENROUTER_API_KEY` in the environment.
 
@@ -109,13 +109,13 @@ OpenRouter passes through `tool_calls` correctly for models that support it. The
 This should work with Claude models via OpenRouter and with OpenAI models.
 
 #### Model Naming
-OpenRouter expects **provider-prefixed names**: `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`, `google/gemini-2.0-flash`, etc. The current code passes the model string directly — no transformation.
+OpenRouter expects **provider-prefixed names**: `anthropic/claude-sonnet-4-latest`, `openai/gpt-4o`, `google/gemini-2.0-flash`, etc. The current code passes the model string directly — no transformation.
 
 The model registry (`src/commands/models.rs:85`) defaults new models to provider `"openrouter"`, suggesting OpenRouter-format names are expected when using that provider.
 
 **Working examples:**
-- `anthropic/claude-sonnet-4-20250514`
-- `anthropic/claude-haiku-4-5-20251001`
+- `anthropic/claude-sonnet-4-latest`
+- `anthropic/claude-haiku-4-latest`
 - `openai/gpt-4o`
 - `google/gemini-2.0-flash`
 
@@ -149,9 +149,9 @@ Listed in priority order:
 export OPENROUTER_API_KEY=$(cat .openrouter.key)
 
 # 2. Configure roles to use OpenRouter
-wg config --set-model evaluator "anthropic/claude-haiku-4-5-20251001" \
+wg config --set-model evaluator "anthropic/claude-haiku-4-latest" \
           --set-provider evaluator openrouter
-wg config --set-model triage "anthropic/claude-haiku-4-5-20251001" \
+wg config --set-model triage "anthropic/claude-haiku-4-latest" \
           --set-provider triage openrouter
 ```
 
@@ -168,7 +168,7 @@ export OPENROUTER_API_KEY=$(cat .openrouter.key)
 #   api_base = "https://openrouter.ai/api"
 
 # 3. Set model with OpenRouter naming
-wg config --model "anthropic/claude-sonnet-4-20250514"
+wg config --model "anthropic/claude-sonnet-4-latest"
 ```
 
 ### For Claude CLI executor (default):
