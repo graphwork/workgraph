@@ -953,7 +953,8 @@ fn main() -> Result<()> {
             id,
             converged,
             skip_verify,
-        } => commands::done::run(&workgraph_dir, &id, converged, skip_verify),
+            ignore_unmerged_worktree,
+        } => commands::done::run(&workgraph_dir, &id, converged, skip_verify, ignore_unmerged_worktree),
         Commands::Fail {
             id,
             reason,
