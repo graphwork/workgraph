@@ -207,7 +207,7 @@ Add the core instruction to your agent's system prompt or `AGENTS.md`:
 Use workgraph (`wg`) for task coordination. Run `wg quickstart` to orient yourself.
 
 As a top-level agent, use service mode — do not manually claim tasks:
-- `wg service start` to start the coordinator
+- `wg service start` to start the dispatcher
 - `wg add "Task" --after dep` to define work
 - `wg list` / `wg agents` to monitor progress
 
@@ -219,7 +219,7 @@ See `wg --help` for all commands.
 
 The skill teaches agents to:
 - Run `wg quickstart` at session start to orient themselves
-- Act as a coordinator: start the service, define tasks, monitor progress
+- Act as a dispatcher: start the service, define tasks, monitor progress
 - Let the service handle claiming and spawning — not do it manually
 - Use manual mode only as a fallback when working alone without the service
 
@@ -299,7 +299,7 @@ That's it. The daemon watches your task graph and auto-spawns agents on ready ta
 Monitor what's happening:
 
 ```bash
-wg service status    # daemon info, agent summary, coordinator state
+wg service status    # daemon info, agent summary, dispatcher state
 wg agents            # list all agents
 wg tui               # interactive dashboard
 ```
@@ -316,7 +316,7 @@ wg service stop --kill-agents  # stop daemon and all agents
 The service reads from `.workgraph/config.toml`:
 
 ```toml
-[coordinator]
+[dispatcher]           # legacy alias [coordinator] still accepted
 max_agents = 4         # max parallel agents (default: 4)
 poll_interval = 60     # seconds between safety-net ticks (default: 60)
 executor = "claude"    # executor: "claude" (default), "amplifier", or "shell"
@@ -353,7 +353,7 @@ wg config --assigner-model haiku
 wg config --evaluator-model opus
 wg config --evolver-model opus
 
-# Creator tracking (recorded on tasks created by the coordinator)
+# Creator tracking (recorded on tasks created by the dispatcher)
 wg config --creator-agent <agent-hash>
 wg config --creator-model opus
 
@@ -371,7 +371,7 @@ wg config --registry-add --id my-model --provider openrouter --reg-model my-mode
 wg config --set-model default sonnet  # set default dispatch model
 wg config --set-model evaluator opus  # per-role model routing
 
-# Multi-coordinator
+# Multi-chat
 wg config --max-coordinators 3
 
 # Inspect merged config (shows source: global, local, or default)
@@ -394,10 +394,10 @@ wg service start --max-agents 8 --executor shell --interval 120 --model haiku
 | `wg service stop` | Stop daemon (agents continue independently) |
 | `wg service stop --kill-agents` | Stop daemon and kill all running agents |
 | `wg service stop --force` | Immediately SIGKILL the daemon |
-| `wg service status` | Show daemon PID, uptime, agent summary, coordinator state |
+| `wg service status` | Show daemon PID, uptime, agent summary, dispatcher state |
 | `wg service reload` | Re-read config.toml without restarting |
 | `wg service restart` | Graceful stop then start |
-| `wg service pause` | Pause coordinator (running agents continue, no new spawns) |
+| `wg service pause` | Pause dispatcher (running agents continue, no new spawns) |
 | `wg service resume` | Resume coordinator (immediate tick) |
 | `wg service freeze` | SIGSTOP all running agents and pause coordinator |
 | `wg service thaw` | SIGCONT all frozen agents and resume coordinator |
@@ -588,7 +588,7 @@ wg service status
 **Common issues:**
 
 - **"Socket already exists"** — A previous daemon didn't clean up. Check if it's still running with `wg service status`, then `wg service stop` or manually remove the stale socket.
-- **Agents not spawning** — Check `wg service status` for coordinator state. Verify `max_agents` isn't already reached with `wg agents --alive`. Ensure there are tasks in `wg ready`.
+- **Agents not spawning** — Check `wg service status` for dispatcher state. Verify `max_agents` isn't already reached with `wg agents --alive`. Ensure there are tasks in `wg ready`.
 - **Agent marked dead prematurely** — Increase `heartbeat_timeout` in config.toml if agents do long-running work without heartbeating.
 - **Config changes not taking effect** — Run `wg service reload` after editing `config.toml`. CLI flag overrides on `wg service start` take precedence over the file.
 - **Daemon won't start** — Check if another daemon is already running. Look at `.workgraph/service/state.json` for stale PID info.

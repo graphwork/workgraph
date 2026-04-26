@@ -11547,7 +11547,7 @@ impl VizApp {
         // release and swaps the observer pane for an owner pane
         // when it happens.
         if self.chat_pty_mode && self.chat_pty_observer {
-            let task_id = format!(".coordinator-{}", self.active_coordinator_id);
+            let task_id = workgraph::chat_id::format_chat_task_id(self.active_coordinator_id);
             let chat_dir = self.workgraph_dir.join("chat").join(&task_id);
             if let Err(e) = workgraph::session_lock::request_release(&chat_dir) {
                 eprintln!("[tui] failed to write release marker for takeover: {}", e);
@@ -11852,7 +11852,7 @@ impl VizApp {
         let coord_task_id = if target_id == 0 {
             ".coordinator".to_string()
         } else {
-            format!(".coordinator-{}", target_id)
+            workgraph::chat_id::format_chat_task_id(target_id)
         };
         if let Some(idx) = self.task_order.iter().position(|id| *id == coord_task_id) {
             self.selected_task_idx = Some(idx);
@@ -11932,7 +11932,7 @@ impl VizApp {
         // spawn-task fails with "session lock busy", child exits
         // immediately, render falls through to file-tailing — which
         // is exactly the broken state the user smoke-tested into.
-        let task_id = format!(".coordinator-{}", self.active_coordinator_id);
+        let task_id = workgraph::chat_id::format_chat_task_id(self.active_coordinator_id);
         let chat_ref = format!("coordinator-{}", self.active_coordinator_id);
 
         let pane_live = self
@@ -12436,10 +12436,20 @@ impl VizApp {
         let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
 
         for (cid, label) in &ids_and_labels {
-            let task_id = if *cid == 0 {
+            // Prefer .chat-N (new), fall back to .coordinator-N or bare .coordinator (legacy)
+            let task_id = if let Some(ref g) = graph {
+                let new_id = workgraph::chat_id::format_chat_task_id(*cid);
+                if g.get_task(&new_id).is_some() {
+                    new_id
+                } else if *cid == 0 && g.get_task(".coordinator").is_some() {
+                    ".coordinator".to_string()
+                } else {
+                    format!(".coordinator-{}", cid)
+                }
+            } else if *cid == 0 {
                 ".coordinator".to_string()
             } else {
-                format!(".coordinator-{}", cid)
+                workgraph::chat_id::format_chat_task_id(*cid)
             };
 
             let (status_desc, is_alive) = if let Some(ref g) = graph {

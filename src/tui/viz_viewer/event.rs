@@ -458,7 +458,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
         ) && modifiers.is_empty();
         if is_scroll {
-            let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 let page = (app.last_right_content_area.height as usize).max(10);
                 match code {
@@ -472,7 +472,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
         if !is_toggle {
-            let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 let key_event = crossterm::event::KeyEvent::new(code, modifiers);
                 let _ = pane.send_key(key_event);
@@ -513,7 +513,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer;
     if vendor_pty_active {
-        let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.send_text(text);
             return;
@@ -2744,7 +2744,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
         Some(t) => t,
         None => return false,
     };
-    let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
     let chat_dir = app.workgraph_dir.join("chat").join(&task_id);
     // Has the handler released?
     let released = match workgraph::session_lock::read_holder(&chat_dir) {
@@ -2786,7 +2786,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
 /// `maybe_auto_enable_chat_pty` which handles per-executor spawn
 /// (native → `wg nex`, claude → `claude`, codex → `codex`).
 fn toggle_chat_pty_mode(app: &mut VizApp) {
-    let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
     let pane_live = app
         .task_panes
         .get_mut(&task_id)
@@ -2822,7 +2822,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Detail => app.hud_scroll_up(amount),
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_up(amount);
                     return;
@@ -2892,7 +2892,7 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_down(amount);
                     return;
@@ -2975,7 +2975,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_top();
                     return;
@@ -3040,7 +3040,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_bottom();
                     return;
@@ -3147,7 +3147,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_up(3);
                 }
@@ -3183,7 +3183,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_down(3);
                 }

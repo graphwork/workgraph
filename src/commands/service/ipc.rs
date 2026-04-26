@@ -2265,9 +2265,9 @@ poll_interval = 120
 
         assert!(resp.ok);
         let data = resp.data.unwrap();
-        assert_eq!(data["coordinator_id"], 1);
+        assert_eq!(data["chat_id"], 1);
 
-        // Verify pending_coordinator_ids tracks the targeted coordinator
+        // Verify pending_coordinator_ids tracks the targeted chat agent
         assert_eq!(pending_coordinator_ids, vec![1]);
 
         // Message should be in coordinator 1's inbox, not coordinator 0's
@@ -2509,31 +2509,31 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        // Create coordinator labeled "alice"
+        // Create chat agent labeled "alice"
         let resp = handle_create_coordinator(dir, Some("alice"), None, None);
-        assert!(resp.ok, "create_coordinator should succeed");
+        assert!(resp.ok, "create_chat should succeed");
 
-        // Verify the coordinator task was created with correct label
+        // Verify the chat task was created with correct label and new prefix
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let coord = graph
-            .get_task(".coordinator-0")
-            .expect("coordinator task should exist");
-        assert_eq!(coord.title, "Coordinator: alice");
-        assert!(coord.tags.contains(&"coordinator-loop".to_string()));
+            .get_task(".chat-0")
+            .expect("chat task should exist with new .chat-N prefix");
+        assert_eq!(coord.title, "Chat: alice");
+        assert!(coord.tags.contains(&"chat-loop".to_string()));
 
-        // Create coordinator labeled "bob"
+        // Create chat labeled "bob"
         let resp = handle_create_coordinator(dir, Some("bob"), None, None);
-        assert!(resp.ok, "create_coordinator for bob should succeed");
+        assert!(resp.ok, "create_chat for bob should succeed");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let coord = graph
-            .get_task(".coordinator-1")
-            .expect("second coordinator should exist");
-        assert_eq!(coord.title, "Coordinator: bob");
+            .get_task(".chat-1")
+            .expect("second chat should exist");
+        assert_eq!(coord.title, "Chat: bob");
 
-        // Both coordinators should coexist
-        assert!(graph.get_task(".coordinator-0").is_some());
-        assert!(graph.get_task(".coordinator-1").is_some());
+        // Both chats should coexist
+        assert!(graph.get_task(".chat-0").is_some());
+        assert!(graph.get_task(".chat-1").is_some());
     }
 
     #[test]

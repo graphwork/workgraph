@@ -65,7 +65,7 @@ wg retry <task-id>    # Failed → Open (clears assignment, preserves logs)
 
 - Retry count is tracked (`retry_count`). Set `max_retries` to limit attempts.
 - Previous failure reasons and logs are preserved for the next agent to learn from.
-- The coordinator re-dispatches the task automatically after retry.
+- The dispatcher re-dispatches the task automatically after retry.
 
 ### Cascade abandon
 
@@ -83,10 +83,10 @@ The `superseded_by` field creates a traceable link from the old task to its repl
 
 ### Placement flow
 
-When `auto_place` is enabled (`wg config --auto-place true`), placement analysis is merged into the assignment step. Rather than creating separate `.place-*` tasks, the coordinator performs placement analysis inline when building `.assign-*` tasks for ready unassigned work:
+When `auto_place` is enabled (`wg config --auto-place true`), placement analysis is merged into the assignment step. Rather than creating separate `.place-*` tasks, the dispatcher performs placement analysis inline when building `.assign-*` tasks for ready unassigned work:
 
 ```
-wg add "New task" → Open state → coordinator creates .assign-<task-id>
+wg add "New task" → Open state → dispatcher creates .assign-<task-id>
                                 → assignment agent analyzes graph context
                                   (including placement when auto_place is on)
                                 → determines optimal dependencies, wiring,
@@ -360,7 +360,7 @@ wg context write-tests
 - Use `wg log` to leave progress traces — they become context for dependent tasks
 - Use `wg artifact` to mark outputs — they appear in `wg context` for successors
 - Always check `wg context <your-task>` before starting work — it shows what predecessors produced
-- **You are expected to create tasks** when you discover work. Bugs, missing docs, needed refactors — create them with `wg add`. The coordinator dispatches automatically.
+- **You are expected to create tasks** when you discover work. Bugs, missing docs, needed refactors — create them with `wg add`. The dispatcher dispatches automatically.
 
 ### 4.1.1 Discovery — see what's new
 
@@ -460,7 +460,7 @@ When an agent needs to pause until a human responds, use `wg wait` instead of po
 wg wait <task-id> --until "human-input" --checkpoint "Waiting for approval on design"
 ```
 
-The coordinator evaluates waiting conditions each tick and automatically resumes the task when a human message arrives. This is more efficient than polling `wg msg read` in a loop and frees the agent slot for other work while waiting.
+The dispatcher evaluates waiting conditions each tick and automatically resumes the task when a human message arrives. This is more efficient than polling `wg msg read` in a loop and frees the agent slot for other work while waiting.
 
 ### 4.2 After Code Changes: Rebuild
 
@@ -474,7 +474,7 @@ This updates the global `wg` binary. Forgetting this step is a common source of 
 
 ### 4.3 Worktree Isolation
 
-When the coordinator spawns agents, each agent works in an isolated [git worktree](WORKTREE-ISOLATION.md). This means:
+When the dispatcher spawns agents, each agent works in an isolated [git worktree](WORKTREE-ISOLATION.md). This means:
 
 - Each agent has its own working tree — no shared file conflicts
 - Agents can build, test, and commit independently
@@ -585,14 +585,14 @@ See [AGENT-SERVICE.md](AGENT-SERVICE.md) for the full step-by-step tick breakdow
 ```bash
 wg service pause    # running agents continue, no new spawns
 wg service resume   # resume + immediate tick
-wg service freeze   # SIGSTOP all agents + pause coordinator
-wg service thaw     # SIGCONT all agents + resume coordinator
+wg service freeze   # SIGSTOP all agents + pause dispatcher
+wg service thaw     # SIGCONT all agents + resume dispatcher
 ```
 
 ### Monitoring
 
 ```bash
-wg service status              # daemon and coordinator state
+wg service status              # daemon and dispatcher state
 wg agents                      # all agents with status
 wg agents --alive              # only alive agents
 wg agents --working            # only working agents
@@ -637,7 +637,7 @@ wg viz --graph                  # 2D spatial graph with box-drawing characters
 
 ### Executor types
 
-The coordinator spawns agents via an executor. Three built-in executors:
+The dispatcher spawns agents via an executor. Three built-in executors:
 
 | Executor | What it does | When to use |
 |----------|-------------|-------------|
@@ -646,8 +646,8 @@ The coordinator spawns agents via an executor. Three built-in executors:
 | **shell** | Runs the task's `exec` command directly (no LLM) | Scripts, builds, non-AI work |
 
 ```bash
-wg config --coordinator-executor claude      # default
-wg config --coordinator-executor amplifier   # switch to amplifier
+wg config --dispatcher-executor claude      # default
+wg config --dispatcher-executor amplifier   # switch to amplifier
 ```
 
 Spawned agents receive environment variables indicating their runtime context:
@@ -662,7 +662,7 @@ Spawned agents receive environment variables indicating their runtime context:
 
 ```toml
 # .workgraph/config.toml
-[coordinator]
+[dispatcher]
 max_agents = 4
 poll_interval = 60
 executor = "claude"
@@ -686,7 +686,7 @@ Model resolution follows a priority chain (highest wins):
 
 1. `task.model` — per-task override set via `wg add --model` or `wg edit --model`
 2. Executor config model — model field in the executor's config
-3. `coordinator.model` — from `[coordinator]` in config.toml or CLI `--model`
+3. `dispatcher.model` — from `[dispatcher]` in config.toml or CLI `--model` (legacy `[coordinator]` accepted)
 4. Executor default — if no model is resolved, no model flag is passed and the executor uses its own default
 
 For agency meta-tasks (assignment, evaluation, evolution), dedicated model settings apply:
@@ -754,7 +754,7 @@ wg add "Integration" --context-scope graph  # needs full chain
 wg edit my-task --context-scope full        # override for debugging
 ```
 
-Scope is resolved at dispatch time by the coordinator. If not set on the task, the role's default scope is used (if the task has an assigned agent with a role that specifies a default scope), otherwise `task` is the implicit default.
+Scope is resolved at dispatch time by the dispatcher. If not set on the task, the role's default scope is used (if the task has an assigned agent with a role that specifies a default scope), otherwise `task` is the implicit default.
 
 ---
 
@@ -764,7 +764,7 @@ These commands support ongoing project health and agent lifecycle management.
 
 ### Compaction
 
-`wg compact` distills the current graph state into a `context.md` summary. When running as a service, the coordinator drives compaction via a `.compact-0` cycle task — this is the coordinator's self-introspection loop.
+`wg compact` distills the current graph state into a `context.md` summary. When running as a service, the dispatcher drives compaction via a `.compact-0` cycle task — this is the chat agent's self-introspection loop.
 
 ```bash
 wg compact              # generate context.md from graph state
@@ -781,7 +781,7 @@ wg sweep --dry-run      # report only, don't fix
 
 ### Checkpoint
 
-`wg checkpoint` saves a checkpoint for context preservation during long-running tasks. The coordinator also auto-checkpoints alive agents when turn/time thresholds are met.
+`wg checkpoint` saves a checkpoint for context preservation during long-running tasks. The dispatcher also auto-checkpoints alive agents when turn/time thresholds are met.
 
 ```bash
 wg checkpoint <task-id> --summary "Completed auth module, starting tests"
@@ -801,7 +801,7 @@ wg stats                # project-wide stats
 
 ### Wait
 
-`wg wait` parks a task in `Waiting` status until a condition is met. The coordinator checks waiting conditions each tick (step 2.7) and automatically resumes satisfied tasks.
+`wg wait` parks a task in `Waiting` status until a condition is met. The dispatcher checks waiting conditions each tick (step 2.7) and automatically resumes satisfied tasks.
 
 ```bash
 wg wait <task-id> --until "task:dep-a=done"       # wait for another task to reach a status
@@ -838,12 +838,12 @@ wg match <task-id>
 
 ### Chat
 
-Send messages to the coordinator with `wg chat`. Useful for multi-coordinator setups:
+Send messages to a chat agent with `wg chat`. Useful for multi-chat setups:
 
 ```bash
 wg chat "Deploy when ready"
 wg chat --attachment report.md "Review this"      # attach a file
-wg chat --coordinator my-coord "Target a specific coordinator"
+wg chat --chat my-coord "Target a specific chat agent"
 ```
 
 ## 8. Manual Operation
@@ -1061,7 +1061,7 @@ Agents should leave the system better than they found it. Beyond completing your
 
 ### 12.1 The Philosophy
 
-A task description is a hypothesis. When you start working, you discover truth: missing prerequisites, unexpected complexity, bugs in adjacent code, documentation gaps. Rather than ignoring these discoveries or trying to fix everything yourself, encode them as new tasks. The coordinator will dispatch them to the right agent at the right time.
+A task description is a hypothesis. When you start working, you discover truth: missing prerequisites, unexpected complexity, bugs in adjacent code, documentation gaps. Rather than ignoring these discoveries or trying to fix everything yourself, encode them as new tasks. The dispatcher will dispatch them to the right agent at the right time.
 
 ```bash
 # Found a bug while implementing a feature
