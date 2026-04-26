@@ -39,7 +39,7 @@ trap cleanup EXIT
 
 cd "$TMPHOME"
 
-wg init --no-agency -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
+wg init --no-agency -x nex -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
 python3 - <<'PY'
 import json, pathlib
 wg = pathlib.Path.cwd() / ".wg"
@@ -132,6 +132,7 @@ check "Ctrl-C SIGINT"   "C-c"          'b"\x03"'
 check "Tab forward"     "Tab"          'b"\t"'
 check "Esc"             "Escape"       'b"\x1b"'
 check "Alt-b ESC-b"     "M-b"          'b"\x1bb"'
+check "Ctrl-Q passthru" "C-q"          'b"\x11"'
 
 if [[ $FAIL -ne 0 ]]; then
     echo ""

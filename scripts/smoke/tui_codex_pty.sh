@@ -34,8 +34,7 @@ trap cleanup EXIT
 
 cd "$TMPHOME"
 
-wg init --no-agency -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
-wg config --coordinator-executor codex >/dev/null 2>&1
+wg init --no-agency -x codex -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
 
 UUID="019db700-0000-7000-8000-0000000000c0"
 python3 - <<PY

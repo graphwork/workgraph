@@ -205,10 +205,14 @@ pub fn run(
 
 /// Write the chosen executor into the project's `config.toml`.
 fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
+    let canonical = match executor {
+        "nex" => "native",
+        other => other,
+    };
     let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
-    config.coordinator.executor = Some(executor.to_string());
+    config.coordinator.executor = Some(canonical.to_string());
     config.save(dir).context("Failed to save config.toml")?;
-    println!("Set coordinator.executor = \"{}\"", executor);
+    println!("Set coordinator.executor = \"{}\"", canonical);
     Ok(())
 }
 

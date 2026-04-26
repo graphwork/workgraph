@@ -72,7 +72,7 @@ fi
 
 # Init a fresh workgraph pointing at the fake endpoint.
 cd "$TMPHOME"
-wg init --no-agency -m local:fake-model -e "http://127.0.0.1:$PORT" >/dev/null 2>&1
+wg init --no-agency -x nex -m local:fake-model -e "http://127.0.0.1:$PORT" >/dev/null 2>&1
 
 # Register a coordinator-1 session alias + the graph task so auto-PTY
 # has something to spawn into.

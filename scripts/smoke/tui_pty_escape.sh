@@ -37,7 +37,7 @@ trap cleanup EXIT
 
 cd "$TMPHOME"
 
-wg init --no-agency -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
+wg init --no-agency -x nex -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
 python3 - <<'PY'
 import json, pathlib
 wg = pathlib.Path.cwd() / ".wg"

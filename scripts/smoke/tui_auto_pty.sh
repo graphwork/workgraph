@@ -25,7 +25,7 @@ trap 'tmux kill-session -t "$SESSION" 2>/dev/null; cd /; rm -rf "$TMPHOME"' EXIT
 cd "$TMPHOME"
 
 # 1. Fresh init with native executor (triggers auto-PTY for Chat tab).
-wg init --no-agency -m local:test-model -e http://127.0.0.1:1 >/dev/null 2>&1
+wg init --no-agency -x nex -m local:test-model -e http://127.0.0.1:1 >/dev/null 2>&1
 
 # 2. Register a coordinator-1 session so the alias resolves through
 #    the registry (same shape `wg tui` creates on its own; baking it
@@ -69,15 +69,31 @@ for i in $(seq 1 "$POLL_DEADLINE"); do
     fi
 done
 
-# 6. Cross-check: a live `wg nex ... --role coordinator` child must exist.
-#    (Without this the banner could be stale from a crashed child.
-#    And without --role coordinator, nex.rs strips the wg mutation tools.)
-if ! pgrep -f "wg nex.*--role coordinator" >/dev/null; then
+# 6. Cross-check: a live `wg nex ... --role coordinator` child for THIS
+#    test's coordinator-1 must exist. Use --resume coordinator-1 as the
+#    needle to avoid matching stale processes from other tests.
+NEX_CMDLINE=$(pgrep -af "wg nex.*--resume coordinator-1" 2>/dev/null | head -1)
+if [[ -z "$NEX_CMDLINE" ]]; then
+    # Fallback: check for any wg nex --role coordinator
+    if pgrep -af "wg nex.*--role coordinator" >/dev/null; then
+        NEX_CMDLINE=$(pgrep -af "wg nex.*--role coordinator" 2>/dev/null | head -1)
+        echo "FAIL: found wg nex but NOT with --resume coordinator-1"
+        echo "  cmdline: $NEX_CMDLINE"
+    fi
+    PASS=0
+fi
+
+# 7. Post treat-wg-nex (58eb7c751): nex must use --resume (stdin via
+#    rustyline), NOT --chat (inbox.jsonl). If --chat is present, the
+#    PTY forwards keystrokes to a stdin nobody reads.
+if [[ -n "$NEX_CMDLINE" ]] && echo "$NEX_CMDLINE" | grep -q -- "--chat"; then
+    echo "FAIL: nex spawned with --chat (expected --resume after treat-wg-nex)"
+    echo "  cmdline: $NEX_CMDLINE"
     PASS=0
 fi
 
 if [[ "$PASS" == 1 ]]; then
-    echo "PASS: wg nex embedded in Chat tab, live child present"
+    echo "PASS: wg nex embedded in Chat tab, live child present, uses --resume"
     exit 0
 fi
 

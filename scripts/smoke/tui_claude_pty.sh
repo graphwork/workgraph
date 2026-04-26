@@ -37,7 +37,7 @@ cd "$TMPHOME"
 # `wg init -m claude:opus` sets agent.model AND coordinator.model
 # via Config::apply_model_endpoint; no `-e` needed because the model
 # has its own `claude:` provider prefix.
-wg init --no-agency -m claude:opus >/dev/null 2>&1
+wg init --no-agency -x claude -m claude:opus >/dev/null 2>&1
 # Confirm the resolver will pick "claude" for this coordinator.
 if ! wg config --show 2>&1 | grep -qE 'model = "claude:'; then
     echo "FAIL: couldn't set coordinator model to claude:opus"

@@ -64,7 +64,7 @@ done
 [[ -f "$TMPHOME/ready.flag" ]] || { echo "FAIL: fake server not ready"; exit 1; }
 
 cd "$TMPHOME"
-wg init --no-agency -m local:fake -e "http://127.0.0.1:$PORT" >/dev/null 2>&1
+wg init --no-agency -x nex -m local:fake -e "http://127.0.0.1:$PORT" >/dev/null 2>&1
 
 # Start daemon WITH the coordinator agent so it spawns its own `wg nex
 # --chat coordinator-0` handler that holds the session lock.
