@@ -1051,3 +1051,258 @@ async fn test_nex_inline_url_passes_bare_model_through() {
         "bare model names with no provider prefix must pass through unchanged"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Named-endpoint path regression: the coordinator-spawned `wg nex` does NOT
+// pass `-e <url>` (the inline-URL shortcut) — instead the URL comes from the
+// `[[llm_endpoints.endpoints]]` config block written by `wg init`. The path
+// resolution lives in `create_provider_ext`'s named-endpoint branch (no
+// `endpoint_name` override).
+//
+// Reproduces the user-visible failure observed in `wg tui` chat after a
+// fresh `wg init -m qwen3-coder -e https://lambda01...:30000 -x nex`:
+//
+//     [native-agent] LLM request failed: Streaming request failed after
+//     retries: API error 404: {"detail":"Not Found"}
+//
+// Root cause: agent-62 fixed only the inline-URL shortcut. The named-
+// endpoint path still passes the URL to `with_base_url(...)` verbatim,
+// without appending the `/v1` path segment that `OpenAiClient` expects
+// (it constructs `{base_url}/chat/completions`). When the user's stored
+// endpoint URL is `https://lambda01...:30000` the wire request goes to
+// `https://lambda01...:30000/chat/completions` instead of the OAI-spec
+// `/v1/chat/completions`, so SGLang/vLLM/llama.cpp respond 404.
+
+/// Recording stub that captures the HTTP request line (method + path)
+/// in addition to the body. Used by the named-endpoint URL-normalization
+/// regression below; the existing `start_recording_oai_stub` only kept
+/// bodies and we don't want to break its three call sites.
+fn start_recording_oai_stub_with_paths(
+    num_requests: usize,
+) -> (
+    String,
+    Arc<std::sync::Mutex<Vec<(String, String)>>>, // (request_line, body)
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://127.0.0.1:{}", addr.port());
+    let captured: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured_clone = Arc::clone(&captured);
+
+    thread::spawn(move || {
+        for _ in 0..num_requests {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+
+            let mut buf = Vec::with_capacity(16 * 1024);
+            let mut tmp = [0u8; 4096];
+            let mut content_length: Option<usize> = None;
+            let mut header_end: Option<usize> = None;
+            loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if header_end.is_none()
+                            && let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                        {
+                            header_end = Some(idx + 4);
+                            let header_str = String::from_utf8_lossy(&buf[..idx]).to_lowercase();
+                            for line in header_str.lines() {
+                                if let Some(rest) = line.strip_prefix("content-length:") {
+                                    content_length = rest.trim().parse().ok();
+                                }
+                            }
+                        }
+                        if let (Some(he), Some(cl)) = (header_end, content_length)
+                            && buf.len() >= he + cl
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            if let Some(he) = header_end {
+                // First line of the request is the request-line ("POST /v1/chat/completions HTTP/1.1").
+                let header_str = String::from_utf8_lossy(&buf[..he.saturating_sub(4)]).to_string();
+                let request_line = header_str.lines().next().unwrap_or("").to_string();
+                let body = String::from_utf8_lossy(&buf[he..]).to_string();
+                captured_clone.lock().unwrap().push((request_line, body));
+            }
+
+            let chunks = [
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}"#,
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ];
+            let mut sse = String::new();
+            for c in &chunks {
+                sse.push_str("data: ");
+                sse.push_str(c);
+                sse.push_str("\n\n");
+            }
+            sse.push_str("data: [DONE]\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                sse.len(),
+                sse,
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (url, captured)
+}
+
+/// Regression for the `wg tui` chat 404 the user reported on autohaiku.
+///
+/// `wg init -e https://host:30000` stores the bare host (no `/v1`) in
+/// `[[llm_endpoints.endpoints]]`. The coordinator spawns `wg nex --chat
+/// .coordinator-N -m local:qwen3-coder` (no `-e`), which routes through
+/// the named-endpoint branch of `create_provider_ext`. That branch must
+/// normalize the endpoint URL by appending `/v1` when missing — same as
+/// the inline-URL shortcut already does — otherwise `OpenAiClient`
+/// posts to `{host}/chat/completions` and the OAI-compat server (SGLang
+/// etc.) returns 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_named_endpoint_url_gets_v1_path_appended() {
+    let tmp = TempDir::new().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let graph = workgraph::graph::WorkGraph::new();
+    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+    let (base_url, captured) = start_recording_oai_stub_with_paths(1);
+
+    // Mirror what `wg init -m qwen3-coder -e <url> -x nex` writes:
+    // an `[[llm_endpoints.endpoints]]` block with provider="local" and
+    // the bare URL (no /v1).
+    let config_toml = format!(
+        r#"
+[[llm_endpoints.endpoints]]
+name = "default"
+provider = "local"
+url = "{}"
+"#,
+        base_url
+    );
+    std::fs::write(tmp.path().join("config.toml"), config_toml).unwrap();
+
+    // Mirror what `wg spawn-task .coordinator-N` does: pass model only
+    // (no endpoint override). The provider must be resolved via the
+    // named-endpoint config we just wrote.
+    let provider = workgraph::executor::native::provider::create_provider_ext(
+        tmp.path(),
+        "local:qwen3-coder",
+        None,
+        None, // <-- the critical bit: no -e override, must use endpoint config
+        None,
+    )
+    .expect("create_provider_ext should resolve via named-endpoint config");
+
+    let request = MessagesRequest {
+        model: provider.model().to_string(),
+        max_tokens: 64,
+        system: None,
+        messages: vec![workgraph::executor::native::client::Message {
+            role: workgraph::executor::native::client::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        tools: vec![],
+        stream: true,
+    };
+
+    let _resp = provider
+        .send_streaming(&request, &|_: String| {})
+        .await
+        .expect("streaming send should succeed against the stub");
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1, "stub should have received one POST");
+    let (request_line, body) = &captured[0];
+
+    assert!(
+        request_line.starts_with("POST /v1/chat/completions"),
+        "named-endpoint path must POST to `/v1/chat/completions` (got `{}`). \
+         Without the `/v1` segment the wire URL becomes `{{host}}/chat/completions`, \
+         which OAI-compat servers (SGLang, vLLM, llama.cpp) answer with 404 — \
+         exactly the fault the user reported in `wg tui` chat.",
+        request_line
+    );
+
+    // Sanity: we still want the model field to be the prefix-stripped form.
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let model_field = parsed.get("model").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(
+        model_field, "qwen3-coder",
+        "the named-endpoint path must also strip the `local:` prefix"
+    );
+}
+
+/// Companion: if the user's endpoint URL already includes `/v1`, we must
+/// NOT double it up to `/v1/v1/...`. Same idempotence the inline-URL
+/// shortcut already enforces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_named_endpoint_url_with_v1_is_not_doubled() {
+    let tmp = TempDir::new().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let graph = workgraph::graph::WorkGraph::new();
+    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+    let (base_url, captured) = start_recording_oai_stub_with_paths(1);
+
+    // User's URL already includes /v1 — endpoint normalization must leave it alone.
+    let config_toml = format!(
+        r#"
+[[llm_endpoints.endpoints]]
+name = "default"
+provider = "local"
+url = "{}/v1"
+"#,
+        base_url
+    );
+    std::fs::write(tmp.path().join("config.toml"), config_toml).unwrap();
+
+    let provider = workgraph::executor::native::provider::create_provider_ext(
+        tmp.path(),
+        "local:qwen3-coder",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let request = MessagesRequest {
+        model: provider.model().to_string(),
+        max_tokens: 64,
+        system: None,
+        messages: vec![workgraph::executor::native::client::Message {
+            role: workgraph::executor::native::client::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        tools: vec![],
+        stream: true,
+    };
+
+    let _resp = provider
+        .send_streaming(&request, &|_: String| {})
+        .await
+        .unwrap();
+
+    let captured = captured.lock().unwrap();
+    let (request_line, _) = &captured[0];
+    assert!(
+        request_line.starts_with("POST /v1/chat/completions")
+            && !request_line.contains("/v1/v1/"),
+        "endpoint URL already ending in /v1 must not double the segment (got `{}`)",
+        request_line
+    );
+}

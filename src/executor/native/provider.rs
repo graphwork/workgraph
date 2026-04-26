@@ -57,6 +57,26 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Normalize an OAI-compatible base URL so `OpenAiClient` (which
+/// posts to `{base_url}/chat/completions`) hits the canonical
+/// `/v1/chat/completions` endpoint that SGLang/vLLM/llama.cpp/Ollama
+/// expose. Idempotent — does NOT double `/v1` if already present.
+///
+/// Both the inline-URL shortcut (`wg nex -e <url>`) and the
+/// named-endpoint resolution path (`wg nex -m <m>` resolving against
+/// `[[llm_endpoints.endpoints]]`) must call this — the named-endpoint
+/// path historically did not, which surfaced as an HTTP 404 fault on
+/// the very first message in `wg tui` chat for any user whose
+/// `wg init -e <bare-url>` had stored the host without `/v1`.
+fn normalize_oai_compat_base_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    }
+}
+
 /// Build an oai-compat client pointed directly at `url`, with an
 /// optional key override. Used by the `-e <url>` shortcut so local
 /// servers (Ollama, vLLM, llama.cpp) work without any config.
@@ -66,14 +86,8 @@ fn build_inline_url_client(
     api_key_override: Option<&str>,
 ) -> Result<OpenAiClient> {
     // OpenAiClient constructs `{base_url}/chat/completions`, so
-    // base_url must include the `/v1` path segment. Normalize:
-    // append `/v1` when missing, strip doubled trailing slashes.
-    let trimmed = url.trim_end_matches('/');
-    let base = if trimmed.ends_with("/v1") {
-        trimmed.to_string()
-    } else {
-        format!("{}/v1", trimmed)
-    };
+    // base_url must include the `/v1` path segment.
+    let base = normalize_oai_compat_base_url(url);
     let key = api_key_override
         .map(String::from)
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
@@ -376,7 +390,15 @@ pub fn create_provider_ext(
             .context("Failed to initialize OpenAI-compatible client")?;
             client = client.with_provider_hint(&provider_name);
             if let Some(base) = api_base {
-                client = client.with_base_url(&base);
+                // Normalize: append `/v1` when missing. `wg init -e
+                // <bare-url>` stores the URL without `/v1`, but
+                // OpenAiClient appends `/chat/completions` directly to
+                // `base_url`, so without this the wire URL becomes
+                // `{host}/chat/completions` and OAI-compat servers
+                // (SGLang/vLLM/llama.cpp/Ollama) answer 404 — exactly
+                // the fault the user reported in `wg tui` chat.
+                let normalized = normalize_oai_compat_base_url(&base);
+                client = client.with_base_url(&normalized);
             } else {
                 // Fall back to the provider's known default URL so that non-OpenRouter
                 // providers (e.g. "openai", "local") don't silently hit the OpenRouter
