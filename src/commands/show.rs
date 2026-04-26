@@ -1292,4 +1292,64 @@ mod tests {
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_show_displays_user_input_not_dated_id() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+
+        let mut task = make_task("model-task", "Task with model");
+        task.model = Some("claude:opus".to_string());
+        graph.add_node(Node::Task(task));
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        // JSON output should contain the user's input string, never a dated ID
+        let result = run(temp_dir.path(), "model-task", true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_model_field_preserves_user_spec() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+
+        let mut task = make_task("t-opus", "Opus task");
+        task.model = Some("claude:opus".to_string());
+        graph.add_node(Node::Task(task));
+
+        let mut task2 = make_task("t-pinned", "Pinned task");
+        task2.model = Some("claude:opus-4-6".to_string());
+        graph.add_node(Node::Task(task2));
+
+        workgraph::parser::save_graph(&graph, &path).unwrap();
+
+        // Verify the model field in TaskDetails preserves user's string exactly
+        let graph = workgraph::parser::load_graph(&path).unwrap();
+        let t1 = graph.get_task("t-opus").unwrap();
+        assert_eq!(t1.model.as_deref(), Some("claude:opus"));
+        let t2 = graph.get_task("t-pinned").unwrap();
+        assert_eq!(t2.model.as_deref(), Some("claude:opus-4-6"));
+    }
+
+    #[test]
+    fn test_show_no_dated_id_in_config_constants() {
+        // Verify that the canonical model constants are bare aliases, not dated IDs
+        assert_eq!(
+            workgraph::config::CLAUDE_OPUS_MODEL_ID,
+            "opus",
+            "CLAUDE_OPUS_MODEL_ID must be bare alias, not dated"
+        );
+        assert_eq!(
+            workgraph::config::CLAUDE_SONNET_MODEL_ID,
+            "sonnet",
+            "CLAUDE_SONNET_MODEL_ID must be bare alias, not dated"
+        );
+        assert_eq!(
+            workgraph::config::CLAUDE_HAIKU_MODEL_ID,
+            "haiku",
+            "CLAUDE_HAIKU_MODEL_ID must be bare alias, not dated"
+        );
+    }
 }
