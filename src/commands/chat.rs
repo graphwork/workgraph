@@ -455,14 +455,17 @@ pub fn run_share(dir: &Path, from_id: u32, to_id: u32) -> Result<()> {
     Ok(())
 }
 
-/// Resolve coordinator label from the graph.
+/// Resolve chat agent label from the graph (accepts both `.chat-N` and `.coordinator-N`).
 fn coordinator_label_from_graph(graph: &workgraph::graph::WorkGraph, cid: u32) -> Option<String> {
-    let task_id = if cid == 0 {
-        ".coordinator".to_string()
-    } else {
-        format!(".coordinator-{}", cid)
-    };
-    graph.get_task(&task_id).map(|t| t.title.clone())
+    if let Some(t) = workgraph::chat_id::find_chat_task(graph, cid) {
+        return Some(t.title.clone());
+    }
+    if cid == 0
+        && let Some(t) = graph.get_task(".coordinator")
+    {
+        return Some(t.title.clone());
+    }
+    None
 }
 
 pub fn run_compact(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {

@@ -656,7 +656,25 @@ fn subprocess_coordinator_loop(
         // and is less specific than the task's own; for now we
         // preserve it via WG_MODEL env so it's applied as a
         // last-resort default by nex.
-        let task_id = format!(".coordinator-{}", coordinator_id);
+        // Prefer the new .chat-N prefix; fall back to legacy .coordinator-N if
+        // we are supervising a task that hasn't been migrated yet.
+        let task_id = {
+            let new_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+            let legacy_id = format!(".coordinator-{}", coordinator_id);
+            let graph_path = crate::commands::graph_path(dir);
+            match workgraph::parser::load_graph(&graph_path) {
+                Ok(g) => {
+                    if g.get_task(&new_id).is_some() {
+                        new_id
+                    } else if g.get_task(&legacy_id).is_some() {
+                        legacy_id
+                    } else {
+                        new_id
+                    }
+                }
+                Err(_) => new_id,
+            }
+        };
         // Hot-swap support: re-read CoordinatorState each iteration
         // so `wg service set-executor <cid> ...` takes effect on the
         // next supervisor restart. Explicit overrides beat the

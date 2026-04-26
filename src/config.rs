@@ -3251,6 +3251,29 @@ impl std::fmt::Display for ConfigSource {
 
 /// Deep-merge two TOML values. For (Table, Table) pairs, recursively merge
 /// with `local` keys overriding `global`. For all other cases, `local` wins.
+/// Rename a legacy top-level table key in-place so the merge logic and serde
+/// deserializer see only the canonical key. Used to migrate `[coordinator]` →
+/// `[dispatcher]` before merging.
+fn normalize_legacy_table(value: &mut toml::Value, legacy: &str, canonical: &str) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+    let Some(legacy_val) = table.remove(legacy) else {
+        return;
+    };
+    match table.remove(canonical) {
+        Some(canonical_val) => {
+            // Both present: canonical wins, but merge in any keys from legacy
+            // that are missing from canonical.
+            let merged = merge_toml(legacy_val, canonical_val);
+            table.insert(canonical.to_string(), merged);
+        }
+        None => {
+            table.insert(canonical.to_string(), legacy_val);
+        }
+    }
+}
+
 pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
     match (global, local) {
         (toml::Value::Table(mut g), toml::Value::Table(l)) => {
@@ -3418,8 +3441,15 @@ impl Config {
         let global_path = Self::global_config_path()?;
         let local_path = workgraph_dir.join("config.toml");
 
-        let global_val = Self::load_toml_value(&global_path)?;
-        let local_val = Self::load_toml_value(&local_path)?;
+        let mut global_val = Self::load_toml_value(&global_path)?;
+        let mut local_val = Self::load_toml_value(&local_path)?;
+
+        // Migrate legacy `[coordinator]` to canonical `[dispatcher]` BEFORE
+        // merging, so callers don't end up with both keys in the merged value
+        // and serde isn't forced to pick one. (rename + alias on the field
+        // doesn't help when both keys are simultaneously present.)
+        normalize_legacy_table(&mut global_val, "coordinator", "dispatcher");
+        normalize_legacy_table(&mut local_val, "coordinator", "dispatcher");
 
         let agent_model_is_local = local_val
             .get("agent")

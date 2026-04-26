@@ -3116,7 +3116,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // below continues to render normally; keys route to the PTY via
     // the Ctrl+T branch in event.rs.
     if app.chat_pty_mode {
-        let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         // Dead-handler cleanup: if the embedded process exited, drop
         // the pane so the next toggle-on respawns.
         let alive = app
