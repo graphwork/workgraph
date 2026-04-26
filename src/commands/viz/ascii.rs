@@ -346,7 +346,7 @@ pub(crate) fn generate_ascii(
         let agency_usage = agency_token_usage.get(id);
         let priority_suffix = task
             .filter(|t| t.priority != PRIORITY_DEFAULT)
-            .map(|t| format!(" · ▴{}", t.priority))
+            .map(|t| format!(" · ⌁{}", t.priority))
             .unwrap_or_default();
         let status_with_tokens = if let Some(tok_str) = format_token_display(usage, agency_usage) {
             format!("{} · {}{}", status, tok_str, priority_suffix)
