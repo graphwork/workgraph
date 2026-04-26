@@ -457,8 +457,8 @@ pub(crate) fn spawn_agent_inner(
         }
     }
 
-    // Build the inner command string first
-    let inner_command = build_inner_command(
+    // Build the inner command string first (with optional fallback for session resume)
+    let (inner_command, fallback_command) = build_inner_command(
         &settings,
         exec_mode,
         &output_dir,
@@ -509,6 +509,13 @@ pub(crate) fn spawn_agent_inner(
     } else {
         inner_command.clone()
     };
+    let timed_fallback = fallback_command.map(|fb| {
+        if let Some(secs) = effective_timeout_secs {
+            format!("timeout --signal=TERM --kill-after=30 {} {}", secs, fb)
+        } else {
+            fb
+        }
+    });
 
     // Create and write wrapper script
     let wrapper_path = write_wrapper_script(
@@ -518,6 +525,7 @@ pub(crate) fn spawn_agent_inner(
         &timed_command,
         effective_timeout_secs,
         &settings.executor_type,
+        timed_fallback.as_deref(),
     )?;
 
     // Run the wrapper script
@@ -851,6 +859,10 @@ pub(crate) fn should_create_worktree(
 }
 
 /// Build the inner command string for the executor.
+///
+/// Returns `(primary_command, Option<fallback_command>)`. The fallback is
+/// provided when the primary attempts session resume — if the session no
+/// longer exists, the wrapper can fall back to a fresh session.
 #[allow(clippy::too_many_arguments)]
 fn build_inner_command(
     settings: &workgraph::service::executor::ExecutorSettings,
@@ -864,7 +876,7 @@ fn build_inner_command(
     vars: &TemplateVars,
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, Option<String>)> {
     let inner_command = match settings.executor_type.as_str() {
         "claude" if resume_session_id.is_some() && exec_mode != "bare" => {
             // Resume mode: use --resume <session_id> with checkpoint as follow-up message
@@ -891,7 +903,16 @@ fn build_inner_command(
             let resume_file = output_dir.join("resume_message.txt");
             fs::write(&resume_file, &resume_msg)
                 .with_context(|| format!("Failed to write resume message: {:?}", resume_file))?;
-            prompt_file_command(&resume_file.to_string_lossy(), &claude_cmd)
+            let resume_command = prompt_file_command(&resume_file.to_string_lossy(), &claude_cmd);
+
+            // Build a fresh-session fallback command (same as the full-mode
+            // "claude" arm below) so the wrapper can retry if the session is
+            // gone. Write prompt.txt alongside resume_message.txt.
+            let fallback = build_claude_fresh_command(
+                settings, exec_mode, output_dir, effective_model, vars,
+            )?;
+
+            return Ok((resume_command, Some(fallback)));
         }
         "claude" if exec_mode == "bare" => {
             // Bare mode: lightweight execution with --system-prompt and no tools.
@@ -1116,11 +1137,78 @@ fn build_inner_command(
             parts.join(" ")
         }
     };
-    Ok(inner_command)
+    Ok((inner_command, None))
+}
+
+/// Build the fresh (non-resume) claude command for fallback.
+/// Mirrors the `"claude"` full-mode arm in `build_inner_command`.
+fn build_claude_fresh_command(
+    settings: &workgraph::service::executor::ExecutorSettings,
+    exec_mode: &str,
+    output_dir: &Path,
+    effective_model: &Option<String>,
+    _vars: &TemplateVars,
+) -> Result<String> {
+    match exec_mode {
+        "light" => {
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            cmd_parts.push("--print".to_string());
+            cmd_parts.push("--verbose".to_string());
+            cmd_parts.push("--output-format".to_string());
+            cmd_parts.push("stream-json".to_string());
+            cmd_parts.push("--dangerously-skip-permissions".to_string());
+            cmd_parts.push("--allowedTools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*),Read,Glob,Grep,WebFetch,WebSearch"));
+            cmd_parts.push("--disallowedTools".to_string());
+            cmd_parts.push(shell_escape(
+                "Edit,Write,NotebookEdit,Agent,EnterWorktree,ExitWorktree",
+            ));
+            cmd_parts.push("--disable-slash-commands".to_string());
+            if let Some(m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+            if let Some(ref prompt_template) = settings.prompt_template {
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                Ok(prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd))
+            } else {
+                Ok(claude_cmd)
+            }
+        }
+        _ => {
+            // Full mode
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                cmd_parts.push(shell_escape(arg));
+            }
+            cmd_parts.push("--disallowedTools".to_string());
+            cmd_parts.push(shell_escape("Agent,EnterWorktree,ExitWorktree"));
+            cmd_parts.push("--disable-slash-commands".to_string());
+            if let Some(m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+            if let Some(ref prompt_template) = settings.prompt_template {
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                Ok(prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd))
+            } else {
+                Ok(claude_cmd)
+            }
+        }
+    }
 }
 
 /// Create and write the wrapper shell script that runs the agent command
 /// and handles completion/failure.
+///
+/// When `fallback_command` is provided (session resume mode), the wrapper
+/// detects "No conversation found" errors and retries with a fresh session.
 fn write_wrapper_script(
     output_dir: &Path,
     task_id: &str,
@@ -1128,6 +1216,7 @@ fn write_wrapper_script(
     timed_command: &str,
     effective_timeout_secs: Option<u64>,
     executor_type: &str,
+    fallback_command: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let complete_cmd = "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string();
     let complete_msg = "[wrapper] Agent exited successfully, marking task done";
@@ -1155,7 +1244,7 @@ fn write_wrapper_script(
     // Also tee stdout to output.log for backward compatibility.
     // For native: the agent loop writes stream.jsonl directly; wrapper just adds bookends.
     // For amplifier/shell/other: wrapper emits Init+Result bookend events.
-    let (run_command, stream_init, stream_result) = match executor_type {
+    let (run_command, fallback_run_command, stream_init, stream_result) = match executor_type {
         "claude" | "codex" => {
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
@@ -1166,7 +1255,14 @@ fn write_wrapper_script(
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
             );
-            (cmd, String::new(), String::new())
+            let fb_cmd = fallback_command.map(|fb| {
+                format!(
+                    "{fb} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
+                    fb = fb,
+                    raw = shell_escape(&raw_str),
+                )
+            });
+            (cmd, fb_cmd, String::new(), String::new())
         }
         "native" => {
             // Native executor writes stream.jsonl itself; wrapper just runs the command.
@@ -1174,7 +1270,7 @@ fn write_wrapper_script(
                 "{timed_command} >> \"$OUTPUT_FILE\" 2>&1",
                 timed_command = timed_command,
             );
-            (cmd, String::new(), String::new())
+            (cmd, None, String::new(), String::new())
         }
         _ => {
             // Amplifier, shell, and custom executors: wrapper writes bookend events.
@@ -1204,8 +1300,31 @@ fn write_wrapper_script(
                 result_ok = result_ok,
                 result_fail = result_fail,
             );
-            (cmd, init, result_block)
+            (cmd, None, init, result_block)
         }
+    };
+
+    // Session resume fallback block: when the primary command tried to resume
+    // a stale session (e.g., claude --resume <uuid>), detect the error and
+    // retry with a fresh session.
+    let session_fallback_block = if let Some(ref fb_cmd) = fallback_run_command {
+        format!(
+            r#"
+# Session resume fallback: if the session no longer exists, start fresh
+if [ $EXIT_CODE -ne 0 ]; then
+    if grep -qE "No conversation found|session.*not found|invalid session|Could not resume" "$OUTPUT_FILE" 2>/dev/null; then
+        echo "" >> "$OUTPUT_FILE"
+        echo "[wrapper] Session not resumable, starting fresh session" >> "$OUTPUT_FILE"
+        wg log "$TASK_ID" "session not resumable, falling back to fresh session" 2>/dev/null || true
+        {fallback_run_command}
+        EXIT_CODE=$?
+    fi
+fi
+"#,
+            fallback_run_command = fb_cmd,
+        )
+    } else {
+        String::new()
     };
 
     let wrapper_script = format!(
@@ -1230,7 +1349,7 @@ HEARTBEAT_PID=$!
 # Run the agent command
 {run_command}
 EXIT_CODE=$?
-
+{session_fallback_block}
 # Stop the heartbeat loop
 kill $HEARTBEAT_PID 2>/dev/null; wait $HEARTBEAT_PID 2>/dev/null
 {stream_result}
@@ -1283,6 +1402,7 @@ exit $EXIT_CODE
         escaped_task_id = shell_escape(task_id),
         escaped_output_file = shell_escape(output_file_str),
         run_command = run_command,
+        session_fallback_block = session_fallback_block,
         timeout_note = timeout_note,
         debug_env_vars = debug_env_vars,
         stream_init = stream_init,
@@ -2530,7 +2650,7 @@ mod tests {
             in_worktree: false,
         };
 
-        let command = build_inner_command(
+        let (command, fallback) = build_inner_command(
             &settings,
             "full",
             output_dir,
@@ -2545,6 +2665,7 @@ mod tests {
         )
         .unwrap();
 
+        assert!(fallback.is_none(), "Codex should not have a fallback command");
         assert!(
             command.contains("cat "),
             "Expected prompt to be piped from a file: {}",
@@ -2574,6 +2695,217 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(prompt_file).unwrap(),
             "Investigate task"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_claude_resume_produces_fallback() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = workgraph::service::executor::ExecutorSettings {
+            executor_type: "claude".to_string(),
+            command: "claude".to_string(),
+            args: vec![
+                "--print".to_string(),
+                "--verbose".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+            env: std::collections::HashMap::new(),
+            prompt_template: Some(PromptTemplate {
+                template: "Full task prompt".to_string(),
+            }),
+            working_dir: Some("/tmp".to_string()),
+            timeout: None,
+            model: None,
+        };
+        let vars = TemplateVars {
+            task_id: "task-1".to_string(),
+            task_title: "Task".to_string(),
+            task_description: "Desc".to_string(),
+            task_context: "Resume context".to_string(),
+            task_identity: String::new(),
+            working_dir: "/tmp".to_string(),
+            skills_preamble: String::new(),
+            model: String::new(),
+            task_loop_info: String::new(),
+            task_verify: None,
+            max_child_tasks: 0,
+            max_task_depth: 0,
+            has_failed_deps: false,
+            failed_deps_info: String::new(),
+            in_worktree: false,
+        };
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("sonnet".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            Some("fake-session-id-12345"),
+        )
+        .unwrap();
+
+        // Primary command should use --resume
+        assert!(
+            command.contains("--resume"),
+            "Resume command should contain --resume: {}",
+            command
+        );
+        assert!(
+            command.contains("fake-session-id-12345"),
+            "Resume command should contain session ID: {}",
+            command
+        );
+
+        // Fallback should exist and NOT contain --resume
+        let fb = fallback.expect("Claude resume should produce a fallback command");
+        assert!(
+            !fb.contains("--resume"),
+            "Fallback command should NOT contain --resume: {}",
+            fb
+        );
+        assert!(
+            fb.contains("prompt.txt"),
+            "Fallback should use prompt.txt: {}",
+            fb
+        );
+
+        // Both prompt files should be written
+        assert!(
+            output_dir.join("resume_message.txt").exists(),
+            "resume_message.txt should be written"
+        );
+        assert!(
+            output_dir.join("prompt.txt").exists(),
+            "prompt.txt should be written for fallback"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_claude_no_resume_no_fallback() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = workgraph::service::executor::ExecutorSettings {
+            executor_type: "claude".to_string(),
+            command: "claude".to_string(),
+            args: vec![
+                "--print".to_string(),
+                "--verbose".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+            env: std::collections::HashMap::new(),
+            prompt_template: Some(PromptTemplate {
+                template: "Full task prompt".to_string(),
+            }),
+            working_dir: Some("/tmp".to_string()),
+            timeout: None,
+            model: None,
+        };
+        let vars = TemplateVars {
+            task_id: "task-1".to_string(),
+            task_title: "Task".to_string(),
+            task_description: "Desc".to_string(),
+            task_context: "Context".to_string(),
+            task_identity: String::new(),
+            working_dir: "/tmp".to_string(),
+            skills_preamble: String::new(),
+            model: String::new(),
+            task_loop_info: String::new(),
+            task_verify: None,
+            max_child_tasks: 0,
+            max_task_depth: 0,
+            has_failed_deps: false,
+            failed_deps_info: String::new(),
+            in_worktree: false,
+        };
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("sonnet".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None, // No resume session
+        )
+        .unwrap();
+
+        assert!(
+            !command.contains("--resume"),
+            "Fresh command should NOT contain --resume: {}",
+            command
+        );
+        assert!(
+            fallback.is_none(),
+            "Fresh spawn should not have a fallback command"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_script_contains_session_fallback_when_fallback_provided() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+
+        let wrapper_path = write_wrapper_script(
+            output_dir,
+            "test-task",
+            "/tmp/output.log",
+            "claude --resume fake-id --print",
+            None,
+            "claude",
+            Some("claude --print < prompt.txt"),
+        )
+        .unwrap();
+
+        let script = std::fs::read_to_string(&wrapper_path).unwrap();
+        assert!(
+            script.contains("Session not resumable, starting fresh session"),
+            "Wrapper should contain session fallback logic"
+        );
+        assert!(
+            script.contains("No conversation found"),
+            "Wrapper should detect 'No conversation found' error"
+        );
+        assert!(
+            script.contains("claude --print < prompt.txt"),
+            "Wrapper should contain the fallback command"
+        );
+    }
+
+    #[test]
+    fn test_wrapper_script_no_fallback_when_none() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+
+        let wrapper_path = write_wrapper_script(
+            output_dir,
+            "test-task",
+            "/tmp/output.log",
+            "claude --print",
+            None,
+            "claude",
+            None,
+        )
+        .unwrap();
+
+        let script = std::fs::read_to_string(&wrapper_path).unwrap();
+        assert!(
+            !script.contains("Session not resumable"),
+            "Wrapper should NOT contain session fallback when no fallback provided"
         );
     }
 }

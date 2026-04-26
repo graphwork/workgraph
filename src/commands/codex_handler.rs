@@ -138,11 +138,44 @@ pub fn run(
             ) {
                 Ok(t) => t,
                 Err(e) => {
-                    logger.error(&format!("codex turn failed: {}", e));
-                    format!(
-                        "The coordinator encountered an error running codex: {}. Please retry.",
-                        e
-                    )
+                    let err_str = format!("{}", e);
+                    if prior_session_id.is_some() && is_stale_session_error(&err_str) {
+                        logger.warn(&format!(
+                            "session not resumable, clearing stale session ID and retrying fresh: {}",
+                            e
+                        ));
+                        let _ = std::fs::remove_file(&session_id_path);
+                        let fresh_prompt = assemble_first_turn_prompt(
+                            workgraph_dir,
+                            coordinator_id,
+                            &system_prompt,
+                            &msg.content,
+                        );
+                        match run_codex_turn(
+                            &fresh_prompt,
+                            None,
+                            model,
+                            workgraph_dir,
+                            &streaming_path,
+                            &session_id_path,
+                            &logger,
+                        ) {
+                            Ok(t) => t,
+                            Err(e2) => {
+                                logger.error(&format!("codex fresh turn also failed: {}", e2));
+                                format!(
+                                    "The coordinator encountered an error running codex: {}. Please retry.",
+                                    e2
+                                )
+                            }
+                        }
+                    } else {
+                        logger.error(&format!("codex turn failed: {}", e));
+                        format!(
+                            "The coordinator encountered an error running codex: {}. Please retry.",
+                            e
+                        )
+                    }
                 }
             };
 
@@ -395,12 +428,33 @@ fn run_codex_turn(
         }
     }
 
+    // Read any remaining stderr before waiting (prevents pipe deadlock on
+    // large error output, though session-not-found errors are small).
+    let stderr_output = child.stderr.take().map(|stderr| {
+        let mut buf = String::new();
+        let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut buf);
+        buf
+    }).unwrap_or_default();
+
     let status = child.wait().context("codex wait")?;
     if !status.success() {
-        anyhow::bail!("codex exec exited {}", status);
+        let stderr_trimmed = stderr_output.trim();
+        if stderr_trimmed.is_empty() {
+            anyhow::bail!("codex exec exited {}", status);
+        } else {
+            anyhow::bail!("codex exec exited {}: {}", status, stderr_trimmed);
+        }
     }
 
     last_agent_text.ok_or_else(|| anyhow::anyhow!("no agent_message in codex JSONL output"))
+}
+
+fn is_stale_session_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("no conversation found")
+        || lower.contains("session not found")
+        || lower.contains("invalid session")
+        || lower.contains("could not resume")
 }
 
 // --- Handler-local logger ----------------------------------------------------
