@@ -656,8 +656,16 @@ fn subprocess_coordinator_loop(
         // and is less specific than the task's own; for now we
         // preserve it via WG_MODEL env so it's applied as a
         // last-resort default by nex.
-        // Prefer the new .chat-N prefix; fall back to legacy .coordinator-N if
-        // we are supervising a task that hasn't been migrated yet.
+        // Pre-flight: locate the chat task in the live graph. Prefer the
+        // new `.chat-N` prefix; fall back to legacy `.coordinator-N` if we
+        // are supervising a task that hasn't been migrated yet.
+        //
+        // Bug A regression-guard: if NEITHER form exists in the graph, the
+        // chat task was deleted (or was never created — e.g. boot path
+        // hardcoded "spawn coordinator-0" against a fresh init). DO NOT
+        // restart-loop calling `wg spawn-task` with a non-existent ID; log
+        // a clear error and exit cleanly so the supervisor thread terminates
+        // instead of chewing CPU forever.
         let task_id = {
             let new_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
             let legacy_id = format!(".coordinator-{}", coordinator_id);
@@ -669,10 +677,21 @@ fn subprocess_coordinator_loop(
                     } else if g.get_task(&legacy_id).is_some() {
                         legacy_id
                     } else {
-                        new_id
+                        logger.error(&format!(
+                            "Coordinator-{}: orphan supervisor — neither {} nor {} exists in the graph. Exiting supervisor (no restart loop). \
+                             If you intended to start this chat, run `wg chat new` (or use the TUI '+' key) to create the task first.",
+                            coordinator_id, new_id, legacy_id
+                        ));
+                        return;
                     }
                 }
-                Err(_) => new_id,
+                Err(e) => {
+                    logger.error(&format!(
+                        "Coordinator-{}: failed to load graph for pre-flight task check: {}. Exiting supervisor.",
+                        coordinator_id, e
+                    ));
+                    return;
+                }
             }
         };
         // Hot-swap support: re-read CoordinatorState each iteration

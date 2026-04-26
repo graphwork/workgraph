@@ -9,11 +9,16 @@
 pub mod chat_compactor;
 pub mod compactor;
 pub mod coordinator_cycle;
+pub mod dispatch_boot;
 pub mod executor;
 pub mod llm;
 pub mod provider_health;
 pub mod registry;
 
+pub use dispatch_boot::{
+    ChatSupervisorBootSpec, enumerate_chat_supervisors_for_boot,
+    enumerate_chat_supervisors_from_graph,
+};
 pub use executor::{
     ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
 };

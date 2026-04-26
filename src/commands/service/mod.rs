@@ -1995,9 +1995,19 @@ pub fn run_daemon(
     let event_log = coordinator_agent::new_event_log();
 
     // Spawn the persistent coordinator agent(s) (LLM sessions for chat).
-    // Each coordinator gets its own Claude CLI session. Coordinator 0 is
-    // spawned at startup; additional coordinators are created on-demand via
-    // the CreateCoordinator IPC request.
+    //
+    // Bug A (orphan chat supervisor) regression-guard: enumerate the live
+    // graph for tasks tagged with a chat-loop tag (`.chat-N` and legacy
+    // `.coordinator-N`) and spawn ONE supervisor per task. Do NOT hardcode
+    // 'always spawn coordinator-0' — a fresh `wg init` has no `.chat-0`, so
+    // hardcoding sends `wg spawn-task .chat-0` into a perpetual restart loop
+    // chasing a task that does not exist. See `tests/integration_dispatch_boot.rs`
+    // for the regression tests that pin this behavior.
+    //
+    // Additional supervisors for new chats are created on-demand via the
+    // CreateCoordinator IPC request, which appends a `.chat-N` task to the
+    // graph and tells the daemon to spawn a supervisor for it.
+    //
     // Enabled by default; disable with --no-coordinator-agent or
     // coordinator.coordinator_agent = false in config.toml.
     let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
@@ -2006,24 +2016,56 @@ pub fn run_daemon(
         coordinator_agent::CoordinatorAgent,
     > = std::collections::HashMap::new();
     if enable_coordinator_agent {
-        match coordinator_agent::CoordinatorAgent::spawn(
-            &dir,
-            0, // coordinator ID
-            daemon_cfg.model.as_deref(),
-            Some(&daemon_cfg.executor),
-            daemon_cfg.provider.as_deref(),
-            &logger,
-            event_log.clone(),
-        ) {
-            Ok(agent) => {
-                logger.info("Coordinator agent 0 spawned successfully");
-                coordinator_agents.insert(0, agent);
-            }
-            Err(e) => {
+        let to_spawn = workgraph::service::enumerate_chat_supervisors_for_boot(&dir);
+        if to_spawn.is_empty() {
+            logger.info(
+                "No chat-loop tasks in graph — no chat supervisors spawned at boot. \
+                 Use `wg chat new` (or the TUI '+' key) to create a chat agent.",
+            );
+        } else {
+            logger.info(&format!(
+                "Spawning {} chat supervisor(s) from graph: {}",
+                to_spawn.len(),
+                to_spawn
+                    .iter()
+                    .map(|s| if s.is_legacy {
+                        format!(".coordinator-{}", s.chat_id)
+                    } else {
+                        format!(".chat-{}", s.chat_id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        for spec in to_spawn {
+            if spec.is_legacy {
                 logger.warn(&format!(
-                    "Failed to spawn coordinator agent 0: {}. Chat will use stub responses.",
-                    e
+                    "Loading legacy `.coordinator-{}` task; please run `wg migrate chat-rename` to rename to `.chat-{}` (deprecation will be removed in a future release)",
+                    spec.chat_id, spec.chat_id
                 ));
+            }
+            match coordinator_agent::CoordinatorAgent::spawn(
+                &dir,
+                spec.chat_id,
+                daemon_cfg.model.as_deref(),
+                Some(&daemon_cfg.executor),
+                daemon_cfg.provider.as_deref(),
+                &logger,
+                event_log.clone(),
+            ) {
+                Ok(agent) => {
+                    logger.info(&format!(
+                        "Coordinator agent {} spawned successfully",
+                        spec.chat_id
+                    ));
+                    coordinator_agents.insert(spec.chat_id, agent);
+                }
+                Err(e) => {
+                    logger.warn(&format!(
+                        "Failed to spawn coordinator agent {}: {}. Chat will use stub responses.",
+                        spec.chat_id, e
+                    ));
+                }
             }
         }
     } else if no_coordinator_agent {
