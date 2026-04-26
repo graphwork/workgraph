@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::graph::Status;
+use workgraph::graph::{Priority, Status};
 use workgraph::query::ready_tasks_cycle_aware;
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
@@ -44,6 +44,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     "title": t.title,
                     "assigned": t.assigned,
                     "estimate": t.estimate,
+                    "priority": t.priority,
                     "ready": true,
                 })
             })
@@ -54,6 +55,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 "title": t.title,
                 "assigned": t.assigned,
                 "estimate": t.estimate,
+                "priority": t.priority,
                 "ready": false,
                 "ready_after": t.ready_after,
             }));
@@ -70,7 +72,11 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     .as_ref()
                     .map(|a| format!(" ({})", a))
                     .unwrap_or_default();
-                println!("  {} - {}{}", task.id, task.title, assigned);
+                let priority_str = match task.priority {
+                    Priority::Normal => String::new(),
+                    p => format!(" \x1b[35m[{}]\x1b[0m", p),
+                };
+                println!("  {} - {}{}{}", task.id, task.title, priority_str, assigned);
             }
         }
         if !waiting.is_empty() {

@@ -1098,6 +1098,7 @@ fn handle_add_task(
         exec_mode: None,
         verify_failures: 0,
         spawn_failures: 0,
+        dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
         tried_models: vec![],
@@ -1329,6 +1330,7 @@ fn handle_create_coordinator(
             next_id
         )),
         status: workgraph::graph::Status::InProgress,
+        priority: workgraph::graph::Priority::High,
         tags: vec!["coordinator-loop".to_string()],
         cycle_config: Some(workgraph::graph::CycleConfig {
             max_iterations: 0,

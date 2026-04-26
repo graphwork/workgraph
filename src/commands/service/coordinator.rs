@@ -1512,6 +1512,7 @@ fn build_auto_assign_tasks(
                     max_rejections: None,
                     verify_failures: 0,
                     spawn_failures: 0,
+                    dispatch_count: 0,
                     tier: None,
                     no_tier_escalation: false,
                     tried_models: vec![],
@@ -1901,6 +1902,7 @@ fn build_flip_verification_tasks(
             max_rejections: None,
             verify_failures: 0,
             spawn_failures: 0,
+            dispatch_count: 0,
             tier: None,
             no_tier_escalation: false,
             tried_models: vec![],
@@ -2165,6 +2167,7 @@ fn build_separate_verify_tasks(
             max_rejections: None,
             verify_failures: 0,
             spawn_failures: 0,
+            dispatch_count: 0,
             tier: None,
             no_tier_escalation: false,
             tried_models: vec![],
@@ -2361,6 +2364,7 @@ fn build_auto_evolve_task(
         max_rejections: None,
         verify_failures: 0,
         spawn_failures: 0,
+        dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
         tried_models: vec![],
@@ -2560,6 +2564,7 @@ fn build_auto_create_task(
         max_rejections: None,
         verify_failures: 0,
         spawn_failures: 0,
+        dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
         tried_models: vec![],
@@ -3066,8 +3071,19 @@ fn sort_tasks_by_priority_with_features<'a>(
         })
         .collect();
 
-    // Sort by effective priority (Critical first, then High, etc.)
-    task_priorities.sort_by_key(|(_, priority)| *priority);
+    // Sort by effective priority (Critical first), then by dispatch_count
+    // ascending within the same level (CFS-like fair share: prefer less-dispatched tasks)
+    task_priorities.sort_by(|(a_task, a_prio), (b_task, b_prio)| {
+        a_prio.cmp(b_prio).then(a_task.dispatch_count.cmp(&b_task.dispatch_count))
+    });
+
+    // Idle gate: only include Idle-effective tasks when no Normal-or-higher tasks are in the set
+    let has_normal_or_higher = task_priorities
+        .iter()
+        .any(|(_, p)| *p <= Priority::Normal);
+    if has_normal_or_higher {
+        task_priorities.retain(|(_, p)| *p != Priority::Idle);
+    }
 
     let sorted_tasks: Vec<_> = task_priorities.into_iter().map(|(task, _)| task).collect();
 
@@ -3076,7 +3092,7 @@ fn sort_tasks_by_priority_with_features<'a>(
         let priority_summary: Vec<String> = sorted_tasks
             .iter()
             .take(5) // Log first 5 for brevity
-            .map(|task| format!("{}:{}", task.id, task.priority))
+            .map(|task| format!("{}:{}(d{})", task.id, task.priority, task.dispatch_count))
             .collect();
         eprintln!(
             "[coordinator] Priority dispatch order: [{}{}]",
@@ -3429,6 +3445,7 @@ fn spawn_agents_for_ready_tasks(
                             "[coordinator] Spawned assignment {} (PID {})",
                             agent_id, pid
                         );
+                        record_dispatch(&gp, &task_id);
                         spawned += 1;
                     }
                     Err(e) => {
@@ -3458,6 +3475,7 @@ fn spawn_agents_for_ready_tasks(
                 match spawn_eval_inline(dir, &task_id, eval_model) {
                     Ok((agent_id, pid)) => {
                         eprintln!("[coordinator] Spawned eval {} (PID {})", agent_id, pid);
+                        record_dispatch(&gp, &task_id);
                         spawned += 1;
                     }
                     Err(e) => {
@@ -3546,6 +3564,7 @@ fn spawn_agents_for_ready_tasks(
         ) {
             Ok((agent_id, pid)) => {
                 eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
+                record_dispatch(&gp, &task.id);
                 spawned += 1;
             }
             Err(e) => {
@@ -3563,6 +3582,18 @@ fn spawn_agents_for_ready_tasks(
     }
 
     spawned
+}
+
+fn record_dispatch(graph_path: &Path, task_id: &str) {
+    let task_id_owned = task_id.to_string();
+    let _ = modify_graph(graph_path, |graph| {
+        if let Some(task) = graph.get_task_mut(&task_id_owned) {
+            task.dispatch_count += 1;
+            true
+        } else {
+            false
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -6212,5 +6243,196 @@ mod tests {
         let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
         let modified = build_separate_verify_tasks(dir.path(), &mut graph, &config);
         assert!(!modified, "should not create verify task for system tasks");
+    }
+
+    // ========== Priority dispatch tests ==========
+
+    #[test]
+    fn test_dispatch_orders_by_priority() {
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+
+        let mut critical = Task::default();
+        critical.id = "task-critical".to_string();
+        critical.title = "Critical task".to_string();
+        critical.status = workgraph::graph::Status::Open;
+        critical.priority = Priority::Critical;
+        critical.created_at = Some(Utc::now().to_rfc3339());
+
+        let mut normal = Task::default();
+        normal.id = "task-normal".to_string();
+        normal.title = "Normal task".to_string();
+        normal.status = workgraph::graph::Status::Open;
+        normal.priority = Priority::Normal;
+        normal.created_at = Some(Utc::now().to_rfc3339());
+
+        let mut low = Task::default();
+        low.id = "task-low".to_string();
+        low.title = "Low task".to_string();
+        low.status = workgraph::graph::Status::Open;
+        low.priority = Priority::Low;
+        low.created_at = Some(Utc::now().to_rfc3339());
+
+        graph.add_node(Node::Task(normal.clone()));
+        graph.add_node(Node::Task(low.clone()));
+        graph.add_node(Node::Task(critical.clone()));
+
+        // Pass tasks in wrong order to verify sorting fixes it
+        let tasks: Vec<&Task> = vec![
+            graph.get_task("task-normal").unwrap(),
+            graph.get_task("task-low").unwrap(),
+            graph.get_task("task-critical").unwrap(),
+        ];
+
+        let sorted = sort_tasks_by_priority_with_features(&graph, tasks, &config);
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0].id, "task-critical");
+        assert_eq!(sorted[1].id, "task-normal");
+        assert_eq!(sorted[2].id, "task-low");
+    }
+
+    #[test]
+    fn test_within_level_fair_share() {
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+
+        let mut task_a = Task::default();
+        task_a.id = "task-a".to_string();
+        task_a.title = "Task A".to_string();
+        task_a.status = workgraph::graph::Status::Open;
+        task_a.priority = Priority::Normal;
+        task_a.dispatch_count = 3;
+        task_a.created_at = Some(Utc::now().to_rfc3339());
+
+        let mut task_b = Task::default();
+        task_b.id = "task-b".to_string();
+        task_b.title = "Task B".to_string();
+        task_b.status = workgraph::graph::Status::Open;
+        task_b.priority = Priority::Normal;
+        task_b.dispatch_count = 1;
+        task_b.created_at = Some(Utc::now().to_rfc3339());
+
+        graph.add_node(Node::Task(task_a.clone()));
+        graph.add_node(Node::Task(task_b.clone()));
+
+        let tasks: Vec<&Task> = vec![
+            graph.get_task("task-a").unwrap(),
+            graph.get_task("task-b").unwrap(),
+        ];
+
+        let sorted = sort_tasks_by_priority_with_features(&graph, tasks, &config);
+        assert_eq!(sorted.len(), 2);
+        // task-b has fewer dispatches (1 vs 3), so it should come first
+        assert_eq!(sorted[0].id, "task-b");
+        assert_eq!(sorted[1].id, "task-a");
+    }
+
+    #[test]
+    fn test_idle_only_dispatched_when_higher_empty() {
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+
+        let mut idle_task = Task::default();
+        idle_task.id = "task-idle".to_string();
+        idle_task.title = "Idle task".to_string();
+        idle_task.status = workgraph::graph::Status::Open;
+        idle_task.priority = Priority::Idle;
+        idle_task.created_at = Some(Utc::now().to_rfc3339());
+
+        let mut normal_task = Task::default();
+        normal_task.id = "task-normal".to_string();
+        normal_task.title = "Normal task".to_string();
+        normal_task.status = workgraph::graph::Status::Open;
+        normal_task.priority = Priority::Normal;
+        normal_task.created_at = Some(Utc::now().to_rfc3339());
+
+        // Case 1: Idle + Normal ready → Idle excluded
+        graph.add_node(Node::Task(idle_task.clone()));
+        graph.add_node(Node::Task(normal_task.clone()));
+
+        let tasks: Vec<&Task> = vec![
+            graph.get_task("task-idle").unwrap(),
+            graph.get_task("task-normal").unwrap(),
+        ];
+
+        let sorted = sort_tasks_by_priority_with_features(&graph, tasks, &config);
+        assert_eq!(sorted.len(), 1, "Idle should be excluded when Normal is present");
+        assert_eq!(sorted[0].id, "task-normal");
+
+        // Case 2: Only Idle ready → Idle included
+        let mut graph2 = WorkGraph::new();
+        graph2.add_node(Node::Task(idle_task.clone()));
+
+        let tasks2: Vec<&Task> = vec![graph2.get_task("task-idle").unwrap()];
+
+        let sorted2 = sort_tasks_by_priority_with_features(&graph2, tasks2, &config);
+        assert_eq!(sorted2.len(), 1, "Idle should be dispatched when nothing else is ready");
+        assert_eq!(sorted2[0].id, "task-idle");
+
+        // Case 3: Idle + Low ready (no Normal+) → both included
+        let mut graph3 = WorkGraph::new();
+        let mut low_task = Task::default();
+        low_task.id = "task-low".to_string();
+        low_task.title = "Low task".to_string();
+        low_task.status = workgraph::graph::Status::Open;
+        low_task.priority = Priority::Low;
+        low_task.created_at = Some(Utc::now().to_rfc3339());
+        graph3.add_node(Node::Task(idle_task.clone()));
+        graph3.add_node(Node::Task(low_task.clone()));
+
+        let tasks3: Vec<&Task> = vec![
+            graph3.get_task("task-idle").unwrap(),
+            graph3.get_task("task-low").unwrap(),
+        ];
+
+        let sorted3 = sort_tasks_by_priority_with_features(&graph3, tasks3, &config);
+        assert_eq!(sorted3.len(), 2, "Idle included when only Low tasks present");
+        assert_eq!(sorted3[0].id, "task-low");
+        assert_eq!(sorted3[1].id, "task-idle");
+    }
+
+    #[test]
+    fn test_default_priorities_for_system_tasks() {
+        // Verify that system tasks get sensible default priorities
+        // .assign-* inherits parent priority (via calculate_auto_priority)
+        // coordinator tasks get High priority
+        use crate::commands::eval_scaffold::scaffold_assign_task;
+
+        let mut graph = WorkGraph::new();
+
+        // Normal user task
+        let mut user_task = Task::default();
+        user_task.id = "my-task".to_string();
+        user_task.title = "My Task".to_string();
+        user_task.status = workgraph::graph::Status::Open;
+        user_task.priority = Priority::Normal;
+        graph.add_node(Node::Task(user_task));
+
+        // Critical user task
+        let mut critical_task = Task::default();
+        critical_task.id = "crit-task".to_string();
+        critical_task.title = "Critical Task".to_string();
+        critical_task.status = workgraph::graph::Status::Open;
+        critical_task.priority = Priority::Critical;
+        graph.add_node(Node::Task(critical_task));
+
+        // Scaffold assign tasks
+        scaffold_assign_task(&mut graph, "my-task", "My Task");
+        scaffold_assign_task(&mut graph, "crit-task", "Critical Task");
+
+        // .assign-* inherits parent priority
+        let assign_normal = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(
+            assign_normal.priority,
+            Priority::Normal,
+            ".assign-* for Normal task should be Normal"
+        );
+
+        let assign_critical = graph.get_task(".assign-crit-task").unwrap();
+        assert_eq!(
+            assign_critical.priority,
+            Priority::Critical,
+            ".assign-* for Critical task should be Critical"
+        );
     }
 }

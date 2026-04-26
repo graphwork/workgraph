@@ -451,6 +451,10 @@ pub struct Task {
     /// Iteration configuration (max_retries, propagation, retry_strategy)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iteration_config: Option<crate::agency::IterationConfig>,
+    /// Number of times this task has been dispatched to an agent (CFS-like vruntime proxy).
+    /// Used within a priority level to prefer tasks with less accumulated dispatch work.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dispatch_count: u32,
     /// Cron schedule expression (e.g., "0 2 * * *" for daily at 2am)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron_schedule: Option<String>,
@@ -1051,6 +1055,8 @@ struct TaskHelper {
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
+    #[serde(default)]
+    dispatch_count: u32,
     /// Cron schedule expression (e.g., "0 2 * * *" for daily at 2am)
     #[serde(default)]
     cron_schedule: Option<String>,
@@ -1149,6 +1155,7 @@ impl<'de> Deserialize<'de> for Task {
             place_near: helper.place_near,
             place_before: helper.place_before,
             independent: false,
+            dispatch_count: helper.dispatch_count,
             iteration_round: 0,
             iteration_anchor: None,
             iteration_parent: None,

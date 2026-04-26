@@ -2,7 +2,7 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthChar;
-use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, format_token_display};
+use workgraph::graph::{Priority, Status, Task, TokenUsage, WorkGraph, format_token_display};
 use workgraph::messages::{CoordinatorMessageStatus, MessageStats};
 
 use super::{LayoutMode, VizOutput};
@@ -427,6 +427,16 @@ pub(crate) fn generate_ascii(
                 })
             })
             .unwrap_or_default();
+        let priority_badge = task
+            .filter(|t| t.priority != Priority::Normal)
+            .map(|t| {
+                if use_color {
+                    format!(" \x1b[35m[{}]\x1b[0m", t.priority)
+                } else {
+                    format!(" [{}]", t.priority)
+                }
+            })
+            .unwrap_or_default();
         let relative_ts = task
             .and_then(|t| {
                 // Pick the most relevant timestamp based on status
@@ -449,11 +459,12 @@ pub(crate) fn generate_ascii(
             })
             .unwrap_or_default();
         format!(
-            "{}{}{}  ({}){}{}{}{}{}",
+            "{}{}{}  ({}){}{}{}{}{}{}",
             color,
             id,
             reset,
             status_with_tokens,
+            priority_badge,
             delay_hint,
             relative_ts,
             msg_indicator,

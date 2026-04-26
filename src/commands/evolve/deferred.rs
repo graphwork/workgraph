@@ -145,6 +145,7 @@ pub(crate) fn defer_self_mutation(
         exec_mode: None,
         verify_failures: 0,
         spawn_failures: 0,
+        dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
         tried_models: vec![],
