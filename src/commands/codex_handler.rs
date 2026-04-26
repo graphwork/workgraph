@@ -325,6 +325,25 @@ fn run_codex_turn(
             .arg("--skip-git-repo-check")
             .arg("--dangerously-bypass-approvals-and-sandbox");
     }
+
+    // OAI-compat plumbing: when the wg session has a custom endpoint,
+    // pass `--config` overrides so codex routes to it instead of
+    // `api.openai.com`. The api_key reaches the codex subprocess via
+    // the OPENAI_API_KEY env var (codex looks it up via env_key).
+    let endpoint_url = crate::commands::codex_oai_compat::endpoint_url_from_env();
+    if let Some(ref url) = endpoint_url {
+        for ovr in crate::commands::codex_oai_compat::config_overrides(url) {
+            cmd.arg("--config").arg(&ovr);
+        }
+        logger.info(&format!(
+            "codex-handler: routing to custom endpoint {} via --config overrides",
+            url
+        ));
+    }
+    if let Some(key) = crate::commands::codex_oai_compat::api_key_from_env() {
+        cmd.env(crate::commands::codex_oai_compat::ENV_KEY_NAME, key);
+    }
+
     if let Some(m) = model {
         let spec = workgraph::config::parse_model_spec(m);
         cmd.arg("--model").arg(&spec.model_id);
@@ -335,13 +354,14 @@ fn run_codex_turn(
     cmd.stderr(Stdio::piped());
 
     logger.info(&format!(
-        "codex-handler: spawning `codex exec{}` (model={}, cwd={:?})",
+        "codex-handler: spawning `codex exec{}` (model={}, endpoint={}, cwd={:?})",
         if resume_session_id.is_some() {
             " resume"
         } else {
             ""
         },
         model.unwrap_or("default"),
+        endpoint_url.as_deref().unwrap_or("default"),
         workgraph_dir.parent().unwrap_or(workgraph_dir)
     ));
 
