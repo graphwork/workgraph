@@ -150,6 +150,12 @@ pub fn run(
 
 /// Figure out what kind of handler to spawn for this task, given
 /// config + task-specific overrides.
+///
+/// All `{executor, model, endpoint}` decisions are delegated to
+/// [`workgraph::dispatch::plan_spawn`] — the single source of truth for
+/// spawn-time resolution. This function only sources `WG_EXECUTOR_TYPE`
+/// (the per-coordinator env hint set by the daemon) and converts the
+/// resulting `SpawnPlan` into a `HandlerSpec` for the local exec adapter.
 pub fn resolve_handler(
     workgraph_dir: &Path,
     task: &Task,
@@ -182,17 +188,21 @@ pub fn resolve_handler(
         }
     });
 
-    // Executor pick: task-level model hints override, else config
-    // default. For Phase 2 we only fully support Native; other
-    // executors compile but print a "not yet implemented" error at
-    // dispatch (Phase 7 fills them in).
-    let executor_kind = pick_executor(&config, task);
+    // Single source of truth: ALL executor/model/endpoint decisions flow
+    // through `plan_spawn`. We only source `WG_EXECUTOR_TYPE` (which the
+    // daemon sets per-coordinator so a Claude coordinator in the same graph
+    // as a native one routes correctly even if the global default differs)
+    // and feed it as the `agent_executor` hint.
+    let env_executor = std::env::var("WG_EXECUTOR_TYPE").ok();
+    let plan = workgraph::dispatch::plan_spawn(task, &config, env_executor.as_deref(), None)?;
 
-    // Resolve model: task.model (user's per-task override) wins,
-    // then fall back to config.coordinator.model (user's project-level setting).
-    // This ensures `wg spawn-task .coordinator-N` picks up the configured model
-    // even when the graph task doesn't have a model field set.
-    let effective_model = task.model.clone().or_else(|| config.coordinator.model.clone());
+    // Provenance: every spawn emits one line tracing each decision back to
+    // the config knob that produced it. Eliminates silent-routing bugs.
+    eprintln!(
+        "[spawn_task] {}: {}",
+        task.id,
+        plan.provenance.log_line(&plan)
+    );
 
     // Resume if the session journal exists on disk — same rule
     // `wg nex` uses internally. Route through the registry so
@@ -200,24 +210,27 @@ pub fn resolve_handler(
     let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, &chat_ref);
     let journal_exists = chat_dir.join("conversation.jsonl").exists();
 
-    Ok(match executor_kind {
-        ExecutorKind::Native => HandlerSpec::Native {
+    let model = Some(plan.model.raw.clone());
+    let endpoint = plan.endpoint.as_ref().map(|e| e.name.clone());
+
+    Ok(match plan.executor {
+        workgraph::dispatch::ExecutorKind::Native => HandlerSpec::Native {
             chat_ref,
             role,
             resume: journal_exists,
-            model: effective_model.clone(),
-            endpoint: task.endpoint.clone(),
+            model,
+            endpoint,
         },
-        ExecutorKind::Claude => HandlerSpec::Claude {
-            chat_ref,
-            model: effective_model.clone(),
-        },
-        ExecutorKind::Codex => HandlerSpec::Codex {
-            chat_ref,
-            model: effective_model,
-        },
-        ExecutorKind::Gemini => HandlerSpec::Gemini { chat_ref },
-        ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
+        workgraph::dispatch::ExecutorKind::Claude => HandlerSpec::Claude { chat_ref, model },
+        workgraph::dispatch::ExecutorKind::Codex => HandlerSpec::Codex { chat_ref, model },
+        workgraph::dispatch::ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
+        workgraph::dispatch::ExecutorKind::Shell => {
+            return Err(anyhow!(
+                "shell executor is not supported by spawn-task; \
+                 task.exec runs through the dispatcher's shell-spawn path, \
+                 not the handler-exec path"
+            ));
+        }
     })
 }
 
@@ -225,44 +238,6 @@ fn is_coordinator_id(task_id: &str) -> bool {
     task_id
         .strip_prefix(".coordinator-")
         .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExecutorKind {
-    Native,
-    Claude,
-    Codex,
-    Gemini,
-    Amplifier,
-}
-
-fn pick_executor(config: &workgraph::config::Config, task: &Task) -> ExecutorKind {
-    // Precedence:
-    //   1. `WG_EXECUTOR_TYPE` env var — daemon sets this per-coordinator
-    //      so a Claude coordinator in the same graph as a native one
-    //      routes correctly even if the global default is different.
-    //   2. Task-level `executor` field (reserved; unused today).
-    //   3. Coordinator config default (`config.coordinator.executor`).
-    //   4. "native".
-    let env_kind = std::env::var("WG_EXECUTOR_TYPE").ok();
-    let label = env_kind
-        .as_deref()
-        .or(config.coordinator.executor.as_deref())
-        .unwrap_or("native");
-    match label.to_ascii_lowercase().as_str() {
-        "native" | "nex" => ExecutorKind::Native,
-        "claude" => ExecutorKind::Claude,
-        "codex" => ExecutorKind::Codex,
-        "gemini" => ExecutorKind::Gemini,
-        "amplifier" => ExecutorKind::Amplifier,
-        _ => {
-            eprintln!(
-                "\x1b[33m[spawn-task] unknown executor {:?} for task {}, defaulting to native\x1b[0m",
-                label, task.id
-            );
-            ExecutorKind::Native
-        }
-    }
 }
 
 /// Exec into the handler process. This REPLACES the current process
