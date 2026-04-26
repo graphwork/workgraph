@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 
-use crate::config::CLAUDE_OPUS_MODEL_ID;
 use std::path::Path;
 
 /// Tier classification for models
@@ -122,7 +121,7 @@ impl ModelRegistry {
 
         let defaults = vec![
             ModelEntry {
-                id: format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"),
+                id: "anthropic/claude-opus-4-6".into(),
                 provider: "openrouter".into(),
                 cost_per_1m_input: 5.0,
                 cost_per_1m_output: 25.0,
@@ -443,15 +442,15 @@ pub fn load_model_choices_with_descriptions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CLAUDE_OPUS_MODEL_ID;
     use tempfile::TempDir;
+
+    const OPENROUTER_OPUS_ID: &str = "anthropic/claude-opus-4-6";
 
     #[test]
     fn test_default_registry_has_models() {
         let reg = ModelRegistry::with_defaults();
-        let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
         assert!(reg.models.len() >= 10);
-        assert!(reg.models.contains_key(&opus_key));
+        assert!(reg.models.contains_key(OPENROUTER_OPUS_ID));
         assert!(reg.models.contains_key("openai/gpt-4o"));
         assert!(reg.models.contains_key("deepseek/deepseek-chat"));
     }
@@ -482,11 +481,7 @@ mod tests {
 
         let loaded = ModelRegistry::load(dir.path()).unwrap();
         assert_eq!(loaded.models.len(), reg.models.len());
-        assert!(
-            loaded
-                .models
-                .contains_key(&format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"))
-        );
+        assert!(loaded.models.contains_key(OPENROUTER_OPUS_ID));
     }
 
     #[test]
@@ -551,8 +546,7 @@ mod tests {
     #[test]
     fn test_yaml_roundtrip() {
         let mut reg = ModelRegistry::with_defaults();
-        reg.set_default(&format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"))
-            .unwrap();
+        reg.set_default(OPENROUTER_OPUS_ID).unwrap();
 
         let yaml = serde_yaml::to_string(&reg).unwrap();
         let parsed: ModelRegistry = serde_yaml::from_str(&yaml).unwrap();
@@ -566,7 +560,7 @@ mod tests {
         let reg = ModelRegistry::with_defaults();
 
         // Models with tool_use capability
-        assert!(reg.supports_tool_use(&format!("anthropic/{CLAUDE_OPUS_MODEL_ID}")));
+        assert!(reg.supports_tool_use(OPENROUTER_OPUS_ID));
         assert!(reg.supports_tool_use("openai/gpt-4o"));
         assert!(reg.supports_tool_use("google/gemini-2.5-pro"));
         assert!(reg.supports_tool_use("deepseek/deepseek-chat"));

@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Default Anthropic API model IDs.
-/// Update these constants when new Claude model versions are released.
-pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-4-5-20251001";
-pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-20250514";
-pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-6";
+/// Bare Claude tier aliases passed to the claude CLI.
+/// The CLI resolves these to the current production model — we do not track dated IDs.
+pub const CLAUDE_HAIKU_MODEL_ID: &str = "haiku";
+pub const CLAUDE_SONNET_MODEL_ID: &str = "sonnet";
+pub const CLAUDE_OPUS_MODEL_ID: &str = "opus";
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1275,7 +1275,7 @@ pub struct ModelRegistryEntry {
     pub id: String,
     /// Provider: "anthropic", "openai", "google", "local", etc.
     pub provider: String,
-    /// Full model identifier sent to the API
+    /// Model identifier passed to the executor (bare alias for Claude, full ID for others)
     pub model: String,
     /// Quality tier this model belongs to
     pub tier: Tier,
@@ -7020,7 +7020,7 @@ background_timeout_secs = 1200
 
 [native_executor.delegate]
 delegate_max_turns = 15
-delegate_model = "claude-haiku-4-5-20251001"
+delegate_model = "haiku"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(
@@ -7037,7 +7037,7 @@ delegate_model = "claude-haiku-4-5-20251001"
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 15);
         assert_eq!(
             config.native_executor.delegate.delegate_model,
-            "claude-haiku-4-5-20251001"
+            "haiku"
         );
     }
 
@@ -7170,5 +7170,54 @@ fetch_max_chars = 16000
         let stamp = name.strip_prefix("config.toml.").unwrap();
         assert_eq!(stamp.len(), "2026-04-22T12-34-56Z".len(), "timestamp fmt");
         assert!(stamp.ends_with('Z'));
+    }
+
+    // ── Bare-alias contract tests ────────────────────────────────────
+
+    #[test]
+    fn test_alias_claude_opus_resolves_to_bare_opus() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Verification);
+        assert_eq!(
+            resolved.model, "opus",
+            "claude:opus must resolve to bare 'opus', not a dated model ID"
+        );
+    }
+
+    #[test]
+    fn test_alias_claude_sonnet_resolves_to_bare_sonnet() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+        assert_eq!(
+            resolved.model, "sonnet",
+            "claude:sonnet must resolve to bare 'sonnet', not a dated model ID"
+        );
+    }
+
+    #[test]
+    fn test_alias_claude_haiku_resolves_to_bare_haiku() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(
+            resolved.model, "haiku",
+            "claude:haiku must resolve to bare 'haiku', not a dated model ID"
+        );
+    }
+
+    #[test]
+    fn test_builtin_registry_uses_bare_aliases_not_dated_ids() {
+        let config = Config::default();
+        let registry = config.effective_registry();
+        for entry in &registry {
+            if entry.provider == "anthropic" {
+                assert!(
+                    !entry.model.contains('-'),
+                    "Anthropic registry entry '{}' has model '{}' — \
+                     expected bare alias (opus/sonnet/haiku), not a dated model ID",
+                    entry.id,
+                    entry.model
+                );
+            }
+        }
     }
 }
