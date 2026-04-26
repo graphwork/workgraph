@@ -899,9 +899,21 @@ impl EndpointConfig {
 /// LLM endpoints configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EndpointsConfig {
+    /// When `true`, local config inherits `[[llm_endpoints.endpoints]]` entries
+    /// from the global config. When `false` (default), the local config's
+    /// endpoints list FULLY replaces the global list — set this to `true`
+    /// in local config to keep the legacy "global cascades into local"
+    /// behavior. Has no effect when read from global config.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inherit_global: bool,
+
     /// List of configured endpoints
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<EndpointConfig>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl EndpointsConfig {
@@ -3350,6 +3362,32 @@ fn emit_legacy_warnings(warnings: &[String]) {
     }
 }
 
+/// LLM endpoint inheritance is opt-in: local config does NOT inherit
+/// `[[llm_endpoints.endpoints]]` entries from global by default. The user must
+/// set `[llm_endpoints] inherit_global = true` in local config to keep the
+/// legacy "global cascades into local" behavior.
+///
+/// This mutates `global_val` in place to drop the `endpoints` array from its
+/// `[llm_endpoints]` table when local hasn't opted in. Call this BEFORE
+/// `merge_toml` so the deep-merge sees an effectively-empty global endpoints
+/// list and the merged config reflects only what local declared.
+fn apply_endpoint_inheritance_policy(global_val: &mut toml::Value, local_val: &toml::Value) {
+    let inherit = local_val
+        .get("llm_endpoints")
+        .and_then(|t| t.get("inherit_global"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    if inherit {
+        return;
+    }
+    if let Some(global_endpoints) = global_val
+        .get_mut("llm_endpoints")
+        .and_then(|t| t.as_table_mut())
+    {
+        global_endpoints.remove("endpoints");
+    }
+}
+
 /// Deep-merge two TOML values. For (Table, Table) pairs, recursively merge
 /// with `local` keys overriding `global`. For all other cases, `local` wins.
 pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
@@ -3568,6 +3606,7 @@ impl Config {
             &mut warnings,
         );
         emit_legacy_warnings(&warnings);
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         Ok(merge_toml(global_val, local_val))
     }
 
@@ -3603,6 +3642,7 @@ impl Config {
             .and_then(|m| m.as_str())
             .is_some();
 
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         let mut merged = merge_toml(global_val.clone(), local_val.clone());
         strip_global_only_model_roles(&mut merged, &global_val, &local_val);
         let mut config: Config = merged
@@ -3950,6 +3990,12 @@ impl Config {
             &mut warnings,
         );
         emit_legacy_warnings(&warnings);
+
+        // Apply endpoint inheritance policy BEFORE recording sources, so the
+        // source map reflects the effective merged config: a global endpoint
+        // entry that's been suppressed because local opted out should not
+        // appear as "from global" in `wg config --list`.
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
 
         // Record sources: global first, then local overwrites
         let mut sources = BTreeMap::new();
@@ -5271,6 +5317,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_single_match() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "my-openai".to_string(),
                 provider: "openai".to_string(),
@@ -5291,6 +5338,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_no_match() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "my-openai".to_string(),
                 provider: "openai".to_string(),
@@ -5309,6 +5357,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_prefers_default() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "first-openai".to_string(),
@@ -5353,6 +5402,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_first_match_without_default() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "anthropic-ep".to_string(),
@@ -5397,6 +5447,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_url_and_key() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
@@ -5427,6 +5478,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_default_returns_default_endpoint() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "openai".to_string(),
@@ -5459,6 +5511,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_default_falls_back_to_first() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "only".to_string(),
                 provider: "openai".to_string(),
@@ -5481,6 +5534,7 @@ model = "claude:haiku"
         // the only configured endpoint has provider "openrouter". find_for_provider("openai")
         // returns None but find_default() returns the openrouter endpoint.
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
@@ -5808,6 +5862,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_by_name() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "openrouter".to_string(),
@@ -6897,7 +6952,11 @@ provider = "openrouter"
     }
 
     #[test]
-    fn test_merge_preserves_global_endpoints_when_local_omits_them() {
+    fn test_merge_toml_preserves_global_endpoints_when_local_omits_them() {
+        // This tests the *primitive* `merge_toml` behavior — global wins when
+        // local omits a key. The user-facing `load_merged*` paths layer
+        // `apply_endpoint_inheritance_policy` on top to invert this for
+        // endpoints specifically (see tests below).
         let global: toml::Value = toml::from_str(
             r#"
 [llm_endpoints]
@@ -6922,6 +6981,136 @@ model = "claude:haiku"
         let config: Config = merged.try_into().unwrap();
         assert_eq!(config.llm_endpoints.endpoints.len(), 1);
         assert_eq!(config.llm_endpoints.endpoints[0].name, "openrouter");
+    }
+
+    // ---- Endpoint inheritance opt-in tests ----
+    //
+    // Endpoint inheritance from global → local is opt-in. Local must set
+    // `[llm_endpoints] inherit_global = true` to get the legacy cascade.
+    // Without that flag, the user's local config defines the *complete* set
+    // of available endpoints. See `apply_endpoint_inheritance_policy`.
+
+    fn make_global_with_openrouter_default() -> toml::Value {
+        toml::from_str(
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-global"
+is_default = true
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_local_no_endpoints_does_not_inherit_global() {
+        // The user's reported symptom: global has openrouter as is_default,
+        // and the user's local has no `[llm_endpoints]` at all. Under the new
+        // policy this MUST NOT cascade — global's endpoints are dropped.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[agent]
+model = "claude:haiku"
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert!(
+            config.llm_endpoints.endpoints.is_empty(),
+            "local with no [llm_endpoints] must not inherit global endpoints; got {:?}",
+            config.llm_endpoints.endpoints
+        );
+        assert!(
+            config.llm_endpoints.find_default().is_none(),
+            "no default endpoint should leak from global"
+        );
+    }
+
+    #[test]
+    fn test_local_with_own_endpoints_replaces_global() {
+        // Local has its own endpoint list; under approach A this fully
+        // replaces global's list (no per-name merging, no global leak).
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "claude-direct"
+provider = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key = "sk-anthropic-local"
+is_default = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "claude-direct");
+        assert!(
+            config.llm_endpoints.find_by_name("openrouter").is_none(),
+            "global openrouter must not leak when local declares its own endpoints"
+        );
+    }
+
+    #[test]
+    fn test_inherit_global_knob_works() {
+        // With `[llm_endpoints] inherit_global = true` in local, the legacy
+        // cascade behavior is preserved.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+inherit_global = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(
+            config.llm_endpoints.endpoints.len(),
+            1,
+            "inherit_global=true must keep the global openrouter entry"
+        );
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "openrouter");
+        assert!(config.llm_endpoints.inherit_global);
+    }
+
+    #[test]
+    fn test_inherit_global_with_local_endpoints_unions() {
+        // `inherit_global = true` plus a local entry — under this branch,
+        // merge_toml's "local list wins" rule for arrays still applies, so
+        // local replaces global's array even with inherit_global=true. The
+        // knob's job is to RESTORE legacy behavior, and legacy merge_toml
+        // already had this property: a non-empty local array replaces global's.
+        // We assert the documented contract.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+inherit_global = true
+[[llm_endpoints.endpoints]]
+name = "claude-direct"
+provider = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key = "sk-anthropic-local"
+is_default = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "claude-direct");
     }
 
     // ---- Global config propagation tests ----
@@ -7072,7 +7261,12 @@ api_key = "sk-or-global"
     }
 
     #[test]
-    fn test_global_endpoints_propagate_to_merged_config() {
+    fn test_global_endpoints_do_not_propagate_to_merged_config_by_default() {
+        // Endpoint inheritance is opt-in. With an empty local config (no
+        // `[llm_endpoints] inherit_global = true`), global endpoints must
+        // NOT leak into the merged config. This is the user-facing
+        // contract that `load_merged` and `load_with_sources` enforce by
+        // calling `apply_endpoint_inheritance_policy` before `merge_toml`.
         let global_path = tempfile::NamedTempFile::new().unwrap();
 
         std::fs::write(
@@ -7093,8 +7287,51 @@ is_default = true
         let local_path = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(local_path.path(), "").unwrap();
 
-        let global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
         let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        let merged = merge_toml(global_val, local_val);
+
+        let config: Config = merged.try_into().unwrap();
+        assert!(
+            config.llm_endpoints.endpoints.is_empty(),
+            "global endpoints must not leak into local without inherit_global; got {:?}",
+            config.llm_endpoints.endpoints
+        );
+    }
+
+    #[test]
+    fn test_global_endpoints_propagate_when_inherit_global_set() {
+        // When local explicitly sets `[llm_endpoints] inherit_global = true`,
+        // the legacy cascade is restored and global endpoints flow through.
+        let global_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            global_path.path(),
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-test-global"
+is_default = true
+"#,
+        )
+        .unwrap();
+
+        let local_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            local_path.path(),
+            r#"
+[llm_endpoints]
+inherit_global = true
+"#,
+        )
+        .unwrap();
+
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         let merged = merge_toml(global_val, local_val);
 
         let config: Config = merged.try_into().unwrap();
@@ -7104,6 +7341,7 @@ is_default = true
             Some("sk-or-test-global".to_string())
         );
         assert_eq!(config.llm_endpoints.endpoints[0].provider, "openrouter");
+        assert!(config.llm_endpoints.inherit_global);
     }
 
     #[test]

@@ -478,6 +478,7 @@ mod tests {
     fn config_with_endpoint(name: &str) -> Config {
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: name.to_string(),
                 provider: "openai".to_string(),

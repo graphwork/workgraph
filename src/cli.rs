@@ -1439,6 +1439,13 @@ pub enum Commands {
         #[arg(long)]
         show: bool,
 
+        /// Show the effective merged config (global + local) — exactly what
+        /// the running daemon and agents will see. Use this to debug e.g.
+        /// "why is openrouter still in my routing when I removed it locally?"
+        /// Equivalent to `wg config show` with no scope, but explicit.
+        #[arg(long)]
+        merged: bool,
+
         /// Initialize default config file
         #[arg(long)]
         init: bool,

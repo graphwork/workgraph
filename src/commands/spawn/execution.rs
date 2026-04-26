@@ -2131,6 +2131,7 @@ mod tests {
     /// Helper to build an EndpointsConfig for endpoint resolution tests.
     fn test_endpoints_config() -> workgraph::config::EndpointsConfig {
         workgraph::config::EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 workgraph::config::EndpointConfig {
                     name: "my-openrouter".to_string(),

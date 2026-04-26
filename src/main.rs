@@ -2145,6 +2145,7 @@ fn main() -> Result<()> {
         },
         Commands::Config {
             show,
+            merged,
             init,
             global,
             local,
@@ -2399,6 +2400,11 @@ fn main() -> Result<()> {
                 commands::config_cmd::list(&workgraph_dir, cli.json)
             } else if init {
                 commands::config_cmd::init(&workgraph_dir, scope)
+            } else if merged {
+                // `--merged` is an explicit alias for "show effective config":
+                // ignore any --global/--local scope so the user sees what the
+                // running system actually sees.
+                commands::config_cmd::show(&workgraph_dir, None, cli.json)
             } else if show
                 || (executor.is_none()
                     && model.is_none()

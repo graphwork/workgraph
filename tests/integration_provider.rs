@@ -302,6 +302,7 @@ api_key = "test-openai-key"
 fn test_endpoint_api_key_resolution() {
     // find_for_provider should return the endpoint with matching provider
     let endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![
             EndpointConfig {
                 name: "anthropic-prod".to_string(),
@@ -356,6 +357,7 @@ fn test_endpoint_api_key_resolution() {
 fn test_endpoint_default_selection() {
     // When multiple endpoints share a provider, is_default=true wins
     let endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![
             EndpointConfig {
                 name: "anthropic-staging".to_string(),

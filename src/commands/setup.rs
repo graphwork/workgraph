@@ -140,6 +140,7 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
             context_window: None,
         };
         config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![endpoint],
         };
     }
