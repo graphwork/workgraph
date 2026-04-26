@@ -1042,6 +1042,15 @@ bash terminal-bench/reproduce.sh
 python3 terminal-bench/results/analyze.py
 ```
 
+## Testing
+
+Run the wave-1 integration smoke test after any wave-1 task lands:
+
+```bash
+bash scripts/smoke/wave-1-smoke.sh        # full suite
+bash scripts/smoke/wave-1-smoke.sh --quick # skip slow daemon/TUI scenarios
+```
+
 ## More docs
 
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Complete command reference
