@@ -7,9 +7,9 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
-    ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel,
-    InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
+    ActivityEventKind, AgentStreamEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
+    ConfirmAction, ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus,
+    FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     SinglePanelView, SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction,
     ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
@@ -4256,6 +4256,8 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .unwrap_or_else(|| "no agent".to_string());
         let view_label = if app.log_pane.view_top {
             "view=events"
+        } else if !app.log_pane.stream_events.is_empty() {
+            "view=activity"
         } else {
             "view=stream"
         };
@@ -4302,6 +4304,25 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 .map(|s| Line::from(s.clone()))
                 .collect()
         }
+    } else if !app.log_pane.stream_events.is_empty() {
+        let mut out: Vec<Line> = Vec::new();
+        for event in &app.log_pane.stream_events {
+            let color = match event.kind {
+                AgentStreamEventKind::ToolCall => Color::Cyan,
+                AgentStreamEventKind::ToolResult => Color::Green,
+                AgentStreamEventKind::TextOutput => Color::White,
+                AgentStreamEventKind::Thinking => Color::Magenta,
+                AgentStreamEventKind::SystemEvent => Color::DarkGray,
+                AgentStreamEventKind::Error => Color::Red,
+            };
+            for sub_line in event.summary.split('\n') {
+                out.push(Line::from(Span::styled(
+                    sub_line.to_string(),
+                    Style::default().fg(color),
+                )));
+            }
+        }
+        out
     } else {
         let text = &app.log_pane.agent_output.full_text;
         if text.is_empty() {

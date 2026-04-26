@@ -2693,6 +2693,282 @@ pub struct AgencyLifecycle {
     pub evaluation: Option<LifecyclePhase>,
 }
 
+// ── Agent Stream Events (structured view of raw_stream.jsonl) ──
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentStreamEventKind {
+    ToolCall,
+    ToolResult,
+    TextOutput,
+    Thinking,
+    SystemEvent,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentStreamEvent {
+    pub kind: AgentStreamEventKind,
+    pub agent_id: String,
+    pub summary: String,
+}
+
+pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<AgentStreamEvent> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let val: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match msg_type {
+        "assistant" => {
+            let content_arr = val
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())?;
+            let mut events = Vec::new();
+            for block in content_arr {
+                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match block_type {
+                    "text" => {
+                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            events.push(AgentStreamEvent {
+                                kind: AgentStreamEventKind::TextOutput,
+                                agent_id: default_agent_id.to_string(),
+                                summary: text.to_string(),
+                            });
+                        }
+                    }
+                    "tool_use" => {
+                        let name =
+                            block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let detail = match name {
+                            "Bash" => block
+                                .get("input")
+                                .and_then(|i| i.get("command"))
+                                .and_then(|v| v.as_str())
+                                .map(|c| {
+                                    let c = c.trim();
+                                    if c.len() > 120 {
+                                        format!("{}…", &c[..c.floor_char_boundary(120)])
+                                    } else {
+                                        c.to_string()
+                                    }
+                                }),
+                            "Read" | "Write" => block
+                                .get("input")
+                                .and_then(|i| i.get("file_path"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| p.to_string()),
+                            "Edit" => {
+                                let path = block
+                                    .get("input")
+                                    .and_then(|i| i.get("file_path"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                Some(format!("{}", path))
+                            }
+                            "Grep" | "Glob" => block
+                                .get("input")
+                                .and_then(|i| i.get("pattern"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| p.to_string()),
+                            _ => None,
+                        };
+                        let summary = match detail {
+                            Some(d) => format!("⚡ {} → {}", name, d),
+                            None => format!("⚡ {}", name),
+                        };
+                        events.push(AgentStreamEvent {
+                            kind: AgentStreamEventKind::ToolCall,
+                            agent_id: default_agent_id.to_string(),
+                            summary,
+                        });
+                    }
+                    "thinking" => {
+                        let text = block
+                            .get("thinking")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            let truncated = if text.len() > 200 {
+                                format!(
+                                    "{}…",
+                                    &text[..text.floor_char_boundary(200)]
+                                )
+                            } else {
+                                text.to_string()
+                            };
+                            events.push(AgentStreamEvent {
+                                kind: AgentStreamEventKind::Thinking,
+                                agent_id: default_agent_id.to_string(),
+                                summary: format!("💭 {}", truncated),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if events.len() == 1 {
+                events.into_iter().next()
+            } else if events.len() > 1 {
+                let combined = events.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>().join("\n");
+                Some(AgentStreamEvent {
+                    kind: events[0].kind.clone(),
+                    agent_id: default_agent_id.to_string(),
+                    summary: combined,
+                })
+            } else {
+                None
+            }
+        }
+        "user" => {
+            let content_arr = val
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())?;
+            for block in content_arr {
+                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if block_type == "tool_result" {
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let content = block
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let truncated = if content.len() > 200 {
+                        format!("{}…", &content[..content.floor_char_boundary(200)])
+                    } else {
+                        content.to_string()
+                    };
+                    let kind = if is_error {
+                        AgentStreamEventKind::Error
+                    } else {
+                        AgentStreamEventKind::ToolResult
+                    };
+                    let prefix = if is_error { "✗" } else { "✓" };
+                    return Some(AgentStreamEvent {
+                        kind,
+                        agent_id: default_agent_id.to_string(),
+                        summary: format!("{} {}", prefix, truncated),
+                    });
+                }
+            }
+            None
+        }
+        "system" => {
+            let subtype = val
+                .get("subtype")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match subtype {
+                "init" | "rate_limit_event" => None,
+                _ => {
+                    let summary = val
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            val.get("description")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| format!("[{}]", subtype));
+                    Some(AgentStreamEvent {
+                        kind: AgentStreamEventKind::SystemEvent,
+                        agent_id: default_agent_id.to_string(),
+                        summary: format!("⚙ {}", summary),
+                    })
+                }
+            }
+        }
+        "tool_call" => {
+            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+            let is_error = val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            let detail = match name {
+                "Bash" | "bash" => val
+                    .get("input")
+                    .and_then(|i| i.get("command"))
+                    .and_then(|v| v.as_str())
+                    .map(|c| {
+                        let c = c.trim();
+                        if c.len() > 120 {
+                            format!("{}…", &c[..c.floor_char_boundary(120)])
+                        } else {
+                            c.to_string()
+                        }
+                    }),
+                "Read" | "Write" | "Edit" => val
+                    .get("input")
+                    .and_then(|i| i.get("file_path"))
+                    .and_then(|v| v.as_str())
+                    .map(|p| p.to_string()),
+                "Grep" | "Glob" => val
+                    .get("input")
+                    .and_then(|i| i.get("pattern"))
+                    .and_then(|v| v.as_str())
+                    .map(|p| p.to_string()),
+                _ => None,
+            };
+            let output_preview = val
+                .get("output")
+                .and_then(|v| v.as_str())
+                .map(|o| {
+                    let o = o.trim();
+                    if o.len() > 100 {
+                        format!("{}…", &o[..o.floor_char_boundary(100)])
+                    } else {
+                        o.to_string()
+                    }
+                });
+            let call_summary = match detail {
+                Some(d) => format!("⚡ {} → {}", name, d),
+                None => format!("⚡ {}", name),
+            };
+            let full = if let Some(preview) = output_preview {
+                let prefix = if is_error { "✗" } else { "✓" };
+                format!("{}\n  {} {}", call_summary, prefix, preview)
+            } else {
+                call_summary
+            };
+            Some(AgentStreamEvent {
+                kind: if is_error {
+                    AgentStreamEventKind::Error
+                } else {
+                    AgentStreamEventKind::ToolCall
+                },
+                agent_id: default_agent_id.to_string(),
+                summary: full,
+            })
+        }
+        "turn" => {
+            if let Some(content) = val.get("content").and_then(|c| c.as_array()) {
+                for block in content {
+                    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if block_type == "text" {
+                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            return Some(AgentStreamEvent {
+                                kind: AgentStreamEventKind::TextOutput,
+                                agent_id: default_agent_id.to_string(),
+                                summary: text.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// State for the log pane (now embedded as right panel tab 2).
 pub struct LogPaneState {
     /// Scroll offset from the top of log content.
@@ -2721,6 +2997,10 @@ pub struct LogPaneState {
     /// Which iteration archive is currently being viewed (index into VizApp::iteration_archives).
     /// None means viewing the current (live) iteration.
     viewing_iteration: Option<usize>,
+    /// Structured events parsed from raw_stream.jsonl.
+    pub stream_events: Vec<AgentStreamEvent>,
+    /// Byte offset for incremental reads from raw_stream.jsonl.
+    pub raw_stream_offset: u64,
 }
 
 impl Default for LogPaneState {
@@ -2738,6 +3018,8 @@ impl Default for LogPaneState {
             agent_output: OutputAgentText::default(),
             has_new_content: false,
             viewing_iteration: None,
+            stream_events: Vec::new(),
+            raw_stream_offset: 0,
         }
     }
 }
@@ -5964,6 +6246,7 @@ impl VizApp {
                     }
                     if self.right_panel_tab == RightPanelTab::Log {
                         self.update_log_output();
+                        self.update_log_stream_events();
                     }
                     self.invalidate_hud();
                     self.load_hud_detail();
@@ -6076,6 +6359,7 @@ impl VizApp {
             // Log pane: update agent output if tab is active.
             if self.right_panel_tab == RightPanelTab::Log {
                 self.update_log_output();
+                self.update_log_stream_events();
                 content_updated = true;
             }
 
@@ -6201,6 +6485,7 @@ impl VizApp {
                 // Update log pane agent output if Log tab is active.
                 if self.right_panel_tab == RightPanelTab::Log {
                     self.update_log_output();
+                    self.update_log_stream_events();
                 }
                 // Preserve HUD scroll position when the selected task hasn't changed.
                 self.invalidate_hud();
@@ -7826,6 +8111,8 @@ impl VizApp {
         // Reset agent output if task changed.
         let prev_agent_id = self.log_pane.agent_id.clone();
 
+        let mut agent_id: Option<String> = None;
+
         if task.log.is_empty() {
             self.log_pane
                 .rendered_lines
@@ -7833,7 +8120,6 @@ impl VizApp {
         } else {
             let now = chrono::Utc::now();
             // Find agent_id from log entries (actor field) or from "Spawned" message.
-            let mut agent_id: Option<String> = None;
             for entry in &task.log {
                 // Try to extract agent_id from actor field.
                 if agent_id.is_none() {
@@ -7867,23 +8153,30 @@ impl VizApp {
                         .push(format!("[{}] {}", time_str, entry.message));
                 }
             }
+        }
 
-            // Also check the agent registry for an agent working on this task.
-            if agent_id.is_none() {
-                for entry in &self.agent_monitor.agents {
-                    if entry.task_id.as_deref() == Some(&task_id) {
-                        agent_id = Some(entry.agent_id.clone());
-                        break;
-                    }
+        // Also check the agent registry for an agent working on this task.
+        if agent_id.is_none() {
+            for entry in &self.agent_monitor.agents {
+                if entry.task_id.as_deref() == Some(&task_id) {
+                    agent_id = Some(entry.agent_id.clone());
+                    break;
                 }
             }
-
-            // Reset agent output buffer if agent changed.
-            if agent_id != prev_agent_id {
-                self.log_pane.agent_output = OutputAgentText::default();
-            }
-            self.log_pane.agent_id = agent_id;
         }
+
+        // Fall back to task.assigned field.
+        if agent_id.is_none() {
+            agent_id = task.assigned.clone();
+        }
+
+        // Reset agent output buffer if agent changed.
+        if agent_id != prev_agent_id {
+            self.log_pane.agent_output = OutputAgentText::default();
+            self.log_pane.stream_events.clear();
+            self.log_pane.raw_stream_offset = 0;
+        }
+        self.log_pane.agent_id = agent_id;
 
         // If auto-tail is on, scroll to bottom so newest entries are visible.
         // Use usize::MAX — the render function clamps to the actual wrapped line count.
@@ -9755,6 +10048,63 @@ impl VizApp {
             if !self.log_pane.auto_tail {
                 self.log_pane.has_new_content = true;
             }
+        }
+    }
+
+    pub fn update_log_stream_events(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let agent_id = match &self.log_pane.agent_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let agents_dir = self.workgraph_dir.join("agents");
+        let stream_path = agents_dir.join(&agent_id).join("raw_stream.jsonl");
+        if !stream_path.exists() {
+            return;
+        }
+
+        let mut file = match std::fs::File::open(&stream_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_len <= self.log_pane.raw_stream_offset {
+            return;
+        }
+
+        if file
+            .seek(SeekFrom::Start(self.log_pane.raw_stream_offset))
+            .is_err()
+        {
+            return;
+        }
+
+        let mut new_data = String::new();
+        if file.read_to_string(&mut new_data).is_err() {
+            return;
+        }
+
+        self.log_pane.raw_stream_offset = file_len;
+
+        let mut had_new = false;
+        for line in new_data.lines() {
+            if let Some(event) = parse_raw_stream_line(line, &agent_id) {
+                self.log_pane.stream_events.push(event);
+                had_new = true;
+            }
+        }
+
+        const MAX_STREAM_EVENTS: usize = 2000;
+        if self.log_pane.stream_events.len() > MAX_STREAM_EVENTS {
+            let drain = self.log_pane.stream_events.len() - MAX_STREAM_EVENTS;
+            self.log_pane.stream_events.drain(..drain);
+        }
+
+        if had_new && !self.log_pane.auto_tail {
+            self.log_pane.has_new_content = true;
         }
     }
 
@@ -20870,5 +21220,190 @@ mod filter_picker_tests {
         picker.filter = "opus".to_string();
         picker.apply_filter();
         assert!(picker.selected < picker.visible_count());
+    }
+}
+
+#[cfg(test)]
+mod agent_stream_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_tool_call_event() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-1").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.contains("Bash"));
+        assert!(event.summary.contains("cargo test"));
+        assert_eq!(event.agent_id, "agent-1");
+    }
+
+    #[test]
+    fn test_parse_text_output_event() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Building the project now."}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-2").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
+        assert!(event.summary.contains("Building the project now."));
+    }
+
+    #[test]
+    fn test_parse_thinking_event() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me analyze this code...","signature":"abc"}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-3").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::Thinking);
+        assert!(event.summary.contains("analyze this code"));
+    }
+
+    #[test]
+    fn test_parse_tool_result_event() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"test output here","is_error":false}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-4").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolResult);
+        assert!(event.summary.contains("test output here"));
+    }
+
+    #[test]
+    fn test_parse_tool_result_error() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"command failed","is_error":true}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-5").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::Error);
+        assert!(event.summary.contains("command failed"));
+    }
+
+    #[test]
+    fn test_parse_system_init_ignored() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"/tmp"}"#;
+        assert!(parse_raw_stream_line(line, "agent-6").is_none());
+    }
+
+    #[test]
+    fn test_parse_system_task_event() {
+        let line = r#"{"type":"system","subtype":"task_started","summary":"Running build"}"#;
+        let event = parse_raw_stream_line(line, "agent-7").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::SystemEvent);
+        assert!(event.summary.contains("Running build"));
+    }
+
+    #[test]
+    fn test_parse_edit_tool() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/main.rs","old_string":"a","new_string":"b"}}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-8").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.contains("Edit"));
+        assert!(event.summary.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_parse_grep_tool() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn main"}}]}}"#;
+        let event = parse_raw_stream_line(line, "agent-9").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.contains("Grep"));
+        assert!(event.summary.contains("fn main"));
+    }
+
+    #[test]
+    fn test_parse_native_executor_tool_call() {
+        let line = r#"{"type":"tool_call","name":"Bash","input":{"command":"ls -la"},"output":"total 8\ndrwx...","is_error":false}"#;
+        let event = parse_raw_stream_line(line, "agent-10").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.contains("Bash"));
+        assert!(event.summary.contains("ls -la"));
+        assert!(event.summary.contains("total 8"));
+    }
+
+    #[test]
+    fn test_parse_native_executor_turn_text() {
+        let line = r#"{"type":"turn","turn":1,"role":"assistant","content":[{"type":"text","text":"Working on it."}]}"#;
+        let event = parse_raw_stream_line(line, "agent-11").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
+        assert!(event.summary.contains("Working on it."));
+    }
+
+    #[test]
+    fn test_log_view_renders_agent_stream_events_for_inprogress_task() {
+        use std::collections::{HashMap, HashSet};
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::parser::save_graph;
+        use workgraph::test_helpers::make_task_with_status;
+        use crate::commands::viz::ascii::generate_ascii;
+        use crate::commands::viz::{LayoutMode, VizOutput};
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status("my-task", "My Task", Status::InProgress);
+        task.assigned = Some("agent-99".to_string());
+        graph.add_node(Node::Task(task));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Create agent directory with raw_stream.jsonl
+        let agent_dir = tmp.path().join("agents").join("agent-99");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let stream_content = [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Starting implementation."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo build"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Build succeeded","is_error":false}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me check the test results.","signature":"x"}]}}"#,
+        ];
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            stream_content.join("\n"),
+        )
+        .unwrap();
+        // Also create output.log (empty) so existing code doesn't fail
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        let idx = app.task_order.iter().position(|id| id == "my-task");
+        app.selected_task_idx = idx;
+
+        // Simulate what the TUI does: load log pane, then update stream events
+        app.load_log_pane();
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-99"));
+
+        app.update_log_stream_events();
+
+        assert_eq!(app.log_pane.stream_events.len(), 4);
+        assert_eq!(
+            app.log_pane.stream_events[0].kind,
+            AgentStreamEventKind::TextOutput
+        );
+        assert!(app.log_pane.stream_events[0]
+            .summary
+            .contains("Starting implementation"));
+        assert_eq!(
+            app.log_pane.stream_events[1].kind,
+            AgentStreamEventKind::ToolCall
+        );
+        assert!(app.log_pane.stream_events[1].summary.contains("Bash"));
+        assert_eq!(
+            app.log_pane.stream_events[2].kind,
+            AgentStreamEventKind::ToolResult
+        );
+        assert!(app.log_pane.stream_events[2]
+            .summary
+            .contains("Build succeeded"));
+        assert_eq!(
+            app.log_pane.stream_events[3].kind,
+            AgentStreamEventKind::Thinking
+        );
     }
 }
