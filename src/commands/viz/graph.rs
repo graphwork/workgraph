@@ -239,7 +239,7 @@ pub fn generate_graph_with_overrides(
                 .map(|s| format!(" · {}", s))
                 .unwrap_or_default();
             let priority_info = if task.priority != PRIORITY_DEFAULT {
-                format!(" · ▴{}", task.priority)
+                format!(" · ⌁{}", task.priority)
             } else {
                 String::new()
             };

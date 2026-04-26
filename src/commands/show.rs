@@ -437,7 +437,7 @@ fn print_human_readable(details: &TaskDetails) {
     }
 
     if details.priority != PRIORITY_DEFAULT {
-        println!("Priority: ▴{}", details.priority);
+        println!("Priority: ⌁{}", details.priority);
     }
 
     if details.visibility != "internal" {

@@ -124,7 +124,7 @@ pub fn run(
             let not_before_str = format_not_before_hint(task.not_before.as_deref());
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
             let priority_str = if task.priority != PRIORITY_DEFAULT {
-                format!(" ▴{}", task.priority)
+                format!(" ⌁{}", task.priority)
             } else {
                 String::new()
             };
