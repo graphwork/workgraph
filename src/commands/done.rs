@@ -220,7 +220,8 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
 
         if !commit_output.status.success() {
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
-            if stderr.contains("nothing to commit") {
+            let stdout = String::from_utf8_lossy(&commit_output.stdout);
+            if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
                 return Ok(WorktreeMergeResult::NoCommits);
             }
             anyhow::bail!("git commit failed: {}", stderr);
