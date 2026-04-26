@@ -2499,6 +2499,11 @@ fn main() -> Result<()> {
         Commands::Sweep { dry_run } => {
             commands::sweep::run(&workgraph_dir, dry_run, cli.json).map(|_| ())
         }
+        Commands::Migrate { cmd } => match cmd {
+            MigrateCommands::ChatRename { dry_run } => {
+                commands::migrate::run_chat_rename(&workgraph_dir, dry_run, cli.json)
+            }
+        },
         Commands::Agents {
             alive,
             dead,

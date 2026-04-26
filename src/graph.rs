@@ -1477,6 +1477,15 @@ impl WorkGraph {
         self.nodes.insert(node.id().to_string(), node);
     }
 
+    /// Remove a node by its current map key, returning it if it existed.
+    /// Used by migrations that need to re-key a task whose `task.id` field
+    /// has been rewritten. Callers are expected to re-insert the returned
+    /// node via `add_node`.
+    pub fn take_node(&mut self, id: &str) -> Option<Node> {
+        self.cycle_analysis = None;
+        self.nodes.remove(id)
+    }
+
     /// Look up a node by ID.
     pub fn get_node(&self, id: &str) -> Option<&Node> {
         self.nodes.get(id)

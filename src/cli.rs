@@ -1759,12 +1759,18 @@ pub enum Commands {
 
     /// Detect and recover orphaned in-progress tasks with dead agents
     #[command(
-        after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the coordinator can re-dispatch.\n\nThis is safe to run anytime — it is idempotent."
+        after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the dispatcher can re-dispatch.\n\nThis is safe to run anytime — it is idempotent."
     )]
     Sweep {
         /// Only report orphaned tasks, don't fix them
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Run a one-shot graph migration (chat-rename, etc.)
+    Migrate {
+        #[command(subcommand)]
+        cmd: MigrateCommands,
     },
 
     /// List running agent processes (service workers)
@@ -3974,6 +3980,21 @@ pub enum ServerCommands {
 }
 
 #[derive(Subcommand)]
+pub enum MigrateCommands {
+    /// Rewrite legacy `.coordinator-N` task ids to `.chat-N`,
+    /// rename `coordinator-loop` tags to `chat-loop`, fix up
+    /// after-edges that referenced the old ids, and rewrite
+    /// `Coordinator: <name>` / `Coordinator N` titles.
+    ///
+    /// Safe to run multiple times — idempotent.
+    ChatRename {
+        /// Only report what would change, don't write.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ServiceCommands {
     /// Start the agent service daemon
     Start {
@@ -4372,6 +4393,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Config { .. } => "config",
         Commands::DeadAgents { .. } => "dead-agents",
         Commands::Sweep { .. } => "sweep",
+        Commands::Migrate { .. } => "migrate",
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
         Commands::Reap { .. } => "reap",

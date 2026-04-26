@@ -69,6 +69,7 @@ pub mod match_cmd;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
 pub mod metrics;
+pub mod migrate;
 pub mod model_cmd;
 pub mod models;
 pub mod msg;
