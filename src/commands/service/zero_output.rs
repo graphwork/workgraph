@@ -362,16 +362,9 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                 }
 
                 if is_circuit_broken {
-                    // Circuit-broken: fail the task
-                    task.status = Status::Failed;
+                    // Circuit-broken: mark incomplete for evaluator review (not auto-fail)
+                    task.status = Status::Incomplete;
                     task.assigned = None;
-                    task.failure_reason = Some(format!(
-                        "Zero-output circuit breaker: {} consecutive zero-output spawns",
-                        state
-                            .task_respawn_counts
-                            .get(task_id.as_str())
-                            .unwrap_or(&0)
-                    ));
                     if !task.tags.contains(&CIRCUIT_BROKEN_TAG.to_string()) {
                         task.tags.push(CIRCUIT_BROKEN_TAG.to_string());
                     }
@@ -381,13 +374,13 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                         user: Some(workgraph::current_user()),
                         message: format!(
                             "Circuit breaker tripped: agent '{}' (PID {}) killed after {}s \
-                             with zero output. Max respawns ({}) exceeded — task failed.",
+                             with zero output. Max respawns ({}) exceeded — marked incomplete for evaluator review.",
                             agent_id, pid, age_secs, MAX_ZERO_OUTPUT_RESPAWNS
                         ),
                     });
                     result.circuit_broken_tasks.push(task_id.clone());
                     eprintln!(
-                        "[zero-output] CIRCUIT BREAKER: Task '{}' failed after {} zero-output spawns",
+                        "[zero-output] CIRCUIT BREAKER: Task '{}' marked incomplete after {} zero-output spawns",
                         task_id,
                         state
                             .task_respawn_counts

@@ -3312,21 +3312,17 @@ fn record_spawn_failure(
             ),
         });
 
-        // Circuit breaker: auto-fail after threshold
+        // Circuit breaker: mark incomplete after threshold (evaluator decides fail)
         if max_spawn_failures > 0 && failures >= max_spawn_failures {
-            task.status = Status::Failed;
+            task.status = Status::Incomplete;
             task.assigned = None;
-            task.failure_reason = Some(format!(
-                "Spawn failed {} consecutive times. Last error: {}. exec_mode={}, executor={}",
-                failures, error_owned, mode_str, executor_owned,
-            ));
             task.log.push(LogEntry {
                 timestamp: now.to_rfc3339(),
                 actor: Some("spawn-circuit-breaker".to_string()),
                 user: None,
                 message: format!(
-                    "Circuit breaker tripped: spawn failed {} times, auto-failing task",
-                    failures,
+                    "Circuit breaker tripped: spawn failed {} times. Last error: {}. exec_mode={}, executor={}. Task marked incomplete for evaluator review.",
+                    failures, error_owned, mode_str, executor_owned,
                 ),
             });
             tripped = true;
@@ -5962,29 +5958,13 @@ mod tests {
         let g = load_graph(&gp).unwrap();
         let t = g.get_task("test-task").unwrap();
         assert_eq!(t.spawn_failures, 5);
-        assert_eq!(t.status, Status::Failed);
+        assert_eq!(t.status, Status::Incomplete,
+            "Circuit breaker should mark task Incomplete (not Failed) — evaluator decides failure");
 
-        // Check failure reason includes exec_mode and executor
-        let reason = t.failure_reason.as_ref().unwrap();
+        // No failure_reason set — circuit breaker logs evidence but doesn't auto-fail
         assert!(
-            reason.contains("exec_mode=shell"),
-            "reason should include exec_mode, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("executor=claude"),
-            "reason should include executor, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("final error"),
-            "reason should include last error, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("5 consecutive"),
-            "reason should include count, got: {}",
-            reason
+            t.failure_reason.is_none(),
+            "Circuit breaker should not set failure_reason (evaluator decides)"
         );
 
         // Check log entries
@@ -5999,6 +5979,12 @@ mod tests {
                 .any(|e| e.actor == Some("spawn-circuit-breaker".to_string())
                     && e.message.contains("Circuit breaker tripped")),
             "Expected circuit breaker log entry"
+        );
+        assert!(
+            t.log
+                .iter()
+                .any(|e| e.message.contains("evaluator review")),
+            "Circuit breaker log should mention evaluator review"
         );
     }
 

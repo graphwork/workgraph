@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
+use workgraph::config::Tier;
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::modify_graph;
 
@@ -15,12 +16,16 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
+    let config = workgraph::config::Config::load_or_default(dir);
+    let escalate_on_retry = config.coordinator.escalate_on_retry;
+
     let mut error: Option<anyhow::Error> = None;
     let mut prev_failure_reason: Option<String> = None;
     let mut attempt: u32 = 0;
     let mut retry_count: u32 = 0;
     let mut max_retries: Option<u32> = None;
     let mut was_incomplete = false;
+    let mut tier_escalation_msg: Option<String> = None;
 
     modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(id) {
@@ -70,6 +75,27 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
         }
         task.tags.retain(|t| t != "converged");
 
+        // Tier escalation on retry: bump fast→standard→premium
+        if escalate_on_retry && !task.no_tier_escalation {
+            let current_tier: Tier = task
+                .tier
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(Tier::Standard);
+            let next_tier = current_tier.escalate();
+            if next_tier != current_tier {
+                task.tier = Some(next_tier.to_string());
+                let msg = format!("Tier escalated on retry: {} → {}", current_tier, next_tier);
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: None,
+                    user: Some(workgraph::current_user()),
+                    message: msg.clone(),
+                });
+                tier_escalation_msg = Some(msg);
+            }
+        }
+
         let source = if was_incomplete {
             "incomplete"
         } else {
@@ -108,7 +134,6 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
     let _ = workgraph::provenance::record(
         dir,
         "retry",
@@ -118,6 +143,7 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
             "attempt": attempt,
             "prev_failure_reason": prev_failure_reason,
             "was_incomplete": was_incomplete,
+            "tier_escalation": tier_escalation_msg,
         }),
         config.log.rotation_threshold,
     );
@@ -136,6 +162,10 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
 
     if let Some(max) = max_retries {
         println!("  Retries remaining after this: {}", max - retry_count);
+    }
+
+    if let Some(ref msg) = tier_escalation_msg {
+        println!("  {}", msg);
     }
 
     Ok(())
@@ -494,6 +524,148 @@ mod tests {
             last_log.message.contains("incomplete"),
             "Log should mention source was incomplete, got: {}",
             last_log.message
+        );
+    }
+
+    fn setup_config_with_escalation(dir: &Path) {
+        let config_path = dir.join("config.toml");
+        fs::write(
+            config_path,
+            "[coordinator]\nescalate_on_retry = true\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_retry_escalates_tier_standard_to_premium() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.tier = Some("standard".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        setup_config_with_escalation(dir_path);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.tier, Some("premium".to_string()));
+        assert!(
+            task.log.iter().any(|e| e.message.contains("Tier escalated")),
+            "Should log tier escalation"
+        );
+    }
+
+    #[test]
+    fn test_retry_escalates_tier_fast_to_standard() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.tier = Some("fast".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        setup_config_with_escalation(dir_path);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.tier, Some("standard".to_string()));
+    }
+
+    #[test]
+    fn test_retry_caps_at_premium() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.tier = Some("premium".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        setup_config_with_escalation(dir_path);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.tier,
+            Some("premium".to_string()),
+            "Premium should not escalate further"
+        );
+        assert!(
+            !task.log.iter().any(|e| e.message.contains("Tier escalated")),
+            "No escalation log when already at premium"
+        );
+    }
+
+    #[test]
+    fn test_retry_no_escalation_without_config() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.tier = Some("fast".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        // No escalation config — default is false
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.tier,
+            Some("fast".to_string()),
+            "Should not escalate when config is off"
+        );
+    }
+
+    #[test]
+    fn test_retry_no_escalation_with_opt_out() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        task.tier = Some("fast".to_string());
+        task.no_tier_escalation = true;
+        setup_workgraph(dir_path, vec![task]);
+        setup_config_with_escalation(dir_path);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.tier,
+            Some("fast".to_string()),
+            "Should not escalate when no_tier_escalation is set"
+        );
+    }
+
+    #[test]
+    fn test_retry_default_tier_escalates() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        // No tier set — defaults to Standard
+        setup_workgraph(dir_path, vec![task]);
+        setup_config_with_escalation(dir_path);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.tier,
+            Some("premium".to_string()),
+            "Default tier (standard) should escalate to premium"
         );
     }
 }
