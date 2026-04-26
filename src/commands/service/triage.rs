@@ -300,7 +300,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             let is_done = verdict.verdict == "done";
                             apply_triage_verdict(task, &verdict, agent_id, *pid, dir, &config);
                             eprintln!(
-                                "[coordinator] Triage for '{}': verdict={}, reason={}",
+                                "[dispatcher] Triage for '{}': verdict={}, reason={}",
                                 task_id, verdict.verdict, verdict.reason
                             );
                             if is_done && task.status == Status::Done {
@@ -310,7 +310,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                         Err(e) => {
                             // Triage failed, fall back to restart behavior
                             eprintln!(
-                                "[coordinator] Triage failed for '{}': {}, falling back to restart",
+                                "[dispatcher] Triage failed for '{}': {}, falling back to restart",
                                 task_id, e
                             );
                             task.status = Status::Open;
@@ -458,12 +458,12 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
             if !output_dir.exists() {
                 if let Err(e) = agency::capture_task_output(dir, task) {
                     eprintln!(
-                        "[coordinator] Warning: output capture failed for '{}': {}",
+                        "[dispatcher] Warning: output capture failed for '{}': {}",
                         task_id, e
                     );
                 } else {
                     eprintln!(
-                        "[coordinator] Captured output for completed task '{}'",
+                        "[dispatcher] Captured output for completed task '{}'",
                         task_id
                     );
                 }
@@ -530,7 +530,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     if !dead.is_empty() {
         if let Err(e) = track_provider_health(dir, &dead, &locked_registry, &config) {
             eprintln!(
-                "[coordinator] Warning: provider health tracking failed: {}",
+                "[dispatcher] Warning: provider health tracking failed: {}",
                 e
             );
         }
@@ -890,7 +890,7 @@ fn try_escalate_model(task: &mut Task, dir: &Path, config: &Config) {
             ),
         });
         eprintln!(
-            "[coordinator] Model escalation for '{}': {} → {} ({})",
+            "[dispatcher] Model escalation for '{}': {} → {} ({})",
             task.id, old_model, result.model, result.reason,
         );
     }

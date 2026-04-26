@@ -590,10 +590,10 @@ fn print_status(status: &StatusOutput) {
         println!("Service: stopped");
     }
 
-    // Line 2: Coordinator config
+    // Line 2: Dispatcher config
     let model_str = status.coordinator.model.as_deref().unwrap_or("default");
     println!(
-        "Coordinator: max={}, executor={}, model={}, poll={}s",
+        "Dispatcher: max={}, executor={}, model={}, poll={}s",
         status.coordinator.max_agents,
         status.coordinator.executor,
         model_str,

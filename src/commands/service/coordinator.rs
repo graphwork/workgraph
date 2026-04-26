@@ -50,7 +50,7 @@ fn cleanup_and_count_alive(
     let finished_agents = triage::cleanup_dead_agents(dir, graph_path)?;
     if !finished_agents.is_empty() {
         eprintln!(
-            "[coordinator] Cleaned up {} dead agent(s): {:?}",
+            "[dispatcher] Cleaned up {} dead agent(s): {:?}",
             finished_agents.len(),
             finished_agents
         );
@@ -62,12 +62,12 @@ fn cleanup_and_count_alive(
         Ok(0) => {}
         Ok(n) => {
             eprintln!(
-                "[coordinator] Reconciliation: recovered {} orphaned task(s)",
+                "[dispatcher] Reconciliation: recovered {} orphaned task(s)",
                 n
             );
         }
         Err(e) => {
-            eprintln!("[coordinator] Reconciliation warning: {}", e);
+            eprintln!("[dispatcher] Reconciliation warning: {}", e);
         }
     }
 
@@ -87,7 +87,7 @@ fn cleanup_and_count_alive(
                 && task.status.is_terminal()
             {
                 eprintln!(
-                    "[coordinator] Agent {} (PID {}) still alive but task '{}' is {:?} — sending SIGTERM",
+                    "[dispatcher] Agent {} (PID {}) still alive but task '{}' is {:?} — sending SIGTERM",
                     agent.id, agent.pid, agent.task_id, task.status
                 );
                 killed.push((agent.id.clone(), agent.pid));
@@ -105,7 +105,7 @@ fn cleanup_and_count_alive(
         if !killed.is_empty() {
             locked_registry.save_ref()?;
             eprintln!(
-                "[coordinator] Killed {} zombie agent(s) with completed tasks",
+                "[dispatcher] Killed {} zombie agent(s) with completed tasks",
                 killed.len()
             );
         }
@@ -121,7 +121,7 @@ fn cleanup_and_count_alive(
 
     if alive_count >= max_agents {
         eprintln!(
-            "[coordinator] Max agents ({}) running, waiting...",
+            "[dispatcher] Max agents ({}) running, waiting...",
             max_agents
         );
         return Ok(Err(TickResult {
@@ -165,10 +165,10 @@ fn check_ready_or_return(
         let terminal = graph.tasks().filter(|t| t.status.is_terminal()).count();
         let total = graph.tasks().count();
         if terminal == total && total > 0 {
-            eprintln!("[coordinator] All {} tasks complete!", total);
+            eprintln!("[dispatcher] All {} tasks complete!", total);
         } else {
             eprintln!(
-                "[coordinator] No ready tasks (terminal: {}/{})",
+                "[dispatcher] No ready tasks (terminal: {}/{})",
                 terminal, total
             );
         }
@@ -470,7 +470,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
     // First, detect circular waits
     let circular = detect_circular_waits(graph);
     for cycle in &circular {
-        eprintln!("[coordinator] Circular wait detected: {:?}", cycle);
+        eprintln!("[dispatcher] Circular wait detected: {:?}", cycle);
         for task_id in cycle {
             if let Some(t) = graph.get_task_mut(task_id)
                 && t.status == Status::Waiting
@@ -556,7 +556,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                 });
                 modified = true;
                 eprintln!(
-                    "[coordinator] Waiting task '{}' failed: {}",
+                    "[dispatcher] Waiting task '{}' failed: {}",
                     task_id, reason
                 );
             }
@@ -588,7 +588,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                 });
                 modified = true;
                 eprintln!(
-                    "[coordinator] Waiting task '{}' condition satisfied, transitioning to Open",
+                    "[dispatcher] Waiting task '{}' condition satisfied, transitioning to Open",
                     task_id
                 );
             }
@@ -763,7 +763,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
             }
 
             eprintln!(
-                "[coordinator] Resurrection: created child task '{}' for Done task '{}' ({} message(s))",
+                "[dispatcher] Resurrection: created child task '{}' for Done task '{}' ({} message(s))",
                 child_id,
                 task_id,
                 triggering_msgs.len()
@@ -787,7 +787,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                 });
 
                 eprintln!(
-                    "[coordinator] Resurrection: reopened Done task '{}' ({} message(s))",
+                    "[dispatcher] Resurrection: reopened Done task '{}' ({} message(s))",
                     task_id,
                     triggering_msgs.len()
                 );
@@ -810,7 +810,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                     message: "Reopened for reassignment (source task resurrected)".to_string(),
                 });
                 eprintln!(
-                    "[coordinator] Resurrection: reopened '{}' for reassignment",
+                    "[dispatcher] Resurrection: reopened '{}' for reassignment",
                     assign_id,
                 );
             }
@@ -880,7 +880,7 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
                         ),
                     });
                 eprintln!(
-                    "[coordinator] Unblocked stuck task '{}' (blocked on: {})",
+                    "[dispatcher] Unblocked stuck task '{}' (blocked on: {})",
                     task.id,
                     task.after.join(", ")
                 );
@@ -907,7 +907,7 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
                     .collect();
                 if !waiting_on.is_empty() {
                     eprintln!(
-                        "[coordinator] Task '{}' still blocked on: {}",
+                        "[dispatcher] Task '{}' still blocked on: {}",
                         task_id,
                         waiting_on.join(", ")
                     );
@@ -966,7 +966,7 @@ fn build_auto_assign_tasks(
                 let age = Utc::now().signed_duration_since(created);
                 if age.num_seconds() < grace_seconds as i64 {
                     eprintln!(
-                        "[coordinator] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
+                        "[dispatcher] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
                         task_id,
                         age.num_seconds(),
                         grace_seconds,
@@ -1056,7 +1056,7 @@ fn build_auto_assign_tasks(
     for assign_task_id in assign_task_ids {
         if phase2_start.elapsed() > ASSIGN_TIME_BUDGET {
             eprintln!(
-                "[coordinator] Assignment time budget exceeded ({}s), deferring remaining to next tick",
+                "[dispatcher] Assignment time budget exceeded ({}s), deferring remaining to next tick",
                 ASSIGN_TIME_BUDGET.as_secs()
             );
             break;
@@ -1096,7 +1096,7 @@ fn build_auto_assign_tasks(
         });
 
         eprintln!(
-            "[coordinator] Assignment path for '{}': {:?} (total_assignments={})",
+            "[dispatcher] Assignment path for '{}': {:?} (total_assignments={})",
             source_id, assignment_path, total_assignments,
         );
 
@@ -1149,7 +1149,7 @@ fn build_auto_assign_tasks(
             match agency::request_agency_assignment(task_title_ref, task_desc_ref, &config.agency) {
                 Ok(response) => {
                     eprintln!(
-                        "[coordinator] Agency assignment for '{}': agency_task_id={}",
+                        "[dispatcher] Agency assignment for '{}': agency_task_id={}",
                         source_id, response.agency_task_id,
                     );
 
@@ -1191,7 +1191,7 @@ fn build_auto_assign_tasks(
                     let assignments_dir = agency_dir.join("assignments");
                     if let Err(e) = save_assignment_record(&record, &assignments_dir) {
                         eprintln!(
-                            "[coordinator] Warning: failed to save assignment record for '{}': {}",
+                            "[dispatcher] Warning: failed to save assignment record for '{}': {}",
                             source_id, e,
                         );
                     }
@@ -1214,7 +1214,7 @@ fn build_auto_assign_tasks(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[coordinator] Warning: Agency assignment failed for '{}' ({}), falling back to native",
+                        "[dispatcher] Warning: Agency assignment failed for '{}' ({}), falling back to native",
                         source_id, e,
                     );
                     // Fall through to native LLM assigner
@@ -1243,7 +1243,7 @@ fn build_auto_assign_tasks(
             Ok(v) => v,
             Err(e) => {
                 eprintln!(
-                    "[coordinator] Lightweight assignment failed for '{}': {}, will retry next tick",
+                    "[dispatcher] Lightweight assignment failed for '{}': {}, will retry next tick",
                     source_id, e
                 );
                 continue;
@@ -1255,7 +1255,7 @@ fn build_auto_assign_tasks(
             Ok(agent) => agent,
             Err(e) => {
                 eprintln!(
-                    "[coordinator] Assignment verdict agent '{}' not found for '{}': {}",
+                    "[dispatcher] Assignment verdict agent '{}' not found for '{}': {}",
                     verdict.agent_hash, source_id, e
                 );
                 continue;
@@ -1338,13 +1338,13 @@ fn build_auto_assign_tasks(
                         ),
                     });
                     eprintln!(
-                        "[coordinator] Placement for '{}': {}",
+                        "[dispatcher] Placement for '{}': {}",
                         source_id,
                         edges_added.join(" "),
                     );
                 } else {
                     eprintln!(
-                        "[coordinator] Placement for '{}': no valid edges to add",
+                        "[dispatcher] Placement for '{}': no valid edges to add",
                         source_id,
                     );
                 }
@@ -1404,13 +1404,13 @@ fn build_auto_assign_tasks(
         let assignments_dir = agency_dir.join("assignments");
         if let Err(e) = save_assignment_record(&record, &assignments_dir) {
             eprintln!(
-                "[coordinator] Warning: failed to save assignment record for '{}': {}",
+                "[dispatcher] Warning: failed to save assignment record for '{}': {}",
                 source_id, e,
             );
         }
 
         eprintln!(
-            "[coordinator] Lightweight assignment for '{}': {} ({}) [path={:?}]",
+            "[dispatcher] Lightweight assignment for '{}': {} ({}) [path={:?}]",
             source_id,
             resolved_agent.name,
             agency::short_hash(&resolved_agent.id),
@@ -1535,7 +1535,7 @@ fn build_auto_assign_tasks(
 
                 graph.add_node(Node::Task(create_task));
                 eprintln!(
-                    "[coordinator] Assigner flagged create_needed for '{}' — created '{}'",
+                    "[dispatcher] Assigner flagged create_needed for '{}' — created '{}'",
                     source_id, create_task_id,
                 );
             }
@@ -1654,7 +1654,7 @@ fn build_auto_evaluate_tasks(
             t.after.retain(|b| b != source_id);
             modified = true;
             eprintln!(
-                "[coordinator] Unblocked evaluation task '{}' (source '{}' failed)",
+                "[dispatcher] Unblocked evaluation task '{}' (source '{}' failed)",
                 eval_id, source_id,
             );
         }
@@ -1939,7 +1939,7 @@ fn build_flip_verification_tasks(
         }
 
         eprintln!(
-            "[coordinator] Created FLIP verification task '{}' (score {:.2} < {:.2})",
+            "[dispatcher] Created FLIP verification task '{}' (score {:.2} < {:.2})",
             verify_task_id, eval.score, threshold,
         );
 
@@ -2204,7 +2204,7 @@ fn build_separate_verify_tasks(
         }
 
         eprintln!(
-            "[coordinator] Created separate verification task '{}' for '{}'",
+            "[dispatcher] Created separate verification task '{}' for '{}'",
             verify_task_id, source_task_id,
         );
 
@@ -2413,11 +2413,11 @@ fn build_auto_evolve_task(
     );
 
     if let Err(e) = updated_state.save(&agency_dir) {
-        eprintln!("[coordinator] Warning: failed to save evolver state: {}", e);
+        eprintln!("[dispatcher] Warning: failed to save evolver state: {}", e);
     }
 
     eprintln!(
-        "[coordinator] Created auto-evolve task '{}' — {}",
+        "[dispatcher] Created auto-evolve task '{}' — {}",
         evolve_task_id, trigger_reason,
     );
 
@@ -2597,11 +2597,11 @@ fn build_auto_create_task(
         &state_path,
         serde_json::to_string_pretty(&state).unwrap_or_default(),
     ) {
-        eprintln!("[coordinator] Warning: failed to save creator state: {}", e);
+        eprintln!("[dispatcher] Warning: failed to save creator state: {}", e);
     }
 
     eprintln!(
-        "[coordinator] Created auto-create task '{}' — {} completed tasks since last creation",
+        "[dispatcher] Created auto-create task '{}' — {} completed tasks since last creation",
         create_task_id, since_last,
     );
 
@@ -3090,7 +3090,7 @@ fn sort_tasks_by_priority_with_features<'a>(
                         effective_priority = boost_priority(effective_priority);
                     }
                     eprintln!(
-                        "[coordinator] Priority bump: {} (age: {}h) -> {}",
+                        "[dispatcher] Priority bump: {} (age: {}h) -> {}",
                         task.id, age_hours, effective_priority
                     );
                 }
@@ -3100,7 +3100,7 @@ fn sort_tasks_by_priority_with_features<'a>(
             let inherited_priority = compute_priority_inheritance(task, graph);
             if inherited_priority > effective_priority {
                 eprintln!(
-                    "[coordinator] Priority inheritance: {} ({} -> {})",
+                    "[dispatcher] Priority inheritance: {} ({} -> {})",
                     task.id, effective_priority, inherited_priority
                 );
                 effective_priority = inherited_priority;
@@ -3134,7 +3134,7 @@ fn sort_tasks_by_priority_with_features<'a>(
             .map(|task| format!("{}:{}(d{})", task.id, task.priority, task.dispatch_count))
             .collect();
         eprintln!(
-            "[coordinator] Priority dispatch order: [{}{}]",
+            "[dispatcher] Priority dispatch order: [{}{}]",
             priority_summary.join(", "),
             if sorted_tasks.len() > 5 { ", ..." } else { "" }
         );
@@ -3420,7 +3420,7 @@ fn spawn_agents_for_ready_tasks(
 
         // Respawn throttle: detect rapid respawn loops and back off
         if let Err(reason) = check_respawn_throttle(task, &gp) {
-            eprintln!("[coordinator] Skipping '{}': {}", task.id, reason);
+            eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
             continue;
         }
 
@@ -3428,7 +3428,7 @@ fn spawn_agents_for_ready_tasks(
         if let Err(reason) =
             check_spawn_circuit_breaker(task, config.coordinator.max_spawn_failures)
         {
-            eprintln!("[coordinator] Skipping '{}': {}", task.id, reason);
+            eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
             continue;
         }
 
@@ -3441,7 +3441,7 @@ fn spawn_agents_for_ready_tasks(
             });
             if source_abandoned {
                 eprintln!(
-                    "[coordinator] Skipping '{}': source task is abandoned",
+                    "[dispatcher] Skipping '{}': source task is abandoned",
                     task.id
                 );
                 continue;
@@ -3473,13 +3473,13 @@ fn spawn_agents_for_ready_tasks(
 
             if is_assignment {
                 eprintln!(
-                    "[coordinator] Spawning assignment inline for: {} - {}",
+                    "[dispatcher] Spawning assignment inline for: {} - {}",
                     task_id, title,
                 );
                 match spawn_assign_inline(dir, &task_id) {
                     Ok((agent_id, pid)) => {
                         eprintln!(
-                            "[coordinator] Spawned assignment {} (PID {})",
+                            "[dispatcher] Spawned assignment {} (PID {})",
                             agent_id, pid
                         );
                         record_dispatch(&gp, &task_id);
@@ -3487,7 +3487,7 @@ fn spawn_agents_for_ready_tasks(
                     }
                     Err(e) => {
                         eprintln!(
-                            "[coordinator] Failed to spawn assignment for {}: {}",
+                            "[dispatcher] Failed to spawn assignment for {}: {}",
                             task_id, e
                         );
                         record_spawn_failure(
@@ -3502,7 +3502,7 @@ fn spawn_agents_for_ready_tasks(
                 }
             } else {
                 eprintln!(
-                    "[coordinator] Spawning eval inline for: {} - {}{}",
+                    "[dispatcher] Spawning eval inline for: {} - {}{}",
                     task_id,
                     title,
                     eval_model
@@ -3511,12 +3511,12 @@ fn spawn_agents_for_ready_tasks(
                 );
                 match spawn_eval_inline(dir, &task_id, eval_model) {
                     Ok((agent_id, pid)) => {
-                        eprintln!("[coordinator] Spawned eval {} (PID {})", agent_id, pid);
+                        eprintln!("[dispatcher] Spawned eval {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
                         spawned += 1;
                     }
                     Err(e) => {
-                        eprintln!("[coordinator] Failed to spawn eval for {}: {}", task_id, e);
+                        eprintln!("[dispatcher] Failed to spawn eval for {}: {}", task_id, e);
                         record_spawn_failure(
                             &gp,
                             &task_id,
@@ -3582,14 +3582,14 @@ fn spawn_agents_for_ready_tasks(
                     .map(|e| e.context_window)
                     .unwrap_or(0);
                 eprintln!(
-                    "[coordinator] Model '{}' is non-Anthropic (context_window={}), switching executor from claude to native",
+                    "[dispatcher] Model '{}' is non-Anthropic (context_window={}), switching executor from claude to native",
                     model, context_window
                 );
                 effective_executor = "native".to_string();
             }
         }
         eprintln!(
-            "[coordinator] Spawning agent for: {} - {} (executor: {})",
+            "[dispatcher] Spawning agent for: {} - {} (executor: {})",
             task.id, task.title, effective_executor
         );
         match spawn::spawn_agent(
@@ -3600,12 +3600,12 @@ fn spawn_agents_for_ready_tasks(
             task_model.as_deref(),
         ) {
             Ok((agent_id, pid)) => {
-                eprintln!("[coordinator] Spawned {} (PID {})", agent_id, pid);
+                eprintln!("[dispatcher] Spawned {} (PID {})", agent_id, pid);
                 record_dispatch(&gp, &task.id);
                 spawned += 1;
             }
             Err(e) => {
-                eprintln!("[coordinator] Failed to spawn for {}: {}", task.id, e);
+                eprintln!("[dispatcher] Failed to spawn for {}: {}", task.id, e);
                 record_spawn_failure(
                     &gp,
                     &task.id,
@@ -3663,7 +3663,7 @@ fn auto_checkpoint_agents(dir: &Path, config: &Config) {
     for agent in &alive_agents {
         if let Err(e) = try_auto_checkpoint(dir, agent, config, interval_turns, interval_mins) {
             eprintln!(
-                "[coordinator] Auto-checkpoint failed for agent {} (task {}): {}",
+                "[dispatcher] Auto-checkpoint failed for agent {} (task {}): {}",
                 agent.id, agent.task_id, e
             );
         }
@@ -3758,7 +3758,7 @@ fn try_auto_checkpoint(
     let summary = generate_checkpoint_summary(config, &agent.output_file, &agent.task_id)?;
 
     eprintln!(
-        "[coordinator] Auto-checkpoint for agent {} (task {}, turn {}): {}",
+        "[dispatcher] Auto-checkpoint for agent {} (task {}, turn {}): {}",
         agent.id,
         agent.task_id,
         turn_count,
@@ -3853,10 +3853,10 @@ pub fn coordinator_tick(
     match super::worktree::sweep_cleanup_pending_worktrees(dir) {
         Ok(0) => {}
         Ok(n) => eprintln!(
-            "[coordinator] Worktree sweep: removed {} cleanup-pending worktree(s)",
+            "[dispatcher] Worktree sweep: removed {} cleanup-pending worktree(s)",
             n
         ),
-        Err(e) => eprintln!("[coordinator] Worktree sweep warning: {}", e),
+        Err(e) => eprintln!("[dispatcher] Worktree sweep warning: {}", e),
     }
 
     // Phase 1.3: Zero-output agent detection — kill agents that have been alive
@@ -3865,19 +3865,19 @@ pub fn coordinator_tick(
         let sweep = super::zero_output::sweep_zero_output_agents(dir);
         if !sweep.killed.is_empty() {
             eprintln!(
-                "[coordinator] Zero-output sweep: killed {} agent(s)",
+                "[dispatcher] Zero-output sweep: killed {} agent(s)",
                 sweep.killed.len()
             );
         }
         if !sweep.circuit_broken_tasks.is_empty() {
             eprintln!(
-                "[coordinator] Zero-output circuit breaker: {} task(s) failed: {:?}",
+                "[dispatcher] Zero-output circuit breaker: {} task(s) failed: {:?}",
                 sweep.circuit_broken_tasks.len(),
                 sweep.circuit_broken_tasks
             );
         }
         if sweep.global_outage_detected {
-            eprintln!("[coordinator] Zero-output: global API outage detected, spawn paused");
+            eprintln!("[dispatcher] Zero-output: global API outage detected, spawn paused");
         }
     }
 
@@ -3901,7 +3901,7 @@ pub fn coordinator_tick(
             let reactivated = evaluate_all_cycle_iterations(graph, &cycle_analysis);
             if !reactivated.is_empty() {
                 eprintln!(
-                    "[coordinator] Cycle iteration: re-activated {} task(s): {:?}",
+                    "[dispatcher] Cycle iteration: re-activated {} task(s): {:?}",
                     reactivated.len(),
                     reactivated
                 );
@@ -3916,7 +3916,7 @@ pub fn coordinator_tick(
             let reactivated = evaluate_all_cycle_failure_restarts(graph, &cycle_analysis);
             if !reactivated.is_empty() {
                 eprintln!(
-                    "[coordinator] Cycle failure restart: re-activated {} task(s): {:?}",
+                    "[dispatcher] Cycle failure restart: re-activated {} task(s): {:?}",
                     reactivated.len(),
                     reactivated
                 );
@@ -3947,7 +3947,7 @@ pub fn coordinator_tick(
                     && workgraph::cron::reset_cron_task(task)
                 {
                     eprintln!(
-                        "[coordinator] Cron reset: '{}' → Open (next fire: {})",
+                        "[dispatcher] Cron reset: '{}' → Open (next fire: {})",
                         task_id,
                         task.next_cron_fire.as_deref().unwrap_or("unknown")
                     );
@@ -4011,7 +4011,7 @@ pub fn coordinator_tick(
 
     // Phase 5.5: Check if spawning is paused due to global API-down backoff.
     if super::zero_output::should_pause_spawning(dir) {
-        eprintln!("[coordinator] Spawning paused: global zero-output backoff active");
+        eprintln!("[dispatcher] Spawning paused: global zero-output backoff active");
         let cycle_analysis = graph.compute_cycle_analysis();
         let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
         // Exclude daemon-managed loop tasks from ready count.
@@ -4027,7 +4027,7 @@ pub fn coordinator_tick(
     match workgraph::service::ProviderHealth::load(dir) {
         Ok(provider_health) if provider_health.should_pause_spawning() => {
             eprintln!(
-                "[coordinator] Spawning paused: {}",
+                "[dispatcher] Spawning paused: {}",
                 provider_health.get_status_summary()
             );
             let cycle_analysis = graph.compute_cycle_analysis();
@@ -4042,7 +4042,7 @@ pub fn coordinator_tick(
         }
         Err(e) => {
             eprintln!(
-                "[coordinator] Warning: failed to load provider health: {}",
+                "[dispatcher] Warning: failed to load provider health: {}",
                 e
             );
         }
@@ -4133,7 +4133,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
-                "[coordinator] Failed to read chat coordinator cursor for {}: {}",
+                "[dispatcher] Failed to read chat coordinator cursor for {}: {}",
                 coordinator_id, e
             );
             return;
@@ -4144,7 +4144,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         Ok(msgs) => msgs,
         Err(e) => {
             eprintln!(
-                "[coordinator] Failed to read chat inbox for {}: {}",
+                "[dispatcher] Failed to read chat inbox for {}: {}",
                 coordinator_id, e
             );
             return;
@@ -4156,7 +4156,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
     }
 
     eprintln!(
-        "[coordinator] Processing {} chat message(s) for coordinator {}",
+        "[dispatcher] Processing {} chat message(s) for coordinator {}",
         new_messages.len(),
         coordinator_id
     );
@@ -4169,7 +4169,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         );
         if let Err(e) = chat::append_outbox_for(dir, coordinator_id, &response, &msg.request_id) {
             eprintln!(
-                "[coordinator] Failed to write chat outbox for coordinator={}, request_id={}: {}",
+                "[dispatcher] Failed to write chat outbox for coordinator={}, request_id={}: {}",
                 coordinator_id, msg.request_id, e
             );
         }
@@ -4182,7 +4182,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         && let Err(e) = chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)
     {
         eprintln!(
-            "[coordinator] Failed to update chat coordinator cursor for {}: {}",
+            "[dispatcher] Failed to update chat coordinator cursor for {}: {}",
             coordinator_id, e
         );
     }
@@ -4219,7 +4219,7 @@ pub fn forward_chat_to_user_board(dir: &Path, content: &str, coordinator_id: u32
 
     if let Err(e) = messages::send_message(dir, &resolved, &routed_content, "user", "normal") {
         eprintln!(
-            "[coordinator] Failed to forward chat to user board '{}': {}",
+            "[dispatcher] Failed to forward chat to user board '{}': {}",
             resolved, e
         );
     }

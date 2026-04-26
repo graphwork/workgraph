@@ -114,9 +114,9 @@ pub enum IpcRequest {
         #[serde(default)]
         priority: Option<String>,
     },
-    /// Send a chat message from the user to the coordinator agent.
+    /// Send a chat message from the user to a chat agent.
     /// Unlike SendMessage (which targets a specific task's queue), UserChat
-    /// targets the coordinator directly and expects a conversational response.
+    /// targets the chat agent directly and expects a conversational response.
     UserChat {
         /// The user's message text
         message: String,
@@ -125,46 +125,66 @@ pub enum IpcRequest {
         /// Optional file attachments
         #[serde(default)]
         attachments: Vec<workgraph::chat::Attachment>,
-        /// Target coordinator (default: 0)
-        #[serde(default)]
-        coordinator_id: Option<u32>,
+        /// Target chat agent (default: 0)
+        #[serde(default, alias = "coordinator_id")]
+        chat_id: Option<u32>,
     },
-    /// Create a new coordinator instance.
-    CreateCoordinator {
-        /// Optional human-readable name for the coordinator.
+    /// Create a new chat agent instance.
+    #[serde(alias = "create_coordinator")]
+    CreateChat {
+        /// Optional human-readable name for the chat agent.
         #[serde(default)]
         name: Option<String>,
-        /// Per-coordinator model override (e.g., "openai:qwen3-coder-30b").
+        /// Per-chat model override (e.g., "openai:qwen3-coder-30b").
         #[serde(default)]
         model: Option<String>,
-        /// Per-coordinator executor override (e.g., "native").
+        /// Per-chat executor override (e.g., "native").
         #[serde(default)]
         executor: Option<String>,
     },
-    /// Hot-swap a coordinator's executor and/or model. Persists
+    /// Hot-swap a chat agent's executor and/or model. Persists
     /// the override in CoordinatorState, SIGTERMs the current
     /// handler, and lets the supervisor respawn via spawn-task
     /// with the new executor. Conversation continuity is preserved
     /// because chat/<ref>/*.jsonl is shared across handlers — the
     /// new handler replays prior turns on its first prompt.
-    SetCoordinatorExecutor {
-        coordinator_id: u32,
+    #[serde(alias = "set_coordinator_executor")]
+    SetChatExecutor {
+        #[serde(alias = "coordinator_id")]
+        chat_id: u32,
         #[serde(default)]
         executor: Option<String>,
         #[serde(default)]
         model: Option<String>,
     },
-    /// Delete a coordinator instance.
-    DeleteCoordinator { coordinator_id: u32 },
-    /// Archive a coordinator instance (mark as Done).
-    ArchiveCoordinator { coordinator_id: u32 },
-    /// Stop a coordinator instance (kill agent, reset to Open).
-    StopCoordinator { coordinator_id: u32 },
-    /// Interrupt a coordinator's current generation (sends SIGINT, does NOT kill).
-    /// The coordinator process stays alive and can accept new messages immediately.
-    InterruptCoordinator { coordinator_id: u32 },
-    /// List all active coordinators.
-    ListCoordinators,
+    /// Delete a chat agent instance.
+    #[serde(alias = "delete_coordinator")]
+    DeleteChat {
+        #[serde(alias = "coordinator_id")]
+        chat_id: u32,
+    },
+    /// Archive a chat agent instance (mark as Done).
+    #[serde(alias = "archive_coordinator")]
+    ArchiveChat {
+        #[serde(alias = "coordinator_id")]
+        chat_id: u32,
+    },
+    /// Stop a chat agent instance (kill agent, reset to Open).
+    #[serde(alias = "stop_coordinator")]
+    StopChat {
+        #[serde(alias = "coordinator_id")]
+        chat_id: u32,
+    },
+    /// Interrupt a chat agent's current generation (sends SIGINT, does NOT kill).
+    /// The chat process stays alive and can accept new messages immediately.
+    #[serde(alias = "interrupt_coordinator")]
+    InterruptChat {
+        #[serde(alias = "coordinator_id")]
+        chat_id: u32,
+    },
+    /// List all active chat agents.
+    #[serde(alias = "list_coordinators")]
+    ListChats,
 }
 
 /// IPC Response types
@@ -459,105 +479,105 @@ fn handle_request(
             message,
             request_id,
             attachments,
-            coordinator_id,
+            chat_id,
         } => {
-            let cid = coordinator_id.unwrap_or(0);
+            let cid = chat_id.unwrap_or(0);
             logger.info(&format!(
-                "IPC UserChat: request_id={}, coordinator_id={}",
+                "IPC UserChat: request_id={}, chat_id={}",
                 request_id, cid
             ));
             match append_chat_inbox(dir, cid, &message, &request_id, attachments) {
                 Ok(msg_id) => {
                     // Signal urgent wake — bypasses settling delay entirely
                     *urgent_wake = true;
-                    // Track which coordinator was targeted for lazy spawning
+                    // Track which chat agent was targeted for lazy spawning
                     pending_coordinator_ids.push(cid);
                     IpcResponse::success(serde_json::json!({
                         "status": "accepted",
                         "request_id": request_id,
                         "inbox_id": msg_id,
-                        "coordinator_id": cid,
+                        "chat_id": cid,
                     }))
                 }
                 Err(e) => IpcResponse::error(&format!("Failed to store chat message: {}", e)),
             }
         }
-        IpcRequest::CreateCoordinator {
+        IpcRequest::CreateChat {
             name,
             model,
             executor,
         } => {
             logger.info(&format!(
-                "IPC CreateCoordinator: name={:?}, model={:?}, executor={:?}",
+                "IPC CreateChat: name={:?}, model={:?}, executor={:?}",
                 name, model, executor
             ));
             handle_create_coordinator(dir, name.as_deref(), model.as_deref(), executor.as_deref())
         }
-        IpcRequest::SetCoordinatorExecutor {
-            coordinator_id,
+        IpcRequest::SetChatExecutor {
+            chat_id,
             executor,
             model,
         } => {
             logger.info(&format!(
-                "IPC SetCoordinatorExecutor: coordinator_id={}, executor={:?}, model={:?}",
-                coordinator_id, executor, model
+                "IPC SetChatExecutor: chat_id={}, executor={:?}, model={:?}",
+                chat_id, executor, model
             ));
             handle_set_coordinator_executor(
                 dir,
-                coordinator_id,
+                chat_id,
                 executor.as_deref(),
                 model.as_deref(),
             )
         }
-        IpcRequest::DeleteCoordinator { coordinator_id } => {
+        IpcRequest::DeleteChat { chat_id } => {
             logger.info(&format!(
-                "IPC DeleteCoordinator: coordinator_id={}",
-                coordinator_id
+                "IPC DeleteChat: chat_id={}",
+                chat_id
             ));
-            let resp = handle_delete_coordinator(dir, coordinator_id);
+            let resp = handle_delete_coordinator(dir, chat_id);
             if resp.ok {
-                delete_coordinator_ids.push(coordinator_id);
+                delete_coordinator_ids.push(chat_id);
             }
             resp
         }
-        IpcRequest::ArchiveCoordinator { coordinator_id } => {
+        IpcRequest::ArchiveChat { chat_id } => {
             logger.info(&format!(
-                "IPC ArchiveCoordinator: coordinator_id={}",
-                coordinator_id
+                "IPC ArchiveChat: chat_id={}",
+                chat_id
             ));
-            let resp = handle_archive_coordinator(dir, coordinator_id);
+            let resp = handle_archive_coordinator(dir, chat_id);
             if resp.ok {
-                delete_coordinator_ids.push(coordinator_id);
+                delete_coordinator_ids.push(chat_id);
             }
             resp
         }
-        IpcRequest::StopCoordinator { coordinator_id } => {
+        IpcRequest::StopChat { chat_id } => {
             logger.info(&format!(
-                "IPC StopCoordinator: coordinator_id={}",
-                coordinator_id
+                "IPC StopChat: chat_id={}",
+                chat_id
             ));
-            let resp = handle_stop_coordinator(dir, coordinator_id);
+            let resp = handle_stop_coordinator(dir, chat_id);
             if resp.ok {
-                delete_coordinator_ids.push(coordinator_id);
+                delete_coordinator_ids.push(chat_id);
             }
             resp
         }
-        IpcRequest::InterruptCoordinator { coordinator_id } => {
+        IpcRequest::InterruptChat { chat_id } => {
             logger.info(&format!(
-                "IPC InterruptCoordinator: coordinator_id={}",
-                coordinator_id
+                "IPC InterruptChat: chat_id={}",
+                chat_id
             ));
             // No graph changes — just signal the daemon to send SIGINT to the
-            // coordinator's Claude CLI subprocess. The actual interrupt happens
+            // chat agent's Claude CLI subprocess. The actual interrupt happens
             // in the daemon loop where coordinator_agents is accessible.
-            interrupt_coordinator_ids.push(coordinator_id);
+            interrupt_coordinator_ids.push(chat_id);
             IpcResponse::success(serde_json::json!({
-                "coordinator_id": coordinator_id,
+                "chat_id": chat_id,
                 "interrupted": true,
             }))
         }
-        IpcRequest::ListCoordinators => {
-            logger.info("IPC ListCoordinators");
+        IpcRequest::ListChats => {
+            logger.info("IPC ListChats");
             handle_list_coordinators(dir)
         }
     }
@@ -1232,17 +1252,16 @@ fn append_chat_inbox(
     }
 }
 
-/// Find the next fresh coordinator ID by scanning both existing coordinator tasks
-/// and existing chat history files. Returns max(existing_ids) + 1 to ensure
-/// the new coordinator has never existed before and has no chat history files.
+/// Find the next fresh chat agent ID by scanning both existing chat tasks
+/// (legacy `.coordinator-N` and new `.chat-N`) and existing chat history files.
+/// Returns max(existing_ids) + 1 to ensure the new chat has never existed before
+/// and has no chat history files.
 fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Path) -> u32 {
     let mut max_id = None::<u32>;
 
-    // Scan all existing coordinator tasks
+    // Scan all existing chat tasks (both new .chat-N and legacy .coordinator-N)
     for task in graph.tasks() {
-        if task.id.starts_with(".coordinator-")
-            && let Ok(id) = task.id[13..].parse::<u32>()
-        {
+        if let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) {
             max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
         }
     }
@@ -1302,36 +1321,36 @@ fn handle_create_coordinator(
     let max = config.coordinator.max_coordinators;
     let alive = graph
         .tasks()
-        .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+        .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
         .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
         .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
         .count();
     if alive >= max {
         return IpcResponse::error(&format!(
-            "Coordinator cap reached ({}/{})",
+            "Chat cap reached ({}/{})",
             alive, max
         ));
     }
 
-    // Find the next available coordinator ID by scanning both existing tasks
-    // and existing chat history files to ensure truly fresh coordinators.
+    // Find the next available chat ID by scanning both existing tasks
+    // and existing chat history files to ensure truly fresh chats.
     let next_id = find_next_fresh_coordinator_id(&graph, dir);
 
-    // Create the coordinator task
+    // Create the chat task
     let title = name
-        .map(|n| format!("Coordinator: {}", n))
-        .unwrap_or_else(|| format!("Coordinator {}", next_id));
+        .map(|n| format!("Chat: {}", n))
+        .unwrap_or_else(|| format!("Chat {}", next_id));
 
     let task = workgraph::graph::Task {
-        id: format!(".coordinator-{}", next_id),
+        id: workgraph::chat_id::format_chat_task_id(next_id),
         title,
         description: Some(format!(
-            "Coordinator {} — persistent coordinator agent.",
+            "Chat {} — persistent chat agent.",
             next_id
         )),
         status: workgraph::graph::Status::InProgress,
         priority: PRIORITY_HIGH,
-        tags: vec!["coordinator-loop".to_string()],
+        tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
         cycle_config: Some(workgraph::graph::CycleConfig {
             max_iterations: 0,
             guard: None,
@@ -1346,17 +1365,17 @@ fn handle_create_coordinator(
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
             user: Some(workgraph::current_user()),
-            message: format!("Coordinator {} task created via IPC", next_id),
+            message: format!("Chat {} task created via IPC", next_id),
         }],
         ..Default::default()
     };
 
     graph.add_node(workgraph::graph::Node::Task(task));
 
-    // Create companion .archive-N task (NO back-edge to coordinator).
+    // Create companion .archive-N task (NO back-edge to chat agent).
     // Archive runs independently and must NOT create a circular dependency.
-    // The coordinator should NOT wait for archive to complete — that creates
-    // deadlock: .coordinator → .archive → .coordinator
+    // The chat agent should NOT wait for archive to complete — that creates
+    // deadlock: .chat → .archive → .chat
     let archive_id = format!(".archive-{}", next_id);
     if graph.get_task(&archive_id).is_none() {
         let archive_task = workgraph::graph::Task {
@@ -1364,12 +1383,12 @@ fn handle_create_coordinator(
             title: format!("Archive {}", next_id),
             description: Some(format!(
                 "Archive task — moves old done/abandoned tasks to archive.jsonl. \
-                 Forms a cycle with coordinator {}.",
+                 Forms a cycle with chat agent {}.",
                 next_id
             )),
             status: workgraph::graph::Status::Open,
             tags: vec!["archive-loop".to_string()],
-            after: vec![format!(".coordinator-{}", next_id)],
+            after: vec![workgraph::chat_id::format_chat_task_id(next_id)],
             created_at: Some(chrono::Utc::now().to_rfc3339()),
             log: vec![workgraph::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1418,7 +1437,8 @@ fn handle_create_coordinator(
 
     IpcResponse::success(serde_json::json!({
         "coordinator_id": next_id,
-        "task_id": format!(".coordinator-{}", next_id),
+        "chat_id": next_id,
+        "task_id": workgraph::chat_id::format_chat_task_id(next_id),
         "name": name,
     }))
 }
@@ -1426,16 +1446,19 @@ fn handle_create_coordinator(
 /// Handle DeleteCoordinator IPC request.
 fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let legacy_task_id = format!(".coordinator-{}", coordinator_id);
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let resolved_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
+        } else if graph.get_task(&legacy_task_id).is_some() {
+            legacy_task_id.as_str()
         } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
             ".coordinator"
         } else {
-            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            result_msg = Some(format!("Chat task '{}' not found", task_id));
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
@@ -1444,7 +1467,7 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
             user: Some(workgraph::current_user()),
-            message: format!("Coordinator {} deleted via IPC", coordinator_id),
+            message: format!("Chat {} deleted via IPC", coordinator_id),
         });
         true
     }) {
@@ -1462,26 +1485,30 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 }
 
 /// Handle ArchiveCoordinator IPC request.
-/// Marks the coordinator task as Done, tags it "archived", and
+/// Marks the chat task as Done, tags it "archived", and
 /// archives the chat session (moves chat dir to `.archive/`, updates
 /// sessions.json) so it won't be resurrected on restart.
 fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let legacy_task_id = format!(".coordinator-{}", coordinator_id);
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let resolved_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
+        } else if graph.get_task(&legacy_task_id).is_some() {
+            legacy_task_id.as_str()
         } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
             ".coordinator"
         } else {
-            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            result_msg = Some(format!("Chat task '{}' not found", task_id));
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
         task.status = workgraph::graph::Status::Done;
-        task.tags.retain(|t| t != "coordinator-loop");
+        task.tags
+            .retain(|t| !workgraph::chat_id::is_chat_loop_tag(t));
         if !task.tags.contains(&"archived".to_string()) {
             task.tags.push("archived".to_string());
         }
@@ -1489,7 +1516,7 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
             user: Some(workgraph::current_user()),
-            message: format!("Coordinator {} archived via IPC", coordinator_id),
+            message: format!("Chat {} archived via IPC", coordinator_id),
         });
         true
     }) {
@@ -1505,7 +1532,7 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let alias = format!("coordinator-{}", coordinator_id);
     if let Err(e) = workgraph::chat_sessions::archive_session(dir, &alias) {
         eprintln!(
-            "[ipc] Warning: coordinator {} task archived but chat session archive failed: {}",
+            "[ipc] Warning: chat {} task archived but chat session archive failed: {}",
             coordinator_id, e
         );
     }
@@ -1573,12 +1600,15 @@ fn handle_set_coordinator_executor(
 
 fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let legacy_task_id = format!(".coordinator-{}", coordinator_id);
 
-    // Resolve the actual task ID (legacy .coordinator for ID 0)
+    // Resolve the actual task ID (.chat-N new, .coordinator-N legacy, or .coordinator very-legacy)
     let resolved_task_id = if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
         if graph.get_task(&task_id).is_some() {
             task_id.clone()
+        } else if graph.get_task(&legacy_task_id).is_some() {
+            legacy_task_id.clone()
         } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
             ".coordinator".to_string()
         } else {
@@ -1604,13 +1634,15 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let actual_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
+        } else if graph.get_task(&legacy_task_id).is_some() {
+            legacy_task_id.as_str()
         } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
             ".coordinator"
         } else {
-            result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+            result_msg = Some(format!("Chat task '{}' not found", task_id));
             return false;
         };
         let task = graph.get_task_mut(actual_id).unwrap();
@@ -1620,7 +1652,7 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
             user: Some(workgraph::current_user()),
-            message: format!("Coordinator {} stopped via IPC", coordinator_id),
+            message: format!("Chat {} stopped via IPC", coordinator_id),
         });
         true
     }) {
@@ -1915,7 +1947,7 @@ poll_interval = 120
             message: "help me plan the auth system".to_string(),
             request_id: "chat-123-abcd".to_string(),
             attachments: vec![],
-            coordinator_id: None,
+            chat_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"user_chat\""));
@@ -1935,47 +1967,58 @@ poll_interval = 120
             _ => panic!("Wrong request type"),
         }
 
-        // Also test parsing from raw JSON (backward compat: no coordinator_id)
+        // Also test parsing from raw JSON (backward compat: no chat_id)
         let raw = r#"{"cmd":"user_chat","message":"hello","request_id":"req-1"}"#;
         let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
         match parsed {
             IpcRequest::UserChat {
                 message,
                 request_id,
-                coordinator_id,
+                chat_id,
                 ..
             } => {
                 assert_eq!(message, "hello");
                 assert_eq!(request_id, "req-1");
-                assert_eq!(coordinator_id, None); // defaults to None
+                assert_eq!(chat_id, None); // defaults to None
             }
             _ => panic!("Wrong request type"),
         }
 
-        // Test with coordinator_id
+        // Test backward-compat: legacy field name `coordinator_id` is accepted
         let raw2 = r#"{"cmd":"user_chat","message":"hi","request_id":"req-2","coordinator_id":1}"#;
         let parsed2: IpcRequest = serde_json::from_str(raw2).unwrap();
         match parsed2 {
-            IpcRequest::UserChat { coordinator_id, .. } => {
-                assert_eq!(coordinator_id, Some(1));
+            IpcRequest::UserChat { chat_id, .. } => {
+                assert_eq!(chat_id, Some(1));
+            }
+            _ => panic!("Wrong request type"),
+        }
+
+        // Test new field name `chat_id`
+        let raw3 = r#"{"cmd":"user_chat","message":"hi","request_id":"req-3","chat_id":2}"#;
+        let parsed3: IpcRequest = serde_json::from_str(raw3).unwrap();
+        match parsed3 {
+            IpcRequest::UserChat { chat_id, .. } => {
+                assert_eq!(chat_id, Some(2));
             }
             _ => panic!("Wrong request type"),
         }
     }
 
     #[test]
-    fn test_ipc_create_coordinator_serialization() {
-        let req = IpcRequest::CreateCoordinator {
+    fn test_ipc_create_chat_serialization() {
+        let req = IpcRequest::CreateChat {
             name: Some("Feature Work".to_string()),
             model: None,
             executor: None,
         };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"create_coordinator\""));
+        // New canonical command name
+        assert!(json.contains("\"cmd\":\"create_chat\""));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::CreateCoordinator {
+            IpcRequest::CreateChat {
                 name,
                 model,
                 executor,
@@ -1988,7 +2031,7 @@ poll_interval = 120
         }
 
         // Test with model and executor overrides
-        let req2 = IpcRequest::CreateCoordinator {
+        let req2 = IpcRequest::CreateChat {
             name: Some("Local Model".to_string()),
             model: Some("openai:qwen3-coder-30b".to_string()),
             executor: Some("native".to_string()),
@@ -1996,7 +2039,7 @@ poll_interval = 120
         let json2 = serde_json::to_string(&req2).unwrap();
         let parsed2: IpcRequest = serde_json::from_str(&json2).unwrap();
         match parsed2 {
-            IpcRequest::CreateCoordinator {
+            IpcRequest::CreateChat {
                 name,
                 model,
                 executor,
@@ -2010,74 +2053,100 @@ poll_interval = 120
     }
 
     #[test]
-    fn test_ipc_delete_coordinator_serialization() {
-        let req = IpcRequest::DeleteCoordinator { coordinator_id: 2 };
+    fn test_ipc_legacy_create_coordinator_accepted_with_warning() {
+        // Backward-compat: legacy `create_coordinator` command name still parses.
+        let raw = r#"{"cmd":"create_coordinator","name":"Legacy"}"#;
+        let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
+        match parsed {
+            IpcRequest::CreateChat { name, .. } => {
+                assert_eq!(name, Some("Legacy".to_string()));
+            }
+            _ => panic!("Legacy create_coordinator must parse to CreateChat"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_delete_chat_serialization() {
+        let req = IpcRequest::DeleteChat { chat_id: 2 };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"delete_coordinator\""));
-        assert!(json.contains("\"coordinator_id\":2"));
+        assert!(json.contains("\"cmd\":\"delete_chat\""));
+        assert!(json.contains("\"chat_id\":2"));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::DeleteCoordinator { coordinator_id } => {
-                assert_eq!(coordinator_id, 2);
+            IpcRequest::DeleteChat { chat_id } => {
+                assert_eq!(chat_id, 2);
+            }
+            _ => panic!("Wrong request type"),
+        }
+
+        // Backward-compat: legacy `delete_coordinator` + `coordinator_id` still parses.
+        let raw = r#"{"cmd":"delete_coordinator","coordinator_id":7}"#;
+        let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
+        match parsed {
+            IpcRequest::DeleteChat { chat_id } => assert_eq!(chat_id, 7),
+            _ => panic!("Legacy delete_coordinator must parse to DeleteChat"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_list_chats_serialization() {
+        let req = IpcRequest::ListChats;
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"list_chats\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, IpcRequest::ListChats));
+
+        // Backward-compat: legacy `list_coordinators` still parses.
+        let raw = r#"{"cmd":"list_coordinators"}"#;
+        let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
+        assert!(matches!(parsed, IpcRequest::ListChats));
+    }
+
+    #[test]
+    fn test_ipc_archive_chat_serialization() {
+        let req = IpcRequest::ArchiveChat { chat_id: 3 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"archive_chat\""));
+        assert!(json.contains("\"chat_id\":3"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::ArchiveChat { chat_id } => {
+                assert_eq!(chat_id, 3);
             }
             _ => panic!("Wrong request type"),
         }
     }
 
     #[test]
-    fn test_ipc_list_coordinators_serialization() {
-        let req = IpcRequest::ListCoordinators;
+    fn test_ipc_stop_chat_serialization() {
+        let req = IpcRequest::StopChat { chat_id: 1 };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"list_coordinators\""));
-
-        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, IpcRequest::ListCoordinators));
-    }
-
-    #[test]
-    fn test_ipc_archive_coordinator_serialization() {
-        let req = IpcRequest::ArchiveCoordinator { coordinator_id: 3 };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"archive_coordinator\""));
-        assert!(json.contains("\"coordinator_id\":3"));
+        assert!(json.contains("\"cmd\":\"stop_chat\""));
+        assert!(json.contains("\"chat_id\":1"));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::ArchiveCoordinator { coordinator_id } => {
-                assert_eq!(coordinator_id, 3);
+            IpcRequest::StopChat { chat_id } => {
+                assert_eq!(chat_id, 1);
             }
             _ => panic!("Wrong request type"),
         }
     }
 
     #[test]
-    fn test_ipc_stop_coordinator_serialization() {
-        let req = IpcRequest::StopCoordinator { coordinator_id: 1 };
+    fn test_ipc_interrupt_chat_serialization() {
+        let req = IpcRequest::InterruptChat { chat_id: 2 };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"stop_coordinator\""));
-        assert!(json.contains("\"coordinator_id\":1"));
+        assert!(json.contains("\"cmd\":\"interrupt_chat\""));
+        assert!(json.contains("\"chat_id\":2"));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::StopCoordinator { coordinator_id } => {
-                assert_eq!(coordinator_id, 1);
-            }
-            _ => panic!("Wrong request type"),
-        }
-    }
-
-    #[test]
-    fn test_ipc_interrupt_coordinator_serialization() {
-        let req = IpcRequest::InterruptCoordinator { coordinator_id: 2 };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"cmd\":\"interrupt_coordinator\""));
-        assert!(json.contains("\"coordinator_id\":2"));
-
-        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            IpcRequest::InterruptCoordinator { coordinator_id } => {
-                assert_eq!(coordinator_id, 2);
+            IpcRequest::InterruptChat { chat_id } => {
+                assert_eq!(chat_id, 2);
             }
             _ => panic!("Wrong request type"),
         }
@@ -2114,7 +2183,7 @@ poll_interval = 120
                 message: "test message".to_string(),
                 request_id: "req-test-1".to_string(),
                 attachments: vec![],
-                coordinator_id: None,
+                chat_id: None,
             },
             &mut running,
             &mut wake_coordinator,
@@ -2182,7 +2251,7 @@ poll_interval = 120
                 message: "message for coord 1".to_string(),
                 request_id: "req-coord1".to_string(),
                 attachments: vec![],
-                coordinator_id: Some(1),
+                chat_id: Some(1),
             },
             &mut running,
             &mut wake_coordinator,

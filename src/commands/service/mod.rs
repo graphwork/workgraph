@@ -1150,7 +1150,7 @@ pub fn run_start(
         println!("Log: {}", log_path_str);
         let model_str = eff_model.as_deref().unwrap_or("default");
         println!(
-            "Coordinator: max_agents={}, poll_interval={}s, executor={}, model={}",
+            "Dispatcher: max_agents={}, poll_interval={}s, executor={}, model={}",
             eff_max_agents, eff_poll_interval, eff_executor, model_str
         );
         if warn_no_agents {
@@ -2833,7 +2833,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             ""
         };
         println!(
-            "Coordinator: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
+            "Dispatcher: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
             state_str, coord.max_agents, coord.poll_interval, coord.executor, model_str
         );
         if coord.frozen && !coord.frozen_pids.is_empty() {
@@ -3211,7 +3211,7 @@ pub fn run_create_coordinator(
 ) -> Result<()> {
     let response = send_request(
         dir,
-        &IpcRequest::CreateCoordinator {
+        &IpcRequest::CreateChat {
             name: name.map(|s| s.to_string()),
             model: model.map(|s| s.to_string()),
             executor: executor.map(|s| s.to_string()),
@@ -3252,7 +3252,7 @@ pub fn run_create_coordinator(
 /// Delete a coordinator session via IPC
 #[cfg(unix)]
 pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::DeleteCoordinator { coordinator_id })?;
+    let response = send_request(dir, &IpcRequest::DeleteChat { chat_id: coordinator_id })?;
 
     if !response.ok {
         let msg = response
@@ -3290,8 +3290,8 @@ pub fn run_set_coordinator_executor(
 ) -> Result<()> {
     let response = send_request(
         dir,
-        &IpcRequest::SetCoordinatorExecutor {
-            coordinator_id,
+        &IpcRequest::SetChatExecutor {
+            chat_id: coordinator_id,
             executor: executor.map(String::from),
             model: model.map(String::from),
         },
@@ -3343,7 +3343,7 @@ pub fn run_set_coordinator_executor(
 /// Archive a coordinator session via IPC (mark as Done)
 #[cfg(unix)]
 pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::ArchiveCoordinator { coordinator_id })?;
+    let response = send_request(dir, &IpcRequest::ArchiveChat { chat_id: coordinator_id })?;
 
     if !response.ok {
         let msg = response
@@ -3373,7 +3373,7 @@ pub fn run_archive_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -
 /// Stop a coordinator session via IPC (kill agent, reset to Open)
 #[cfg(unix)]
 pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::StopCoordinator { coordinator_id })?;
+    let response = send_request(dir, &IpcRequest::StopChat { chat_id: coordinator_id })?;
 
     if !response.ok {
         let msg = response
@@ -3403,7 +3403,7 @@ pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> R
 /// Interrupt a coordinator's current generation via IPC (sends SIGINT, does NOT kill).
 #[cfg(unix)]
 pub fn run_interrupt_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::InterruptCoordinator { coordinator_id })?;
+    let response = send_request(dir, &IpcRequest::InterruptChat { chat_id: coordinator_id })?;
 
     if !response.ok {
         let msg = response

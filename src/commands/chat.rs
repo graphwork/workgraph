@@ -107,7 +107,7 @@ pub fn run_send(
             message: full_message,
             request_id: request_id.clone(),
             attachments: attachments.clone(),
-            coordinator_id: Some(coordinator_id),
+            chat_id: Some(coordinator_id),
         },
     )
     .context("Failed to connect to service. Is it running? Start with: wg service start")?;
@@ -200,7 +200,7 @@ pub fn run_interactive(dir: &Path, timeout_secs: Option<u64>, coordinator_id: u3
                 message: msg.to_string(),
                 request_id: request_id.clone(),
                 attachments: vec![],
-                coordinator_id: Some(coordinator_id),
+                chat_id: Some(coordinator_id),
             },
         ) {
             Ok(resp) => resp,
