@@ -475,19 +475,37 @@ impl OpenAiClient {
                                     });
                                 }
                                 ContentBlock::Text { text } => {
-                                    oai_messages.push(OaiMessage {
-                                        role: "user".to_string(),
-                                        content: Some(text.clone()),
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        reasoning_details: None,
-                                    });
+                                    // Merge into the previous user message if
+                                    // one exists to avoid consecutive same-role
+                                    // messages (which OAI servers reject).
+                                    if let Some(prev) = oai_messages.last_mut()
+                                        && prev.role == "user"
+                                        && prev.tool_call_id.is_none()
+                                    {
+                                        let existing =
+                                            prev.content.get_or_insert_with(String::new);
+                                        existing.push('\n');
+                                        existing.push_str(text);
+                                    } else {
+                                        oai_messages.push(OaiMessage {
+                                            role: "user".to_string(),
+                                            content: Some(text.clone()),
+                                            tool_calls: None,
+                                            tool_call_id: None,
+                                            reasoning_details: None,
+                                        });
+                                    }
                                 }
                                 _ => {}
                             }
                         }
                     } else {
-                        // Regular text message
+                        // Regular text message — merge into previous user
+                        // message when one already exists at the tail to
+                        // avoid consecutive same-role violations. This
+                        // can happen when the agent loop appends context
+                        // warnings or inbox-drain messages adjacent to a
+                        // user turn.
                         let text: String = msg
                             .content
                             .iter()
@@ -497,13 +515,22 @@ impl OpenAiClient {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        oai_messages.push(OaiMessage {
-                            role: "user".to_string(),
-                            content: Some(text),
-                            tool_calls: None,
-                            tool_call_id: None,
-                            reasoning_details: None,
-                        });
+                        if let Some(prev) = oai_messages.last_mut()
+                            && prev.role == "user"
+                            && prev.tool_call_id.is_none()
+                        {
+                            let existing = prev.content.get_or_insert_with(String::new);
+                            existing.push('\n');
+                            existing.push_str(&text);
+                        } else {
+                            oai_messages.push(OaiMessage {
+                                role: "user".to_string(),
+                                content: Some(text),
+                                tool_calls: None,
+                                tool_call_id: None,
+                                reasoning_details: None,
+                            });
+                        }
                     }
                 }
                 Role::Assistant => {
@@ -800,9 +827,11 @@ impl OpenAiClient {
             tools,
             tool_choice,
             stream: true,
-            stream_options: Some(OaiStreamOptions {
-                include_usage: true,
-            }),
+            stream_options: if self.supports_stream_options() {
+                Some(OaiStreamOptions { include_usage: true })
+            } else {
+                None
+            },
             cache_control: self.cache_control_value(),
             reasoning,
             include_reasoning,
@@ -1198,9 +1227,11 @@ impl OpenAiClient {
             tools,
             tool_choice,
             stream: true,
-            stream_options: Some(OaiStreamOptions {
-                include_usage: true,
-            }),
+            stream_options: if self.supports_stream_options() {
+                Some(OaiStreamOptions { include_usage: true })
+            } else {
+                None
+            },
             cache_control: self.cache_control_value(),
             reasoning,
             include_reasoning,
@@ -1322,6 +1353,17 @@ impl OpenAiClient {
         } else {
             None
         }
+    }
+
+    /// Whether to include `stream_options: {include_usage: true}` in
+    /// streaming requests. Known providers (OpenRouter, OpenAI) support
+    /// this; local servers (vLLM, llama.cpp, SGLang) may not. Omitting
+    /// it is safe — usage just defaults to zeros.
+    fn supports_stream_options(&self) -> bool {
+        matches!(
+            self.provider_hint.as_deref(),
+            Some("openrouter") | Some("openai")
+        )
     }
 
     fn build_headers(&self) -> HeaderMap {
@@ -2730,6 +2772,131 @@ mod tests {
         assert_eq!(tc.len(), 1);
         assert_eq!(tc[0].id, "call_456");
         assert_eq!(tc[0].function.name, "bash");
+    }
+
+    /// Regression test: a two-turn conversation with tool use on turn 1
+    /// must produce a valid OAI message sequence with no consecutive same-
+    /// role messages (except tool results after assistant tool_calls).
+    #[test]
+    fn test_translate_messages_two_turn_with_tool_use() {
+        let system = Some("You are helpful.".to_string());
+        let messages = vec![
+            // Turn 1: user message
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Check a file".to_string(),
+                }],
+            },
+            // Turn 1: assistant responds with tool call
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "Let me check.".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"file_path": "/tmp/test.txt"}),
+                    },
+                ],
+            },
+            // Turn 1: tool result
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "file contents here".to_string(),
+                    is_error: false,
+                }],
+            },
+            // Turn 1: assistant end turn
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "Found the file.".to_string(),
+                }],
+            },
+            // Turn 2: new user message
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Now do something else".to_string(),
+                }],
+            },
+        ];
+
+        let oai_msgs = OpenAiClient::translate_messages(&system, &messages);
+
+        // Expected: system, user, assistant(tool_calls), tool, assistant, user
+        assert_eq!(oai_msgs.len(), 6);
+        assert_eq!(oai_msgs[0].role, "system");
+        assert_eq!(oai_msgs[1].role, "user");
+        assert_eq!(oai_msgs[2].role, "assistant");
+        assert!(oai_msgs[2].tool_calls.is_some());
+        assert_eq!(oai_msgs[3].role, "tool");
+        assert_eq!(oai_msgs[3].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(oai_msgs[4].role, "assistant");
+        assert_eq!(oai_msgs[5].role, "user");
+        assert_eq!(
+            oai_msgs[5].content.as_deref(),
+            Some("Now do something else")
+        );
+
+        // Verify no invalid consecutive same-role pairs (except tool after assistant)
+        for i in 1..oai_msgs.len() {
+            let prev = &oai_msgs[i - 1].role;
+            let curr = &oai_msgs[i].role;
+            if prev == curr && curr != "tool" {
+                panic!(
+                    "Invalid consecutive same-role messages at index {}: {} → {}",
+                    i, prev, curr
+                );
+            }
+        }
+    }
+
+    /// Regression: conversation with thinking blocks from inline <think> tags
+    /// must not produce invalid OAI messages when replayed on the second turn.
+    #[test]
+    fn test_translate_messages_thinking_block_dropped_cleanly() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "let me think about this".to_string(),
+                        reasoning_details: None, // inline <think> tags have no reasoning_details
+                    },
+                    ContentBlock::Text {
+                        text: "Hi there!".to_string(),
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "second message".to_string(),
+                }],
+            },
+        ];
+
+        let oai_msgs = OpenAiClient::translate_messages(&None, &messages);
+
+        // Thinking block without reasoning_details is dropped (correct).
+        // Should produce: user, assistant, user — 3 messages.
+        assert_eq!(oai_msgs.len(), 3);
+        assert_eq!(oai_msgs[0].role, "user");
+        assert_eq!(oai_msgs[1].role, "assistant");
+        assert_eq!(oai_msgs[1].content.as_deref(), Some("Hi there!"));
+        assert_eq!(oai_msgs[2].role, "user");
     }
 
     #[test]
