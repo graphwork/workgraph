@@ -16,6 +16,17 @@
 //! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Codex /
 //! Gemini / Amplifier are still stubs — they error cleanly with a
 //! "not yet implemented" message when selected.
+//!
+//! ## Stdout-is-protocol contract
+//!
+//! After dispatch, this command `exec()`s into the chosen handler so
+//! the child inherits our stdio. That means anything we (or any
+//! transitively-called code, including `Config::load_*`) write to
+//! stdout BEFORE the exec becomes part of the handler's protocol
+//! stream and corrupts the chat json-line conversation. The only
+//! legitimate stdout writer in this file is the `--dry-run` preview
+//! line which exits before any handler is spawned. All other
+//! diagnostics use `eprintln!` / the logger.
 
 use std::path::Path;
 

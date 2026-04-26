@@ -3,6 +3,21 @@
 //! `wg nex` drops the user into an agentic coding session powered by any
 //! OpenAI-compatible model. Supports streaming, tool calling, and multi-turn
 //! conversation.
+//!
+//! ## Stdout-is-protocol contract (handler invocations)
+//!
+//! When invoked as a handler — `wg nex --chat <ref>` (and also
+//! autonomous task-agent runs spawned by the daemon) — stdout is part
+//! of the protocol stream that parent supervisors parse line-by-line.
+//! **Never write diagnostic text to stdout from this file or anything
+//! it transitively calls.** Config-load chatter, deprecation warnings,
+//! progress notes, and debug output all belong on stderr or in the
+//! daemon log; the existing call sites use `eprintln!` exactly because
+//! a single stray `println!` corrupts the json-line stream and crashes
+//! the next-turn parse silently. The only legitimate stdout writers in
+//! this file are gated by `eval_mode` (one-line JSON summary for
+//! benchmark harnesses) and are documented inline. The regression lock
+//! lives in `tests/integration_handler_stdout_pristine.rs`.
 
 use std::path::Path;
 

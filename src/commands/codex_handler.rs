@@ -13,6 +13,15 @@
 //! no stream-json parser to maintain, crashes are a non-event (next
 //! turn restarts fresh). The cost is replayed context on every turn
 //! — fine for coordinator workloads which are low-frequency anyway.
+//!
+//! ## Stdout-is-protocol contract
+//!
+//! Stdout for this handler binary is the protocol stream parent
+//! supervisors parse line-by-line. **Never write diagnostic text to
+//! stdout from this file or anything it transitively calls** — config
+//! warnings, deprecation notices, and debug logs go to stderr or
+//! `handler.log`. See `tests/integration_handler_stdout_pristine.rs`
+//! for the regression lock.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;

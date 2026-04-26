@@ -1,6 +1,19 @@
 //! `wg claude-handler` — standalone bridge between Claude CLI's
 //! stream-json stdio and `chat/<ref>/*.jsonl`.
 //!
+//! ## Stdout-is-protocol contract
+//!
+//! Stdout for the handler binary is part of the protocol stream that
+//! parent supervisors (the daemon, the TUI's PTY embed, smoke harnesses)
+//! parse line-by-line. **Never write diagnostic text to stdout from this
+//! file or anything it transitively calls** — config-load chatter,
+//! deprecation warnings, debug breadcrumbs and progress notes all belong
+//! on stderr or in `handler.log` / `daemon.log`. A single stray
+//! `println!` in a transitive call corrupts the chat json-line stream
+//! and crashes the next-turn parse silently. The regression lock for
+//! this contract lives in
+//! `tests/integration_handler_stdout_pristine.rs`.
+//!
 //! Peer of `wg nex --chat <ref>`: where nex IS a native handler that
 //! speaks chat/*.jsonl directly, this handler spawns the `claude` CLI
 //! and translates between the two protocols. From the daemon's and
