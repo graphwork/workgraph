@@ -182,8 +182,22 @@ pub fn create_provider_ext(
     if let Some(url) = endpoint_name
         && (url.starts_with("http://") || url.starts_with("https://"))
     {
+        // Strip the canonical provider prefix (`local:`, `oai-compat:`,
+        // `openrouter:`, etc.) before passing the model name to the
+        // wire layer. `wg init` stores models in the prefixed form
+        // (`local:qwen3-coder`), but downstream OAI-compat servers
+        // (SGLang, vLLM, llama.cpp, Ollama) treat a colon in the
+        // `model` field as a LoRA-adapter reference and reject
+        // anything they don't have loaded with HTTP 400 — which broke
+        // every `wg nex -e <url> -m <prefixed>` invocation on the
+        // first message.
+        //
+        // Mirrors the prefix handling in the non-inline path below
+        // (search for `parse_model_spec` + `spec.model_id`).
+        let spec = crate::config::parse_model_spec(model);
+        let stripped_model = spec.model_id.as_str();
         return Ok(Box::new(build_inline_url_client(
-            model,
+            stripped_model,
             url,
             api_key_override,
         )?));

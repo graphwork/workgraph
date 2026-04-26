@@ -3,8 +3,11 @@
 //! Uses mock providers to verify multi-turn conversation, tool calling,
 //! and streaming behavior in the interactive agent loop.
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -768,5 +771,283 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
         result.final_text.contains("second message"),
         "Final text should reference second message, got: {}",
         result.final_text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Inline-URL provider-prefix stripping (regression for wg-nex-native, attempt 3)
+// ---------------------------------------------------------------------------
+//
+// Reproduces the user-visible failure observed in ~/autohaiku and ~/household:
+//
+//     $ wg init -m qwen3-coder -e https://lambda01.tail334fe6.ts.net:30000 -x nex
+//     $ wg nex --no-mcp -m local:qwen3-coder -e https://lambda01.tail334fe6.ts.net:30000 hi
+//     [native-agent] LLM request failed: Streaming request failed after retries:
+//     API error 400: ... "LoRA adapter 'qwen3-coder' was requested, but LoRA is
+//     not enabled" ...
+//
+// SGLang interprets `model: "<base>:<lora>"` as a LoRA adapter request. `wg
+// init` stores the model as `local:qwen3-coder` (provider-prefixed canonical
+// form), and the inline-URL shortcut path in `create_provider_ext` was
+// passing that string to the OAI wire layer verbatim — so the request body
+// carried `"model": "local:qwen3-coder"` and SGLang rejected the call as
+// requesting a LoRA adapter named "qwen3-coder" on a base model "local"
+// that does not exist.
+//
+// The fix: strip the known provider-prefix before constructing the inline-
+// URL client, the same way the non-inline path already does.
+
+/// Spin up a one-shot mock OAI-compat server that captures the raw
+/// request body and replies with a small SSE stream. Returns the base
+/// URL plus an Arc<Mutex<Vec<request bodies>>> the test inspects after
+/// the call completes.
+fn start_recording_oai_stub(num_requests: usize) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://127.0.0.1:{}", addr.port());
+    let bodies: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let bodies_clone = Arc::clone(&bodies);
+
+    thread::spawn(move || {
+        for _ in 0..num_requests {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+
+            // Read until we have the full body (Content-Length-driven).
+            let mut buf = Vec::with_capacity(16 * 1024);
+            let mut tmp = [0u8; 4096];
+            let mut content_length: Option<usize> = None;
+            let mut header_end: Option<usize> = None;
+            loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if header_end.is_none() {
+                            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                header_end = Some(idx + 4);
+                                let header_str =
+                                    String::from_utf8_lossy(&buf[..idx]).to_lowercase();
+                                for line in header_str.lines() {
+                                    if let Some(rest) = line.strip_prefix("content-length:") {
+                                        content_length = rest.trim().parse().ok();
+                                    }
+                                }
+                            }
+                        }
+                        if let (Some(he), Some(cl)) = (header_end, content_length)
+                            && buf.len() >= he + cl
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            if let Some(he) = header_end {
+                let body = String::from_utf8_lossy(&buf[he..]).to_string();
+                bodies_clone.lock().unwrap().push(body);
+            }
+
+            // Reply with a minimal SSE stream that the OpenAI client
+            // accepts: a content delta, a finish_reason chunk, then
+            // [DONE]. Usage is omitted (defaults to zero), which is
+            // valid when stream_options is not set.
+            let chunks = [
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}"#,
+                r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            ];
+            let mut sse = String::new();
+            for c in &chunks {
+                sse.push_str("data: ");
+                sse.push_str(c);
+                sse.push_str("\n\n");
+            }
+            sse.push_str("data: [DONE]\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                sse.len(),
+                sse,
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (url, bodies)
+}
+
+/// Regression: `wg nex -m local:qwen3-coder -e <url>` (and its
+/// programmatic equivalent through `create_provider_ext`) must send
+/// `"model": "qwen3-coder"` in the OAI request body — NOT
+/// `"model": "local:qwen3-coder"`. The provider-prefix is for our
+/// internal routing; downstream OAI servers (SGLang, vLLM, llama.cpp,
+/// Ollama) interpret a colon in the model field as a LoRA adapter
+/// reference and reject the request with HTTP 400.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nex_inline_url_strips_local_provider_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let graph = workgraph::graph::WorkGraph::new();
+    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+    let (base_url, bodies) = start_recording_oai_stub(1);
+
+    // This is exactly what `wg nex -e <url> -m local:qwen3-coder` does:
+    // pass the full provider-prefixed model string and an inline URL
+    // through to create_provider_ext.
+    let provider = workgraph::executor::native::provider::create_provider_ext(
+        tmp.path(),
+        "local:qwen3-coder",
+        None,
+        Some(base_url.as_str()),
+        None,
+    )
+    .expect("create_provider_ext should accept inline URL + prefixed model");
+
+    // The agent loop uses `self.client.model().to_string()` to fill
+    // `request.model` (see src/executor/native/agent.rs:1623), so this
+    // is the value that actually ends up on the wire.
+    let request = MessagesRequest {
+        model: provider.model().to_string(),
+        max_tokens: 64,
+        system: None,
+        messages: vec![workgraph::executor::native::client::Message {
+            role: workgraph::executor::native::client::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        tools: vec![],
+        stream: true,
+    };
+
+    let on_text = |_: String| {};
+    let _resp = provider
+        .send_streaming(&request, &on_text)
+        .await
+        .expect("streaming send should succeed against the stub");
+
+    let captured = bodies.lock().unwrap();
+    assert_eq!(captured.len(), 1, "stub should have received one POST");
+
+    let body = &captured[0];
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).unwrap_or_else(|e| panic!("body not JSON ({}): {}", e, body));
+    let model_field = parsed
+        .get("model")
+        .and_then(|v| v.as_str())
+        .expect("body must have a `model` string field");
+
+    assert_eq!(
+        model_field, "qwen3-coder",
+        "inline-URL provider must strip the `local:` prefix before sending — \
+         downstream OAI servers (SGLang etc.) treat a colon in the model \
+         field as a LoRA adapter reference and reject the request with HTTP \
+         400. Got `{}` in the request body.",
+        model_field
+    );
+}
+
+/// Companion regression: `oai-compat:` is the canonical alias and must
+/// also be stripped on the inline-URL path. Same failure mode as
+/// `local:` — any colon in the model field gets misread by downstream
+/// servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nex_inline_url_strips_oai_compat_provider_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let graph = workgraph::graph::WorkGraph::new();
+    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+    let (base_url, bodies) = start_recording_oai_stub(1);
+
+    let provider = workgraph::executor::native::provider::create_provider_ext(
+        tmp.path(),
+        "oai-compat:llama-3-70b",
+        None,
+        Some(base_url.as_str()),
+        None,
+    )
+    .expect("create_provider_ext should accept inline URL + oai-compat prefix");
+
+    let request = MessagesRequest {
+        model: provider.model().to_string(),
+        max_tokens: 64,
+        system: None,
+        messages: vec![workgraph::executor::native::client::Message {
+            role: workgraph::executor::native::client::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        tools: vec![],
+        stream: true,
+    };
+
+    let _resp = provider
+        .send_streaming(&request, &|_: String| {})
+        .await
+        .expect("streaming send should succeed against the stub");
+
+    let body = bodies.lock().unwrap()[0].clone();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let model_field = parsed.get("model").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(
+        model_field, "llama-3-70b",
+        "oai-compat:<model> must be stripped on the inline-URL path"
+    );
+}
+
+/// Regression: a bare model name (no provider prefix) should be passed
+/// through unchanged on the inline-URL path. This guards against
+/// over-aggressive stripping that might break the common case
+/// `wg nex -m qwen3-coder-30b -e http://localhost:11434`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nex_inline_url_passes_bare_model_through() {
+    let tmp = TempDir::new().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let graph = workgraph::graph::WorkGraph::new();
+    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+    let (base_url, bodies) = start_recording_oai_stub(1);
+
+    let provider = workgraph::executor::native::provider::create_provider_ext(
+        tmp.path(),
+        "qwen3-coder-30b",
+        None,
+        Some(base_url.as_str()),
+        None,
+    )
+    .unwrap();
+
+    let request = MessagesRequest {
+        model: provider.model().to_string(),
+        max_tokens: 64,
+        system: None,
+        messages: vec![workgraph::executor::native::client::Message {
+            role: workgraph::executor::native::client::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        tools: vec![],
+        stream: true,
+    };
+
+    let _resp = provider
+        .send_streaming(&request, &|_: String| {})
+        .await
+        .unwrap();
+
+    let body = bodies.lock().unwrap()[0].clone();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let model_field = parsed.get("model").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(
+        model_field, "qwen3-coder-30b",
+        "bare model names with no provider prefix must pass through unchanged"
     );
 }
