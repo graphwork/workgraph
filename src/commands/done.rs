@@ -232,6 +232,26 @@ struct WorktreeInfo {
     agent_id: Option<String>,
 }
 
+/// Detect git's "no changes staged" messages from a failed `git commit`.
+///
+/// Git emits different phrasings depending on working-tree state:
+///   - "nothing to commit, working tree clean" — clean tree, nothing staged
+///   - "nothing added to commit but untracked files present" — clean tree + untracked
+///   - "no changes added to commit" — modified tracked files but none staged
+///
+/// All three mean "the squash-merge produced no new content," which after a prior
+/// successful merge to main is the expected retry state, not a failure.
+fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
+    let needles = [
+        "nothing to commit",
+        "nothing added to commit",
+        "no changes added to commit",
+    ];
+    needles
+        .iter()
+        .any(|n| stdout.contains(n) || stderr.contains(n))
+}
+
 fn detect_worktree() -> Option<WorktreeInfo> {
     let wt_path = std::env::var("WG_WORKTREE_PATH").ok()?;
     let branch = std::env::var("WG_BRANCH").ok()?;
@@ -350,13 +370,7 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         if !commit_output.status.success() {
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             let stdout = String::from_utf8_lossy(&commit_output.stdout);
-            // "nothing to commit" is the message when git status finds no changes;
-            // "nothing added to commit" is the message when only untracked files exist.
-            // Both indicate the squash merge produced no diff (already on main).
-            let has_nothing_to_commit = |s: &str| {
-                s.contains("nothing to commit") || s.contains("nothing added to commit")
-            };
-            if has_nothing_to_commit(&stderr) || has_nothing_to_commit(&stdout) {
+            if is_no_changes_to_commit(&stdout, &stderr) {
                 return Ok(WorktreeMergeResult::NoCommits);
             }
             anyhow::bail!("git commit failed: {}", stderr);
@@ -4096,5 +4110,105 @@ mod tests {
             }
             other => panic!("expected Merged, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_is_no_changes_to_commit_detects_all_variants() {
+        // Clean tree, no untracked files
+        assert!(is_no_changes_to_commit(
+            "On branch main\nnothing to commit, working tree clean\n",
+            "",
+        ));
+        // Clean tree but untracked files present (the bug scenario from fix-wg-done-2)
+        assert!(is_no_changes_to_commit(
+            "On branch main\nUntracked files: ...\nnothing added to commit but untracked files present\n",
+            "",
+        ));
+        // Modified tracked files but none staged
+        assert!(is_no_changes_to_commit(
+            "Changes not staged for commit:\nno changes added to commit (use \"git add\")\n",
+            "",
+        ));
+        // Also detected when message comes through stderr
+        assert!(is_no_changes_to_commit(
+            "",
+            "nothing added to commit but untracked files present\n",
+        ));
+        // Real failure (e.g., hook rejection) must NOT be misclassified
+        assert!(!is_no_changes_to_commit(
+            "",
+            "error: pre-commit hook failed\n",
+        ));
+        assert!(!is_no_changes_to_commit("", ""));
+    }
+
+    #[test]
+    fn test_done_handles_already_merged_branch() {
+        // Simulates the fix-wg-done-2 scenario: a branch that has already been
+        // squash-merged into main. The second invocation must return NoCommits
+        // rather than bail with "git commit failed", even when untracked files
+        // are present (which makes git emit "nothing added to commit but
+        // untracked files present" instead of "nothing to commit").
+        use std::process::Command;
+
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(project_root)
+                .output()
+                .expect("git command failed to spawn");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: stdout={} stderr={}",
+                args,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        };
+
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::write(project_root.join("README.md"), "init\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "init"]);
+
+        git(&["checkout", "-b", "feature"]);
+        std::fs::write(project_root.join("file.txt"), "feature change\n").unwrap();
+        git(&["add", "file.txt"]);
+        git(&["commit", "-m", "feature change"]);
+
+        git(&["checkout", "main"]);
+
+        // Untracked file mimics stray .workgraph.* / .wg/ dirs that trigger the
+        // "nothing added to commit but untracked files present" wording.
+        std::fs::write(project_root.join(".workgraph.junk"), "junk\n").unwrap();
+
+        let wt = WorktreeInfo {
+            worktree_path: project_root.to_string_lossy().to_string(),
+            branch: "feature".to_string(),
+            project_root: project_root.to_string_lossy().to_string(),
+            agent_id: Some("test-agent".to_string()),
+        };
+
+        let r1 = attempt_worktree_merge(&wt, "test-task").expect("first merge call must succeed");
+        assert!(
+            matches!(r1, WorktreeMergeResult::Merged { .. }),
+            "first call should produce Merged, got {:?}",
+            r1,
+        );
+
+        let r2 = attempt_worktree_merge(&wt, "test-task")
+            .expect("second merge call must succeed (no bail)");
+        assert!(
+            matches!(r2, WorktreeMergeResult::NoCommits),
+            "second call on an already-merged branch should return NoCommits, got {:?}",
+            r2,
+        );
     }
 }
