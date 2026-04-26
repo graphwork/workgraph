@@ -188,6 +188,12 @@ pub fn resolve_handler(
     // dispatch (Phase 7 fills them in).
     let executor_kind = pick_executor(&config, task);
 
+    // Resolve model: task.model (user's per-task override) wins,
+    // then fall back to config.coordinator.model (user's project-level setting).
+    // This ensures `wg spawn-task .coordinator-N` picks up the configured model
+    // even when the graph task doesn't have a model field set.
+    let effective_model = task.model.clone().or_else(|| config.coordinator.model.clone());
+
     // Resume if the session journal exists on disk — same rule
     // `wg nex` uses internally. Route through the registry so
     // aliases (`coordinator-0`, `0`) resolve to the UUID dir.
@@ -199,16 +205,16 @@ pub fn resolve_handler(
             chat_ref,
             role,
             resume: journal_exists,
-            model: task.model.clone(),
+            model: effective_model.clone(),
             endpoint: task.endpoint.clone(),
         },
         ExecutorKind::Claude => HandlerSpec::Claude {
             chat_ref,
-            model: task.model.clone(),
+            model: effective_model.clone(),
         },
         ExecutorKind::Codex => HandlerSpec::Codex {
             chat_ref,
-            model: task.model.clone(),
+            model: effective_model,
         },
         ExecutorKind::Gemini => HandlerSpec::Gemini { chat_ref },
         ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
@@ -502,5 +508,147 @@ mod tests {
         assert!(p.contains("--chat foo"));
         assert!(p.contains("--resume"));
         assert!(p.contains("--role coordinator"));
+    }
+
+    #[test]
+    #[serial]
+    fn spawn_task_passes_model_to_claude_handler() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::set_var("WG_EXECUTOR_TYPE", "claude") };
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("config.toml").parent().unwrap()).unwrap();
+
+        let mut task = mktask("test-task");
+        task.model = Some("claude:opus".to_string());
+        let spec = resolve_handler(wg_dir, &task, None).unwrap();
+
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        } else {
+            unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
+        }
+
+        let preview = spec.command_preview();
+        match spec {
+            HandlerSpec::Claude { model, .. } => {
+                assert_eq!(
+                    model,
+                    Some("claude:opus".to_string()),
+                    "task.model should pass through to HandlerSpec"
+                );
+            }
+            _ => panic!("expected Claude handler"),
+        }
+        assert!(
+            preview.contains("-m claude:opus"),
+            "dry-run should include --model flag: {}",
+            preview
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn spawn_task_falls_back_to_config_model() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::set_var("WG_EXECUTOR_TYPE", "claude") };
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+
+        let task = mktask(".coordinator-0");
+        assert!(task.model.is_none(), "synthesized task has no model");
+        let spec = resolve_handler(wg_dir, &task, None).unwrap();
+
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        } else {
+            unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
+        }
+
+        let preview = spec.command_preview();
+        match spec {
+            HandlerSpec::Claude { model, .. } => {
+                assert_eq!(
+                    model,
+                    Some("claude:opus".to_string()),
+                    "should fall back to config.coordinator.model when task.model is None"
+                );
+            }
+            _ => panic!("expected Claude handler"),
+        }
+        assert!(
+            preview.contains("-m claude:opus"),
+            "dry-run should include config model: {}",
+            preview
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn user_pinned_dated_id_passes_through_unchanged() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::set_var("WG_EXECUTOR_TYPE", "claude") };
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut task = mktask("pinned-task");
+        task.model = Some("claude:claude-opus-4-6".to_string());
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        } else {
+            unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
+        }
+
+        match spec {
+            HandlerSpec::Claude { model, .. } => {
+                assert_eq!(
+                    model,
+                    Some("claude:claude-opus-4-6".to_string()),
+                    "user-pinned dated ID should pass through unchanged"
+                );
+            }
+            _ => panic!("expected Claude handler"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn task_model_wins_over_config_model() {
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::set_var("WG_EXECUTOR_TYPE", "claude") };
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nmodel = \"claude:sonnet\"\n",
+        )
+        .unwrap();
+
+        let mut task = mktask("override-task");
+        task.model = Some("claude:opus".to_string());
+        let spec = resolve_handler(wg_dir, &task, None).unwrap();
+
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        } else {
+            unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
+        }
+
+        match spec {
+            HandlerSpec::Claude { model, .. } => {
+                assert_eq!(
+                    model,
+                    Some("claude:opus".to_string()),
+                    "task.model should win over config.coordinator.model"
+                );
+            }
+            _ => panic!("expected Claude handler"),
+        }
     }
 }
