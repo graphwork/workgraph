@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 
 use workgraph::agency;
 use workgraph::config::{CapBehavior, Config, EndpointConfig};
+use workgraph::dispatch::plan_spawn;
 use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
@@ -65,6 +66,24 @@ pub(crate) fn spawn_agent_inner(
             (None, None)
         };
 
+    // SINGLE SOURCE OF TRUTH: route spawn decisions through plan_spawn so that
+    // {executor, model, endpoint} are decided in one place rather than
+    // independently in the argv builder. The CLI's --executor flag
+    // (`executor_name`) is treated as the caller's chosen executor floor and
+    // passed in via the `agent_executor` slot — that gives it priority over
+    // [dispatcher].executor, matching the expected CLI override semantics.
+    //
+    // The plan-derived endpoint is the only source consulted when assembling
+    // native-executor argv flags below; there is no fallback ad-hoc lookup.
+    let config = Config::load_or_default(dir);
+    let plan = plan_spawn(task, &config, Some(executor_name), model)?;
+    eprintln!(
+        "[{}] {}: {}",
+        spawned_by,
+        task_id,
+        plan.provenance.log_line(&plan)
+    );
+
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
         Status::Open | Status::Blocked | Status::Incomplete => {}
@@ -111,8 +130,7 @@ pub(crate) fn spawn_agent_inner(
         }
     }
 
-    // Resolve context scope
-    let config = Config::load_or_default(dir);
+    // Resolve context scope (config was loaded earlier for plan_spawn)
 
     // Check OpenRouter cost caps before proceeding with expensive operations
     if let Some(provider) = model.and_then(|m| workgraph::config::parse_model_spec(m).provider)
@@ -388,55 +406,30 @@ pub(crate) fn spawn_agent_inner(
     // Use resolved exec_mode (already accounts for role defaults)
     let exec_mode = resolved_exec_mode.as_str();
 
-    // Provider is already resolved by resolve_model_and_provider() above.
+    // Provider is still resolved by resolve_model_and_provider() above.
     // The registry may contribute a provider if the model matched a registry entry;
     // use it only when the tier cascade didn't already produce one.
-    let task_endpoint = graph.get_task(task_id).and_then(|t| t.endpoint.clone());
     let effective_provider: Option<String> = resolved.provider.or(registry_provider.clone());
 
-    // Endpoint resolution cascade:
-    //   1. task.endpoint — explicit endpoint name on the task
-    //   2. registry entry endpoint — from model registry alias
-    //   3. task.provider — find matching endpoint by provider
-    //   4. registry provider — find matching endpoint by registry provider
-    //   5. agent.preferred_provider — find matching endpoint by agent's provider
-    //   6. role config endpoint — from [models.task_agent].endpoint
-    let effective_endpoint: Option<String> = task_endpoint
-        .or(registry_endpoint.clone())
-        .or_else(|| {
-            task_provider
-                .as_ref()
-                .and_then(|prov| config.llm_endpoints.find_for_provider(prov))
-                .map(|ep| ep.name.clone())
-        })
-        .or_else(|| {
-            registry_provider
-                .as_ref()
-                .and_then(|prov| config.llm_endpoints.find_for_provider(prov))
-                .map(|ep| ep.name.clone())
-        })
-        .or_else(|| {
-            agent_preferred_provider
-                .as_ref()
-                .and_then(|prov| config.llm_endpoints.find_for_provider(prov))
-                .map(|ep| ep.name.clone())
-        })
-        .or_else(|| resolved_task_agent.endpoint.clone());
-
-    // Resolve endpoint config, URL, and API key from the named endpoint.
-    // Falls back to the default endpoint if no specific endpoint was resolved via the cascade.
-    let endpoint_config = effective_endpoint
-        .as_ref()
-        .and_then(|name| config.llm_endpoints.find_by_name(name))
-        .or_else(|| config.llm_endpoints.find_default());
+    // Endpoint resolution: plan.endpoint is the single source of truth. For
+    // executors that don't need an endpoint (claude/codex/amplifier/shell),
+    // plan.endpoint is None and the argv builder skips --endpoint-* flags
+    // entirely. For native, plan.endpoint carries the resolved EndpointConfig.
+    // No ad-hoc cascade lookup happens here anymore — that decision lives in
+    // dispatch::plan::plan_spawn().
+    let endpoint_config: Option<&EndpointConfig> = plan.endpoint.as_ref();
+    let effective_endpoint: Option<String> = endpoint_config.map(|ep| ep.name.clone());
     let effective_endpoint_url: Option<String> = endpoint_config.and_then(|ep| ep.url.clone());
     let effective_api_key: Option<String> =
         endpoint_config.and_then(|ep| ep.resolve_api_key(Some(dir)).ok().flatten());
 
-    // Validate endpoint resolution for registry-resolved models.
-    // If the model came from the registry with an explicit endpoint that doesn't exist
-    // in config, or the endpoint has no valid key, fail early with a clear message.
-    if let Some(ref reg_ep) = registry_endpoint {
+    // Validate endpoint resolution for registry-resolved models — but only
+    // when the plan actually selected an endpoint. If plan.endpoint is None
+    // (e.g. executor=claude), the model registry's endpoint hint is irrelevant
+    // to argv assembly and a missing/keyless endpoint must not block the spawn.
+    if plan.endpoint.is_some()
+        && let Some(ref reg_ep) = registry_endpoint
+    {
         if endpoint_config.is_none() {
             anyhow::bail!(
                 "Model references endpoint '{}' which is not configured.\n\
