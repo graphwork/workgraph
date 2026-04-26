@@ -89,12 +89,140 @@ enum TriageResult {
     UnknownButActive { activity_type: String },
 }
 
+#[derive(Debug, PartialEq)]
+enum PushOutcome {
+    /// No `origin` remote configured — skipped silently.
+    NoRemote,
+    /// `git push origin main` succeeded AND the agent branch was deleted on origin.
+    PushedAndDeleted,
+    /// `git push origin main` succeeded but the branch-delete push failed.
+    PushedNotDeleted { delete_error: String },
+    /// `git push origin main` failed (network, permissions, non-FF unresolvable).
+    LocalOnly { push_error: String },
+}
+
 #[derive(Debug)]
 enum WorktreeMergeResult {
     NotInWorktree,
     NoCommits,
-    Merged { commit_sha: String },
-    Conflict { conflicting_files: Vec<String> },
+    Merged {
+        commit_sha: String,
+        push_outcome: PushOutcome,
+    },
+    Conflict {
+        conflicting_files: Vec<String>,
+    },
+}
+
+/// Best-effort: push local `main` to `origin/main` (FF-only, with a single
+/// fetch+ff-merge+retry on non-FF), then delete the agent branch on origin.
+///
+/// Never fails — `wg done` must remain successful even if the remote is
+/// unavailable. Returns a `PushOutcome` describing what happened so the caller
+/// can surface it in the `[merge]` log line.
+///
+/// Branch deletion is **only** attempted after the main push succeeds (the
+/// audit doc requires the squash commit be reachable from `origin/main`
+/// before we drop the only ref to the agent branch tip on origin).
+fn push_main_and_delete_branch(project_root: &str, branch: &str) -> PushOutcome {
+    use std::process::Command;
+
+    // 0. If there's no `origin` remote, skip silently — common in tests and
+    //    detached/local-only repos. Without this we'd report a misleading
+    //    `push failed: ... 'origin' does not appear to be a git repository`.
+    let remote_check = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(project_root)
+        .output();
+    let has_origin = matches!(remote_check, Ok(o) if o.status.success());
+    if !has_origin {
+        return PushOutcome::NoRemote;
+    }
+
+    // 1. First push attempt.
+    let push = Command::new("git")
+        .args(["push", "origin", "main"])
+        .current_dir(project_root)
+        .output();
+
+    let initial_push_ok = matches!(&push, Ok(o) if o.status.success());
+    let mut push_err_msg = String::new();
+    if !initial_push_ok {
+        push_err_msg = match &push {
+            Ok(o) => one_line_error(&o.stderr),
+            Err(e) => e.to_string(),
+        };
+
+        // Try to recover from a non-FF rejection: fetch origin main, fast-forward
+        // local main to origin/main, retry the push. We do NOT attempt a
+        // non-fast-forward merge — local main has the squash commit on top
+        // and origin/main has its own work; a real reconciliation needs human
+        // judgment, not best-effort merges.
+        let fetch_ok = Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(project_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let ff_ok = if fetch_ok {
+            Command::new("git")
+                .args(["merge", "--ff-only", "origin/main"])
+                .current_dir(project_root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if ff_ok {
+            let retry = Command::new("git")
+                .args(["push", "origin", "main"])
+                .current_dir(project_root)
+                .output();
+            let retry_ok = matches!(&retry, Ok(o) if o.status.success());
+            if !retry_ok {
+                if let Ok(o) = retry {
+                    push_err_msg = one_line_error(&o.stderr);
+                }
+                return PushOutcome::LocalOnly {
+                    push_error: push_err_msg,
+                };
+            }
+            // fall through — push succeeded on retry
+        } else {
+            return PushOutcome::LocalOnly {
+                push_error: push_err_msg,
+            };
+        }
+    }
+
+    // 2. Push succeeded — squash commit is now on origin/main. Safe to delete
+    //    the agent branch on origin.
+    let delete = Command::new("git")
+        .args(["push", "origin", &format!(":refs/heads/{}", branch)])
+        .current_dir(project_root)
+        .output();
+
+    match delete {
+        Ok(o) if o.status.success() => PushOutcome::PushedAndDeleted,
+        Ok(o) => PushOutcome::PushedNotDeleted {
+            delete_error: one_line_error(&o.stderr),
+        },
+        Err(e) => PushOutcome::PushedNotDeleted {
+            delete_error: e.to_string(),
+        },
+    }
+}
+
+fn one_line_error(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown error")
+        .to_string()
 }
 
 struct WorktreeInfo {
@@ -237,7 +365,18 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         let commit_sha = String::from_utf8_lossy(&sha_output.stdout)
             .trim()
             .to_string();
-        WorktreeMergeResult::Merged { commit_sha }
+
+        // Best-effort push of main + delete of the agent branch on origin.
+        // This closes the gap documented in
+        // docs/audit-unmerged-branches-2026-04-26.md: prior to this, every
+        // clean `wg done` left the squash commit on local main only and the
+        // agent branch lingering on origin.
+        let push_outcome = push_main_and_delete_branch(&wt.project_root, &wt.branch);
+
+        WorktreeMergeResult::Merged {
+            commit_sha,
+            push_outcome,
+        }
     };
 
     unsafe { libc::flock(fd, libc::LOCK_UN) };
@@ -1859,10 +1998,27 @@ fn run_inner(
                 // Nothing to merge — proceed to mark done
                 mark_worktree_for_cleanup(&wt);
             }
-            WorktreeMergeResult::Merged { commit_sha } => {
+            WorktreeMergeResult::Merged {
+                commit_sha,
+                push_outcome,
+            } => {
+                let suffix = match &push_outcome {
+                    PushOutcome::PushedAndDeleted => format!(
+                        " — pushed origin/main, deleted origin/{}",
+                        wt.branch
+                    ),
+                    PushOutcome::PushedNotDeleted { delete_error } => format!(
+                        " — pushed origin/main, branch delete failed: {}",
+                        delete_error
+                    ),
+                    PushOutcome::LocalOnly { push_error } => {
+                        format!(" — local-only (push failed: {})", push_error)
+                    }
+                    PushOutcome::NoRemote => String::new(),
+                };
                 eprintln!(
-                    "[merge] Squash-merged {} to main ({})",
-                    wt.branch, commit_sha
+                    "[merge] Squash-merged {} to main ({}){}",
+                    wt.branch, commit_sha, suffix
                 );
                 mark_worktree_for_cleanup(&wt);
             }
@@ -3675,5 +3831,264 @@ mod tests {
             Some("30m".to_string()),
             "Deferred task should inherit verify timeout"
         );
+    }
+
+    // ======================================================================
+    // Push-on-merge tests (closes the gap from
+    // docs/audit-unmerged-branches-2026-04-26.md). The fixtures here use a
+    // local bare repo as `origin` so we can verify both:
+    //   1. `git push origin main` advances `origin/main`, and
+    //   2. `git push origin :refs/heads/<branch>` removes the agent branch
+    //      from `origin`.
+    // No network is required.
+    // ======================================================================
+
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Run a git command and assert success.
+    fn git(cwd: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {}", args, e));
+        assert!(
+            out.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    /// Run a git command, return `(success, stdout)`.
+    fn git_capture(cwd: &Path, args: &[&str]) -> (bool, String) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {}", args, e));
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    }
+
+    /// Build a project repo whose `origin` remote is a local bare repo.
+    /// Returns `(remote_bare_dir, project_root)`. Both are owned by the
+    /// caller (tempdirs).
+    ///
+    /// The project repo has:
+    ///   - `main` branch with one commit
+    ///   - an agent branch `wg/agent-test/<task>` checked out with one new
+    ///     commit on top of main (this is what the merge-back will squash)
+    ///   - `main` checked out at the end (squash-merge requires being on main)
+    fn make_repo_with_remote(
+        task_id: &str,
+    ) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, String) {
+        let remote = tempdir().unwrap();
+        let project = tempdir().unwrap();
+        let project_path = project.path().to_path_buf();
+
+        // 1. Bare remote.
+        git(remote.path(), &["init", "--bare", "-b", "main"]);
+
+        // 2. Project repo on `main`.
+        git(&project_path, &["init", "-b", "main"]);
+        git(&project_path, &["config", "user.email", "test@test.com"]);
+        git(&project_path, &["config", "user.name", "Test"]);
+        std::fs::write(project_path.join("README.md"), "initial\n").unwrap();
+        git(&project_path, &["add", "README.md"]);
+        git(&project_path, &["commit", "-m", "initial"]);
+        git(
+            &project_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
+            ],
+        );
+        git(&project_path, &["push", "-u", "origin", "main"]);
+
+        // 3. Agent branch with a commit on top of main.
+        let branch = format!("wg/agent-test/{}", task_id);
+        git(&project_path, &["checkout", "-b", &branch]);
+        std::fs::write(project_path.join("agent_work.txt"), "agent change\n").unwrap();
+        git(&project_path, &["add", "agent_work.txt"]);
+        git(&project_path, &["commit", "-m", "agent work"]);
+        git(&project_path, &["push", "-u", "origin", &branch]);
+
+        // 4. Back to main so attempt_worktree_merge can squash-merge into it.
+        git(&project_path, &["checkout", "main"]);
+
+        (remote, project, project_path, branch)
+    }
+
+    fn make_wt(project_path: &Path, branch: &str) -> WorktreeInfo {
+        WorktreeInfo {
+            // attempt_worktree_merge only checks `<worktree_path>/.git` exists
+            // when deciding whether to skip; we just point it at the project
+            // root, which has a real `.git` dir, since these tests don't use
+            // a separate worktree directory.
+            worktree_path: project_path.to_str().unwrap().to_string(),
+            branch: branch.to_string(),
+            project_root: project_path.to_str().unwrap().to_string(),
+            agent_id: Some("agent-test".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_done_pushes_main_and_deletes_branch_on_clean_merge() {
+        let (_remote, _project, project_path, branch) =
+            make_repo_with_remote("clean-merge");
+        let wt = make_wt(&project_path, &branch);
+
+        // Capture origin/main before the merge.
+        let (_, before_sha) =
+            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let before_sha = before_sha.trim().to_string();
+
+        // Run the merge path.
+        let result = attempt_worktree_merge(&wt, "clean-merge").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty(), "expected a squash commit sha");
+                assert_eq!(
+                    push_outcome,
+                    PushOutcome::PushedAndDeleted,
+                    "expected clean push + branch delete on origin"
+                );
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
+
+        // origin/main must have advanced.
+        let (_, after_sha) =
+            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let after_sha = after_sha.trim().to_string();
+        assert_ne!(
+            before_sha, after_sha,
+            "origin/main should advance to the squash commit"
+        );
+
+        // Local main HEAD == origin/main.
+        let (_, local_main) =
+            git_capture(&project_path, &["rev-parse", "main"]);
+        assert_eq!(
+            local_main.trim(),
+            after_sha,
+            "local main and origin/main should match after push"
+        );
+
+        // The agent branch must be gone on origin.
+        let (_, refs) = git_capture(&project_path, &["ls-remote", "origin"]);
+        assert!(
+            !refs.contains(&format!("refs/heads/{}", branch)),
+            "agent branch should be deleted on origin; ls-remote = {}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_done_succeeds_when_remote_unavailable() {
+        let (remote, _project, project_path, branch) =
+            make_repo_with_remote("remote-unavailable");
+
+        // Point `origin` at an unreachable URL. We do this *after* the
+        // initial setup so the project is in a realistic post-spawn state.
+        git(
+            &project_path,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                // file:// scheme + nonexistent path = guaranteed-fail push,
+                // no DNS / network dependency.
+                "file:///nonexistent/path/to/repo.git",
+            ],
+        );
+
+        // Sanity: the bare remote we'd otherwise push to still exists, but
+        // we no longer have a path to it.
+        drop(remote);
+
+        let wt = make_wt(&project_path, &branch);
+        let result = attempt_worktree_merge(&wt, "remote-unavailable").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty(), "local merge should still happen");
+                match push_outcome {
+                    PushOutcome::LocalOnly { push_error } => {
+                        assert!(
+                            !push_error.is_empty(),
+                            "expected a non-empty push error reason"
+                        );
+                    }
+                    other => panic!(
+                        "expected LocalOnly when remote unreachable, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
+
+        // Local main must still have the squash commit.
+        let (ok, log) = git_capture(
+            &project_path,
+            &["log", "main", "--oneline", "-1"],
+        );
+        assert!(ok, "git log on main failed");
+        assert!(
+            log.contains("remote-unavailable"),
+            "squash commit should be on local main; got: {}",
+            log
+        );
+    }
+
+    #[test]
+    fn test_done_no_remote_returns_no_remote_outcome() {
+        // A repo with no `origin` remote should produce PushOutcome::NoRemote
+        // and the merge log line should omit the push suffix.
+        let project = tempdir().unwrap();
+        let project_path = project.path().to_path_buf();
+
+        git(&project_path, &["init", "-b", "main"]);
+        git(&project_path, &["config", "user.email", "test@test.com"]);
+        git(&project_path, &["config", "user.name", "Test"]);
+        std::fs::write(project_path.join("README.md"), "x\n").unwrap();
+        git(&project_path, &["add", "README.md"]);
+        git(&project_path, &["commit", "-m", "initial"]);
+
+        let branch = "wg/agent-test/no-remote".to_string();
+        git(&project_path, &["checkout", "-b", &branch]);
+        std::fs::write(project_path.join("a.txt"), "x\n").unwrap();
+        git(&project_path, &["add", "a.txt"]);
+        git(&project_path, &["commit", "-m", "agent work"]);
+        git(&project_path, &["checkout", "main"]);
+
+        let wt = make_wt(&project_path, &branch);
+        let result = attempt_worktree_merge(&wt, "no-remote").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty());
+                assert_eq!(push_outcome, PushOutcome::NoRemote);
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
     }
 }
