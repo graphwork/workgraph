@@ -949,10 +949,20 @@ impl AgentLoop {
                 window_size
             );
 
-            messages.push(Message {
-                role: Role::User,
-                content: vec![ContentBlock::Text { text: warning }],
-            });
+            // Append to the last user message rather than pushing a
+            // separate one — consecutive same-role messages are invalid
+            // in the OAI chat format and some servers reject them with
+            // HTTP 400.
+            if let Some(last) = messages.last_mut()
+                && last.role == Role::User
+            {
+                last.content.push(ContentBlock::Text { text: warning });
+            } else {
+                messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text: warning }],
+                });
+            }
         }
 
         messages
