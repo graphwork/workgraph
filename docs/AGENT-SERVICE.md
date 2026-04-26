@@ -584,12 +584,27 @@ Commands that modify the graph (`wg done`, `wg add`, `wg edit`, `wg fail`, etc.)
 └── registry.json           # Agent registry (flock-protected)
 
 .workgraph/agents/
-└── agent-N/
-    ├── run.sh              # Wrapper script
-    ├── output.log          # Agent stdout/stderr
-    ├── prompt.txt          # Rendered prompt (claude executor)
-    └── metadata.json       # Agent metadata (timing, exit code)
+└── agent-N/                # Every spawn path (full and inline) emits these 4 files:
+    ├── metadata.json       # Agent metadata: agent_id, task_id, executor, model, started_at, worktree info
+    ├── output.log          # Agent stdout/stderr (always present, may be empty initially)
+    ├── prompt.txt          # Rendered LLM prompt (full spawns) or task description (inline spawns)
+    └── run.sh              # Executable wrapper script (full spawns) or inline script (inline spawns)
 ```
+
+### Agent Directory Contract
+
+Every agent directory (`.workgraph/agents/agent-N/`) is guaranteed to contain these four files regardless of spawn path:
+
+| File | Content | Purpose |
+|------|---------|---------|
+| `metadata.json` | JSON: `agent_id`, `task_id`, `executor`, `model`, `started_at`, optional `worktree_path`/`worktree_branch`, `inline` flag for inline spawns | Identification, debugging, worktree cleanup |
+| `output.log` | Agent stdout/stderr stream | Live monitoring, TUI display, token usage extraction |
+| `prompt.txt` | Full LLM prompt (standard spawns) or task description (inline spawns) | Replay, debugging, prompt forensics |
+| `run.sh` | Executable bash script that launched the agent | Replay, debugging, understanding what ran |
+
+**Full spawns** (via `spawn/execution.rs`): Used for regular task agents (claude, native, shell, amplifier executors). The prompt.txt contains the rendered LLM prompt and run.sh is a full wrapper with heartbeats, timeout handling, and completion logic.
+
+**Inline spawns** (via `coordinator.rs`): Used for system tasks (evaluation, assignment, FLIP). These run simple CLI commands (`wg evaluate`, `wg assign`). The prompt.txt notes that no LLM prompt was assembled, and run.sh contains the inline script.
 
 ## Troubleshooting
 

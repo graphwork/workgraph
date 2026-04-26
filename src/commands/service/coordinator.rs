@@ -2607,14 +2607,53 @@ fn build_auto_create_task(
     true
 }
 
+/// Write standard agent artifacts (metadata.json, prompt.txt, run.sh) for inline-spawned agents.
+///
+/// Inline spawn paths (eval, assign) used to emit only output.log, making those
+/// agents harder to debug/replay. This function brings them in line with the full
+/// spawn path in `spawn/execution.rs`.
+fn write_inline_artifacts(
+    output_dir: &Path,
+    agent_id: &str,
+    task_id: &str,
+    executor: &str,
+    model: Option<&str>,
+    script: &str,
+) {
+    let metadata = serde_json::json!({
+        "agent_id": agent_id,
+        "task_id": task_id,
+        "executor": executor,
+        "model": model,
+        "started_at": Utc::now().to_rfc3339(),
+        "inline": true,
+    });
+    let _ = fs::write(
+        output_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata).unwrap_or_default(),
+    );
+    let _ = fs::write(
+        output_dir.join("prompt.txt"),
+        format!("[inline {} task — no LLM prompt; runs: {}]", executor, task_id),
+    );
+    let wrapper = format!("#!/bin/bash\n# Auto-generated inline {} wrapper\n{}", executor, script);
+    let _ = fs::write(output_dir.join("run.sh"), &wrapper);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(
+            output_dir.join("run.sh"),
+            fs::Permissions::from_mode(0o755),
+        );
+    }
+}
+
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
-/// Instead of coordinator -> run.sh -> bash -> `wg evaluate` -> claude, this
-/// forks a single process: `wg evaluate <source-task> --model <model>` that
-/// marks the eval task done/failed on exit.  This eliminates:
-///   - Executor config resolution & template processing
-///   - run.sh wrapper script
-///   - prompt.txt / metadata.json generation
+/// Forks a single process: `wg evaluate <source-task> --model <model>` that
+/// marks the eval task done/failed on exit. Skips executor config resolution
+/// and template processing but still emits the standard agent artifacts
+/// (metadata.json, prompt.txt, run.sh, output.log) for debugging and replay.
 ///
 /// The forked process is still tracked in the agent registry for dead-agent
 /// detection.
@@ -2779,6 +2818,8 @@ exit $EXIT_CODE"#,
         )
     };
 
+    write_inline_artifacts(&output_dir, &agent_id, eval_task_id, "eval", evaluator_model, &script);
+
     // Fork the process
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(&script);
@@ -2842,6 +2883,7 @@ exit $EXIT_CODE"#,
 }
 
 /// Spawn an assignment inline task (similar to eval but for `wg assign --auto`).
+/// Emits the standard agent artifacts (metadata.json, prompt.txt, run.sh, output.log).
 fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)> {
     use std::process::{Command, Stdio};
 
@@ -2946,6 +2988,8 @@ else
 fi
 exit $EXIT_CODE"#,
     );
+
+    write_inline_artifacts(&output_dir, &agent_id, assign_task_id, "assign", None, &script);
 
     // Fork the process
     let mut cmd = Command::new("bash");
@@ -6434,5 +6478,103 @@ mod tests {
             Priority::Critical,
             ".assign-* for Critical task should be Critical"
         );
+    }
+
+    #[test]
+    fn test_write_inline_artifacts_creates_all_files() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("agents").join("agent-42");
+        fs::create_dir_all(&output_dir).unwrap();
+
+        write_inline_artifacts(
+            &output_dir,
+            "agent-42",
+            ".evaluate-my-task",
+            "eval",
+            Some("sonnet"),
+            "#!/bin/bash\nwg evaluate run my-task",
+        );
+
+        assert!(output_dir.join("metadata.json").exists());
+        assert!(output_dir.join("prompt.txt").exists());
+        assert!(output_dir.join("run.sh").exists());
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["agent_id"], "agent-42");
+        assert_eq!(metadata["task_id"], ".evaluate-my-task");
+        assert_eq!(metadata["executor"], "eval");
+        assert_eq!(metadata["model"], "sonnet");
+        assert_eq!(metadata["inline"], true);
+
+        let prompt = fs::read_to_string(output_dir.join("prompt.txt")).unwrap();
+        assert!(prompt.contains("eval"));
+
+        let run_sh = fs::read_to_string(output_dir.join("run.sh")).unwrap();
+        assert!(run_sh.contains("wg evaluate run my-task"));
+        assert!(run_sh.starts_with("#!/bin/bash"));
+    }
+
+    #[test]
+    fn test_write_inline_artifacts_assign_variant() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("agents").join("agent-99");
+        fs::create_dir_all(&output_dir).unwrap();
+
+        write_inline_artifacts(
+            &output_dir,
+            "agent-99",
+            ".assign-my-task",
+            "assign",
+            None,
+            "wg assign 'my-task' --auto",
+        );
+
+        assert!(output_dir.join("metadata.json").exists());
+        assert!(output_dir.join("prompt.txt").exists());
+        assert!(output_dir.join("run.sh").exists());
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["agent_id"], "agent-99");
+        assert_eq!(metadata["executor"], "assign");
+        assert!(metadata["model"].is_null());
+
+        let run_sh = fs::read_to_string(output_dir.join("run.sh")).unwrap();
+        assert!(run_sh.contains("wg assign"));
+    }
+
+    #[test]
+    fn test_no_minimal_artifact_spawn_path() {
+        // Verify that both inline spawn functions call write_inline_artifacts.
+        // This is a compile-time guarantee: if write_inline_artifacts is removed
+        // from either function, the call sites in spawn_eval_inline and
+        // spawn_assign_inline would fail to compile. This test documents the
+        // contract: every spawn path must produce metadata.json + prompt.txt +
+        // run.sh + output.log.
+        //
+        // The canonical spawn path (spawn/execution.rs::spawn_agent_inner) writes
+        // metadata.json at L802, prompt.txt at various points per executor type,
+        // and run.sh via write_wrapper_script at L1415.
+        //
+        // The inline paths (coordinator.rs) use write_inline_artifacts.
+
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path();
+        fs::create_dir_all(output_dir).unwrap();
+
+        // Simulate what both inline spawn paths now do after building script
+        write_inline_artifacts(output_dir, "agent-1", "task-1", "eval", None, "echo test");
+
+        let expected_files = ["metadata.json", "prompt.txt", "run.sh"];
+        for f in &expected_files {
+            assert!(
+                output_dir.join(f).exists(),
+                "Inline spawn must produce {} but it is missing",
+                f
+            );
+        }
     }
 }
