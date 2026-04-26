@@ -1140,4 +1140,115 @@ mod tui_editor_tests {
             .unwrap();
         // If we got here without panicking, rendering works.
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Input box style: no purple/magenta (tui-purple-styled)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// The bottom chat input box must not be rendered with purple/magenta
+    /// foreground anywhere — neither the border separator, the `> ` prompt,
+    /// nor the typed text. User reports purple "is cool but not right anymore"
+    /// and the styling should be the default terminal color.
+    #[test]
+    fn test_chat_input_box_color_is_default() {
+        use ratatui::style::Color;
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello");
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render::draw(frame, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let area = app.last_chat_input_area;
+        assert!(area.height > 0 && area.width > 0, "input area not laid out");
+
+        let mut bad: Vec<(u16, u16, String, Color)> = Vec::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                let cell = &buf[(x, y)];
+                let fg = cell.style().fg;
+                if matches!(fg, Some(Color::Magenta) | Some(Color::LightMagenta)) {
+                    bad.push((x, y, cell.symbol().to_string(), fg.unwrap()));
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "Chat input box must not contain magenta/purple cells, found {} offending cells: {:?}",
+            bad.len(),
+            bad.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
+    /// After a chat message is sent and an executor response arrives (success
+    /// or fault), the input box must not be pre-populated with executor
+    /// output. Only user input belongs in the editor.
+    #[test]
+    fn test_chat_input_box_does_not_capture_previous_output() {
+        use crate::tui::viz_viewer::state::{ChatMessage, ChatRole};
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hi nex");
+
+        // Submit (clears editor, sends message).
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "",
+            "editor should be empty right after submit"
+        );
+
+        // Simulate executor (wg nex) emitting output, then faulting with an
+        // error. None of this content should ever reach the editor.
+        let nex_output = "internal traceback: nex died here";
+        let nex_error = "Executor faulted: connection refused";
+        app.chat.messages.push(ChatMessage {
+            role: ChatRole::Coordinator,
+            text: nex_output.to_string(),
+            full_text: None,
+            attachments: Vec::new(),
+            edited: false,
+            inbox_id: None,
+            user: None,
+            target_task: None,
+            msg_timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            read_at: None,
+            msg_queue_id: None,
+        });
+        app.chat.messages.push(ChatMessage {
+            role: ChatRole::SystemError,
+            text: nex_error.to_string(),
+            full_text: None,
+            attachments: Vec::new(),
+            edited: false,
+            inbox_id: None,
+            user: None,
+            target_task: None,
+            msg_timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            read_at: None,
+            msg_queue_id: None,
+        });
+
+        // Render — re-rendering must not pre-fill the editor with anything.
+        let _ = render_to_string(&mut app, 120, 40);
+
+        let editor_after = editor_text(&app.chat.editor);
+        assert_eq!(
+            editor_after, "",
+            "editor must remain empty after executor output/fault, got {:?}",
+            editor_after
+        );
+        assert!(
+            !editor_after.contains(nex_output),
+            "editor must never contain executor stdout/output"
+        );
+        assert!(
+            !editor_after.contains(nex_error),
+            "editor must never contain executor error text"
+        );
+    }
 }

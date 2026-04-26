@@ -3845,18 +3845,20 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let in_edit_mode = app.chat.editing_index.is_some();
     let has_text = !super::state::editor_is_empty(&app.chat.editor);
     app.last_chat_input_area = area;
-    // Use yellow/gold border when in edit mode, magenta for normal input.
+    // Yellow/gold border when editing an existing message; default terminal
+    // color for the normal active input (no purple styling — keeps the
+    // composer visually neutral).
     let border_color = if is_editing && in_edit_mode {
         Color::Yellow
     } else if is_editing {
-        Color::Magenta
+        Color::Reset
     } else {
         Color::DarkGray
     };
     let prompt_color = if is_editing && in_edit_mode {
         Color::Yellow
     } else if is_editing {
-        Color::LightMagenta
+        Color::Reset
     } else {
         Color::DarkGray
     };
