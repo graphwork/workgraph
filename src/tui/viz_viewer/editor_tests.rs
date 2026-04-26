@@ -1140,4 +1140,104 @@ mod tui_editor_tests {
             .unwrap();
         // If we got here without panicking, rendering works.
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Sub-bug A: chat input box must not be styled with magenta/purple.
+    // The bottom input box was rendered with Color::Magenta border and
+    // Color::LightMagenta prompt while the user was typing — users
+    // perceived this as "purple" and complained that it leaked visual
+    // confusion with the wg-nex output above. The input box should use
+    // the default terminal color, no styling.
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_chat_input_box_color_is_default() {
+        use ratatui::layout::Rect;
+        use ratatui::style::Color;
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        // Render only the chat input box at the bottom of the screen.
+        let input_area = Rect::new(0, 20, 80, 4);
+        terminal
+            .draw(|frame| render::draw_chat_input(frame, &mut app, input_area))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        for y in input_area.y..(input_area.y + input_area.height) {
+            for x in input_area.x..(input_area.x + input_area.width) {
+                let cell = &buf[(x, y)];
+                assert!(
+                    cell.fg != Color::Magenta && cell.fg != Color::LightMagenta,
+                    "chat input cell at ({}, {}) has purple fg ({:?}); \
+                     expected non-magenta. symbol={:?}",
+                    x,
+                    y,
+                    cell.fg,
+                    cell.symbol()
+                );
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Sub-bug B: input box state must not capture executor/nex output.
+    // The user's bug report suggested that after a fault the chat input
+    // box ended up "offering" stale wg-nex output as the next user input.
+    // After a send (Enter), the editor must be empty, and crucially must
+    // never end up populated with non-user content.
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_chat_input_box_does_not_capture_previous_output() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Simulate user typing then sending.
+        type_string(&mut app, "hello world");
+        assert_eq!(editor_text(&app.chat.editor), "hello world");
+
+        // Mimic the Enter handler: clear editor, would normally call
+        // send_chat_message. We don't need the network round-trip here
+        // — the contract is "after Enter, the editor is empty".
+        send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "",
+            "editor should be empty after sending; \
+             nothing from the previous turn / executor output should survive"
+        );
+
+        // Now simulate "wg nex emitted output" arriving while no user
+        // input is active. The chat editor must remain empty — none of
+        // that output may pre-populate the user-input field.
+        let stale_output =
+            "ERROR: model qwen3-coder is not available\nat lambda01: connection reset";
+        app.chat.messages.push(crate::tui::viz_viewer::state::ChatMessage {
+            role: crate::tui::viz_viewer::state::ChatRole::Coordinator,
+            text: stale_output.to_string(),
+            full_text: None,
+            attachments: Vec::new(),
+            edited: false,
+            inbox_id: None,
+            user: None,
+            target_task: None,
+            msg_timestamp: None,
+            read_at: None,
+            msg_queue_id: None,
+        });
+
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "",
+            "appending an executor/nex message must NOT pre-populate the input box"
+        );
+        assert!(
+            !editor_text(&app.chat.editor).contains("ERROR"),
+            "input box must never contain executor output"
+        );
+    }
 }
