@@ -74,3 +74,14 @@ owners = [
 ]
 description = "Open a chat and send 'hi'; expect a non-error coordinator response within 30s of dispatcher boot."
 timeout_seconds = 90
+
+[[scenario]]
+name = "tui_log_pane_renders_raw_stream"
+script = "scenarios/tui_log_pane_renders_raw_stream.sh"
+owners = [
+    "tui-agent-activity",
+    "tui-log-view",
+    "smoke-gate-is",
+]
+description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-progress task's assigned agent on first draw, and picks up new events as they're appended. Regression for the tui-agent-activity merge that surfaced 'no agent output yet' to users despite stream files existing."
+timeout_seconds = 60

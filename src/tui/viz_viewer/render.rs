@@ -2300,6 +2300,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             // has changed on disk.
             app.load_log_pane();
             app.update_log_output();
+            app.update_log_stream_events();
             draw_log_tab(frame, app, content_area);
         }
         RightPanelTab::CoordLog => {
@@ -13613,6 +13614,114 @@ mod tests {
             text.contains("1 agents"),
             "should show 1 agent, got: {}",
             text
+        );
+    }
+
+    /// Render a TestBackend buffer to a flat string (concatenating cell symbols
+    /// row by row, separated by newlines). Useful for asserting that specific
+    /// text appears in a rendered TUI.
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area();
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    out.push_str(cell.symbol());
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Regression test for tui-log-view: when an in-progress task has an
+    /// assigned agent whose raw_stream.jsonl file contains events, the Log
+    /// pane MUST render those events on first draw — NOT show
+    /// "no agent output yet". This is the user-reported failure mode that
+    /// the prior tui-agent-activity attempt did not catch end-to-end.
+    #[test]
+    fn test_log_pane_renders_raw_stream_events_for_alive_agent() {
+        use crate::commands::viz::ascii::generate_ascii;
+        use crate::commands::viz::{LayoutMode, VizOutput};
+        use crate::tui::viz_viewer::state::{RightPanelTab, VizApp};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use std::collections::{HashMap, HashSet};
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::parser::save_graph;
+        use workgraph::test_helpers::make_task_with_status;
+
+        // 1) Set up a workgraph dir with one in-progress task assigned to agent-77.
+        let mut graph = WorkGraph::new();
+        let mut t = make_task_with_status("my-task", "Live Task", Status::InProgress);
+        t.assigned = Some("agent-77".to_string());
+        graph.add_node(Node::Task(t));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        // 2) Create the agent's raw_stream.jsonl with realistic events.
+        let agent_dir = tmp.path().join("agents").join("agent-77");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let stream_lines = [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"UNIQUE_STREAM_MARKER_ALPHA"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        ];
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            stream_lines.join("\n"),
+        )
+        .unwrap();
+        // output.log is empty — the only data source must be raw_stream.jsonl.
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+
+        // 3) Build VizApp pointed at the workgraph dir, select the task,
+        //    and switch the right panel to the Log tab — exactly what the
+        //    user does when they press '4'.
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz: VizOutput = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        let idx = app.task_order.iter().position(|id| id == "my-task");
+        app.selected_task_idx = idx;
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Log;
+
+        // 4) Render via TestBackend — the user's first draw of the Log tab.
+        //    Wide enough to avoid Compact breakpoint clobbering layout.
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let rendered = buffer_to_string(terminal.backend().buffer());
+
+        // The bug surface: Log pane must show real activity, not the
+        // "no agent output yet" sentinel that the user sees today.
+        assert!(
+            !rendered.contains("no agent output yet"),
+            "Log tab must NOT show 'no agent output yet' when raw_stream.jsonl \
+             has events for an alive agent. Rendered:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("UNIQUE_STREAM_MARKER_ALPHA"),
+            "Log tab must render the stream event text on first draw. Rendered:\n{}",
+            rendered
         );
     }
 }
