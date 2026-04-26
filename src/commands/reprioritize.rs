@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::graph::Priority;
+use workgraph::graph::{PRIORITY_DEFAULT, PRIORITY_CRITICAL, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW};
 use workgraph::parser::modify_graph;
 
 use super::add::parse_priority;
@@ -19,7 +19,7 @@ pub fn run(dir: &Path, id: &str, priority: &str) -> Result<()> {
     let new_priority = parse_priority(Some(priority));
 
     let mut error: Option<anyhow::Error> = None;
-    let mut old_priority = Priority::Normal;
+    let mut old_priority = PRIORITY_DEFAULT;
     modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(id) {
             Some(t) => t,
@@ -93,7 +93,7 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.priority, PRIORITY_HIGH);
     }
 
     #[test]
@@ -106,7 +106,7 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::Critical);
+        assert_eq!(task.priority, PRIORITY_CRITICAL);
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::Low);
+        assert_eq!(task.priority, PRIORITY_LOW);
     }
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::Idle);
+        assert_eq!(task.priority, PRIORITY_IDLE);
     }
 
     #[test]
@@ -145,7 +145,7 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::Normal);
+        assert_eq!(task.priority, PRIORITY_DEFAULT);
     }
 
     #[test]
@@ -174,20 +174,39 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.priority, PRIORITY_HIGH);
     }
 
     #[test]
     fn test_reprioritize_with_existing_priority() {
         let dir = tempdir().unwrap();
         let mut task = make_task("t1", "Task 1");
-        task.priority = Priority::Critical;
+        task.priority = PRIORITY_CRITICAL;
         setup_workgraph(dir.path(), vec![task]);
 
         run(dir.path(), "t1", "low").unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.priority, Priority::Low);
+        assert_eq!(task.priority, PRIORITY_LOW);
+    }
+
+    #[test]
+    fn test_reprioritize_accepts_numeric_and_named() {
+        let dir = tempdir().unwrap();
+        let task = make_task("t1", "Task 1");
+        setup_workgraph(dir.path(), vec![task]);
+
+        // Numeric
+        run(dir.path(), "t1", "42").unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.priority, 42);
+
+        // Named alias
+        run(dir.path(), "t1", "high").unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.priority, PRIORITY_HIGH);
     }
 }

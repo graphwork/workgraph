@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::cron::{calculate_next_fire, parse_cron_expression};
-use workgraph::graph::{CycleConfig, Estimate, Node, Priority, Status, Task, parse_delay};
+use workgraph::graph::{CycleConfig, Estimate, Node, PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW, PRIORITY_NORMAL, Priority, Status, Task, boost_priority, parse_delay};
 use workgraph::parser::modify_graph;
 
 use super::graph_path;
@@ -90,18 +90,23 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
 /// Accepts named levels (critical, high, normal, low, idle) or defaults to Normal if invalid.
 pub fn parse_priority(priority_str: Option<&str>) -> Priority {
     match priority_str {
-        Some(s) => match s.to_lowercase().as_str() {
-            "critical" => Priority::Critical,
-            "high" => Priority::High,
-            "normal" => Priority::Normal,
-            "low" => Priority::Low,
-            "idle" => Priority::Idle,
-            _ => {
-                eprintln!("Warning: Invalid priority '{}', using Normal", s);
-                Priority::Normal
+        Some(s) => {
+            if let Ok(n) = s.parse::<u32>() {
+                return n;
             }
-        },
-        None => Priority::Normal,
+            match s.to_lowercase().as_str() {
+                "critical" => PRIORITY_CRITICAL,
+                "high" => PRIORITY_HIGH,
+                "normal" => PRIORITY_NORMAL,
+                "low" => PRIORITY_LOW,
+                "idle" => PRIORITY_IDLE,
+                _ => {
+                    eprintln!("Warning: Invalid priority '{}', using default ({})", s, PRIORITY_DEFAULT);
+                    PRIORITY_DEFAULT
+                }
+            }
+        }
+        None => PRIORITY_DEFAULT,
     }
 }
 
@@ -114,20 +119,13 @@ pub fn parse_priority(priority_str: Option<&str>) -> Priority {
 /// - Idle -> Low
 /// - Critical stays Critical (can't go higher)
 pub fn calculate_final_priority(base_priority: Priority, tags: &[String]) -> Priority {
-    // Check if the task has urgent or triage tags
     let has_urgent_tag = tags.iter().any(|tag| {
         let tag_lower = tag.to_lowercase();
         tag_lower == "urgent" || tag_lower == "triage"
     });
 
     if has_urgent_tag {
-        match base_priority {
-            Priority::Idle => Priority::Low,
-            Priority::Low => Priority::Normal,
-            Priority::Normal => Priority::High,
-            Priority::High => Priority::Critical,
-            Priority::Critical => Priority::Critical, // Can't boost higher than Critical
-        }
+        boost_priority(base_priority)
     } else {
         base_priority
     }
@@ -998,7 +996,7 @@ fn add_task_directly(
             title: title.to_string(),
             description: description.map(String::from),
             status: Status::Open,
-            priority: calculate_final_priority(Priority::Normal, tags),
+            priority: calculate_final_priority(PRIORITY_DEFAULT, tags),
             assigned: None,
             estimate: None,
             before: vec![],

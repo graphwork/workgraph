@@ -347,6 +347,10 @@ pub enum Commands {
         #[arg(long = "no-tier-escalation")]
         no_tier_escalation: bool,
 
+        /// Task priority (higher = more important). Accepts a number or name: critical (100), high (50), normal (10), low (5), idle (0)
+        #[arg(long, short = 'p')]
+        priority: Option<String>,
+
         /// Cron schedule expression (6-field format: "sec min hour day month dow")
         #[arg(long)]
         cron: Option<String>,

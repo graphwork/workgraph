@@ -17,8 +17,9 @@ use workgraph::agency::{
 use workgraph::chat;
 use workgraph::config::Config;
 use workgraph::graph::{
-    LogEntry, Node, Priority, Status, Task, WaitCondition, WaitSpec,
-    evaluate_all_cycle_failure_restarts, evaluate_all_cycle_iterations,
+    LogEntry, Node, PRIORITY_DEFAULT, PRIORITY_IDLE, PRIORITY_NORMAL, Priority, Status, Task,
+    WaitCondition, WaitSpec, boost_priority, evaluate_all_cycle_failure_restarts,
+    evaluate_all_cycle_iterations,
 };
 use workgraph::messages;
 use workgraph::parser::{load_graph, modify_graph};
@@ -1459,7 +1460,7 @@ fn build_auto_assign_tasks(
                     title: format!("Create agents: poor match for '{}'", source_id),
                     description: Some(desc),
                     status: Status::Open,
-                    priority: Priority::default(),
+                    priority: PRIORITY_DEFAULT,
                     assigned: None,
                     estimate: None,
                     before: vec![],
@@ -1847,7 +1848,7 @@ fn build_flip_verification_tasks(
             title: format!("Verify (FLIP {:.2}): {}", eval.score, source_title),
             description: Some(desc),
             status: Status::Open,
-            priority: Priority::default(),
+            priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
             before: vec![],
@@ -2114,7 +2115,7 @@ fn build_separate_verify_tasks(
             title: format!("Verify: {}", source_title),
             description: Some(desc),
             status: Status::Open,
-            priority: Priority::default(),
+            priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
             before: vec![],
@@ -2311,7 +2312,7 @@ fn build_auto_evolve_task(
         title: format!("Auto-evolve: {}", trigger_reason),
         description: Some(desc),
         status: Status::Open,
-        priority: Priority::default(),
+        priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
         before: vec![],
@@ -2511,7 +2512,7 @@ fn build_auto_create_task(
         title: format!("Auto-create: {} tasks since last creation", since_last),
         description: Some(desc),
         status: Status::Open,
-        priority: Priority::default(),
+        priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
         before: vec![],
@@ -3042,13 +3043,7 @@ fn sort_tasks_by_priority_with_features<'a>(
                     // Bump priority by one level for every 24 hours of waiting
                     let bumps = (age_hours / starvation_threshold_hours) as usize;
                     for _ in 0..bumps {
-                        effective_priority = match effective_priority {
-                            Priority::Idle => Priority::Low,
-                            Priority::Low => Priority::Normal,
-                            Priority::Normal => Priority::High,
-                            Priority::High => Priority::Critical,
-                            Priority::Critical => Priority::Critical, // Can't go higher
-                        };
+                        effective_priority = boost_priority(effective_priority);
                     }
                     eprintln!(
                         "[coordinator] Priority bump: {} (age: {}h) -> {}",
@@ -3059,7 +3054,7 @@ fn sort_tasks_by_priority_with_features<'a>(
 
             // Priority inheritance: check if this task blocks any high-priority tasks
             let inherited_priority = compute_priority_inheritance(task, graph);
-            if inherited_priority < effective_priority {
+            if inherited_priority > effective_priority {
                 eprintln!(
                     "[coordinator] Priority inheritance: {} ({} -> {})",
                     task.id, effective_priority, inherited_priority
@@ -3071,18 +3066,18 @@ fn sort_tasks_by_priority_with_features<'a>(
         })
         .collect();
 
-    // Sort by effective priority (Critical first), then by dispatch_count
-    // ascending within the same level (CFS-like fair share: prefer less-dispatched tasks)
+    // Sort by effective priority descending (higher number = higher priority),
+    // then by dispatch_count ascending (CFS-like fair share: prefer less-dispatched tasks)
     task_priorities.sort_by(|(a_task, a_prio), (b_task, b_prio)| {
-        a_prio.cmp(b_prio).then(a_task.dispatch_count.cmp(&b_task.dispatch_count))
+        b_prio.cmp(a_prio).then(a_task.dispatch_count.cmp(&b_task.dispatch_count))
     });
 
-    // Idle gate: only include Idle-effective tasks when no Normal-or-higher tasks are in the set
+    // Idle gate: only include idle (priority 0) tasks when no higher-priority tasks are in the set
     let has_normal_or_higher = task_priorities
         .iter()
-        .any(|(_, p)| *p <= Priority::Normal);
+        .any(|(_, p)| *p >= PRIORITY_NORMAL);
     if has_normal_or_higher {
-        task_priorities.retain(|(_, p)| *p != Priority::Idle);
+        task_priorities.retain(|(_, p)| *p != PRIORITY_IDLE);
     }
 
     let sorted_tasks: Vec<_> = task_priorities.into_iter().map(|(task, _)| task).collect();
@@ -3112,11 +3107,9 @@ fn compute_priority_inheritance(
 ) -> Priority {
     let mut highest_inherited = task.priority;
 
-    // Find all tasks that depend on this task (directly or indirectly)
     for dependent_task in graph.tasks() {
         if dependent_task.after.contains(&task.id) {
-            // This task directly blocks the dependent
-            if dependent_task.priority < highest_inherited {
+            if dependent_task.priority > highest_inherited {
                 highest_inherited = dependent_task.priority;
             }
         }
@@ -6256,21 +6249,21 @@ mod tests {
         critical.id = "task-critical".to_string();
         critical.title = "Critical task".to_string();
         critical.status = workgraph::graph::Status::Open;
-        critical.priority = Priority::Critical;
+        critical.priority = workgraph::graph::PRIORITY_CRITICAL;
         critical.created_at = Some(Utc::now().to_rfc3339());
 
         let mut normal = Task::default();
         normal.id = "task-normal".to_string();
         normal.title = "Normal task".to_string();
         normal.status = workgraph::graph::Status::Open;
-        normal.priority = Priority::Normal;
+        normal.priority = workgraph::graph::PRIORITY_NORMAL;
         normal.created_at = Some(Utc::now().to_rfc3339());
 
         let mut low = Task::default();
         low.id = "task-low".to_string();
         low.title = "Low task".to_string();
         low.status = workgraph::graph::Status::Open;
-        low.priority = Priority::Low;
+        low.priority = workgraph::graph::PRIORITY_LOW;
         low.created_at = Some(Utc::now().to_rfc3339());
 
         graph.add_node(Node::Task(normal.clone()));
@@ -6300,7 +6293,7 @@ mod tests {
         task_a.id = "task-a".to_string();
         task_a.title = "Task A".to_string();
         task_a.status = workgraph::graph::Status::Open;
-        task_a.priority = Priority::Normal;
+        task_a.priority = workgraph::graph::PRIORITY_NORMAL;
         task_a.dispatch_count = 3;
         task_a.created_at = Some(Utc::now().to_rfc3339());
 
@@ -6308,7 +6301,7 @@ mod tests {
         task_b.id = "task-b".to_string();
         task_b.title = "Task B".to_string();
         task_b.status = workgraph::graph::Status::Open;
-        task_b.priority = Priority::Normal;
+        task_b.priority = workgraph::graph::PRIORITY_NORMAL;
         task_b.dispatch_count = 1;
         task_b.created_at = Some(Utc::now().to_rfc3339());
 
@@ -6336,14 +6329,14 @@ mod tests {
         idle_task.id = "task-idle".to_string();
         idle_task.title = "Idle task".to_string();
         idle_task.status = workgraph::graph::Status::Open;
-        idle_task.priority = Priority::Idle;
+        idle_task.priority = workgraph::graph::PRIORITY_IDLE;
         idle_task.created_at = Some(Utc::now().to_rfc3339());
 
         let mut normal_task = Task::default();
         normal_task.id = "task-normal".to_string();
         normal_task.title = "Normal task".to_string();
         normal_task.status = workgraph::graph::Status::Open;
-        normal_task.priority = Priority::Normal;
+        normal_task.priority = workgraph::graph::PRIORITY_NORMAL;
         normal_task.created_at = Some(Utc::now().to_rfc3339());
 
         // Case 1: Idle + Normal ready → Idle excluded
@@ -6375,7 +6368,7 @@ mod tests {
         low_task.id = "task-low".to_string();
         low_task.title = "Low task".to_string();
         low_task.status = workgraph::graph::Status::Open;
-        low_task.priority = Priority::Low;
+        low_task.priority = workgraph::graph::PRIORITY_LOW;
         low_task.created_at = Some(Utc::now().to_rfc3339());
         graph3.add_node(Node::Task(idle_task.clone()));
         graph3.add_node(Node::Task(low_task.clone()));
@@ -6405,7 +6398,7 @@ mod tests {
         user_task.id = "my-task".to_string();
         user_task.title = "My Task".to_string();
         user_task.status = workgraph::graph::Status::Open;
-        user_task.priority = Priority::Normal;
+        user_task.priority = workgraph::graph::PRIORITY_NORMAL;
         graph.add_node(Node::Task(user_task));
 
         // Critical user task
@@ -6413,7 +6406,7 @@ mod tests {
         critical_task.id = "crit-task".to_string();
         critical_task.title = "Critical Task".to_string();
         critical_task.status = workgraph::graph::Status::Open;
-        critical_task.priority = Priority::Critical;
+        critical_task.priority = workgraph::graph::PRIORITY_CRITICAL;
         graph.add_node(Node::Task(critical_task));
 
         // Scaffold assign tasks
@@ -6424,14 +6417,14 @@ mod tests {
         let assign_normal = graph.get_task(".assign-my-task").unwrap();
         assert_eq!(
             assign_normal.priority,
-            Priority::Normal,
+            workgraph::graph::PRIORITY_NORMAL,
             ".assign-* for Normal task should be Normal"
         );
 
         let assign_critical = graph.get_task(".assign-crit-task").unwrap();
         assert_eq!(
             assign_critical.priority,
-            Priority::Critical,
+            workgraph::graph::PRIORITY_CRITICAL,
             ".assign-* for Critical task should be Critical"
         );
     }

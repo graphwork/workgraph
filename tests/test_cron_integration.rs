@@ -2,7 +2,7 @@ use chrono::{TimeZone, Timelike, Utc};
 use serde_json;
 use tempfile::TempDir;
 use workgraph::cron::{calculate_next_fire, is_cron_due, parse_cron_expression};
-use workgraph::graph::{Node, Priority, Status, Task, WorkGraph};
+use workgraph::graph::{Node, PRIORITY_NORMAL, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
 #[test]
@@ -251,7 +251,7 @@ fn create_test_task() -> Task {
         title: "Test Task".to_string(),
         description: None,
         status: Status::Open,
-        priority: Priority::Normal,
+        priority: PRIORITY_NORMAL,
         assigned: None,
         estimate: None,
         before: vec![],

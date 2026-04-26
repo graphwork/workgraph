@@ -3,7 +3,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use workgraph::config::CoordinatorConfig;
-use workgraph::graph::{Node, Priority, Status, Task, WorkGraph, parse_delay};
+use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph, parse_delay};
 use workgraph::parser::load_graph;
 
 /// Helper to load a workgraph from a directory (mimics load_workgraph)
@@ -23,7 +23,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         title: format!("Test task {}", id),
         description: None,
         status: Status::Open,
-        priority: Priority::default(),
+        priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
         before: vec![],

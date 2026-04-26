@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::graph::{Priority, Status};
+use workgraph::graph::{PRIORITY_DEFAULT, Status};
 use workgraph::query::ready_tasks_cycle_aware;
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
@@ -72,9 +72,10 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     .as_ref()
                     .map(|a| format!(" ({})", a))
                     .unwrap_or_default();
-                let priority_str = match task.priority {
-                    Priority::Normal => String::new(),
-                    p => format!(" \x1b[35m[{}]\x1b[0m", p),
+                let priority_str = if task.priority != PRIORITY_DEFAULT {
+                    format!(" ▴{}", task.priority)
+                } else {
+                    String::new()
                 };
                 println!("  {} - {}{}{}", task.id, task.title, priority_str, assigned);
             }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use workgraph::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
-use workgraph::graph::{Node, Priority, Status, Task};
+use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task};
 use workgraph::parser::{load_graph, modify_graph};
 
 use super::graph_path;
@@ -243,7 +243,7 @@ pub fn run(
                 title: rendered.title.clone(),
                 description: Some(rendered.description.clone()),
                 status: Status::Open,
-                priority: Priority::default(),
+                priority: PRIORITY_DEFAULT,
                 assigned: None,
                 estimate: None,
                 before: vec![],

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::graph::{Priority, Status};
+use workgraph::graph::{PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW, PRIORITY_NORMAL, Priority, Status};
 
 pub fn run(
     dir: &Path,
@@ -30,15 +30,23 @@ pub fn run(
     };
 
     let priority_filter: Option<Priority> = match priority_filter {
-        Some("critical") => Some(Priority::Critical),
-        Some("high") => Some(Priority::High),
-        Some("normal") => Some(Priority::Normal),
-        Some("low") => Some(Priority::Low),
-        Some("idle") => Some(Priority::Idle),
-        Some(s) => anyhow::bail!(
-            "Unknown priority: '{}'. Valid values: critical, high, normal, low, idle",
-            s
-        ),
+        Some(s) => {
+            if let Ok(n) = s.parse::<u32>() {
+                Some(n)
+            } else {
+                match s.to_lowercase().as_str() {
+                    "critical" => Some(PRIORITY_CRITICAL),
+                    "high" => Some(PRIORITY_HIGH),
+                    "normal" => Some(PRIORITY_NORMAL),
+                    "low" => Some(PRIORITY_LOW),
+                    "idle" => Some(PRIORITY_IDLE),
+                    _ => anyhow::bail!(
+                        "Unknown priority: '{}'. Valid values: critical, high, normal, low, idle, or a number",
+                        s
+                    ),
+                }
+            }
+        }
         None => None,
     };
 
@@ -113,9 +121,10 @@ pub fn run(
             };
             let not_before_str = format_not_before_hint(task.not_before.as_deref());
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
-            let priority_str = match task.priority {
-                Priority::Normal => String::new(),
-                priority => format!(" \x1b[35m[{}]\x1b[0m", priority),
+            let priority_str = if task.priority != PRIORITY_DEFAULT {
+                format!(" ▴{}", task.priority)
+            } else {
+                String::new()
             };
             let cron_str = if task.cron_enabled {
                 if let Some(ref sched) = task.cron_schedule {

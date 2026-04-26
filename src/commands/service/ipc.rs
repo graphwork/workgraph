@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
 use workgraph::cron::{calculate_next_fire, parse_cron_expression};
-use workgraph::graph::{Node, Priority, Status, Task};
+use workgraph::graph::{Node, PRIORITY_DEFAULT, PRIORITY_HIGH, Status, Task};
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::registry::AgentRegistry;
 
@@ -1045,7 +1045,7 @@ fn handle_add_task(
         title: title.to_string(),
         description: description.map(String::from),
         status: Status::Open,
-        priority: Priority::default(),
+        priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
         before: vec![],
@@ -1330,7 +1330,7 @@ fn handle_create_coordinator(
             next_id
         )),
         status: workgraph::graph::Status::InProgress,
-        priority: workgraph::graph::Priority::High,
+        priority: PRIORITY_HIGH,
         tags: vec!["coordinator-loop".to_string()],
         cycle_config: Some(workgraph::graph::CycleConfig {
             max_iterations: 0,

@@ -315,7 +315,7 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Priority, Task};
+    use workgraph::graph::{PRIORITY_DEFAULT, Task};
 
     fn make_test_task() -> Task {
         Task {
@@ -323,7 +323,7 @@ mod tests {
             title: "Test Task Title".to_string(),
             description: Some("This is a test description".to_string()),
             status: Status::InProgress,
-            priority: Priority::default(),
+            priority: PRIORITY_DEFAULT,
             assigned: Some("agent-1".to_string()),
             estimate: None,
             before: vec![],

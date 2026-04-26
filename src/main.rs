@@ -812,6 +812,7 @@ fn main() -> Result<()> {
             propagation,
             retry_strategy,
             no_tier_escalation,
+            priority,
             cron,
             subtask,
         } => {
@@ -893,7 +894,7 @@ fn main() -> Result<()> {
                     independent,
                     no_tier_escalation,
                     parse_iteration_config(propagation.as_deref(), retry_strategy.as_deref()),
-                    None, // priority - not yet exposed in CLI
+                    priority.as_deref(),
                     cron.as_deref(),
                     subtask,
                 )

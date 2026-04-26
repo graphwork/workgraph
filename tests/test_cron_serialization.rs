@@ -1,5 +1,5 @@
 use serde_json;
-use workgraph::graph::{Node, Priority, Status, Task};
+use workgraph::graph::{Node, PRIORITY_NORMAL, Status, Task};
 
 #[test]
 fn test_cron_task_serialization() {
@@ -9,7 +9,7 @@ fn test_cron_task_serialization() {
         title: "Test Cron Task".to_string(),
         description: None,
         status: Status::Open,
-        priority: Priority::Normal,
+        priority: PRIORITY_NORMAL,
         assigned: None,
         estimate: None,
         before: vec![],

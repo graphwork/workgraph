@@ -378,7 +378,7 @@ fn find_cycles_dfs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Estimate, Node, Priority, Task};
+    use workgraph::graph::{Estimate, Node, PRIORITY_DEFAULT, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -394,7 +394,7 @@ mod tests {
             title: title.to_string(),
             description: None,
             status: Status::Open,
-            priority: Priority::default(),
+            priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: Some(Estimate {
                 hours: Some(hours),

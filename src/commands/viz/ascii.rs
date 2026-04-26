@@ -2,7 +2,7 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthChar;
-use workgraph::graph::{Priority, Status, Task, TokenUsage, WorkGraph, format_token_display};
+use workgraph::graph::{PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display};
 use workgraph::messages::{CoordinatorMessageStatus, MessageStats};
 
 use super::{LayoutMode, VizOutput};
@@ -368,8 +368,14 @@ pub(crate) fn generate_ascii(
                 .or_else(|| live_token_usage.get(&t.id))
         });
         let agency_usage = agency_token_usage.get(id);
+        let priority_suffix = task
+            .filter(|t| t.priority != PRIORITY_DEFAULT)
+            .map(|t| format!(" · ▴{}", t.priority))
+            .unwrap_or_default();
         let status_with_tokens = if let Some(tok_str) = format_token_display(usage, agency_usage) {
-            format!("{} · {}", status, tok_str)
+            format!("{} · {}{}", status, tok_str, priority_suffix)
+        } else if !priority_suffix.is_empty() {
+            format!("{}{}", status, priority_suffix)
         } else {
             status.to_string()
         };
@@ -427,16 +433,6 @@ pub(crate) fn generate_ascii(
                 })
             })
             .unwrap_or_default();
-        let priority_badge = task
-            .filter(|t| t.priority != Priority::Normal)
-            .map(|t| {
-                if use_color {
-                    format!(" \x1b[35m[{}]\x1b[0m", t.priority)
-                } else {
-                    format!(" [{}]", t.priority)
-                }
-            })
-            .unwrap_or_default();
         let relative_ts = task
             .and_then(|t| {
                 // Pick the most relevant timestamp based on status
@@ -459,12 +455,11 @@ pub(crate) fn generate_ascii(
             })
             .unwrap_or_default();
         format!(
-            "{}{}{}  ({}){}{}{}{}{}{}",
+            "{}{}{}  ({}){}{}{}{}{}",
             color,
             id,
             reset,
             status_with_tokens,
-            priority_badge,
             delay_hint,
             relative_ts,
             msg_indicator,

@@ -197,27 +197,59 @@ impl Status {
     }
 }
 
-/// Task priority levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Priority {
-    Critical,
-    High,
-    #[default]
-    Normal,
-    Low,
-    Idle,
+/// Task priority as an unbounded u32. Higher number = higher priority.
+pub type Priority = u32;
+
+pub const PRIORITY_CRITICAL: Priority = 100;
+pub const PRIORITY_HIGH: Priority = 50;
+pub const PRIORITY_NORMAL: Priority = 10;
+pub const PRIORITY_LOW: Priority = 5;
+pub const PRIORITY_IDLE: Priority = 0;
+pub const PRIORITY_DEFAULT: Priority = PRIORITY_NORMAL;
+
+/// Deserialize priority from either a u32 or a legacy named string ("critical", "high", etc.).
+fn deserialize_priority<'de, D>(deserializer: D) -> Result<Option<Priority>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::Number(n)) => {
+            Ok(Some(n.as_u64().unwrap_or(PRIORITY_DEFAULT as u64) as u32))
+        }
+        Some(serde_json::Value::String(s)) => Ok(Some(match s.to_lowercase().as_str() {
+            "critical" => PRIORITY_CRITICAL,
+            "high" => PRIORITY_HIGH,
+            "normal" => PRIORITY_NORMAL,
+            "low" => PRIORITY_LOW,
+            "idle" => PRIORITY_IDLE,
+            _ => PRIORITY_DEFAULT,
+        })),
+        Some(_) => Ok(Some(PRIORITY_DEFAULT)),
+    }
 }
 
-impl std::fmt::Display for Priority {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Priority::Critical => write!(f, "critical"),
-            Priority::High => write!(f, "high"),
-            Priority::Normal => write!(f, "normal"),
-            Priority::Low => write!(f, "low"),
-            Priority::Idle => write!(f, "idle"),
-        }
+/// Boost priority by one tier (for urgent/triage tags and starvation prevention).
+pub fn boost_priority(p: Priority) -> Priority {
+    match p {
+        0 => PRIORITY_LOW,
+        1..=5 => PRIORITY_NORMAL,
+        6..=10 => PRIORITY_HIGH,
+        11..=50 => PRIORITY_CRITICAL,
+        _ => p, // already above critical
+    }
+}
+
+/// Lower priority by one tier (for eval/flip scaffolding tasks).
+pub fn lower_priority(p: Priority) -> Priority {
+    match p {
+        0 => 0,
+        1..=5 => PRIORITY_IDLE,
+        6..=10 => PRIORITY_LOW,
+        11..=50 => PRIORITY_NORMAL,
+        51..=100 => PRIORITY_HIGH,
+        _ => PRIORITY_CRITICAL,
     }
 }
 
@@ -228,7 +260,7 @@ impl std::fmt::Display for Priority {
 /// Custom `Deserialize` handles migration from the old `identity` field
 /// (`{"role_id": "...", "motivation_id": "..."}`) to the new `agent` field
 /// (content-hash string).
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -237,8 +269,7 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default)]
     pub status: Status,
-    /// Task priority level (critical, high, normal, low, idle)
-    #[serde(default)]
+    #[serde(default = "default_priority")]
     pub priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned: Option<String>,
@@ -467,6 +498,88 @@ pub struct Task {
     /// Timestamp of next scheduled cron trigger (ISO 8601 / RFC 3339)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cron_fire: Option<String>,
+}
+
+impl Default for Task {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            description: None,
+            status: Status::default(),
+            priority: PRIORITY_DEFAULT,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: vec![],
+            requires: vec![],
+            tags: vec![],
+            skills: vec![],
+            inputs: vec![],
+            deliverables: vec![],
+            artifacts: vec![],
+            exec: None,
+            timeout: None,
+            not_before: None,
+            created_at: None,
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: None,
+            failure_reason: None,
+            model: None,
+            provider: None,
+            endpoint: None,
+            verify: None,
+            verify_timeout: None,
+            agent: None,
+            loop_iteration: 0,
+            last_iteration_completed_at: None,
+            cycle_failure_restarts: 0,
+            cycle_config: None,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            exec_mode: None,
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            triage_count: 0,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+            validation: None,
+            validation_commands: vec![],
+            validator_agent: None,
+            validator_model: None,
+            gate_attempts: 0,
+            test_required: false,
+            rejection_count: 0,
+            max_rejections: None,
+            verify_failures: 0,
+            spawn_failures: 0,
+            tier: None,
+            no_tier_escalation: false,
+            tried_models: vec![],
+            superseded_by: vec![],
+            supersedes: None,
+            unplaced: false,
+            place_near: vec![],
+            place_before: vec![],
+            independent: false,
+            dispatch_count: 0,
+            iteration_round: 0,
+            iteration_anchor: None,
+            iteration_parent: None,
+            iteration_config: None,
+            cron_schedule: None,
+            cron_enabled: false,
+            last_cron_fire: None,
+            next_cron_fire: None,
+        }
+    }
 }
 
 /// Returns `true` if the task ID represents a system-generated task.
@@ -860,6 +973,10 @@ fn default_visibility() -> String {
     "internal".to_string()
 }
 
+fn default_priority() -> Priority {
+    PRIORITY_DEFAULT
+}
+
 /// Deserialize loops_to accepting both old string format and array format.
 fn deserialize_loops_to<'de, D>(deserializer: D) -> Result<Vec<serde_json::Value>, D::Error>
 where
@@ -925,7 +1042,7 @@ struct TaskHelper {
     description: Option<String>,
     #[serde(default)]
     status: Status,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_priority")]
     priority: Option<Priority>,
     #[serde(default)]
     assigned: Option<String>,
@@ -1093,7 +1210,7 @@ impl<'de> Deserialize<'de> for Task {
             title: helper.title,
             description: helper.description,
             status: helper.status,
-            priority: helper.priority.unwrap_or_default(),
+            priority: helper.priority.unwrap_or(PRIORITY_DEFAULT),
             assigned: helper.assigned,
             estimate: helper.estimate,
             before: helper.before,
@@ -3113,62 +3230,74 @@ mod tests {
     }
 
     #[test]
-    fn test_priority() {
-        // Test Priority enum default values
-        assert_eq!(Priority::default(), Priority::Normal);
+    fn test_priority_is_u32() {
+        assert_eq!(PRIORITY_DEFAULT, 10u32);
+        assert_eq!(PRIORITY_CRITICAL, 100u32);
+        assert_eq!(PRIORITY_HIGH, 50u32);
+        assert_eq!(PRIORITY_NORMAL, 10u32);
+        assert_eq!(PRIORITY_LOW, 5u32);
+        assert_eq!(PRIORITY_IDLE, 0u32);
 
-        // Test Priority ordering (PartialOrd implementation)
-        assert!(Priority::Critical < Priority::High);
-        assert!(Priority::High < Priority::Normal);
-        assert!(Priority::Normal < Priority::Low);
-        assert!(Priority::Low < Priority::Idle);
+        // Higher number = higher priority
+        assert!(PRIORITY_CRITICAL > PRIORITY_HIGH);
+        assert!(PRIORITY_HIGH > PRIORITY_NORMAL);
+        assert!(PRIORITY_NORMAL > PRIORITY_LOW);
+        assert!(PRIORITY_LOW > PRIORITY_IDLE);
 
-        // Test Priority display
-        assert_eq!(format!("{}", Priority::Critical), "critical");
-        assert_eq!(format!("{}", Priority::High), "high");
-        assert_eq!(format!("{}", Priority::Normal), "normal");
-        assert_eq!(format!("{}", Priority::Low), "low");
-        assert_eq!(format!("{}", Priority::Idle), "idle");
-
-        // Test Task with priority field
         let task = Task {
             id: "test-task".to_string(),
             title: "Test Task".to_string(),
-            priority: Priority::High,
+            priority: PRIORITY_HIGH,
             ..Task::default()
         };
-        assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.priority, 50);
 
-        // Test Task default priority is Normal
         let default_task = Task::default();
-        assert_eq!(default_task.priority, Priority::Normal);
+        assert_eq!(default_task.priority, PRIORITY_DEFAULT);
+    }
 
-        // Test serialization/deserialization compatibility
-        use serde_json;
+    #[test]
+    fn test_priority_serde_migration_from_named_enum() {
+        // Old graph.jsonl entries with string-enum values must deserialize to u32
+        let json_critical =
+            r#"{"id":"t1","title":"T","status":"open","priority":"critical"}"#;
+        let task: Task = serde_json::from_str(json_critical).unwrap();
+        assert_eq!(task.priority, PRIORITY_CRITICAL);
 
-        // Test serialization
-        let json_str = serde_json::to_string(&Priority::Critical).unwrap();
-        assert_eq!(json_str, "\"critical\"");
+        let json_high = r#"{"id":"t2","title":"T","status":"open","priority":"high"}"#;
+        let task: Task = serde_json::from_str(json_high).unwrap();
+        assert_eq!(task.priority, PRIORITY_HIGH);
 
-        // Test deserialization
-        let priority: Priority = serde_json::from_str("\"high\"").unwrap();
-        assert_eq!(priority, Priority::High);
+        let json_normal = r#"{"id":"t3","title":"T","status":"open","priority":"normal"}"#;
+        let task: Task = serde_json::from_str(json_normal).unwrap();
+        assert_eq!(task.priority, PRIORITY_NORMAL);
 
-        // Test backward compatibility - missing priority field should default to Normal
-        let json_without_priority = r#"{"id": "test", "title": "Test", "status": "open"}"#;
+        let json_low = r#"{"id":"t4","title":"T","status":"open","priority":"low"}"#;
+        let task: Task = serde_json::from_str(json_low).unwrap();
+        assert_eq!(task.priority, PRIORITY_LOW);
 
-        // This should deserialize successfully with default priority
-        #[derive(serde::Deserialize)]
-        struct TestTask {
-            #[serde(rename = "id")]
-            _id: String,
-            #[serde(rename = "title")]
-            _title: String,
-            #[serde(default)]
-            priority: Priority,
-        }
+        let json_idle = r#"{"id":"t5","title":"T","status":"open","priority":"idle"}"#;
+        let task: Task = serde_json::from_str(json_idle).unwrap();
+        assert_eq!(task.priority, PRIORITY_IDLE);
 
-        let parsed: TestTask = serde_json::from_str(json_without_priority).unwrap();
-        assert_eq!(parsed.priority, Priority::Normal);
+        // New u32 format
+        let json_u32 = r#"{"id":"t6","title":"T","status":"open","priority":42}"#;
+        let task: Task = serde_json::from_str(json_u32).unwrap();
+        assert_eq!(task.priority, 42);
+
+        // Missing priority → default
+        let json_none = r#"{"id":"t7","title":"T","status":"open"}"#;
+        let task: Task = serde_json::from_str(json_none).unwrap();
+        assert_eq!(task.priority, PRIORITY_DEFAULT);
+
+        // Serialization writes u32
+        let task = Task {
+            id: "t8".to_string(),
+            title: "T".to_string(),
+            priority: PRIORITY_CRITICAL,
+            ..Task::default()
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"priority\":100"));
     }
 }

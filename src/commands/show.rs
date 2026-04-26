@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{
-    CycleConfig, LogEntry, LoopGuard, Priority, Status, Task, TokenUsage, format_tokens,
+    CycleConfig, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task, TokenUsage, format_tokens,
     parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
@@ -434,6 +434,10 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Status: {} (PAUSED)", details.status);
     } else {
         println!("Status: {}", details.status);
+    }
+
+    if details.priority != PRIORITY_DEFAULT {
+        println!("Priority: ▴{}", details.priority);
     }
 
     if details.visibility != "internal" {
@@ -980,7 +984,7 @@ mod tests {
             title: "Test Task".to_string(),
             description: Some("Test description".to_string()),
             status: Status::InProgress,
-            priority: Priority::Normal,
+            priority: PRIORITY_DEFAULT,
             assigned: Some("agent-1".to_string()),
             hours: Some(2.0),
             cost: Some(200.0),

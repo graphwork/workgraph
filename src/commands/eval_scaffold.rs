@@ -15,7 +15,7 @@ use chrono::Utc;
 use std::path::Path;
 
 use workgraph::config::Config;
-use workgraph::graph::{Node, Priority, Status, Task, WorkGraph};
+use workgraph::graph::{Node, PRIORITY_DEFAULT, Priority, Status, Task, WorkGraph, lower_priority};
 
 /// Tags that mark tasks as part of the evaluation/assignment infrastructure.
 /// Tasks with these tags do not get their own eval tasks (no meta-evaluation).
@@ -57,30 +57,15 @@ fn calculate_auto_priority(
 ) -> Priority {
     let parent_task = match graph.get_task(parent_task_id) {
         Some(task) => task,
-        None => return Priority::Normal, // Default fallback
+        None => return PRIORITY_DEFAULT,
     };
 
     let parent_priority = parent_task.priority;
 
     match scaffolding_type {
-        "assign" => {
-            // .assign-* tasks inherit parent priority (they gate the parent)
-            parent_priority
-        }
-        "evaluate" | "flip" => {
-            // .evaluate-* and .flip-* tasks get parent priority minus one level
-            match parent_priority {
-                Priority::Critical => Priority::High,
-                Priority::High => Priority::Normal,
-                Priority::Normal => Priority::Low,
-                Priority::Low => Priority::Idle,
-                Priority::Idle => Priority::Idle, // Can't go lower than Idle
-            }
-        }
-        _ => {
-            // Unknown scaffolding type, default to Normal
-            Priority::Normal
-        }
+        "assign" => parent_priority,
+        "evaluate" | "flip" => lower_priority(parent_priority),
+        _ => PRIORITY_DEFAULT,
     }
 }
 
