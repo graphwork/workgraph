@@ -236,10 +236,9 @@ Start by doing the work yourself. Only switch to decomposition after assessing c
 
 ### Include validation criteria in subtasks
 Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. \
-Use `--validation=llm` for an LLM verification gate at completion time:
+The agency evaluator reads this section and scores the agent's output against it:
 ```bash
 wg add 'Implement auth endpoint' --after {{task_id}} \
-  --validation=llm \
   -d '## Description
 Add POST /auth/token endpoint.
 
@@ -405,7 +404,7 @@ const DECOMP_TEMPLATE_ITERATE: &str = "\
 When work requires multiple passes (e.g., optimize -> benchmark -> optimize):
 ```bash
 wg add 'Refine implementation' --after {{task_id}} --max-iterations 3 \\
-  --validation=llm -d '## Validation\n- [ ] cargo test passes\n- [ ] benchmark target met'
+  -d '## Validation\n- [ ] cargo test passes\n- [ ] benchmark target met'
 ```
 Use `wg done --converged` when the work meets criteria. Use `wg fail` if a pass doesn't work so the cycle restarts.";
 
@@ -484,10 +483,9 @@ pub fn build_decomposition_guidance(
     parts.push(format!(
         "\n### Include validation criteria in subtasks\n\
          Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. \
-         Use `--validation=llm` for an LLM verification gate at completion time:\n\
+         The agency evaluator reads this section and scores the agent's output against it:\n\
          ```bash\n\
          wg add 'Implement auth endpoint' --after {task_id} \\\n  \
-         --validation=llm \\\n  \
          -d '## Description\nAdd POST /auth/token endpoint.\n\n\
          ## Validation\n\
          - [ ] Failing test written first: test_auth_rejects_expired_token\n\
@@ -720,7 +718,7 @@ working on one task in this graph. Other agents work on other tasks concurrently
 
 ### Task Lifecycle
 Tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
-Some tasks have a `pending-validation` step before `done` (when `--validation=llm` is set).
+Some tasks have a `pending-validation` step before `done` when the agency evaluator (auto_evaluate + FLIP) routes the work for human or LLM review.
 
 ### Core Commands
 
@@ -757,10 +755,10 @@ unordered list and may execute in the wrong order.
 
 ### Validation
 Include a `## Validation` section in task descriptions with concrete acceptance criteria. \
-For LLM-verified gates, use `--validation=llm`:
+The agency evaluator (auto_evaluate + FLIP) reads this section and scores the agent's output against it:
 
 ```bash
-wg add \"Implement feature\" --validation=llm -d \"## Validation
+wg add \"Implement feature\" -d \"## Validation
 - [ ] cargo test test_feature passes
 - [ ] feature works end-to-end\"
 ```
@@ -2869,10 +2867,16 @@ args = ["--custom-flag"]
             "Guide must explain --after for dependencies"
         );
 
-        // Must cover --validation for LLM verification gates
+        // Must explain the `## Validation` section convention; the agency
+        // evaluator reads this section and scores against it. The old
+        // `--validation` CLI flag was removed.
         assert!(
-            guide.contains("--validation"),
-            "Guide must explain --validation for LLM verification gates"
+            guide.contains("## Validation"),
+            "Guide must mention the ## Validation section convention"
+        );
+        assert!(
+            !guide.contains("--validation"),
+            "Guide must not advertise the removed --validation flag"
         );
 
         // Must cover wg log, wg done, wg fail

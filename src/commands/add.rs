@@ -391,34 +391,29 @@ pub fn run(
     if verify.is_some() {
         anyhow::bail!(
             "--verify is deprecated and no longer accepted.\n\
-             Use one of these alternatives instead:\n\
-             \n\
-             1. Put validation criteria in the task description under a ## Validation section:\n\
+             Put validation criteria in the task description under a ## Validation section:\n\
              \n\
              wg add \"My task\" -d \"## Validation\\n- [ ] cargo test passes\"\n\
              \n\
-             2. Use --validation=llm for an LLM verification gate at completion time:\n\
-             \n\
-             wg add \"My task\" --validation=llm -d \"...\"\n\
-             \n\
-             These approaches are more flexible and less error-prone than shell-command gates."
+             The agency evaluator (auto_evaluate + FLIP) reads the ## Validation section and \
+             scores the agent's output against it."
         );
     }
 
-    // Validate --validation mode if provided
-    if let Some(mode) = validation {
-        match mode {
-            "none" | "integrated" | "external" | "llm" => {}
-            _ => anyhow::bail!(
-                "Invalid --validation '{}'. Valid values: none, integrated, external, llm",
-                mode
-            ),
-        }
+    // --validation / --validator-agent / --validator-model are deprecated no-ops.
+    // The hard-gate flag was removed; validation criteria belong in the task
+    // description's `## Validation` section, where the agency evaluator reads them.
+    if validation.is_some() || validator_agent.is_some() || validator_model.is_some() {
+        eprintln!(
+            "Warning: --validation, --validator-agent, and --validator-model are deprecated \
+             and ignored. Put validation criteria in a `## Validation` section of the task \
+             description; the agency evaluator scores against it."
+        );
     }
-    // --validator-agent / --validator-model only make sense with validation=llm
-    if (validator_agent.is_some() || validator_model.is_some()) && validation != Some("llm") {
-        anyhow::bail!("--validator-agent and --validator-model require --validation=llm");
-    }
+    // Drop the values so they don't get persisted on the task.
+    let validation: Option<&str> = None;
+    let validator_agent: Option<&str> = None;
+    let validator_model: Option<&str> = None;
 
     let log = if paused {
         vec![workgraph::graph::LogEntry {
@@ -842,7 +837,8 @@ pub fn run_remote(
     if verify.is_some() {
         anyhow::bail!(
             "--verify is deprecated and no longer accepted.\n\
-             Use --validation=llm or a ## Validation section in the task description instead."
+             Put validation criteria in a ## Validation section of the task description; \
+             the agency evaluator scores against it."
         );
     }
 

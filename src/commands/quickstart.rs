@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-const QUICKSTART_TEXT: &str = r#"
+const QUICKSTART_TEXT: &str = r###"
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                         WORKGRAPH AGENT QUICKSTART                           ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -209,15 +209,18 @@ TASK STATE COMMANDS
     wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
     wg rm-dep <task> <dependency>      # Remove a dependency edge
 
-VALIDATION (--validation=llm gate)
+VALIDATION (## Validation section in task description)
 ─────────────────────────────────────────
-  Tasks created with --validation=llm have an LLM verification gate before completion:
+  Put validation criteria in a ## Validation section of each code task's description.
+  The agency evaluator (auto_evaluate + FLIP) reads this section and scores the
+  agent's output against it — no CLI flag needed.
 
-  wg add "Task" --validation=llm -d "Validation:\n- [ ] cargo test passes"
-  wg done <task-id>           # LLM evaluates validation criteria before completing
+  wg add "Task" -d "## Validation\n- [ ] cargo test passes"
+  wg done <task-id>           # Agency evaluator scores against the ## Validation section
 
-  Include a Validation section in task descriptions with concrete acceptance criteria.
-  The LLM gate reads the description and verifies the criteria are met.
+  Include concrete acceptance criteria as a checklist. The evaluator routes
+  work to `pending-validation` when fidelity is low (FLIP score), where
+  `wg approve` / `wg reject` provide the human review path.
 
 INCOMPLETE STATUS (retryable work)
 ─────────────────────────────────────────
@@ -584,7 +587,7 @@ COST & SPENDING
   wg spend                            # Show token usage and cost summaries
   wg spend --today                    # Show only today's spend
   wg openrouter                       # OpenRouter cost monitoring
-"#;
+"###;
 
 fn json_output() -> serde_json::Value {
     serde_json::json!({
@@ -695,9 +698,9 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Tasks with --validation=llm have an LLM verification gate before completion.",
-            "create": "wg add \"task\" --validation=llm -d \"## Validation\\n- [ ] criteria here\"",
-            "note": "Include a ## Validation section in descriptions with concrete acceptance criteria."
+            "description": "Validation criteria live in a ## Validation section of the task description; the agency evaluator (auto_evaluate + FLIP) scores the agent's output against it.",
+            "create": "wg add \"task\" -d \"## Validation\\n- [ ] criteria here\"",
+            "note": "Include a ## Validation section in descriptions with concrete acceptance criteria. Low-FLIP results route to pending-validation for human review (wg approve / wg reject)."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",
@@ -1300,7 +1303,7 @@ mod tests {
             "MANUAL MODE",
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
-            "VALIDATION (--validation=llm gate)",
+            "VALIDATION (## Validation section in task description)",
             "MESSAGING",
             "CONTEXT & ARTIFACTS",
             "CYCLES",
@@ -1347,8 +1350,10 @@ mod tests {
     #[test]
     fn test_quickstart_text_contains_validation() {
         assert!(QUICKSTART_TEXT.contains("VALIDATION"));
-        assert!(QUICKSTART_TEXT.contains("--validation=llm"));
-        assert!(QUICKSTART_TEXT.contains("Validation section"));
+        // Quickstart must describe the agency-evaluator path (## Validation
+        // section) and must NOT advertise the removed --validation flag.
+        assert!(QUICKSTART_TEXT.contains("## Validation"));
+        assert!(!QUICKSTART_TEXT.contains("--validation"));
     }
 
     #[test]

@@ -99,7 +99,7 @@ You have access to these workgraph CLI commands via the `Bash` tool:
 
 8. **Include integration points** — When fanning out parallel work, always add an integrator task that depends on all parallel branches: `wg add "Integrate X" --after branch-a,branch-b,branch-c`
 
-9. **Give clear descriptions** — Each task description should tell the agent what to achieve, the scope/constraints, and what "done" looks like. Include a `## Validation` section with concrete acceptance criteria. Use `--validation=llm` for LLM verification gates. Agents cannot ask you clarifying questions mid-task.
+9. **Give clear descriptions** — Each task description should tell the agent what to achieve, the scope/constraints, and what "done" looks like. Include a `## Validation` section with concrete acceptance criteria; the agency evaluator reads it and scores the agent's output against it. Agents cannot ask you clarifying questions mid-task.
 
 10. **Use the graph for status** — When the user asks "what's happening?", inspect the graph (`wg status`, `wg agents`, `wg list`) rather than guessing from memory.
 
@@ -238,7 +238,6 @@ Evaluate JWT libraries for Rust...
 
 wg add "Implement: JWT auth middleware" --paused --no-place \
   --after research-jwt-library \
-  --validation=llm \
   -d "## Description
 Implement JWT auth middleware...
 ## Validation

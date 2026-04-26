@@ -2712,7 +2712,8 @@ pub struct CoordinatorConfig {
     /// Verification mode for tasks with legacy verify commands (deprecated).
     /// - "inline" (default): verify command runs in the same agent process that did the work
     /// - "separate": verify runs in a separate agent context (different conversation/context window)
-    /// New tasks should use --validation=llm instead.
+    /// New tasks should put validation criteria in a `## Validation` section of the task
+    /// description; the agency evaluator (auto_evaluate + FLIP) reads it.
     #[serde(default = "default_verify_mode")]
     pub verify_mode: String,
 

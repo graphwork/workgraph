@@ -266,7 +266,8 @@ pub fn run(
         if verify.is_some() {
             error = Some(anyhow::anyhow!(
                 "--verify is deprecated and no longer accepted.\n\
-                 Use --validation=llm or a ## Validation section in the task description instead."
+                 Put validation criteria in a ## Validation section of the task description; \
+                 the agency evaluator scores against it."
             ));
             return false;
         }

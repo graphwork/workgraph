@@ -755,7 +755,7 @@ wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module
 When work requires multiple passes:
 ```bash
 wg add 'Refine implementation' --after $WG_TASK_ID --max-iterations 3 \
-  --validation=llm -d '## Validation\n- [ ] cargo test passes\n- [ ] performance benchmark target met'
+  -d '## Validation\n- [ ] cargo test passes\n- [ ] performance benchmark target met'
 ```
 Use `wg done --converged` when work has stabilized.
 
@@ -771,7 +771,7 @@ Every **code task** description MUST include:
 - [ ] <any additional acceptance criteria>
 ```
 
-Use `--validation=llm` for an LLM verification gate at completion time.
+The agency evaluator (auto_evaluate + FLIP) reads the `## Validation` section and scores the agent's output against it.
 
 ## Core Commands
 
@@ -968,7 +968,7 @@ wg add 'Final check' --after fix-issues
 Use status-based dependencies:
 ```bash
 wg add 'Deploy to staging' --after tests-pass
-wg add 'Deploy to prod' --after deploy-to-staging --validation=llm
+wg add 'Deploy to prod' --after deploy-to-staging
 ```
 
 ### Complex Fan-Out
@@ -1029,7 +1029,7 @@ wg func apply "testing-pipeline" --input target=new-feature
 Handle long-running processes:
 ```bash
 wg add 'Monitor deployment' --after deploy --max-iterations 24 \
-  --validation=llm --cycle-delay 3600  # Check hourly
+  --cycle-delay 3600  # Check hourly
 ```
 
 ### Error Recovery Patterns

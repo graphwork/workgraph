@@ -234,29 +234,30 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
-        /// [DEPRECATED] Use --validation=llm or ## Validation in description instead.
+        /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
+        /// task description; the agency evaluator scores against it.
         #[arg(long, hide = true)]
         verify: Option<String>,
 
-        /// [DEPRECATED] Use --validation=llm instead.
+        /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
+        /// task description; the agency evaluator scores against it.
         #[arg(long = "verify-timeout", hide = true)]
         verify_timeout: Option<String>,
 
-        /// Validation mode: "none", "integrated", "external", or "llm".
-        /// "llm" opts the task in to the LLM verification gate at `wg done`
-        /// time (see docs/design/llm-verification-gate.md).
-        #[arg(long)]
+        /// [DEPRECATED, no-op] The hard-gate `--validation` flag has been
+        /// removed. Put validation criteria in a `## Validation` section of
+        /// the task description; the agency evaluator (auto_evaluate +
+        /// FLIP) reads it. Accepted-but-ignored for one release with a
+        /// deprecation warning.
+        #[arg(long, hide = true)]
         validation: Option<String>,
 
-        /// Pin a specific evaluator agent (content hash) for the LLM gate.
-        /// Only meaningful when --validation=llm. Falls back to
-        /// config.agency.evaluator_agent when unset.
-        #[arg(long = "validator-agent")]
+        /// [DEPRECATED, no-op] Removed alongside `--validation`.
+        #[arg(long = "validator-agent", hide = true)]
         validator_agent: Option<String>,
 
-        /// Model override for the LLM gate call only (e.g., "opus", "sonnet").
-        /// Parallel to --model but applies only to the validator.
-        #[arg(long = "validator-model")]
+        /// [DEPRECATED, no-op] Removed alongside `--validation`.
+        #[arg(long = "validator-model", hide = true)]
         validator_model: Option<String>,
 
         /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
@@ -454,7 +455,8 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// [DEPRECATED] Use --validation=llm or ## Validation in description instead.
+        /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
+        /// task description; the agency evaluator scores against it.
         #[arg(long, hide = true)]
         verify: Option<String>,
 
