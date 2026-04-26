@@ -311,34 +311,46 @@ impl CoordinatorAgent {
     ) -> Result<Self> {
         let executor = executor.unwrap_or("claude");
         // Decide the coordinator implementation up front so send_message
-        // can skip the redundant-append path for subprocess mode. Mirror
-        // `agent_thread_main`'s dispatcher logic.
-        let model_requires_native = model
-            .map(|m| {
-                let config = workgraph::config::Config::load_or_default(dir);
-                super::coordinator::requires_native_executor(m, &config)
-            })
-            .unwrap_or(false);
+        // can skip the redundant-append path for subprocess mode.
+        //
+        // SINGLE SOURCE OF TRUTH: route the supervisor's executor/model
+        // through `plan_spawn` so subprocess detection here cannot
+        // diverge from what `agent_thread_main` actually launches. We
+        // build a synthetic Task carrying any per-task model override
+        // (the chat task's id) and let plan_spawn cascade through the
+        // explicit `agent_executor` (the supervisor's `executor` arg)
+        // → config → default rules.
+        let supervisor_config = workgraph::config::Config::load_or_default(dir);
+        let chat_task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+        let mut chat_task = workgraph::graph::Task {
+            id: chat_task_id.clone(),
+            title: chat_task_id.clone(),
+            ..workgraph::graph::Task::default()
+        };
+        if let Some(m) = model {
+            chat_task.model = Some(m.to_string());
+        }
+        let supervisor_plan = workgraph::dispatch::plan_spawn(
+            &chat_task,
+            &supervisor_config,
+            Some(executor),
+            model,
+        )
+        .context("plan_spawn for coordinator agent supervisor failed")?;
         // Post-Phase-7, ALL supported executors are backed by a
         // handler subprocess that reads the inbox directly:
         //   native → wg nex --chat
         //   claude → wg claude-handler --chat
         //   codex  → wg codex-handler --chat
-        // Only `shell` or an unknown legacy executor would bypass
-        // the subprocess path; for those we still return false so
-        // `route_chat_to_agent` fires send_message. The historical
-        // claude-inline path (`false` for claude) is gone — leaving
-        // it caused a double-inbox-append bug: the IPC UserChat
-        // handler wrote once, then route_chat_to_agent saw the new
-        // message and forwarded via send_message, whose forwarder
-        // thread appended AGAIN. Coordinator then saw every user
-        // turn twice and complained about a "chat replay loop".
-        let uses_subprocess = matches!(executor, "native" | "claude" | "codex")
+        // Only `shell` would bypass the subprocess path. Provider
+        // hints retained as a hedge for the legacy non-canonical
+        // values still seen in older configs (the cleanup belongs in
+        // a separate task — keep behavior conservative here).
+        let uses_subprocess = supervisor_plan.executor != workgraph::dispatch::ExecutorKind::Shell
             || matches!(
                 provider,
                 Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
-            )
-            || model_requires_native;
+            );
 
         if executor == "claude" && !Self::is_claude_available() {
             anyhow::bail!(
@@ -499,35 +511,18 @@ fn agent_thread_main(
     logger: &DaemonLogger,
     _event_log: &SharedEventLog,
 ) {
-    // Non-Anthropic provider/model forces native regardless of what
-    // executor config claims (Claude CLI can only talk to Anthropic).
-    let model_requires_native = model
-        .map(|m| {
-            let config = workgraph::config::Config::load_or_default(dir);
-            super::coordinator::requires_native_executor(m, &config)
-        })
-        .unwrap_or(false);
-    let force_native = matches!(
-        provider,
-        Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
-    ) || model_requires_native;
-
-    let effective_executor = if force_native && executor != "native" {
-        logger.info(&format!(
-            "Coordinator-{}: executor '{}' overridden to 'native' (provider/model requires direct API)",
-            coordinator_id, executor
-        ));
-        "native"
-    } else {
-        executor
-    };
-
+    // Executor/model resolution lives inside `subprocess_coordinator_loop`,
+    // where each iteration calls `dispatch::plan_spawn` (single source of
+    // truth) and emits a provenance line. The legacy
+    // `requires_native_executor` model-based auto-switch is gone — model
+    // never overrides an explicit executor floor (see dispatch::plan
+    // module docs for the regression this fixes).
     subprocess_coordinator_loop(
         dir,
         coordinator_id,
         model,
         provider,
-        effective_executor,
+        executor,
         rx,
         alive,
         pid,
@@ -699,14 +694,67 @@ fn subprocess_coordinator_loop(
         // next supervisor restart. Explicit overrides beat the
         // static daemon_cfg values we got at spawn time.
         let state = super::CoordinatorState::load_for(dir, coordinator_id);
-        let effective_exec = state
+        let exec_override = state
             .as_ref()
             .and_then(|s| s.executor_override.clone())
             .unwrap_or_else(|| executor.to_string());
-        let effective_model_override = state
+        let model_override = state
             .as_ref()
             .and_then(|s| s.model_override.clone())
             .or_else(|| model.map(String::from));
+
+        // SINGLE SOURCE OF TRUTH: every supervisor-iteration spawn flows
+        // through plan_spawn. We hydrate the chat task from the graph so
+        // any per-task model/exec overrides on `.chat-N` (or legacy
+        // `.coordinator-N`) are honored, then layer the supervisor's
+        // explicit `exec_override` as the agency-level executor input.
+        let supervisor_config = workgraph::config::Config::load_or_default(dir);
+        let chat_task = match workgraph::parser::load_graph(&crate::commands::graph_path(dir)) {
+            Ok(g) => g
+                .get_task(&task_id)
+                .cloned()
+                .unwrap_or_else(|| workgraph::graph::Task {
+                    id: task_id.clone(),
+                    title: task_id.clone(),
+                    model: model_override.clone(),
+                    ..workgraph::graph::Task::default()
+                }),
+            Err(_) => workgraph::graph::Task {
+                id: task_id.clone(),
+                title: task_id.clone(),
+                model: model_override.clone(),
+                ..workgraph::graph::Task::default()
+            },
+        };
+        let plan = match workgraph::dispatch::plan_spawn(
+            &chat_task,
+            &supervisor_config,
+            Some(&exec_override),
+            model_override.as_deref(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.error(&format!(
+                    "Coordinator-{}: plan_spawn failed for {}: {} — sleeping 5s and retrying",
+                    coordinator_id, task_id, e
+                ));
+                restart_timestamps.push_back(std::time::Instant::now());
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            }
+        };
+        let effective_exec = plan.executor.as_str().to_string();
+        let effective_model_override = Some(plan.model.raw.clone());
+
+        // Provenance: every supervisor-iteration spawn emits one line tracing
+        // each {executor, model, endpoint} decision back to the config knob
+        // that produced it. Eliminates silent-routing bugs.
+        logger.info(&format!(
+            "Coordinator-{}: {}",
+            coordinator_id,
+            plan.provenance.log_line(&plan)
+        ));
+
         let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
         let mut cmd = Command::new(&wg_bin);
         cmd.arg("spawn-task").arg(&task_id);
