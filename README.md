@@ -1044,12 +1044,34 @@ python3 terminal-bench/results/analyze.py
 
 ## Testing
 
-Run the wave-1 integration smoke test after any wave-1 task lands:
+Run the wave-1 integration smoke test after any wave-1 task lands.
+
+**This MUST be run live against real endpoints — no stubs, no mocks, no
+special bypass.** The earlier version of this smoke silently passed because
+it relied on a fake LLM and ran the daemon with `--no-coordinator-agent`,
+which is exactly how the `wg nex` 404 reached the user on the first 'hi' in
+TUI chat. Live scenarios cover the user's literal reproduction:
 
 ```bash
-bash scripts/smoke/wave-1-smoke.sh        # full suite
-bash scripts/smoke/wave-1-smoke.sh --quick # skip slow daemon/TUI scenarios
+# Full suite — runs scenarios 1-7 (offline + live)
+bash scripts/smoke/wave-1-smoke.sh
+
+# Skip slow daemon/TUI scenarios (and the live ones)
+bash scripts/smoke/wave-1-smoke.sh --quick
+
+# Skip live scenarios (6, 7) but keep offline ones — for sandboxed CI
+bash scripts/smoke/wave-1-smoke.sh --offline
 ```
+
+If a live endpoint is unreachable, scenario 6/7 print a LOUD banner —
+`*** NEX SMOKE SKIPPED — endpoint unreachable ***` — that is greppable in
+output and impossible to miss. Set `WG_SMOKE_FAIL_ON_SKIP=1` to promote
+loud skips to fail in CI. Set `WG_SMOKE_KEEP_SCRATCH=1` to preserve the
+per-scenario scratch dirs for post-mortem inspection.
+
+Live scenarios point at `https://lambda01.tail334fe6.ts.net:30000` with
+model `qwen3-coder` by default; override via `WG_LIVE_NEX_ENDPOINT` and
+`WG_LIVE_NEX_MODEL`.
 
 ## More docs
 

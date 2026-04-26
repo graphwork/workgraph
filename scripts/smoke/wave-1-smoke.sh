@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
 # Wave-1 integration smoke test
 #
-# Assertion-driven live coverage of the full wg stack:
-#   1. Claude end-to-end (init + daemon + phantom check + task lifecycle)
-#   2. Nex end-to-end (two-turn dialogue via fake LLM)
+# Assertion-driven LIVE coverage of the full wg stack — this MUST run live
+# against real endpoints; no stubs, no mocks, no special bypass. If the
+# default config is broken, this smoke fails. The earlier version of this
+# script silently passed because it relied on a fake LLM and ran the daemon
+# with --no-coordinator-agent — that's exactly how the wg-nex 404 slipped
+# through and the user hit it on the first 'hi' in TUI chat.
+#
+# Scenarios (live unless explicitly noted):
+#   1. Claude task graph (init + daemon + phantom check + task lifecycle)
+#   2. Nex two-turn (fake LLM) — kept as offline lower bound
 #   3. Setup routes (claude-cli + openrouter non-interactive)
 #   4. Launcher history recall in TUI
 #   5. Model alias resolution (claude:sonnet → current model id)
+#   6. **Nex live**: wg init -e https://lambda01… -x nex; wg service start;
+#      wg chat 'hi' must return a non-error response within 30s; 4 more
+#      messages back-to-back must all succeed. If lambda01 is unreachable
+#      a LOUD banner is printed (NEX SMOKE SKIPPED — endpoint unreachable);
+#      it is greppable in run output. Set WG_SMOKE_FAIL_ON_SKIP=1 to make
+#      that condition exit non-zero instead.
+#   7. **Claude live chat**: wg init -x claude; wg service start; wg chat
+#      'hi' must return a non-error coordinator response within 60s.
 #
-# Each scenario is a function. Failures exit non-zero with a clear message.
-# Missing prerequisites produce SKIP, not FAIL.
+# Configure via env vars:
+#   WG_LIVE_NEX_ENDPOINT  default https://lambda01.tail334fe6.ts.net:30000
+#   WG_LIVE_NEX_MODEL     default qwen3-coder
+#   WG_SMOKE_FAIL_ON_SKIP if set to 1, treat loud-skip as fail (CI strict mode)
+#   WG_SMOKE_KEEP_SCRATCH if set to 1, do not remove scratch dirs (post-mortem)
 #
 # Usage:
-#   bash scripts/smoke/wave-1-smoke.sh           # run all scenarios
-#   bash scripts/smoke/wave-1-smoke.sh --quick    # skip slow (daemon) scenarios
+#   bash scripts/smoke/wave-1-smoke.sh            # run all (live + offline)
+#   bash scripts/smoke/wave-1-smoke.sh --quick    # skip slow scenarios (2,4,6,7)
+#   bash scripts/smoke/wave-1-smoke.sh --offline  # skip live scenarios (6,7)
 #
-# Run before merging any wave-1 task.
+# Run before merging any wave-1 task and any task touching coordinator/nex.
 
 set -u
 
@@ -23,14 +42,25 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WG_BIN="$(command -v wg)"
 FAKE_SERVER="$REPO_ROOT/scripts/testing/fake_llm_server.py"
 
+LIVE_NEX_ENDPOINT="${WG_LIVE_NEX_ENDPOINT:-https://lambda01.tail334fe6.ts.net:30000}"
+LIVE_NEX_MODEL="${WG_LIVE_NEX_MODEL:-qwen3-coder}"
+
 PASS=0
 FAIL=0
 SKIP=0
+LOUD_SKIPS=0
 TOTAL=0
 FAILED_NAMES=()
+LOUD_SKIP_NAMES=()
 
 QUICK=false
-[[ "${1:-}" == "--quick" ]] && QUICK=true
+OFFLINE=false
+for arg in "$@"; do
+    case "$arg" in
+        --quick) QUICK=true ;;
+        --offline) OFFLINE=true ;;
+    esac
+done
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -48,6 +78,77 @@ fail() {
 skip() {
     SKIP=$((SKIP + 1))
     echo "  SKIP: $1"
+}
+
+# Loud skip: print a banner that's impossible to miss in CI output.
+# Used when a live-endpoint precondition fails; per the smoke-test-gap
+# task spec, live scenarios MUST NOT silently skip — the earlier wave-1
+# smoke quietly skipped the only nex scenario, which is how the 404 bug
+# reached the user. If WG_SMOKE_FAIL_ON_SKIP=1 we promote to fail.
+loud_skip() {
+    local name="$1" reason="$2"
+    LOUD_SKIPS=$((LOUD_SKIPS + 1))
+    LOUD_SKIP_NAMES+=("$name — $reason")
+    echo ""
+    echo "  ================================================"
+    echo "  *** ${name} SKIPPED — ${reason} ***"
+    echo "  ================================================"
+    echo ""
+    if [[ "${WG_SMOKE_FAIL_ON_SKIP:-0}" == "1" ]]; then
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("$name (loud-skip → fail in strict mode): $reason")
+    else
+        SKIP=$((SKIP + 1))
+    fi
+}
+
+# Reachability probe: 200 from /v1/models (or any 2xx) means up.
+endpoint_reachable() {
+    local url="$1"
+    local code
+    code=$(curl -sk -m 5 -o /dev/null -w "%{http_code}" "$url/v1/models" 2>/dev/null || echo "000")
+    [[ "$code" =~ ^2[0-9][0-9]$ ]]
+}
+
+cleanup_scratch() {
+    local dir="$1"
+    [[ -z "${dir:-}" ]] && return
+    if [[ "${WG_SMOKE_KEEP_SCRATCH:-0}" == "1" ]]; then
+        echo "    scratch preserved: $dir"
+        return
+    fi
+    rm -rf "$dir"
+}
+
+# Resolve the coordinator-0 chat directory by reading sessions.json. The
+# session UUID is generated per-init, so the path is not predictable.
+# Returns the absolute UUID dir path, or empty if not yet created.
+resolve_coord_chat_dir() {
+    local wg_root="$1" alias="${2:-coordinator-0}"
+    local sessions="$wg_root/chat/sessions.json"
+    [[ -f "$sessions" ]] || return 1
+    python3 - "$sessions" "$alias" <<'PY' 2>/dev/null
+import json, os, sys
+sessions_path = sys.argv[1]
+alias = sys.argv[2]
+data = json.load(open(sessions_path))
+sessions = data.get("sessions", {})
+for uuid, info in sessions.items():
+    aliases = info.get("aliases", [])
+    if alias in aliases:
+        print(os.path.join(os.path.dirname(sessions_path), uuid))
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# Wait for a coordinator-0 chat response in outbox.jsonl after sending.
+# wg chat itself blocks until response or timeout, so this is just a
+# convenience for inspecting evidence after the fact.
+last_outbox_role() {
+    local outbox="$1"
+    [[ -f "$outbox" ]] || return 1
+    tail -1 "$outbox" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('role',''))" 2>/dev/null
 }
 
 assert_eq() {
@@ -494,11 +595,276 @@ scenario_5_model_alias() {
     fi
 }
 
+# ── Scenario 6: Nex live against user's real endpoint ─────────────
+#
+# This is the scenario the previous wave-1 smoke FAILED to cover. The
+# user's literal reproduction:
+#   $ wg init -m qwen3-coder -e https://lambda01...:30000 -x nex
+#   $ wg service start
+#   $ <open chat in TUI, type 'hi'>
+#   → 'why isn't the smoke test catching all this stuff! i did the most
+#      basic thing i wrote hi and then it barfed.'
+#
+# The bug was in the named-endpoint path of create_provider_ext: the
+# stored endpoint URL had no /v1 suffix, so the OAI client posted to
+# /chat/completions and got 404. The coordinator-spawned `wg nex`
+# (which does NOT use -e) hit this path, which meant the inline-URL
+# fix in agent-62 was insufficient and only the agent-72 fix caught
+# the named-endpoint case.
+#
+# This smoke runs the full TUI chat flow programmatically. `wg chat
+# 'hi'` is exactly what the TUI Send button does — it goes through
+# IPC UserChat to the coordinator, which proxies to the nex agent via
+# chat/<coordinator-ref>/{inbox,outbox}.jsonl.
+
+scenario_6_nex_live_endpoint() {
+    local desc="Nex LIVE: wg chat 'hi' against $LIVE_NEX_ENDPOINT must return non-error"
+    TOTAL=$((TOTAL + 1))
+    echo "[$TOTAL] $desc"
+
+    if [[ -z "$WG_BIN" ]]; then
+        loud_skip "NEX SMOKE" "wg binary not found on PATH"
+        return
+    fi
+    if ! command -v curl >/dev/null; then
+        loud_skip "NEX SMOKE" "curl not available — cannot probe endpoint"
+        return
+    fi
+
+    if ! endpoint_reachable "$LIVE_NEX_ENDPOINT"; then
+        loud_skip "NEX SMOKE" "endpoint unreachable ($LIVE_NEX_ENDPOINT)"
+        return
+    fi
+
+    local scratch
+    scratch=$(make_scratch)
+    local daemon_pid=""
+    _s6_cleanup() {
+        if [[ -d "$scratch/.wg/service" ]]; then
+            local sock="$scratch/.wg/service/daemon.sock"
+            if [[ -S "$sock" ]]; then
+                # Daemon ignores our stop request (agent role) — kill PID directly.
+                local pid
+                pid=$(grep -oP 'PID \K[0-9]+' "$scratch/.wg/service/daemon.log" 2>/dev/null | head -1)
+                [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+            fi
+        fi
+        if [[ -n "$daemon_pid" ]]; then
+            kill "$daemon_pid" 2>/dev/null
+            wait "$daemon_pid" 2>/dev/null
+        fi
+        # Best-effort: kill any nex children spawned for this scratch
+        pkill -f "$scratch/.wg" 2>/dev/null
+        sleep 1
+        cleanup_scratch "$scratch"
+    }
+    trap _s6_cleanup RETURN
+
+    # Init exactly as the user did (no --no-agency; default config — task spec
+    # says "no special bypass to make the test pass").
+    if ! (cd "$scratch" && wg init -m "$LIVE_NEX_MODEL" -e "$LIVE_NEX_ENDPOINT" -x nex) >"$scratch/init.log" 2>&1; then
+        fail "$desc — wg init failed: $(cat "$scratch/init.log")"
+        return
+    fi
+
+    # Confirm the bare endpoint URL was stored (regression sentry: if init starts
+    # appending /v1 itself, the named-endpoint path's normalization is no longer
+    # the only thing that prevents the 404 — but failing here would still surface
+    # any regression in init's URL handling).
+    local cfg="$scratch/.wg/config.toml"
+    if ! grep -q "url = \"$LIVE_NEX_ENDPOINT\"" "$cfg" 2>/dev/null; then
+        echo "    note: stored endpoint URL differs from input — $(grep '^url' "$cfg" 2>/dev/null | head -1)"
+    fi
+
+    # Start service (default config — full coordinator agent enabled).
+    (cd "$scratch" && wg service start --force) >"$scratch/service.log" 2>&1 &
+    daemon_pid=$!
+
+    # Wait for daemon socket + coordinator-0 to be ready (chat dir exists).
+    local ready=0
+    for _i in $(seq 1 20); do
+        if [[ -S "$scratch/.wg/service/daemon.sock" ]] && [[ -d "$scratch/.wg/chat" ]]; then
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$ready" -ne 1 ]]; then
+        fail "$desc — daemon/coordinator did not come up within 20s. service.log:\n$(cat "$scratch/service.log" 2>/dev/null)"
+        return
+    fi
+
+    # Send 'hi' — the literal first user message that triggered the bug.
+    local first_log="$scratch/chat-hi.log"
+    if ! (cd "$scratch" && timeout 60 wg chat 'hi' --timeout 45) >"$first_log" 2>&1; then
+        local cd_for_err
+        cd_for_err=$(resolve_coord_chat_dir "$scratch/.wg" "coordinator-0" || echo "$scratch/.wg/chat")
+        fail "$desc — wg chat 'hi' failed (this is the exact user-reported flow). Log:\n$(cat "$first_log")\nOutbox tail:\n$(tail -3 "$cd_for_err/outbox.jsonl" 2>/dev/null)"
+        return
+    fi
+
+    # Resolve the coordinator-0 chat dir (UUID-based) and locate outbox.jsonl.
+    local chat_dir
+    chat_dir=$(resolve_coord_chat_dir "$scratch/.wg" "coordinator-0")
+    if [[ -z "$chat_dir" ]]; then
+        fail "$desc — could not resolve coordinator-0 chat dir from sessions.json"
+        return
+    fi
+    local outbox="$chat_dir/outbox.jsonl"
+    if [[ ! -f "$outbox" ]]; then
+        fail "$desc — outbox.jsonl not created at $outbox"
+        return
+    fi
+    local role
+    role=$(last_outbox_role "$outbox")
+    if [[ "$role" != "coordinator" ]]; then
+        fail "$desc — first 'hi' produced role='$role' (expected 'coordinator'). Outbox tail:\n$(tail -3 "$outbox")"
+        return
+    fi
+
+    # Send 4 more messages back-to-back (each must succeed).
+    local fail_count=0
+    local detail=""
+    for n in 2 3 4 5; do
+        local resp_log="$scratch/chat-$n.log"
+        if ! (cd "$scratch" && timeout 60 wg chat "Smoke message $n: reply with the word OK and the number $n." --timeout 45) >"$resp_log" 2>&1; then
+            fail_count=$((fail_count + 1))
+            detail+="\n  msg $n FAILED: $(tail -3 "$resp_log")"
+            continue
+        fi
+        local r
+        r=$(last_outbox_role "$outbox")
+        if [[ "$r" != "coordinator" ]]; then
+            fail_count=$((fail_count + 1))
+            detail+="\n  msg $n outbox role='$r' (expected 'coordinator')"
+        fi
+    done
+
+    if [[ "$fail_count" -gt 0 ]]; then
+        fail "$desc — $fail_count of 4 follow-up messages failed${detail}"
+        return
+    fi
+
+    # Sanity: outbox should now have at least 5 coordinator responses.
+    local coord_count
+    coord_count=$(grep -c '"role":"coordinator"' "$outbox" 2>/dev/null || echo 0)
+    if [[ "$coord_count" -lt 5 ]]; then
+        fail "$desc — expected >=5 coordinator responses in outbox, got $coord_count"
+        return
+    fi
+
+    pass "$desc — 5/5 messages produced coordinator responses ($coord_count total)"
+}
+
+# ── Scenario 7: Claude live chat ────────────────────────────────────
+#
+# Same shape as scenario 6 but using the claude executor. Validates
+# that:
+#   - `wg init -x claude` produces a working default config
+#   - The coordinator agent spawns claude via claude-handler
+#   - `wg chat 'hi'` produces a non-error coordinator response
+#
+# The user's regression bar is the same: a fresh init + service start +
+# 'hi' must work.
+
+scenario_7_claude_live_chat() {
+    local desc="Claude LIVE: wg chat 'hi' must return a coordinator response"
+    TOTAL=$((TOTAL + 1))
+    echo "[$TOTAL] $desc"
+
+    if [[ -z "$WG_BIN" ]]; then
+        loud_skip "CLAUDE SMOKE" "wg binary not found on PATH"
+        return
+    fi
+    if ! command -v claude >/dev/null; then
+        loud_skip "CLAUDE SMOKE" "claude CLI not on PATH (run wg setup --provider anthropic)"
+        return
+    fi
+    # The coordinator chat agent spawns `wg nex` with the configured model.
+    # `wg init -x claude` writes model = `openrouter:anthropic/claude-sonnet-4`,
+    # which goes through the native OAI client — needs OPENROUTER_API_KEY.
+    # `wg init -x claude -m claude:sonnet` would route through anthropic —
+    # needs ANTHROPIC_API_KEY.
+    # Without either key, the coordinator agent cannot reach Claude. We loud-skip
+    # rather than silently skip so the gap is visible in run output.
+    if [[ -z "${OPENROUTER_API_KEY:-}" ]] && [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+        loud_skip "CLAUDE SMOKE" "neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY set — coordinator chat cannot reach Claude"
+        return
+    fi
+
+    local scratch
+    scratch=$(make_scratch)
+    local daemon_pid=""
+    _s7_cleanup() {
+        if [[ -d "$scratch/.wg/service" ]]; then
+            local pid
+            pid=$(grep -oP 'PID \K[0-9]+' "$scratch/.wg/service/daemon.log" 2>/dev/null | head -1)
+            [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+        fi
+        if [[ -n "$daemon_pid" ]]; then
+            kill "$daemon_pid" 2>/dev/null
+            wait "$daemon_pid" 2>/dev/null
+        fi
+        pkill -f "$scratch/.wg" 2>/dev/null
+        sleep 1
+        cleanup_scratch "$scratch"
+    }
+    trap _s7_cleanup RETURN
+
+    if ! (cd "$scratch" && wg init -x claude) >"$scratch/init.log" 2>&1; then
+        fail "$desc — wg init failed: $(cat "$scratch/init.log")"
+        return
+    fi
+
+    (cd "$scratch" && wg service start --force) >"$scratch/service.log" 2>&1 &
+    daemon_pid=$!
+
+    local ready=0
+    for _i in $(seq 1 20); do
+        if [[ -S "$scratch/.wg/service/daemon.sock" ]] && [[ -d "$scratch/.wg/chat" ]]; then
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$ready" -ne 1 ]]; then
+        fail "$desc — daemon/coordinator did not come up within 20s. service.log:\n$(cat "$scratch/service.log" 2>/dev/null)"
+        return
+    fi
+
+    local resp_log="$scratch/chat-hi.log"
+    if ! (cd "$scratch" && timeout 120 wg chat 'hi' --timeout 90) >"$resp_log" 2>&1; then
+        local cd_for_err
+        cd_for_err=$(resolve_coord_chat_dir "$scratch/.wg" "coordinator-0" || echo "$scratch/.wg/chat")
+        fail "$desc — wg chat 'hi' (claude) failed. Log:\n$(cat "$resp_log")\nOutbox tail:\n$(tail -3 "$cd_for_err/outbox.jsonl" 2>/dev/null)"
+        return
+    fi
+
+    local chat_dir
+    chat_dir=$(resolve_coord_chat_dir "$scratch/.wg" "coordinator-0")
+    if [[ -z "$chat_dir" ]]; then
+        fail "$desc — could not resolve coordinator-0 chat dir from sessions.json"
+        return
+    fi
+    local outbox="$chat_dir/outbox.jsonl"
+    local role
+    role=$(last_outbox_role "$outbox")
+    if [[ "$role" != "coordinator" ]]; then
+        fail "$desc — claude 'hi' produced role='$role' (expected 'coordinator'). Outbox tail:\n$(tail -3 "$outbox")"
+        return
+    fi
+
+    pass "$desc"
+}
+
 # ── Runner ──────────────────────────────────────────────────────────
 
 echo "=== Wave-1 Integration Smoke Test ==="
-echo "Binary: $WG_BIN"
-echo "Repo:   $REPO_ROOT"
+echo "Binary:        $WG_BIN"
+echo "Repo:          $REPO_ROOT"
+echo "Live nex EP:   $LIVE_NEX_ENDPOINT"
+echo "Live nex M:    $LIVE_NEX_MODEL"
+echo "Mode:          quick=$QUICK offline=$OFFLINE fail-on-skip=${WG_SMOKE_FAIL_ON_SKIP:-0}"
 echo ""
 
 scenario_1_claude_e2e
@@ -523,9 +889,30 @@ fi
 
 scenario_5_model_alias
 
+# Live scenarios — the assertions that actually catch the user-visible bugs.
+if [[ "$OFFLINE" == "false" ]] && [[ "$QUICK" == "false" ]]; then
+    scenario_6_nex_live_endpoint
+    scenario_7_claude_live_chat
+else
+    TOTAL=$((TOTAL + 1))
+    echo "[$TOTAL] Nex LIVE (skipped in --offline/--quick mode)"
+    loud_skip "NEX SMOKE" "live scenarios disabled by --offline/--quick flag"
+    TOTAL=$((TOTAL + 1))
+    echo "[$TOTAL] Claude LIVE (skipped in --offline/--quick mode)"
+    loud_skip "CLAUDE SMOKE" "live scenarios disabled by --offline/--quick flag"
+fi
+
 echo ""
 echo "=== Results ==="
-echo "Total: $TOTAL  Pass: $PASS  Fail: $FAIL  Skip: $SKIP"
+echo "Total: $TOTAL  Pass: $PASS  Fail: $FAIL  Skip: $SKIP  LoudSkip: $LOUD_SKIPS"
+
+if [[ ${#LOUD_SKIP_NAMES[@]} -gt 0 ]]; then
+    echo ""
+    echo "Loud skips (greppable as 'NEX SMOKE SKIPPED' / 'CLAUDE SMOKE SKIPPED'):"
+    for name in "${LOUD_SKIP_NAMES[@]}"; do
+        echo "  - $name"
+    done
+fi
 
 if [[ ${#FAILED_NAMES[@]} -gt 0 ]]; then
     echo ""
