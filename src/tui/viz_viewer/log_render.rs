@@ -54,11 +54,49 @@ fn event_modifier(kind: &AgentStreamEventKind) -> Modifier {
 
 /// Render the Events view: one summary line per event.
 ///
-/// This preserves the legacy "view=activity" behavior — one line per
-/// stream event, tinted by kind.
+/// Tool calls render as a single inline line of the form
+/// `{status?}⌁<Tool> → <detail>` where the optional status prefix is
+/// `✓` (success) or `✗` (failure) once the tool's result has arrived,
+/// or absent while the call is still in flight. The paired
+/// `ToolResult` / `Error` event is consumed by the call's line and is
+/// NOT emitted as a separate `✓ <result>` row that would visually
+/// fracture the call from its outcome.
+///
+/// Non-tool events keep their parsed `summary`, one line per event.
 pub fn render_events_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    for event in events {
+    let mut i = 0;
+    while i < events.len() {
+        let event = &events[i];
+
+        if event.kind == AgentStreamEventKind::ToolCall {
+            // Two ways a tool call can know its outcome:
+            //   1. claude flow — a separate ToolResult/Error event is
+            //      emitted immediately after this ToolCall.
+            //   2. native-executor flow — the result preview is folded
+            //      into the same event's summary as a "  ✓ …" /
+            //      "  ✗ …" continuation line.
+            let paired_status = events
+                .get(i + 1)
+                .and_then(|n| n.details.as_ref())
+                .and_then(|d| match d {
+                    EventDetails::ToolResult { is_error, .. } => Some(*is_error),
+                    _ => None,
+                });
+            let status = paired_status.or_else(|| embedded_result_status(&event.summary));
+
+            emit_tool_call_line(&mut out, event, status);
+
+            if paired_status.is_some() {
+                // Skip the now-folded result event so it doesn't render
+                // as its own row.
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
         let color = event_color(&event.kind);
         let modifier = event_modifier(&event.kind);
         for sub_line in event.summary.split('\n') {
@@ -67,8 +105,100 @@ pub fn render_events_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>> {
                 Style::default().fg(color).add_modifier(modifier),
             )));
         }
+        i += 1;
     }
     out
+}
+
+/// Detect a folded result-preview marker on a ToolCall summary.
+/// Native-executor `tool_call` events embed "  ✓ <preview>" or
+/// "  ✗ <preview>" as a continuation line; we promote that marker to
+/// the call line itself and drop the bare preview row.
+fn embedded_result_status(summary: &str) -> Option<bool> {
+    for line in summary.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("✓ ") {
+            return Some(false);
+        }
+        if trimmed.starts_with("✗ ") {
+            return Some(true);
+        }
+    }
+    None
+}
+
+/// Render one tool call as a single inline line (plus any non-result
+/// continuation lines from the original summary). The optional `status`
+/// becomes the leading prefix character (`✓` or `✗`); when `None` the
+/// line shows just `⌁<Tool> → ...` to signal "in flight".
+fn emit_tool_call_line(
+    out: &mut Vec<Line<'static>>,
+    event: &AgentStreamEvent,
+    status: Option<bool>,
+) {
+    let tool_color = event_color(&event.kind);
+    let mut emitted_call_line = false;
+
+    for line in event.summary.split('\n') {
+        let trimmed = line.trim_start();
+        // Drop the bare "  ✓ <preview>" / "  ✗ <preview>" continuation
+        // line emitted by the native-executor parser — its information
+        // is now carried by the leading status prefix on the call line.
+        if trimmed.starts_with("✓ ") || trimmed.starts_with("✗ ") {
+            continue;
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+
+        if !emitted_call_line {
+            if let Some(is_error) = status {
+                let (sym, color) = if is_error {
+                    ("✗", Color::Red)
+                } else {
+                    ("✓", Color::Green)
+                };
+                spans.push(Span::styled(
+                    sym.to_string(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+
+        // Tighten the legacy "⌁ Tool → ..." form (with a space) to the
+        // requested "⌁Tool → ..." (no space) so the lightning glyph
+        // visually attaches to the tool name.
+        let body = line.strip_prefix("⌁ ").map(|rest| format!("⌁{}", rest));
+        let body_str = body.as_deref().unwrap_or(line);
+
+        spans.push(Span::styled(
+            body_str.to_string(),
+            Style::default().fg(tool_color),
+        ));
+        out.push(Line::from(spans));
+        emitted_call_line = true;
+    }
+
+    // Defensive: if the summary was empty (shouldn't happen for a
+    // ToolCall), still emit a placeholder line so the prefix is visible.
+    if !emitted_call_line {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if let Some(is_error) = status {
+            let (sym, color) = if is_error {
+                ("✗", Color::Red)
+            } else {
+                ("✓", Color::Green)
+            };
+            spans.push(Span::styled(
+                sym.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::styled(
+            "⌁".to_string(),
+            Style::default().fg(tool_color),
+        ));
+        out.push(Line::from(spans));
+    }
 }
 
 /// Compute a "coarse activity" label for an event in HighLevel mode.
@@ -936,6 +1066,220 @@ mod tests {
             text.contains("no workgraph log entries"),
             "placeholder text should signal emptiness, got: {}",
             text
+        );
+    }
+
+    /// Events mode: a successful Bash call paired with its ToolResult
+    /// must render as ONE inline line of the form `✓⌁Bash → <cmd>`,
+    /// and the standalone result event must NOT appear as its own row
+    /// (no `✓ Task: ...` line breaking the visual grouping).
+    #[test]
+    fn test_events_mode_paired_success_collapses_to_single_inline_line() {
+        let events = vec![
+            tool_call_bash("wg show test-task-2"),
+            tool_result("Task: test-task-2\nStatus: open", false),
+        ];
+        let lines = render_events_view(&events);
+        let text = lines_to_text(&lines);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "expected a single line (call + result folded together), got {}: {}",
+            lines.len(),
+            text
+        );
+        let l0 = line_text(&lines[0]);
+        assert!(
+            l0.starts_with("✓⌁Bash"),
+            "expected line to start with '✓⌁Bash' (success prefix tight against ⌁), got: {:?}",
+            l0
+        );
+        assert!(
+            l0.contains("→ wg show test-task-2"),
+            "expected arrow + command on same line, got: {:?}",
+            l0
+        );
+        assert!(
+            !text.contains("Task:"),
+            "result body must NOT bleed into events mode — no '✓ Task: ...' row, got:\n{}",
+            text
+        );
+        assert!(
+            !text.contains("✓ Task:"),
+            "explicit guard against the legacy '✓ Task: ...' standalone line, got:\n{}",
+            text
+        );
+    }
+
+    /// Events mode: a failed Bash call's status prefix must show on the
+    /// SAME line as the call (no separate failure-result line).
+    #[test]
+    fn test_events_mode_paired_failure_uses_failure_prefix() {
+        let events = vec![
+            tool_call_bash("cargo test"),
+            tool_result("compilation failed", true),
+        ];
+        let lines = render_events_view(&events);
+        let text = lines_to_text(&lines);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "failure pair must also fold to one line: {}",
+            text
+        );
+        let l0 = line_text(&lines[0]);
+        assert!(
+            l0.starts_with("✗⌁Bash"),
+            "expected '✗⌁Bash' failure prefix, got: {:?}",
+            l0
+        );
+        assert!(
+            !text.contains("compilation failed"),
+            "result body must not appear as its own row in events mode: {}",
+            text
+        );
+    }
+
+    /// Events mode: an in-flight tool call (no paired result yet)
+    /// renders WITHOUT a leading status — just `⌁Bash → ...` — so the
+    /// reader can tell the call hasn't finished.
+    #[test]
+    fn test_events_mode_inflight_call_has_no_status_prefix() {
+        let events = vec![tool_call_bash("cargo build")];
+        let lines = render_events_view(&events);
+        let text = lines_to_text(&lines);
+
+        assert_eq!(lines.len(), 1, "in-flight call is a single line: {}", text);
+        let l0 = line_text(&lines[0]);
+        assert!(
+            l0.starts_with("⌁Bash"),
+            "in-flight call must start with '⌁Bash' (no status prefix), got: {:?}",
+            l0
+        );
+        assert!(
+            !l0.starts_with("✓") && !l0.starts_with("✗"),
+            "no leading status while pending, got: {:?}",
+            l0
+        );
+    }
+
+    /// Events mode: status-prefix logic applies uniformly across tool
+    /// kinds (not just Bash). Smoke a Read and an Edit so a future
+    /// refactor that special-cases Bash gets caught.
+    #[test]
+    fn test_events_mode_prefix_logic_applies_to_non_bash_tools() {
+        let events = vec![
+            tool_call_edit("src/main.rs", "old", "new"),
+            tool_result("File edited", false),
+        ];
+        let lines = render_events_view(&events);
+        let l0 = line_text(&lines[0]);
+        assert!(
+            l0.starts_with("✓⌁Edit"),
+            "Edit success must use '✓⌁Edit' prefix, got: {:?}",
+            l0
+        );
+        assert!(
+            l0.contains("src/main.rs"),
+            "Edit line must include the file path, got: {:?}",
+            l0
+        );
+
+        let read_call = AgentStreamEvent {
+            kind: AgentStreamEventKind::ToolCall,
+            agent_id: "agent-test".to_string(),
+            summary: "⌁ Read → src/lib.rs".to_string(),
+            details: Some(EventDetails::ToolCall {
+                name: "Read".to_string(),
+                input: serde_json::json!({"file_path": "src/lib.rs"}),
+            }),
+        };
+        let read_evts = vec![read_call, tool_result("contents", false)];
+        let lines2 = render_events_view(&read_evts);
+        let l1 = line_text(&lines2[0]);
+        assert!(
+            l1.starts_with("✓⌁Read"),
+            "Read success must use '✓⌁Read' prefix, got: {:?}",
+            l1
+        );
+    }
+
+    /// Events mode: native-executor `tool_call` events carry their own
+    /// folded result preview as a `\n  ✓ ...` continuation line. The
+    /// events renderer must promote that marker to the call-line prefix
+    /// and drop the bare preview row, just like the claude-flow case.
+    #[test]
+    fn test_events_mode_folds_native_executor_embedded_result() {
+        let event = AgentStreamEvent {
+            kind: AgentStreamEventKind::ToolCall,
+            agent_id: "agent-test".to_string(),
+            summary: "⌁ Bash → ls -la\n  ✓ total 8".to_string(),
+            details: Some(EventDetails::ToolCall {
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "ls -la"}),
+            }),
+        };
+        let lines = render_events_view(&[event]);
+        assert_eq!(
+            lines.len(),
+            1,
+            "native event must collapse to one line: {}",
+            lines_to_text(&lines)
+        );
+        let l0 = line_text(&lines[0]);
+        assert!(
+            l0.starts_with("✓⌁Bash"),
+            "embedded result marker must promote to a leading prefix, got: {:?}",
+            l0
+        );
+        assert!(
+            !l0.contains("total 8"),
+            "result preview body should not bleed onto the call line: {:?}",
+            l0
+        );
+    }
+
+    /// Events mode does NOT alter the high-level or raw-pretty modes —
+    /// they share the same input slice but route through their own
+    /// renderers. Snapshot the line counts to catch accidental coupling.
+    #[test]
+    fn test_events_mode_does_not_affect_other_view_modes() {
+        let events = vec![
+            tool_call_bash("cargo test"),
+            tool_result("ok", false),
+            tool_call_edit("src/main.rs", "a", "b"),
+            tool_result("edit applied", false),
+        ];
+
+        let high = render_high_level_view(&events);
+        let high_text = lines_to_text(&high);
+        // High-level still summarizes calls coarsely and hides results.
+        assert!(
+            high_text.contains("Running cargo"),
+            "high-level renderer untouched, got: {}",
+            high_text
+        );
+        assert!(
+            high_text.contains("Editing"),
+            "high-level renderer untouched, got: {}",
+            high_text
+        );
+
+        let raw = render_raw_pretty_view(&events);
+        let raw_text = lines_to_text(&raw);
+        // Raw still uses the tighter "⌁ <label>" header per call AND
+        // emits the result with its own ✓ marker block.
+        assert!(
+            raw_text.contains("⌁ Bash → \"cargo test\""),
+            "raw renderer untouched, got: {}",
+            raw_text
+        );
+        assert!(
+            raw_text.contains("✓ ok"),
+            "raw renderer must still emit result rows, got: {}",
+            raw_text
         );
     }
 
