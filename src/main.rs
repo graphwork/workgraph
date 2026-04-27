@@ -2248,6 +2248,7 @@ fn main() -> Result<()> {
             ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
         },
         Commands::Config {
+            cmd: config_subcmd,
             show,
             merged,
             init,
@@ -2328,6 +2329,36 @@ fn main() -> Result<()> {
             reset_dry_run,
             reset_yes,
         } => {
+            // Subcommand form takes priority. `wg config init …` runs the
+            // new minimal-write path; flag-style args on `Config` are
+            // ignored when a subcommand is present.
+            if let Some(subcmd) = config_subcmd {
+                match subcmd {
+                    ConfigSubcommand::Init {
+                        global: init_global,
+                        local: init_local,
+                        route,
+                        bare,
+                        force,
+                    } => {
+                        let scope = if init_global {
+                            commands::config_cmd::ConfigScope::Global
+                        } else if init_local {
+                            commands::config_cmd::ConfigScope::Local
+                        } else {
+                            commands::config_cmd::ConfigScope::Local
+                        };
+                        return commands::config_cmd::init_minimal(
+                            &workgraph_dir,
+                            scope,
+                            &route,
+                            bare,
+                            force,
+                        );
+                    }
+                }
+            }
+
             // Derive scope from --global/--local flags
             let scope = if global {
                 Some(commands::config_cmd::ConfigScope::Global)
@@ -2640,6 +2671,24 @@ fn main() -> Result<()> {
             }
             MigrateCommands::RetireCompactArchive { dry_run } => {
                 commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
+            }
+            MigrateCommands::Config {
+                global,
+                local,
+                all,
+                dry_run,
+            } => {
+                let target = if all {
+                    commands::migrate::ConfigMigrateTarget::All
+                } else if global {
+                    commands::migrate::ConfigMigrateTarget::Global
+                } else if local {
+                    commands::migrate::ConfigMigrateTarget::Local
+                } else {
+                    // Default: migrate the local config in this workgraph dir.
+                    commands::migrate::ConfigMigrateTarget::Local
+                };
+                commands::migrate::run_config_migrate(&workgraph_dir, target, dry_run, cli.json)
             }
         },
         Commands::Agents {

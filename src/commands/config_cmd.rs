@@ -364,6 +364,282 @@ pub fn init(dir: &Path, scope: Option<ConfigScope>) -> Result<()> {
     Ok(())
 }
 
+/// `wg config init` — write a minimal canonical config file for the
+/// chosen route. Refuses to overwrite an existing file unless `--force`
+/// is set (in which case a `.bak` is made first).
+///
+/// The output is byte-deterministic for a given (scope, route, bare)
+/// triple: every `wg config init` invocation produces the exact same
+/// file. This makes `wg migrate config` idempotent and lets us assert
+/// against fixtures in tests.
+pub fn init_minimal(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    route: &str,
+    bare: bool,
+    force: bool,
+) -> Result<()> {
+    let route_enum = workgraph::config_defaults::SetupRoute::from_name(route)
+        .ok_or_else(|| anyhow::anyhow!(
+            "unknown route '{}'. Valid: claude-cli, codex-cli, openrouter, local, nex-custom",
+            route,
+        ))?;
+
+    let path = match scope {
+        ConfigScope::Global => Config::global_config_path()?,
+        ConfigScope::Local => workgraph_dir.join("config.toml"),
+    };
+
+    let body = render_minimal_config(route_enum, scope, bare);
+
+    if path.exists() && !force {
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        if !existing.trim().is_empty() {
+            anyhow::bail!(
+                "{} already exists.\n\
+                 Run `wg migrate config` to clean up stale keys, or pass --force \
+                 to overwrite (a backup is made automatically as `<path>.bak`).",
+                path.display(),
+            );
+        }
+    }
+
+    if path.exists() && force {
+        let backup = path.with_extension("toml.bak");
+        std::fs::copy(&path, &backup).map_err(|e| {
+            anyhow::anyhow!("failed to back up {} to {}: {}", path.display(), backup.display(), e)
+        })?;
+        println!("Backed up existing config to {}", backup.display());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            anyhow::anyhow!("failed to create {}: {}", parent.display(), e)
+        })?;
+    }
+    std::fs::write(&path, &body).map_err(|e| {
+        anyhow::anyhow!("failed to write {}: {}", path.display(), e)
+    })?;
+
+    println!(
+        "Wrote minimal {} config at {} (route: {})",
+        match scope {
+            ConfigScope::Global => "global",
+            ConfigScope::Local => "local",
+        },
+        path.display(),
+        route_enum.as_name(),
+    );
+    println!(
+        "Edit it directly, or run `wg config -m <model>` / `wg config -e <url>` to update.",
+    );
+    Ok(())
+}
+
+/// Render a minimal canonical config TOML body for the given (route, scope, bare).
+///
+/// Hand-crafted strings rather than serialized `Config` so the output is:
+/// - **deterministic** (no field-ordering surprises from serde)
+/// - **minimal** (only keys the design picked as 'always-set' for the route)
+/// - **commented** (each section has a one-line note explaining why it's there)
+///
+/// Built-in defaults cover everything else — `wg show <task>` from a fresh
+/// install with no `~/.wg/config.toml` already runs claude:opus correctly.
+pub fn render_minimal_config(
+    route: workgraph::config_defaults::SetupRoute,
+    scope: ConfigScope,
+    bare: bool,
+) -> String {
+    use workgraph::config_defaults::SetupRoute as R;
+
+    if bare {
+        return match scope {
+            ConfigScope::Local => {
+                "# .wg/config.toml — written by `wg config init --local --bare`\n\
+                 \n\
+                 [project]\n\
+                 name = \"\"\n"
+                    .to_string()
+            }
+            ConfigScope::Global => {
+                let model = match route {
+                    R::ClaudeCli => "claude:opus",
+                    R::CodexCli => "codex:o1-pro",
+                    R::Openrouter => "openrouter:anthropic/claude-opus-4-7",
+                    R::Local => "local:qwen2.5-coder:7b",
+                    R::NexCustom => "oai-compat:custom-model",
+                };
+                format!(
+                    "# ~/.wg/config.toml — written by `wg config init --global --bare`\n\
+                     \n\
+                     [agent]\n\
+                     model = \"{}\"\n",
+                    model,
+                )
+            }
+        };
+    }
+
+    let scope_label = match scope {
+        ConfigScope::Global => "~/.wg/config.toml",
+        ConfigScope::Local => ".wg/config.toml",
+    };
+    let scope_flag = match scope {
+        ConfigScope::Global => "--global",
+        ConfigScope::Local => "--local",
+    };
+    let header = format!(
+        "# {} — written by `wg config init {} --route {}`\n\
+         # Only keys that differ from built-in defaults are listed; everything\n\
+         # else falls through to the binary's defaults. Edit freely or rerun\n\
+         # `wg config init --force` to regenerate.\n\n",
+        scope_label,
+        scope_flag,
+        route.as_name(),
+    );
+
+    match (route, scope) {
+        (R::ClaudeCli, ConfigScope::Global) => format!(
+            "{header}\
+             [agent]\n\
+             model = \"claude:opus\"\n\
+             \n\
+             [tiers]\n\
+             fast = \"claude:haiku\"\n\
+             standard = \"claude:sonnet\"\n\
+             premium = \"claude:opus\"\n\
+             \n\
+             [models.evaluator]\n\
+             model = \"claude:haiku\"\n\
+             \n\
+             [models.assigner]\n\
+             model = \"claude:haiku\"\n",
+        ),
+
+        (R::Openrouter, ConfigScope::Global) => format!(
+            "{header}\
+             [agent]\n\
+             model = \"openrouter:anthropic/claude-opus-4-7\"\n\
+             \n\
+             [tiers]\n\
+             fast = \"openrouter:anthropic/claude-haiku-4-5\"\n\
+             standard = \"openrouter:anthropic/claude-sonnet-4-6\"\n\
+             premium = \"openrouter:anthropic/claude-opus-4-7\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"openrouter\"\n\
+             provider = \"openrouter\"\n\
+             url = \"https://openrouter.ai/api/v1\"\n\
+             api_key_env = \"OPENROUTER_API_KEY\"\n\
+             is_default = true\n",
+        ),
+
+        (R::CodexCli, ConfigScope::Global) => format!(
+            "{header}\
+             [agent]\n\
+             model = \"codex:o1-pro\"\n\
+             \n\
+             [tiers]\n\
+             fast = \"codex:gpt-5-mini\"\n\
+             standard = \"codex:gpt-5\"\n\
+             premium = \"codex:o1-pro\"\n",
+        ),
+
+        (R::Local, ConfigScope::Global) => format!(
+            "{header}\
+             [agent]\n\
+             model = \"local:qwen2.5-coder:7b\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"local\"\n\
+             provider = \"local\"\n\
+             url = \"http://localhost:11434/v1\"\n\
+             is_default = true\n",
+        ),
+
+        (R::NexCustom, ConfigScope::Global) => format!(
+            "{header}\
+             # Edit endpoint url + api_key_env to match your provider.\n\
+             [agent]\n\
+             model = \"oai-compat:custom-model\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"custom\"\n\
+             provider = \"oai-compat\"\n\
+             url = \"https://example.com/v1\"\n\
+             api_key_env = \"CUSTOM_API_KEY\"\n\
+             is_default = true\n",
+        ),
+
+        // Local scope: shadow the global default with a project-specific
+        // model + endpoint. Most projects only need `[project]`.
+        (R::ClaudeCli, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"claude:opus\"\n",
+        ),
+
+        (R::Openrouter, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"openrouter:anthropic/claude-opus-4-7\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"openrouter\"\n\
+             provider = \"openrouter\"\n\
+             url = \"https://openrouter.ai/api/v1\"\n\
+             api_key_env = \"OPENROUTER_API_KEY\"\n\
+             is_default = true\n",
+        ),
+
+        (R::CodexCli, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"codex:o1-pro\"\n",
+        ),
+
+        (R::Local, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"local:qwen2.5-coder:7b\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"local\"\n\
+             provider = \"local\"\n\
+             url = \"http://localhost:11434/v1\"\n\
+             is_default = true\n",
+        ),
+
+        (R::NexCustom, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"oai-compat:custom-model\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"custom\"\n\
+             provider = \"oai-compat\"\n\
+             url = \"https://example.com/v1\"\n\
+             api_key_env = \"CUSTOM_API_KEY\"\n\
+             is_default = true\n",
+        ),
+    }
+}
+
 /// Update configuration values
 #[allow(clippy::too_many_arguments)]
 pub fn update(

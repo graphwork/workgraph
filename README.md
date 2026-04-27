@@ -44,11 +44,17 @@ wg --help
 
 ### 1. Global config (once, after install)
 
+A fresh install with no `~/.wg/config.toml` already runs `claude:opus` via the
+`claude` CLI handler — built-in defaults cover the common case. The first
+time you want to commit choices to disk you have three options:
+
 ```bash
-wg setup    # interactive wizard — pick one of 5 named routes
+wg setup                            # interactive wizard — pick one of 5 named routes
+wg config init --global             # non-interactive: minimal canonical claude-cli config
+wg config init --global --route openrouter   # non-interactive: openrouter route
 ```
 
-Writes `~/.workgraph/config.toml`. Pick one of 5 smooth routes — each produces a complete, working config (model + tiers + endpoint when applicable) end-to-end:
+Writes `~/.wg/config.toml`. Pick one of 5 smooth routes — each produces a complete, working config (model + tiers + endpoint when applicable) end-to-end:
 
 | Route | Default model spec | Use case |
 |-------|--------------------|----------|
@@ -73,6 +79,15 @@ wg setup --route claude-cli --dry-run
 ```
 
 Switch routes later with `wg config reset --route <name>` (always backs up the existing config first; `--keep-keys` preserves existing endpoint entries).
+
+If you have an old config from a previous wg release with deprecated keys
+(`agent.executor`, retired compactor knobs) or stale model strings
+(`openrouter:anthropic/claude-sonnet-4` instead of `…-sonnet-4-6`), run:
+
+```bash
+wg migrate config --dry-run    # preview changes
+wg migrate config --all        # rewrite global + local; backs up to .pre-migrate.<timestamp>
+```
 
 ### 2. Initialize a project
 

@@ -1513,6 +1513,12 @@ pub enum Commands {
 
     /// View or modify project configuration
     Config {
+        /// Subcommand form (e.g. `wg config init`). When provided, all
+        /// flag-style args on `Config` are ignored and the subcommand
+        /// runs in isolation.
+        #[command(subcommand)]
+        cmd: Option<ConfigSubcommand>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -4251,6 +4257,77 @@ pub enum MigrateCommands {
         /// Only report what would change, don't write.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Rewrite a stale `config.toml` to canonical form.
+    ///
+    /// Strips deprecated keys (`agent.executor`, retired compactor knobs,
+    /// `verify_autospawn_enabled`), renames legacy section/field names
+    /// (`[coordinator]` → `[dispatcher]`, `chat_agent` → `coordinator_agent`,
+    /// `max_chats` → `max_coordinators`), and fixes known stale model
+    /// strings (`openrouter:anthropic/claude-sonnet-4` → `…-sonnet-4-6`,
+    /// etc). Always writes a backup to `<path>.pre-migrate.<timestamp>`.
+    ///
+    /// Safe to run multiple times — idempotent.
+    Config {
+        /// Migrate the global config (~/.wg/config.toml).
+        #[arg(long, conflicts_with_all = ["local", "all"])]
+        global: bool,
+
+        /// Migrate the local project config (.wg/config.toml).
+        #[arg(long, conflicts_with_all = ["global", "all"])]
+        local: bool,
+
+        /// Migrate both global and local configs in one pass.
+        #[arg(long, conflicts_with_all = ["global", "local"])]
+        all: bool,
+
+        /// Print a unified diff of what would change but don't rewrite.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// Subcommand variants for `wg config`.
+///
+/// At top level, `Commands::Config` keeps its legacy flag interface for
+/// backwards compatibility (`wg config --init`, `wg config --show`, ...).
+/// The subcommand form (`wg config init …`) takes priority when present.
+#[derive(Subcommand)]
+pub enum ConfigSubcommand {
+    /// Write a minimal canonical config file for a chosen route.
+    ///
+    /// The file contains only keys the design picked as 'always-set' for
+    /// the route — every other key falls through to the built-in default.
+    /// This is the modern replacement for `wg config --init`, which
+    /// continues to work for one release as a deprecated alias.
+    Init {
+        /// Target the global config (~/.wg/config.toml).
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Target the local project config (.wg/config.toml).
+        ///
+        /// Default when neither --global nor --local is given.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Setup route. One of: `claude-cli` (default), `codex-cli`,
+        /// `openrouter`, `local`, `nex-custom`.
+        #[arg(long, default_value = "claude-cli")]
+        route: String,
+
+        /// Write only the absolute minimum (`[project]` for local,
+        /// just `agent.model` for global). Use this when you want
+        /// the file to exist but be as close to empty as possible.
+        #[arg(long)]
+        bare: bool,
+
+        /// Overwrite an existing file. Without --force, init refuses
+        /// to clobber a non-empty config and tells you to run `wg
+        /// migrate config` instead.
+        #[arg(long)]
+        force: bool,
     },
 }
 

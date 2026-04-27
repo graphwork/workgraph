@@ -2822,7 +2822,9 @@ pub struct CoordinatorConfig {
     /// user chat messages and manages the graph conversationally.
     /// When false, chat uses a simple stub response.
     /// Default: true.
-    #[serde(default = "default_coordinator_agent")]
+    ///
+    /// Alias `chat_agent` is accepted for forward-compat with the rename.
+    #[serde(default = "default_coordinator_agent", alias = "chat_agent")]
     pub coordinator_agent: bool,
 
     /// **Deprecated (retired-compact-archive):** the graph-cycle compactor
@@ -2857,7 +2859,9 @@ pub struct CoordinatorConfig {
 
     /// Maximum number of concurrent coordinator agents (LLM sessions).
     /// Each coordinator is a separate Claude CLI process. Default: 4.
-    #[serde(default = "default_max_coordinators")]
+    ///
+    /// Alias `max_chats` is accepted for forward-compat with the rename.
+    #[serde(default = "default_max_coordinators", alias = "max_chats")]
     pub max_coordinators: usize,
 
     /// Archive tasks completed/abandoned more than this many days ago.
@@ -3665,14 +3669,31 @@ fn record_sources(
 }
 
 impl Config {
-    /// Return the global workgraph directory (~/.workgraph/)
+    /// Return the global workgraph directory.
+    ///
+    /// Resolution order matches `main.rs::resolve_workgraph_dir`:
+    /// 1. `~/.wg` if it exists (modern, written by `wg init`).
+    /// 2. `~/.workgraph` if it exists (legacy).
+    /// 3. `~/.wg` (default — new installs get the modern name).
+    ///
+    /// Without this mirroring, `wg init --global` writes to `~/.wg/config.toml`
+    /// but `Config::load_global()` reads `~/.workgraph/config.toml`, silently
+    /// dropping every global key.
     pub fn global_dir() -> anyhow::Result<PathBuf> {
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        Ok(home.join(".workgraph"))
+        let modern = home.join(".wg");
+        if modern.is_dir() {
+            return Ok(modern);
+        }
+        let legacy = home.join(".workgraph");
+        if legacy.is_dir() {
+            return Ok(legacy);
+        }
+        Ok(modern)
     }
 
-    /// Return the global config file path (~/.workgraph/config.toml)
+    /// Return the global config file path.
     pub fn global_config_path() -> anyhow::Result<PathBuf> {
         Ok(Self::global_dir()?.join("config.toml"))
     }

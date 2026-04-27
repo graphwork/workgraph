@@ -473,3 +473,507 @@ mod tests {
         assert!(graph.get_task(".chat-1").is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// `wg migrate config` — rewrite stale config.toml files to canonical form.
+// ---------------------------------------------------------------------------
+
+/// What scopes `wg migrate config` should rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigMigrateTarget {
+    Global,
+    Local,
+    All,
+}
+
+/// Per-file summary of what `wg migrate config` changed (or would change).
+#[derive(Debug, Default, Clone)]
+pub struct ConfigMigrateResult {
+    /// Path of the file that was inspected.
+    pub path: std::path::PathBuf,
+    /// Whether the file existed at all.
+    pub existed: bool,
+    /// Top-level keys removed because they are deprecated/no-op.
+    pub removed_keys: Vec<String>,
+    /// Keys renamed (legacy → canonical).
+    pub renamed_keys: Vec<(String, String)>,
+    /// Keys whose values were rewritten (e.g. stale model strings).
+    pub rewritten_values: Vec<(String, String, String)>, // (key, old, new)
+    /// Path of the backup that was written (None on dry-run / no changes).
+    pub backup_path: Option<std::path::PathBuf>,
+    /// Whether the file was actually written (false on dry-run / no-op).
+    pub wrote: bool,
+}
+
+impl ConfigMigrateResult {
+    pub fn is_noop(&self) -> bool {
+        self.removed_keys.is_empty()
+            && self.renamed_keys.is_empty()
+            && self.rewritten_values.is_empty()
+    }
+}
+
+/// Top-level entry point: dispatch to global / local / both based on target.
+pub fn run_config_migrate(
+    workgraph_dir: &Path,
+    target: ConfigMigrateTarget,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let global_path = workgraph::config::Config::global_config_path()?;
+    let local_path = workgraph_dir.join("config.toml");
+
+    let mut results = Vec::new();
+    match target {
+        ConfigMigrateTarget::Global => {
+            results.push(migrate_one(&global_path, dry_run)?);
+        }
+        ConfigMigrateTarget::Local => {
+            results.push(migrate_one(&local_path, dry_run)?);
+        }
+        ConfigMigrateTarget::All => {
+            results.push(migrate_one(&global_path, dry_run)?);
+            results.push(migrate_one(&local_path, dry_run)?);
+        }
+    }
+
+    if json {
+        let payload: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "path": r.path.display().to_string(),
+                    "existed": r.existed,
+                    "removed_keys": r.removed_keys,
+                    "renamed_keys": r.renamed_keys,
+                    "rewritten_values": r.rewritten_values,
+                    "wrote": r.wrote,
+                    "backup_path": r.backup_path.as_ref().map(|p| p.display().to_string()),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        for r in &results {
+            print_one(r, dry_run);
+        }
+    }
+    Ok(())
+}
+
+fn print_one(r: &ConfigMigrateResult, dry_run: bool) {
+    if !r.existed {
+        println!(
+            "{}: file does not exist — nothing to migrate",
+            r.path.display()
+        );
+        return;
+    }
+    if r.is_noop() {
+        println!("{}: already canonical — no changes", r.path.display());
+        return;
+    }
+    let prefix = if dry_run { "[dry-run] " } else { "" };
+    println!("{}{}:", prefix, r.path.display());
+    for k in &r.removed_keys {
+        println!("  - removed deprecated key: {}", k);
+    }
+    for (old, new) in &r.renamed_keys {
+        println!("  - renamed: {} → {}", old, new);
+    }
+    for (k, old, new) in &r.rewritten_values {
+        println!("  - {}: {:?} → {:?}", k, old, new);
+    }
+    if r.wrote {
+        if let Some(bk) = &r.backup_path {
+            println!("  ✓ wrote (backup: {})", bk.display());
+        } else {
+            println!("  ✓ wrote");
+        }
+    } else if dry_run {
+        println!("  (dry-run — file not modified; rerun without --dry-run to apply)");
+    }
+}
+
+/// Read one config file, compute the canonical form, and (unless dry-run)
+/// write it back with a `.pre-migrate.<timestamp>` backup.
+fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateResult> {
+    let mut result = ConfigMigrateResult {
+        path: path.to_path_buf(),
+        ..Default::default()
+    };
+    if !path.exists() {
+        return Ok(result);
+    }
+    result.existed = true;
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))?;
+
+    let mut doc: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            anyhow::bail!(
+                "{} is not valid TOML: {}\nFix syntax errors before migrating.",
+                path.display(),
+                e
+            );
+        }
+    };
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    let mut rewritten: Vec<(String, String, String)> = Vec::new();
+
+    // 1. Drop deprecated/no-op keys.
+    drop_deprecated(&mut doc, &mut removed);
+
+    // 2. Rename legacy field names (chat_agent → coordinator_agent, etc).
+    rename_legacy_fields(&mut doc, &mut renamed);
+
+    // 3. Fix known stale model strings (claude-sonnet-4 → -4-6, etc).
+    fix_stale_model_strings(&mut doc, &mut rewritten);
+
+    result.removed_keys = removed;
+    result.renamed_keys = renamed;
+    result.rewritten_values = rewritten;
+
+    if result.is_noop() || dry_run {
+        return Ok(result);
+    }
+
+    // Write backup + new file.
+    let now = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let backup = path.with_extension(format!("toml.pre-migrate.{}", now));
+    std::fs::copy(path, &backup).map_err(|e| {
+        anyhow::anyhow!("failed to back up {} → {}: {}", path.display(), backup.display(), e)
+    })?;
+    result.backup_path = Some(backup);
+
+    let new_body = toml::to_string_pretty(&doc)
+        .map_err(|e| anyhow::anyhow!("failed to serialize migrated config: {}", e))?;
+    std::fs::write(path, new_body)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {}", path.display(), e))?;
+    result.wrote = true;
+
+    Ok(result)
+}
+
+/// Top-level [section].key pairs that the migration removes outright.
+/// These are deprecated/no-op as of the audit and are never written by
+/// the canonical defaults or by `wg config init`.
+const DEPRECATED_KEYS: &[(&str, &str)] = &[
+    // Handler is now derived from model spec's provider prefix.
+    ("agent", "executor"),
+    ("dispatcher", "executor"),
+    ("coordinator", "executor"),
+    // Compactor (.compact-N) cycle was retired.
+    ("dispatcher", "compactor_interval"),
+    ("dispatcher", "compactor_ops_threshold"),
+    ("dispatcher", "compaction_token_threshold"),
+    ("dispatcher", "compaction_threshold_ratio"),
+    ("coordinator", "compactor_interval"),
+    ("coordinator", "compactor_ops_threshold"),
+    ("coordinator", "compaction_token_threshold"),
+    ("coordinator", "compaction_threshold_ratio"),
+    // Verify-shadow-task auto-spawn was replaced by .evaluate-* + wg rescue.
+    ("dispatcher", "verify_autospawn_enabled"),
+    ("coordinator", "verify_autospawn_enabled"),
+    // Legacy verify_mode predates the ## Validation pattern.
+    ("dispatcher", "verify_mode"),
+    ("coordinator", "verify_mode"),
+    // Old FLIP threshold knob — replaced by per-agent eval thresholds.
+    ("agency", "flip_verification_threshold"),
+];
+
+fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) {
+    let table = match doc.as_table_mut() {
+        Some(t) => t,
+        None => return,
+    };
+    for (section, key) in DEPRECATED_KEYS {
+        if let Some(toml::Value::Table(sec)) = table.get_mut(*section)
+            && sec.remove(*key).is_some()
+        {
+            removed.push(format!("{}.{}", section, key));
+        }
+        // Also drop empty sections we just emptied.
+        if let Some(toml::Value::Table(sec)) = table.get(*section)
+            && sec.is_empty()
+        {
+            table.remove(*section);
+            removed.push(format!("{} (empty section)", section));
+        }
+    }
+}
+
+fn rename_legacy_fields(doc: &mut toml::Value, renamed: &mut Vec<(String, String)>) {
+    let table = match doc.as_table_mut() {
+        Some(t) => t,
+        None => return,
+    };
+    // Rename top-level [coordinator] section to [dispatcher] when no
+    // [dispatcher] section already exists. If both exist, leave them
+    // alone — the user has manually split them and we don't want to
+    // silently merge.
+    if table.contains_key("coordinator") && !table.contains_key("dispatcher") {
+        if let Some(v) = table.remove("coordinator") {
+            table.insert("dispatcher".to_string(), v);
+            renamed.push(("[coordinator]".to_string(), "[dispatcher]".to_string()));
+        }
+    }
+
+    // Within [dispatcher], rename chat_agent → coordinator_agent + max_chats → max_coordinators.
+    if let Some(toml::Value::Table(disp)) = table.get_mut("dispatcher") {
+        for (old, new) in &[
+            ("chat_agent", "coordinator_agent"),
+            ("max_chats", "max_coordinators"),
+        ] {
+            if disp.contains_key(*old) && !disp.contains_key(*new) {
+                if let Some(v) = disp.remove(*old) {
+                    disp.insert(new.to_string(), v);
+                    renamed.push((
+                        format!("dispatcher.{}", old),
+                        format!("dispatcher.{}", new),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Stale model string rewrites: maps `<old>` → `<new>` substrings inside
+/// any string field anywhere in the config. Conservative — only matches
+/// exact full strings, not arbitrary substrings, to avoid surprising
+/// rewrites of unrelated values.
+const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
+    (
+        "openrouter:anthropic/claude-sonnet-4",
+        "openrouter:anthropic/claude-sonnet-4-6",
+    ),
+    (
+        "openrouter:anthropic/claude-haiku-4",
+        "openrouter:anthropic/claude-haiku-4-5",
+    ),
+    (
+        "openrouter:anthropic/claude-opus-4",
+        "openrouter:anthropic/claude-opus-4-7",
+    ),
+    (
+        "anthropic/claude-sonnet-4",
+        "anthropic/claude-sonnet-4-6",
+    ),
+    (
+        "anthropic/claude-haiku-4",
+        "anthropic/claude-haiku-4-5",
+    ),
+    (
+        "anthropic/claude-opus-4",
+        "anthropic/claude-opus-4-7",
+    ),
+];
+
+fn fix_stale_model_strings(
+    doc: &mut toml::Value,
+    rewritten: &mut Vec<(String, String, String)>,
+) {
+    walk_strings(doc, "", &mut |path, s| {
+        for (old, new) in STALE_MODEL_REWRITES {
+            // Match exact full string only (not substring) so e.g.
+            // `claude-sonnet-4` doesn't fire when the value is already
+            // `claude-sonnet-4-6`. The `-4` suffix is a prefix of `-4-6`,
+            // so a naive substring match would loop.
+            if s == *old {
+                let new_str = (*new).to_string();
+                rewritten.push((path.to_string(), s.clone(), new_str.clone()));
+                return Some(new_str);
+            }
+        }
+        None
+    });
+}
+
+/// Walk every string value in a TOML doc, calling `f(path, &value)`.
+/// If `f` returns `Some(new)`, replace the value with `new`. The path
+/// uses dotted notation: `"agent.model"`, `"tiers.standard"`, etc.
+fn walk_strings(
+    val: &mut toml::Value,
+    path: &str,
+    f: &mut dyn FnMut(&str, &String) -> Option<String>,
+) {
+    match val {
+        toml::Value::String(s) => {
+            if let Some(new) = f(path, s) {
+                *s = new;
+            }
+        }
+        toml::Value::Array(arr) => {
+            for (i, child) in arr.iter_mut().enumerate() {
+                let child_path = format!("{}[{}]", path, i);
+                walk_strings(child, &child_path, f);
+            }
+        }
+        toml::Value::Table(tbl) => {
+            for (k, child) in tbl.iter_mut() {
+                let child_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", path, k)
+                };
+                walk_strings(child, &child_path, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod config_migrate_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_config(dir: &Path, body: &str) -> std::path::PathBuf {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn strips_deprecated_agent_executor() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+executor = "claude"
+model = "claude:opus"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.removed_keys.iter().any(|k| k == "agent.executor"),
+            "should remove agent.executor; got {:?}",
+            r.removed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !migrated.contains("executor"),
+            "migrated config should not contain executor; got:\n{}",
+            migrated,
+        );
+        assert!(
+            migrated.contains("model = \"claude:opus\""),
+            "migrated config should keep model; got:\n{}",
+            migrated,
+        );
+    }
+
+    #[test]
+    fn fixes_stale_openrouter_sonnet_model() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "openrouter:anthropic/claude-sonnet-4"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, _, new)| new == "openrouter:anthropic/claude-sonnet-4-6"),
+            "should rewrite stale sonnet-4 to sonnet-4-6; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("openrouter:anthropic/claude-sonnet-4-6"));
+        assert!(!migrated.contains("\"openrouter:anthropic/claude-sonnet-4\""));
+    }
+
+    #[test]
+    fn renames_chat_agent_to_coordinator_agent() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[dispatcher]
+chat_agent = true
+max_chats = 4
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.renamed_keys
+                .iter()
+                .any(|(_, new)| new == "dispatcher.coordinator_agent"),
+            "should rename chat_agent → coordinator_agent; got {:?}",
+            r.renamed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("coordinator_agent"));
+        assert!(migrated.contains("max_coordinators"));
+        assert!(!migrated.contains("chat_agent"));
+        assert!(!migrated.contains("max_chats"));
+    }
+
+    #[test]
+    fn dry_run_does_not_write() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+executor = "claude"
+"#,
+        );
+        let original = std::fs::read_to_string(&path).unwrap();
+        let r = migrate_one(&path, true).unwrap();
+        assert!(!r.removed_keys.is_empty());
+        assert!(!r.wrote);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(original, after, "dry-run must not touch the file");
+    }
+
+    #[test]
+    fn idempotent_on_canonical_config() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "claude:opus"
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(r.is_noop(), "canonical config should be a no-op; got {:?}", r);
+    }
+
+    #[test]
+    fn renames_legacy_coordinator_section_to_dispatcher() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[coordinator]
+max_agents = 4
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.renamed_keys
+                .iter()
+                .any(|(old, new)| old == "[coordinator]" && new == "[dispatcher]"),
+            "should rename [coordinator] → [dispatcher]; got {:?}",
+            r.renamed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("[dispatcher]"));
+        assert!(!migrated.contains("[coordinator]"));
+    }
+}

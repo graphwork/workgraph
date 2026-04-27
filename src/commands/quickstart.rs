@@ -488,10 +488,16 @@ CONFIGURATION
 ─────────────────────────────────────────
   wg config --show                    # Show current configuration
   wg config --list                    # Show merged config with source annotations
-  wg config --global --model opus     # Write to global ~/.workgraph/config.toml
-  wg config --local --model sonnet    # Write to local .workgraph/config.toml
+  wg config --merged                  # Show effective merged config
+  wg config init --global             # Write minimal canonical ~/.wg/config.toml
+  wg config init --local --bare       # Write minimal canonical .wg/config.toml
+  wg config init --route openrouter --global   # Write openrouter-route config
+  wg config --global --model opus     # Update key in global ~/.wg/config.toml
+  wg config --local --model sonnet    # Update key in local .wg/config.toml
   wg config --creator-agent <hash>    # Set agent used for task creation
   wg config --creator-model <model>   # Set model used for task creation
+  wg migrate config --dry-run         # Preview what `wg migrate config` would change
+  wg migrate config --all             # Rewrite stale global+local configs to canonical
 
 TRACE, RUNS & REPLAY
 ─────────────────────────────────────────

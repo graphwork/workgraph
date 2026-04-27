@@ -23,9 +23,16 @@ Pick a **(model, endpoint)** pair — wg derives the handler from the model spec
 - `wg config -m claude:opus` → claude CLI handler (no endpoint needed; CLI auths itself)
 - `wg config -m codex:gpt-5` → codex CLI handler (no endpoint needed)
 - `wg config -m local:qwen3-coder -e http://127.0.0.1:8088` → in-process nex handler
-- `wg config -m openrouter:anthropic/claude-opus-4-6` → in-process nex handler
+- `wg config -m openrouter:anthropic/claude-opus-4-7` → in-process nex handler
 
 The legacy `--executor` / `-x` flag and `[agent].executor` / `[dispatcher].executor` config keys are deprecated; they still work for one release with a deprecation warning, but the model spec is the single source of truth for which handler runs. Spawned agents continue to receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars (handler kind + resolved model). See `src/dispatch/handler_for_model.rs` for the full mapping.
+
+A fresh install with no `~/.wg/config.toml` already runs `claude:opus` via the
+claude CLI handler — built-in defaults cover the common case. To commit choices
+to disk run `wg config init --global` (minimal canonical claude-cli config) or
+`wg setup` (interactive wizard). To clean up an old config with deprecated
+keys or stale model strings, run `wg migrate config --dry-run` then
+`wg migrate config --all`. See `docs/config-ux-design.md` for full details.
 
 ## For All Agents (Including the Chat Agent)
 

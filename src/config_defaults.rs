@@ -196,9 +196,9 @@ fn openrouter_config(params: &RouteParams) -> Config {
     // Tiers fully populated. Stored in provider:model format so the
     // strict model-spec validator accepts them on reload.
     config.tiers = TierConfig {
-        fast: Some("openrouter:anthropic/claude-haiku-4".to_string()),
-        standard: Some("openrouter:anthropic/claude-sonnet-4".to_string()),
-        premium: Some("openrouter:anthropic/claude-opus-4".to_string()),
+        fast: Some("openrouter:anthropic/claude-haiku-4-5".to_string()),
+        standard: Some("openrouter:anthropic/claude-sonnet-4-6".to_string()),
+        premium: Some("openrouter:anthropic/claude-opus-4-7".to_string()),
     };
 
     // Worker default: premium tier (opus) — real implementation needs the
@@ -206,7 +206,7 @@ fn openrouter_config(params: &RouteParams) -> Config {
     let agent_model = params
         .model
         .clone()
-        .unwrap_or_else(|| "openrouter:anthropic/claude-opus-4".to_string());
+        .unwrap_or_else(|| "openrouter:anthropic/claude-opus-4-7".to_string());
     let agent_model = ensure_provider_prefix(&agent_model, "openrouter");
     config.agent.model = agent_model.clone();
     config.coordinator.model = Some(agent_model.clone());
@@ -215,8 +215,8 @@ fn openrouter_config(params: &RouteParams) -> Config {
     // the cheap tier, ~10x cost vs sonnet for nearly identical scores.
     config.models = split_role_models_routing(
         &agent_model,
-        "openrouter:anthropic/claude-haiku-4",
-        "openrouter:anthropic/claude-haiku-4",
+        "openrouter:anthropic/claude-haiku-4-5",
+        "openrouter:anthropic/claude-haiku-4-5",
     );
 
     config
@@ -417,7 +417,7 @@ fn openrouter_default_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "haiku".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-haiku-4".to_string(),
+            model: "anthropic/claude-haiku-4-5".to_string(),
             tier: Tier::Fast,
             context_window: 200_000,
             max_output_tokens: 8_192,
@@ -426,7 +426,7 @@ fn openrouter_default_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "sonnet".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-sonnet-4".to_string(),
+            model: "anthropic/claude-sonnet-4-6".to_string(),
             tier: Tier::Standard,
             context_window: 200_000,
             max_output_tokens: 64_000,
@@ -435,7 +435,7 @@ fn openrouter_default_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "opus".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-opus-4".to_string(),
+            model: "anthropic/claude-opus-4-7".to_string(),
             tier: Tier::Premium,
             context_window: 200_000,
             max_output_tokens: 32_000,
@@ -589,15 +589,15 @@ mod tests {
         assert_tiers_filled(&config);
         assert_eq!(
             config.tiers.fast.as_deref(),
-            Some("openrouter:anthropic/claude-haiku-4")
+            Some("openrouter:anthropic/claude-haiku-4-5")
         );
         assert_eq!(
             config.tiers.standard.as_deref(),
-            Some("openrouter:anthropic/claude-sonnet-4")
+            Some("openrouter:anthropic/claude-sonnet-4-6")
         );
         assert_eq!(
             config.tiers.premium.as_deref(),
-            Some("openrouter:anthropic/claude-opus-4")
+            Some("openrouter:anthropic/claude-opus-4-7")
         );
 
         // models.* pinned
@@ -685,19 +685,19 @@ mod tests {
     fn test_route_openrouter_role_split() {
         let config = config_for_route(SetupRoute::Openrouter, RouteParams::default());
         assert_eq!(
-            config.agent.model, "openrouter:anthropic/claude-opus-4",
+            config.agent.model, "openrouter:anthropic/claude-opus-4-7",
             "openrouter agent should default to opus equivalent"
         );
         let evaluator = config.models.evaluator.as_ref().unwrap();
         assert_eq!(
             evaluator.model.as_deref(),
-            Some("openrouter:anthropic/claude-haiku-4"),
+            Some("openrouter:anthropic/claude-haiku-4-5"),
             "openrouter evaluator should default to haiku equivalent"
         );
         let assigner = config.models.assigner.as_ref().unwrap();
         assert_eq!(
             assigner.model.as_deref(),
-            Some("openrouter:anthropic/claude-haiku-4"),
+            Some("openrouter:anthropic/claude-haiku-4-5"),
             "openrouter assigner should default to haiku equivalent"
         );
     }
