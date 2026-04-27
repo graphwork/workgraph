@@ -2935,8 +2935,8 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                             _ => None,
                         };
                         let summary = match detail {
-                            Some(d) => format!("⚡ {} → {}", name, d),
-                            None => format!("⚡ {}", name),
+                            Some(d) => format!("⌁ {} → {}", name, d),
+                            None => format!("⌁ {}", name),
                         };
                         events.push(AgentStreamEvent {
                             kind: AgentStreamEventKind::ToolCall,
@@ -3145,8 +3145,8 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                     }
                 });
             let call_summary = match detail {
-                Some(d) => format!("⚡ {} → {}", name, d),
-                None => format!("⚡ {}", name),
+                Some(d) => format!("⌁ {} → {}", name, d),
+                None => format!("⌁ {}", name),
             };
             let full = if let Some(preview) = output_preview {
                 let prefix = if is_error { "✗" } else { "✓" };
@@ -21641,6 +21641,21 @@ mod agent_stream_tests {
         assert!(event.summary.contains("Bash"));
         assert!(event.summary.contains("ls -la"));
         assert!(event.summary.contains("total 8"));
+    }
+
+    #[test]
+    fn test_tool_call_summary_uses_priority_symbol_not_lightning() {
+        // Pins the visual prefix so a future edit can't silently revert
+        // ⌁ (priority symbol, U+2380) back to ⚡ (lightning, U+26A1).
+        let claude_line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        let event = parse_raw_stream_line(claude_line, "a").unwrap();
+        assert!(event.summary.starts_with("⌁ "), "got: {}", event.summary);
+        assert!(!event.summary.contains('⚡'), "got: {}", event.summary);
+
+        let native_line = r#"{"type":"tool_call","name":"Bash","input":{"command":"ls"},"output":"x","is_error":false}"#;
+        let event = parse_raw_stream_line(native_line, "a").unwrap();
+        assert!(event.summary.starts_with("⌁ "), "got: {}", event.summary);
+        assert!(!event.summary.contains('⚡'), "got: {}", event.summary);
     }
 
     #[test]

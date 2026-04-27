@@ -420,7 +420,7 @@ mod tests {
         AgentStreamEvent {
             kind: AgentStreamEventKind::ToolCall,
             agent_id: "agent-test".to_string(),
-            summary: format!("⚡ Bash → {}", cmd),
+            summary: format!("⌁ Bash → {}", cmd),
             details: Some(EventDetails::ToolCall {
                 name: "Bash".to_string(),
                 input,
@@ -437,7 +437,7 @@ mod tests {
         AgentStreamEvent {
             kind: AgentStreamEventKind::ToolCall,
             agent_id: "agent-test".to_string(),
-            summary: format!("⚡ Edit → {}", path),
+            summary: format!("⌁ Edit → {}", path),
             details: Some(EventDetails::ToolCall {
                 name: "Edit".to_string(),
                 input,
