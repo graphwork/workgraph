@@ -274,6 +274,14 @@ pub(crate) fn filter_internal_tasks<'a>(
         }
     }
 
+    // Parent-state-driven annotations: a task in PendingEval is being evaluated
+    // for its entire pending window, regardless of whether the .evaluate-X task
+    // is currently in_progress, terminal, or hasn't been scheduled yet. Without
+    // this, the [∴ evaluating] badge flashes briefly during the evaluator's
+    // (often sub-second) active window and then disappears, even though the
+    // parent stays in PendingEval until promotion.
+    add_parent_state_annotations(&tasks, &mut annotations);
+
     // Second pass: filter out internal tasks and fix edges
     // For tasks that were blocked by internal tasks, rewire to the internal task's blockers
     let filtered: Vec<&'a Task> = tasks
@@ -316,6 +324,9 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
         }
     }
 
+    // Parent-state-driven annotations (see filter_internal_tasks for rationale).
+    add_parent_state_annotations(&tasks, &mut annotations);
+
     let filtered: Vec<&'a Task> = tasks
         .into_iter()
         .filter(|t| {
@@ -328,6 +339,43 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
         .collect();
 
     (filtered, annotations)
+}
+
+/// Annotate a task based on its own status: PendingEval → "[∴ evaluating]",
+/// PendingValidation → "[∴ validating]". This is the parent-state view of the
+/// pipeline phase, complementary to the internal-task-state view; together they
+/// keep the badge visible across the whole phase even when the .evaluate-X /
+/// .verify-X helper task is briefly absent or terminal.
+///
+/// Idempotent: if an annotation with the same text already exists for the task
+/// (typically from the internal-task-driven pass above), this is a no-op so the
+/// badge isn't duplicated.
+fn add_parent_state_annotations(
+    tasks: &[&Task],
+    annotations: &mut HashMap<String, AnnotationInfo>,
+) {
+    for task in tasks {
+        if is_internal_task(task) {
+            continue;
+        }
+        let annotation = match task.status {
+            Status::PendingEval => "[∴ evaluating]",
+            Status::PendingValidation => "[∴ validating]",
+            _ => continue,
+        };
+        let entry = annotations.entry(task.id.clone()).or_insert_with(|| {
+            AnnotationInfo {
+                text: String::new(),
+                dot_task_ids: Vec::new(),
+            }
+        });
+        if !entry.text.contains(annotation) {
+            if !entry.text.is_empty() {
+                entry.text.push(' ');
+            }
+            entry.text.push_str(annotation);
+        }
+    }
 }
 
 /// Generate the ASCII viz output string for the given directory and options.
@@ -1471,4 +1519,98 @@ mod tests {
         );
     }
 
+    /// Issue 1 (fix-tui-detail): the [∴ evaluating] badge must persist for the
+    /// entire window the parent task is in PendingEval, not just while the
+    /// .evaluate-X helper task is running. This was previously broken because:
+    /// (a) the helper often completes in sub-second windows, and
+    /// (b) when wg evaluate run rejects PendingEval parents, the helper goes
+    /// terminal Failed in milliseconds, leaving the parent stuck in PendingEval
+    /// with no badge at all (only the 3-second sticky cache covered the gap).
+    #[test]
+    fn pendingeval_parent_shows_evaluating_annotation_without_helper() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::PendingEval;
+        graph.add_node(Node::Task(parent));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (_filtered, annots) =
+            filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
+        let annot = annots
+            .get("my-task")
+            .expect("PendingEval parent must produce an evaluating annotation");
+        assert!(
+            annot.text.contains("evaluating"),
+            "expected 'evaluating' badge for PendingEval parent, got: {}",
+            annot.text
+        );
+    }
+
+    /// Even when the .evaluate-X helper has terminated (Failed because parent
+    /// was in PendingEval — the bug surfaced in research-tui-detail), the badge
+    /// must remain visible because the parent is still in PendingEval.
+    #[test]
+    fn pendingeval_parent_shows_evaluating_when_helper_failed() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::PendingEval;
+        let mut eval = make_internal_task(
+            ".evaluate-my-task",
+            "Evaluate my-task",
+            "evaluation",
+            vec!["my-task"],
+        );
+        eval.status = Status::Failed;
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(eval));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (_filtered, annots) =
+            filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
+        let annot = annots
+            .get("my-task")
+            .expect("PendingEval parent must produce an evaluating annotation");
+        assert!(annot.text.contains("evaluating"));
+        assert!(
+            !annot.text.contains("evaluating [∴ evaluating]")
+                && annot.text.matches("evaluating").count() == 1,
+            "badge must not be duplicated when helper is also active: {}",
+            annot.text
+        );
+    }
+
+    /// PendingValidation parents should likewise persistently show validating.
+    #[test]
+    fn pendingvalidation_parent_shows_validating_annotation() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::PendingValidation;
+        graph.add_node(Node::Task(parent));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (_filtered, annots) =
+            filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
+        let annot = annots
+            .get("my-task")
+            .expect("PendingValidation parent must produce a validating annotation");
+        assert!(
+            annot.text.contains("validating"),
+            "expected 'validating' badge, got: {}",
+            annot.text
+        );
+    }
+
+    /// Done parents must NOT pick up a phase badge.
+    #[test]
+    fn done_parent_has_no_phase_annotation() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::Done;
+        graph.add_node(Node::Task(parent));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (_filtered, annots) =
+            filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
+        assert!(!annots.contains_key("my-task"));
+    }
 }

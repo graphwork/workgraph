@@ -4775,7 +4775,7 @@ impl VizApp {
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
-            detail_collapsed_sections: ["Output", "Output (raw)", "Prompt"]
+            detail_collapsed_sections: ["Description", "Output", "Output (raw)", "Prompt"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -7461,6 +7461,7 @@ impl VizApp {
 
         // ── Evaluation ──
         let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
+        let mut rendered_eval = false;
         if evals_dir.exists() {
             let prefix = format!("eval-{}-", task.id);
             if let Ok(entries) = std::fs::read_dir(&evals_dir) {
@@ -7476,6 +7477,7 @@ impl VizApp {
                     && let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content)
                 {
                     eval_found = true;
+                    rendered_eval = true;
                     let is_flip = eval
                         .get("source")
                         .and_then(|v| v.as_str())
@@ -7598,6 +7600,48 @@ impl VizApp {
                     lines.push(String::new());
                 }
                 let _ = eval_found;
+            }
+        }
+
+        // Fallback: when no eval-{task.id}-*.json exists, surface the state of
+        // any .evaluate-X / .flip-X siblings in the graph. This avoids silent
+        // omission when (a) the evaluator hasn't run yet, (b) the evaluator
+        // failed without writing a score, or (c) the eval is currently running.
+        if !rendered_eval && !workgraph::graph::is_system_task(&task.id) {
+            let eval_siblings: Vec<(&'static str, String)> = vec![
+                ("Evaluation", format!(".evaluate-{}", task.id)),
+                ("Evaluation", format!("evaluate-{}", task.id)),
+                ("FLIP", format!(".flip-{}", task.id)),
+                ("FLIP", format!("flip-{}", task.id)),
+            ];
+            let sibling_rows: Vec<(String, Status, String)> = eval_siblings
+                .iter()
+                .filter_map(|(label, tid)| {
+                    graph
+                        .tasks()
+                        .find(|t| &t.id == tid)
+                        .map(|t| (label.to_string(), t.status, t.id.clone()))
+                })
+                .collect();
+            if !sibling_rows.is_empty() {
+                lines.push("── Evaluation ──".to_string());
+                for (label, status, sib_id) in &sibling_rows {
+                    let summary = match status {
+                        Status::Open | Status::Blocked | Status::Waiting => {
+                            "scheduled (no score yet)"
+                        }
+                        Status::InProgress
+                        | Status::PendingValidation
+                        | Status::PendingEval => "running…",
+                        Status::Done => "done (no score recorded)",
+                        Status::Failed => "failed (no score recorded)",
+                        Status::Abandoned => "abandoned (no score recorded)",
+                        Status::Incomplete => "incomplete (no score recorded)",
+                    };
+                    lines.push(format!("  {} ({}): {}", label, sib_id, summary));
+                }
+                lines.push("  No score recorded — see task logs for details.".to_string());
+                lines.push(String::new());
             }
         }
 
@@ -8278,16 +8322,17 @@ impl VizApp {
         }
     }
 
-    /// Toggle the section header at the given screen row (relative to the detail content area).
-    /// Uses the section_header_positions populated by the renderer.
-    /// Returns the section name if a header was found and toggled.
+    /// Toggle the section header enclosing the given screen row (relative to the
+    /// detail content area). Maps any clicked row to the most recent section
+    /// header at-or-above it, so clicks anywhere in a section body collapse/expand
+    /// that section. Returns the section name if a header was found and toggled.
     pub fn toggle_detail_section_at_screen_row(&mut self, screen_row: usize) -> Option<String> {
         let line_idx = self.hud_scroll + screen_row;
-        // Find a header at this wrapped line index.
         let name = self
             .detail_section_header_lines
             .iter()
-            .find(|(idx, _)| *idx == line_idx)
+            .filter(|(idx, _)| *idx <= line_idx)
+            .max_by_key(|(idx, _)| *idx)
             .map(|(_, name)| name.clone())?;
         self.toggle_detail_section_by_name(&name);
         Some(name)
@@ -9009,7 +9054,10 @@ impl VizApp {
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
-            detail_collapsed_sections: std::collections::HashSet::new(),
+            detail_collapsed_sections: ["Description", "Output", "Output (raw)", "Prompt"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             detail_section_header_lines: Vec::new(),
             right_panel_visible: false,
             focused_panel: FocusedPanel::Graph,
@@ -16287,9 +16335,10 @@ mod hud_tests {
         );
 
         let mut app = build_app(&viz, "collapse-test", tmp.path());
+        // Reset default-collapsed set so this test exercises a clean expand→collapse→expand cycle.
+        app.detail_collapsed_sections.clear();
         app.load_hud_detail();
 
-        // Verify Description section exists
         assert!(app.detail_collapsed_sections.is_empty());
 
         // Scroll to the Description header and toggle
@@ -16338,6 +16387,8 @@ mod hud_tests {
         );
 
         let mut app = build_app(&viz, "toggle-name", tmp.path());
+        // Reset default-collapsed set so the toggle below starts from expanded.
+        app.detail_collapsed_sections.clear();
         app.load_hud_detail();
 
         // Toggle by name
@@ -16354,6 +16405,171 @@ mod hud_tests {
         // Collapsed state stays even if we reload hud_detail
         app.load_hud_detail();
         assert!(app.detail_collapsed_sections.contains("Description"));
+    }
+
+    /// Issue 4 (fix-tui-detail): Description must default to collapsed so a long
+    /// description doesn't push Runtime/Eval/Tokens/Deps off the visible area.
+    #[test]
+    fn description_is_collapsed_by_default() {
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let app = build_app(&viz, "a", _tmp.path());
+        assert!(
+            app.detail_collapsed_sections.contains("Description"),
+            "Description must be in the default-collapsed set"
+        );
+        assert!(app.detail_collapsed_sections.contains("Prompt"));
+        assert!(app.detail_collapsed_sections.contains("Output"));
+        assert!(app.detail_collapsed_sections.contains("Output (raw)"));
+    }
+
+    /// Issue 3 (fix-tui-detail): clicking anywhere inside a section's body
+    /// (not just on its header line) must collapse that section. Previously
+    /// `toggle_detail_section_at_screen_row` only fired on exact-match header
+    /// rows, leaving body clicks as a confusing no-op.
+    #[test]
+    fn click_in_section_body_collapses_enclosing_section() {
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let mut app = build_app(&viz, "a", _tmp.path());
+        app.detail_collapsed_sections.clear();
+        // Synthesize three section headers at known wrapped-line indices, with
+        // body rows between them. The renderer normally populates this; we set
+        // it directly to keep the test focused on the click-mapping logic.
+        app.detail_section_header_lines = vec![
+            (0, "Description".to_string()),
+            (5, "Prompt".to_string()),
+            (12, "Tokens".to_string()),
+        ];
+        app.hud_scroll = 0;
+
+        // Click on row 3 — inside Description's body. Must collapse Description.
+        let toggled = app.toggle_detail_section_at_screen_row(3);
+        assert_eq!(toggled, Some("Description".to_string()));
+        assert!(app.detail_collapsed_sections.contains("Description"));
+
+        // Click on row 7 — inside Prompt's body. Must collapse Prompt, not Description.
+        let toggled = app.toggle_detail_section_at_screen_row(7);
+        assert_eq!(toggled, Some("Prompt".to_string()));
+        assert!(app.detail_collapsed_sections.contains("Prompt"));
+
+        // Click on row 12 — exact header — still toggles Tokens.
+        let toggled = app.toggle_detail_section_at_screen_row(12);
+        assert_eq!(toggled, Some("Tokens".to_string()));
+        assert!(app.detail_collapsed_sections.contains("Tokens"));
+
+        // Click on row 0 (above any header) — no header to map to, returns None.
+        // Set up so all headers are below.
+        app.detail_section_header_lines = vec![(5, "Description".to_string())];
+        app.hud_scroll = 0;
+        let toggled = app.toggle_detail_section_at_screen_row(2);
+        assert_eq!(toggled, None);
+    }
+
+    /// Issue 2 (fix-tui-detail): when a task has a sibling .evaluate-X (or
+    /// .flip-X) but no eval-{id}-*.json scoring file has been written, the
+    /// Detail view must still surface an Evaluation pane describing the
+    /// helper's status, instead of silently omitting it. This regressed when
+    /// PendingEval was introduced and wg evaluate run started rejecting
+    /// PendingEval parents (research-tui-detail finding).
+    #[test]
+    fn detail_surfaces_evaluate_sibling_when_no_eval_file() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task_with_status("my-task", "My Task", Status::PendingEval);
+        parent.description = Some("Test description".to_string());
+        let mut eval = make_task_with_status(
+            ".evaluate-my-task",
+            "Evaluate my-task",
+            Status::Failed,
+        );
+        eval.tags = vec!["evaluation".to_string(), "agency".to_string()];
+        eval.after = vec!["my-task".to_string()];
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(eval));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = build_app(&viz, "my-task", tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().expect("detail must load");
+        let has_eval_section = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("── Evaluation ──"));
+        assert!(
+            has_eval_section,
+            "Evaluation section must be present when sibling .evaluate-X exists. Got lines:\n{}",
+            detail.rendered_lines.join("\n")
+        );
+        let mentions_helper = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains(".evaluate-my-task") && l.contains("failed"));
+        assert!(
+            mentions_helper,
+            "Evaluation pane must surface the helper's id and status. Got lines:\n{}",
+            detail.rendered_lines.join("\n")
+        );
+    }
+
+    /// When neither an eval file nor a sibling .evaluate-X exists (e.g. a task
+    /// outside the agency pipeline), the Evaluation pane must still be omitted —
+    /// surfacing a fake "no eval" pane for every task would be noise.
+    #[test]
+    fn detail_omits_evaluation_pane_with_no_file_and_no_sibling() {
+        let mut graph = WorkGraph::new();
+        let parent = make_task_with_status("standalone", "Standalone", Status::Done);
+        graph.add_node(Node::Task(parent));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = build_app(&viz, "standalone", tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().expect("detail must load");
+        let has_eval_section = detail
+            .rendered_lines
+            .iter()
+            .any(|l| l.contains("── Evaluation ──"));
+        assert!(
+            !has_eval_section,
+            "Evaluation section must be omitted when no eval file and no sibling exists"
+        );
     }
 
     // ── Iteration browsing tests ──
