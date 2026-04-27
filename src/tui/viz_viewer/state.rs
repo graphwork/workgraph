@@ -2855,7 +2855,7 @@ pub struct AgentStreamEvent {
     pub details: Option<EventDetails>,
 }
 
-/// Three view modes available in the per-task Log pane (right panel tab 4).
+/// Four view modes available in the per-task Log pane (right panel tab 4).
 /// Cycled with the `4` key while the Log pane is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogViewMode {
@@ -2867,15 +2867,21 @@ pub enum LogViewMode {
     /// Pretty-printed full transcript: every event rendered with its own
     /// formatter, NOT a JSON dump.
     RawPretty,
+    /// Workgraph-level log entries only: `wg log` writes, dispatcher
+    /// status updates, and task lifecycle transitions sourced from the
+    /// task's `log` field on the graph. NO LLM stream content.
+    WgLog,
 }
 
 impl LogViewMode {
-    /// Cycle to the next mode in the order Events -> HighLevel -> RawPretty -> Events.
+    /// Cycle to the next mode in the order
+    /// Events -> HighLevel -> RawPretty -> WgLog -> Events.
     pub fn next(self) -> Self {
         match self {
             Self::Events => Self::HighLevel,
             Self::HighLevel => Self::RawPretty,
-            Self::RawPretty => Self::Events,
+            Self::RawPretty => Self::WgLog,
+            Self::WgLog => Self::Events,
         }
     }
 
@@ -2885,6 +2891,7 @@ impl LogViewMode {
             Self::Events => "events",
             Self::HighLevel => "high-level",
             Self::RawPretty => "raw",
+            Self::WgLog => "wg-log",
         }
     }
 }
@@ -3225,8 +3232,8 @@ pub struct LogPaneState {
     pub auto_tail: bool,
     /// Whether to show raw JSON format (toggled by `J`).
     pub json_mode: bool,
-    /// Which of the three view modes is active. Cycled by pressing `4`
-    /// while the Log pane is focused: events → high-level → raw → events.
+    /// Which of the four view modes is active. Cycled by pressing `4`
+    /// while the Log pane is focused: events → high-level → raw → wg-log → events.
     pub view_mode: LogViewMode,
     /// Cached rendered log lines for the currently selected task.
     pub rendered_lines: Vec<String>,
@@ -8653,8 +8660,8 @@ impl VizApp {
         self.invalidate_log_pane();
     }
 
-    /// Cycle the log pane through its three view modes:
-    /// Events → HighLevel → RawPretty → Events.
+    /// Cycle the log pane through its four view modes:
+    /// Events → HighLevel → RawPretty → WgLog → Events.
     /// Resets scroll position to keep the most recent content visible
     /// (auto-tail enabled).
     pub fn cycle_log_view(&mut self) {
@@ -22761,11 +22768,11 @@ mod agent_stream_tests {
     }
 
     /// Pressing the `4` key while focused on the Log pane must cycle
-    /// the view through three modes in stable order:
-    /// Events → HighLevel → RawPretty → Events. Required by the
-    /// per-task Log "three view modes" feature.
+    /// the view through four modes in stable order:
+    /// Events → HighLevel → RawPretty → WgLog → Events. Required by the
+    /// per-task Log "four view modes" feature.
     #[test]
-    fn test_log_view_cycles_through_three_modes() {
+    fn test_log_view_cycles_through_four_modes() {
         use crate::commands::viz::{LayoutMode, VizOutput};
         use crate::commands::viz::ascii::generate_ascii;
         use std::collections::{HashMap, HashSet};
@@ -22805,16 +22812,20 @@ mod agent_stream_tests {
         assert_eq!(app.log_pane.view_mode, LogViewMode::RawPretty);
 
         app.cycle_log_view();
+        assert_eq!(app.log_pane.view_mode, LogViewMode::WgLog);
+
+        app.cycle_log_view();
         assert_eq!(
             app.log_pane.view_mode,
             LogViewMode::Events,
-            "after three cycles we should be back at Events"
+            "after four cycles we should be back at Events"
         );
 
         // The mode label exposed in the pane header must match.
         assert_eq!(LogViewMode::Events.label(), "events");
         assert_eq!(LogViewMode::HighLevel.label(), "high-level");
         assert_eq!(LogViewMode::RawPretty.label(), "raw");
+        assert_eq!(LogViewMode::WgLog.label(), "wg-log");
     }
 }
 

@@ -1,6 +1,6 @@
 //! Per-mode renderers for the per-task Log pane (right panel tab 4).
 //!
-//! Three view modes are supported (cycled with the `4` key):
+//! Four view modes are supported (cycled with the `4` key):
 //!
 //! 1. **Events** — one structured line per event (tool calls, results,
 //!    errors). Quick operational view.
@@ -10,10 +10,17 @@
 //! 3. **RawPretty** — full pretty-printed transcript: every event
 //!    rendered with its own formatter, NEVER as a JSON dump. Each
 //!    event-kind has a distinct prefix and visual treatment.
+//! 4. **WgLog** — workgraph-level log entries only: `wg log` writes,
+//!    dispatcher status updates, and task lifecycle transitions sourced
+//!    from the task's `log` field on the graph. Contains no LLM-stream
+//!    content (no tool calls, tokens, thinking, etc.) — useful for
+//!    seeing only the structured workgraph-side narrative.
 //!
-//! All three modes consume the same `&[AgentStreamEvent]` produced by
-//! `parse_raw_stream_line`, so adding a new mode means adding one more
-//! function here — no extra parsing or storage.
+//! The first three modes consume the same `&[AgentStreamEvent]` produced
+//! by `parse_raw_stream_line`; WgLog consumes the pre-rendered
+//! `[<rel-time>] <message>` strings populated by `load_log_pane()` from
+//! `task.log`. Adding a new mode means adding one more function here —
+//! no extra parsing or storage.
 //!
 //! Pure functions — no `VizApp` dependency — so they unit-test cleanly.
 use ratatui::style::{Color, Modifier, Style};
@@ -201,6 +208,30 @@ pub fn render_raw_pretty_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>>
     }
 
     out
+}
+
+/// Render the WgLog view: workgraph-level entries only, sourced from
+/// `task.log` via `load_log_pane()`. The caller passes the pre-formatted
+/// `[<rel-time>] <message>` strings; this renderer styles them and
+/// inserts a placeholder when there are no entries yet. NO LLM-stream
+/// content appears here — that is intentional, this view is the "what
+/// has the graph itself recorded for this task" surface.
+pub fn render_wg_log_view(rendered_lines: &[String]) -> Vec<Line<'static>> {
+    if rendered_lines.is_empty() {
+        return vec![Line::from(Span::styled(
+            "(no workgraph log entries yet)",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    }
+    rendered_lines
+        .iter()
+        .map(|s| {
+            Line::from(Span::styled(
+                s.clone(),
+                Style::default().fg(Color::Gray),
+            ))
+        })
+        .collect()
 }
 
 fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
@@ -851,6 +882,99 @@ mod tests {
             0,
             "consecutive tool events must not have blank gaps:\n{}",
             lines_to_text(&lines)
+        );
+    }
+
+    /// WgLog mode renders one line per pre-formatted workgraph entry,
+    /// preserving ordering. The renderer takes pre-formatted strings
+    /// (`load_log_pane()` builds `[<rel-time>] <message>` lines from
+    /// `task.log`); it must not drop or reorder them.
+    #[test]
+    fn test_wg_log_mode_renders_workgraph_entries_in_order() {
+        let entries = vec![
+            "[5m ago] Task created".to_string(),
+            "[3m ago] Spawned by coordinator --executor claude --model opus".to_string(),
+            "[1m ago] Starting implementation".to_string(),
+        ];
+        let lines = render_wg_log_view(&entries);
+        let text = lines_to_text(&lines);
+
+        assert_eq!(
+            lines.len(),
+            entries.len(),
+            "one rendered line per entry, got: {}",
+            text
+        );
+        for entry in &entries {
+            assert!(
+                text.contains(entry),
+                "entry {:?} missing from rendered output:\n{}",
+                entry,
+                text
+            );
+        }
+        // Order preserved.
+        let pos_first = text.find("Task created").unwrap();
+        let pos_mid = text.find("Spawned by coordinator").unwrap();
+        let pos_last = text.find("Starting implementation").unwrap();
+        assert!(
+            pos_first < pos_mid && pos_mid < pos_last,
+            "WgLog must preserve input order:\n{}",
+            text
+        );
+    }
+
+    /// WgLog mode shows a clear placeholder when the task has no
+    /// workgraph-level log entries yet — the user should never see a
+    /// silently empty pane.
+    #[test]
+    fn test_wg_log_mode_renders_placeholder_when_empty() {
+        let lines = render_wg_log_view(&[]);
+        let text = lines_to_text(&lines);
+        assert_eq!(lines.len(), 1, "exactly one placeholder line when empty");
+        assert!(
+            text.contains("no workgraph log entries"),
+            "placeholder text should signal emptiness, got: {}",
+            text
+        );
+    }
+
+    /// WgLog mode is the "structured workgraph narrative" view: it must
+    /// NOT include any LLM-stream content. The renderer takes only
+    /// `&[String]` (workgraph log entries from `task.log`), so by
+    /// construction it cannot show stream events — but assert this
+    /// holds at the API boundary so a future refactor doesn't quietly
+    /// invert the contract.
+    #[test]
+    fn test_wg_log_mode_does_not_render_stream_events() {
+        let stream_events = vec![
+            tool_call_bash("cargo test"),
+            text_output("here is a long assistant text response"),
+            tool_call_edit("src/main.rs", "old text", "new text"),
+        ];
+        // Only LLM-stream events are present; the WgLog input slice is empty.
+        let wg_entries: Vec<String> = Vec::new();
+        let lines = render_wg_log_view(&wg_entries);
+        let text = lines_to_text(&lines);
+
+        // None of the LLM-stream content should leak into the WgLog view.
+        for ev in &stream_events {
+            assert!(
+                !text.contains(&ev.summary),
+                "WgLog must not contain LLM-stream content {:?}; got: {}",
+                ev.summary,
+                text
+            );
+        }
+        assert!(
+            !text.contains("cargo test"),
+            "WgLog must not contain tool-call commands: {}",
+            text
+        );
+        assert!(
+            !text.contains("assistant text response"),
+            "WgLog must not contain assistant text: {}",
+            text
         );
     }
 }

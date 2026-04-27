@@ -4302,15 +4302,18 @@ fn render_editor_word_wrap(
     }
 }
 
-/// Draw the per-task Log tab. Three view modes are available, cycled
+/// Draw the per-task Log tab. Four view modes are available, cycled
 /// with the `4` key while the Log pane is focused:
 ///   * `Events` — one structured event per line (legacy view)
 ///   * `HighLevel` — coarse activity summaries
 ///   * `RawPretty` — full pretty-printed transcript
+///   * `WgLog` — workgraph-level log entries only (`wg log` writes,
+///     dispatcher status, lifecycle transitions). NO LLM stream content.
 ///
-/// All three modes consume `app.log_pane.stream_events` (parsed
-/// raw_stream.jsonl). When no stream events have been parsed yet, falls
-/// back to the raw agent output buffer.
+/// The first three modes consume `app.log_pane.stream_events` (parsed
+/// raw_stream.jsonl); when no stream events have been parsed yet, they
+/// fall back to the raw agent output buffer. `WgLog` instead consumes
+/// `app.log_pane.rendered_lines` (populated from `task.log`).
 fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use ratatui::widgets::Paragraph;
 
@@ -4362,16 +4365,21 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     use super::log_render::{
         render_events_view, render_high_level_view, render_raw_pretty_view,
+        render_wg_log_view,
     };
     use super::state::LogViewMode;
 
-    // Collect display lines for whichever view is active. All three
-    // modes share the same data source (parsed raw_stream events).
-    let raw_lines: Vec<Line> = if !app.log_pane.stream_events.is_empty() {
+    // Collect display lines for whichever view is active. The first
+    // three modes share the same data source (parsed raw_stream events);
+    // WgLog reads workgraph-level entries from `task.log`.
+    let raw_lines: Vec<Line> = if app.log_pane.view_mode == LogViewMode::WgLog {
+        render_wg_log_view(&app.log_pane.rendered_lines)
+    } else if !app.log_pane.stream_events.is_empty() {
         match app.log_pane.view_mode {
             LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
             LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
             LogViewMode::RawPretty => render_raw_pretty_view(&app.log_pane.stream_events),
+            LogViewMode::WgLog => unreachable!("handled above"),
         }
     } else {
         let text = &app.log_pane.agent_output.full_text;
