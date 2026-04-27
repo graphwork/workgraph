@@ -2661,13 +2661,18 @@ fn main() -> Result<()> {
                 name,
                 model,
                 executor,
-            } => commands::service::run_create_coordinator(
-                &workgraph_dir,
-                name.as_deref(),
-                model.as_deref(),
-                executor.as_deref(),
-                cli.json,
-            ),
+            } => {
+                eprintln!(
+                    "warning: 'wg service create-chat' is deprecated; use 'wg chat create' instead."
+                );
+                commands::chat_cmd::run_create(
+                    &workgraph_dir,
+                    name.as_deref(),
+                    model.as_deref(),
+                    executor.as_deref(),
+                    cli.json,
+                )
+            }
             ServiceCommands::SetChatExecutor {
                 id,
                 executor,
@@ -2680,13 +2685,22 @@ fn main() -> Result<()> {
                 cli.json,
             ),
             ServiceCommands::DeleteChat { id } => {
-                commands::service::run_delete_coordinator(&workgraph_dir, id, cli.json)
+                eprintln!(
+                    "warning: 'wg service delete-chat' is deprecated; use 'wg chat delete' instead."
+                );
+                commands::chat_cmd::run_delete(&workgraph_dir, &id.to_string(), true, cli.json)
             }
             ServiceCommands::ArchiveChat { id } => {
-                commands::service::run_archive_coordinator(&workgraph_dir, id, cli.json)
+                eprintln!(
+                    "warning: 'wg service archive-chat' is deprecated; use 'wg chat archive' instead."
+                );
+                commands::chat_cmd::run_archive(&workgraph_dir, &id.to_string(), cli.json)
             }
             ServiceCommands::StopChat { id } => {
-                commands::service::run_stop_coordinator(&workgraph_dir, id, cli.json)
+                eprintln!(
+                    "warning: 'wg service stop-chat' is deprecated; use 'wg chat stop' instead."
+                );
+                commands::chat_cmd::run_stop(&workgraph_dir, &id.to_string(), cli.json)
             }
             ServiceCommands::InterruptChat { id } => {
                 commands::service::run_interrupt_coordinator(&workgraph_dir, id, cli.json)

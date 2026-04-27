@@ -518,6 +518,16 @@ impl CoordinatorState {
     /// Save coordinator state to the per-ID file.
     pub fn save_for(&self, dir: &Path, coordinator_id: u32) {
         let path = coordinator_state_path(dir, coordinator_id);
+        if let Some(parent) = path.parent()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "Warning: failed to create coordinator state dir {}: {}",
+                parent.display(),
+                e
+            );
+            return;
+        }
         match serde_json::to_string_pretty(self) {
             Ok(content) => {
                 if let Err(e) = fs::write(&path, content) {
