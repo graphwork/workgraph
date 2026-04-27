@@ -1930,6 +1930,22 @@ pub fn evaluate_all_cycle_iterations(
             continue; // No config = no cycle iteration
         };
 
+        // Chat-loop tasks are event-driven (wake on inbox), NOT polled by
+        // cycle reactivation. Skip them — otherwise the chat agent gets
+        // re-spawned on every dispatcher tick when its inbox is empty,
+        // burning tokens to dutifully report "nothing to do" + wg done +
+        // cycle resets, repeat forever (458 dispatches observed in the
+        // wild before manual archive). Bandaid until wg-chat-as ships
+        // (chat as first-class entity, not a graph cycle).
+        if let Some(owner_task) = graph.get_task(&config_owner_id)
+            && owner_task
+                .tags
+                .iter()
+                .any(|t| t == "chat-loop" || t == "coordinator-loop")
+        {
+            continue;
+        }
+
         let reactivated = reactivate_cycle(graph, &cycle.members, &config_owner_id, &cycle_config);
         all_reactivated.extend(reactivated);
     }
