@@ -4039,7 +4039,7 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             if app.focused_panel == FocusedPanel::RightPanel {
                 " [PTY]  Ctrl+T: command mode  PgUp/Dn: scroll".to_string()
             } else {
-                " [CMD]  Ctrl+T: back to chat  ←→: coordinators  +: new  -: close".to_string()
+                " [CMD]  Ctrl+T: back to chat  n: new  w: close  ←→/[]: chats  ?: help".to_string()
             }
         } else if app.chat_pty_mode {
             " Enter: chat  ↑↓: scroll  Ctrl+T: focus PTY".to_string()
@@ -7311,10 +7311,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                             hints.push(("PgUp/Dn", "scroll"));
                         } else {
                             hints.push(("Ctrl+T", "back to chat"));
-                            hints.push(("←→", "coordinators"));
-                            hints.push(("+", "new"));
-                            hints.push(("-", "close"));
-                            hints.push(("↑↓", "scroll"));
+                            hints.push(("n", "new chat"));
+                            hints.push(("w", "close tab"));
+                            hints.push(("←→", "chats"));
+                            hints.push(("?", "help"));
                         }
                     }
                     RightPanelTab::Chat if app.chat_pty_mode => {
@@ -8704,18 +8704,19 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("c", "Open chat input"),
         binding("Ctrl-C", "Kill agent on focused task"),
         blank(),
-        heading("Chat Panel (chat agents)"),
+        heading("Chat Panel (command mode)"),
+        binding("n", "New chat (launcher); next match if search active"),
+        binding("w / Ctrl-W", "Close current tab (non-destructive)"),
+        binding("1..9", "Jump to chat tab N"),
+        binding("←/→ / [ / ]", "Prev / next chat"),
         binding("~ / `", "Open chat picker"),
         binding("+", "Add new chat (picker)"),
         binding("-", "Close/archive chat"),
-        binding("Ctrl-W", "Close current tab (command mode only)"),
-        binding("[ / ]", "Prev / next chat"),
-        binding("←/→", "Prev / next chat"),
         binding("Ctrl-T", "Toggle PTY focus / command mode"),
         blank(),
         heading("Search (vim-style)"),
         binding("/", "Start search"),
-        binding("n / N", "Next / previous match"),
+        binding("N", "Previous match (n = new chat when no search)"),
         binding("Enter", "Accept and jump to match"),
         binding("Esc", "Clear search"),
         blank(),

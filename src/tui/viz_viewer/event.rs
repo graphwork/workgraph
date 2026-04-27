@@ -555,6 +555,20 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Bare 'w' in command mode (Normal input): close the active chat tab.
+    // Single-key alias for Ctrl+W; only fires outside text-entry modes so
+    // typing 'w' in ChatInput / search / etc. is not intercepted.
+    if matches!(code, KeyCode::Char('w'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.right_panel_tab == RightPanelTab::Chat
+    {
+        app.focused_panel = FocusedPanel::Graph;
+        let cid = app.active_coordinator_id;
+        app.close_tab(cid);
+        return;
+    }
+
     // Dispatch based on input mode
     match &app.input_mode {
         InputMode::Search => handle_search_input(app, code, modifiers),
@@ -1878,6 +1892,16 @@ pub(crate) fn try_chat_tab_navigation(
             return true;
         }
     }
+    // Plain '0' — jump to the 10th chat tab (index 9). Only active when
+    // there are at least 10 chats; otherwise falls through so '0' still
+    // switches to the first right-panel tab (Chat).
+    if modifiers.is_empty() && matches!(code, KeyCode::Char('0')) {
+        let chat_count = app.list_coordinator_ids().len();
+        if chat_count >= 10 {
+            switch_chat_tab_to_index(app, 9);
+            return true;
+        }
+    }
     false
 }
 
@@ -2012,8 +2036,17 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.shrink_viz_pane();
         }
 
-        // Navigate between matches
-        KeyCode::Char('n') => app.next_match(),
+        // 'n' opens the new-chat launcher when no search matches are active;
+        // when matches exist it navigates forward (vim-style n/N).
+        KeyCode::Char('n') => {
+            if app.fuzzy_matches.is_empty() {
+                app.focused_panel = FocusedPanel::Graph;
+                app.right_panel_tab = RightPanelTab::Chat;
+                app.open_launcher();
+            } else {
+                app.next_match();
+            }
+        }
         KeyCode::Char('N') => app.prev_match(),
 
         // Alt+Up/Down: toggle focus between graph and right panel
@@ -8702,6 +8735,151 @@ mod chat_tab_navigation_tests {
         assert!(app.active_tabs.is_empty(), "active_tabs must be empty");
         assert_eq!(app.active_coordinator_id, 0, "active coordinator resets to 0");
         // Must not have panicked — no crash
+    }
+
+    // ── Command-mode single-key bindings (implement-tui-command) ──
+
+    /// 'n' in command mode with no active search matches opens the launcher.
+    #[test]
+    fn test_command_mode_n_opens_launcher() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+        app.fuzzy_matches.clear(); // no active search matches
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(
+            app.launcher.is_some(),
+            "'n' in command mode with no search matches must open the launcher"
+        );
+        assert_eq!(app.input_mode, InputMode::Launcher);
+    }
+
+    /// 'n' with active search matches navigates to the next match instead of opening launcher.
+    #[test]
+    fn test_command_mode_n_next_match_when_fuzzy_active() {
+        use crate::tui::viz_viewer::state::FuzzyLineMatch;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+        // Seed two fake matches so next_match() has something to cycle through.
+        app.fuzzy_matches = vec![
+            FuzzyLineMatch { line_idx: 0, score: 100, char_positions: vec![] },
+            FuzzyLineMatch { line_idx: 1, score: 90, char_positions: vec![] },
+        ];
+        app.current_match = Some(0);
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(
+            app.launcher.is_none(),
+            "'n' with active search matches must NOT open the launcher"
+        );
+        assert_eq!(
+            app.current_match,
+            Some(1),
+            "'n' with active search matches must advance to the next match"
+        );
+    }
+
+    /// Bare 'w' in Normal mode with Chat tab active closes the current tab.
+    #[test]
+    fn test_command_mode_w_closes_tab() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+        switch_chat_tab_to_index(&mut app, 1); // active = cid 4
+
+        super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+
+        assert!(
+            !app.active_tabs.contains(&4),
+            "'w' in command mode must remove the current tab from active_tabs"
+        );
+    }
+
+    /// Bare 'w' in ChatInput mode must NOT close the tab (user is typing).
+    #[test]
+    fn test_command_mode_w_noop_in_chat_input() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.input_mode = InputMode::ChatInput;
+        let tabs_before = app.active_tabs.clone();
+
+        super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+
+        assert_eq!(
+            app.active_tabs, tabs_before,
+            "'w' in ChatInput mode must NOT close any tab"
+        );
+    }
+
+    /// In command mode (focused_panel = Graph), Left/Right cycle chat tabs
+    /// when the Chat tab is active.
+    #[test]
+    fn test_command_mode_left_right_cycle_chat_tabs() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = InputMode::Normal;
+        switch_chat_tab_to_index(&mut app, 0); // start at first tab
+
+        // Right arrow should advance to next chat.
+        super::handle_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        let after_right = app.active_coordinator_id;
+
+        // Left arrow should go back.
+        super::handle_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        let after_left = app.active_coordinator_id;
+
+        assert_ne!(
+            after_right, app.active_tabs[0],
+            "Right arrow must move to a different chat tab"
+        );
+        assert_eq!(
+            after_left, app.active_tabs[0],
+            "Left arrow after Right must return to the starting tab"
+        );
+    }
+
+    /// Digit keys 1-9 switch chat tabs by index when ≥2 chats and Chat tab is active.
+    #[test]
+    fn test_command_mode_digit_switches_chat_tab() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+
+        // '2' should jump to the second chat tab (index 1).
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(
+            app.active_coordinator_id, app.active_tabs[1],
+            "'2' must switch to the second chat tab"
+        );
+
+        // '1' should jump to the first chat tab (index 0).
+        super::handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(
+            app.active_coordinator_id, app.active_tabs[0],
+            "'1' must switch to the first chat tab"
+        );
+    }
+
+    /// In PTY mode (vendor_pty_active), 'n' does NOT open the launcher.
+    /// (Complementary to the existing test_pty_mode_passes_ctrl_n_to_editor.)
+    #[test]
+    fn test_pty_mode_bare_n_does_not_open_launcher() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.fuzzy_matches.clear();
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(
+            app.launcher.is_none(),
+            "'n' in PTY mode must NOT open the launcher"
+        );
     }
 }
 
