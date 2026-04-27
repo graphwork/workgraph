@@ -1578,6 +1578,7 @@ fn main() -> Result<()> {
             }
         },
         Commands::Chat {
+            command,
             message,
             interactive,
             history,
@@ -1592,7 +1593,51 @@ fn main() -> Result<()> {
             compact,
             share_from,
         } => {
-            if let Some(from_id) = share_from {
+            if let Some(sub) = command {
+                use cli::ChatCommands;
+                match sub {
+                    ChatCommands::Create {
+                        name,
+                        executor,
+                        model,
+                    } => commands::chat_cmd::run_create(
+                        &workgraph_dir,
+                        name.as_deref(),
+                        model.as_deref(),
+                        executor.as_deref(),
+                        cli.json,
+                    ),
+                    ChatCommands::List => {
+                        commands::chat_cmd::run_list(&workgraph_dir, cli.json)
+                    }
+                    ChatCommands::Show { chat } => {
+                        commands::chat_cmd::run_show(&workgraph_dir, &chat, cli.json)
+                    }
+                    ChatCommands::Attach { chat, cli: force_cli } => {
+                        commands::chat_cmd::run_attach(&workgraph_dir, &chat, force_cli)
+                    }
+                    ChatCommands::Send { chat, message } => {
+                        commands::chat_cmd::run_send(
+                            &workgraph_dir,
+                            &chat,
+                            &message,
+                            cli.json,
+                        )
+                    }
+                    ChatCommands::Stop { chat } => {
+                        commands::chat_cmd::run_stop(&workgraph_dir, &chat, cli.json)
+                    }
+                    ChatCommands::Resume { chat } => {
+                        commands::chat_cmd::run_resume(&workgraph_dir, &chat, cli.json)
+                    }
+                    ChatCommands::Archive { chat } => {
+                        commands::chat_cmd::run_archive(&workgraph_dir, &chat, cli.json)
+                    }
+                    ChatCommands::Delete { chat, yes } => {
+                        commands::chat_cmd::run_delete(&workgraph_dir, &chat, yes, cli.json)
+                    }
+                }
+            } else if let Some(from_id) = share_from {
                 commands::chat::run_share(&workgraph_dir, from_id, coordinator)
             } else if compact {
                 commands::chat::run_compact(&workgraph_dir, coordinator, cli.json)

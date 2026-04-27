@@ -22,6 +22,7 @@ pub mod assign;
 pub mod blocked;
 pub mod bottlenecks;
 pub mod chat;
+pub mod chat_cmd;
 pub mod chat_session;
 pub mod check;
 pub mod checkpoint;

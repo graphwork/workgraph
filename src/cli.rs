@@ -1155,8 +1155,25 @@ pub enum Commands {
     /// Compact: distill graph state into context.md
     Compact,
 
-    /// Chat with the coordinator agent
+    /// Chat with the coordinator agent.
+    ///
+    /// `wg chat <subcommand>` (create, list, show, attach, send, stop,
+    /// resume, archive, delete) manages chat agents as first-class graph
+    /// entities — these work whether the service daemon is up or down.
+    ///
+    /// `wg chat <message>` (no subcommand) keeps the legacy one-shot
+    /// behaviour: send a message to coordinator 0 and wait for the
+    /// response.
+    #[command(
+        args_conflicts_with_subcommands = true,
+        subcommand_precedence_over_arg = true
+    )]
     Chat {
+        /// New: subcommand for chat-as-entity management. When set, the
+        /// per-message flags below are ignored.
+        #[command(subcommand)]
+        command: Option<ChatCommands>,
+
         /// Message to send (omit for interactive mode)
         message: Option<String>,
 
@@ -3553,6 +3570,96 @@ pub enum RemoteCommands {
     Show {
         /// Remote name
         name: String,
+    },
+}
+
+/// Subcommands for `wg chat <sub>` — chat as a first-class graph entity.
+///
+/// These commands separate "create the persistent chat in the graph" from
+/// "spawn the runtime supervisor right now". Most subcommands work with
+/// the service daemon up OR down; the few that genuinely require the
+/// supervisor (resume, stop) error clearly when it's not running.
+#[derive(Subcommand, Debug)]
+pub enum ChatCommands {
+    /// Create a new chat agent task in the graph.
+    /// Works with the service running or stopped — the supervisor picks
+    /// up the new chat on next start.
+    Create {
+        /// Optional human-readable name (becomes part of the task title
+        /// and addressable as a chat reference).
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Per-chat executor override (e.g. "claude", "amplifier", "native").
+        #[arg(long)]
+        executor: Option<String>,
+
+        /// Per-chat model override (e.g. "claude:opus", "openai:qwen3-coder-30b").
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
+    /// List all chat agents with their runtime status.
+    #[command(alias = "ls")]
+    List,
+
+    /// Detailed view of one chat: task, runtime, executor, model.
+    Show {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+    },
+
+    /// Open an interactive view of the chat session.
+    /// Defaults to the TUI when on a TTY; use `--cli` to force a
+    /// read-only stream view.
+    Attach {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+        /// Force CLI (read-only stream) mode even on a TTY.
+        #[arg(long)]
+        cli: bool,
+    },
+
+    /// Append a one-shot message to a chat's inbox.
+    /// Does NOT wait for a response. Works with the daemon up or down
+    /// (queues until the handler is alive).
+    Send {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+        /// Message body. Pass quoted; reads stdin if `-`.
+        message: String,
+    },
+
+    /// SIGTERM the live handler (chat entity stays in graph). Reversible
+    /// via `wg chat resume`. Requires the service daemon.
+    Stop {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+    },
+
+    /// Ask the supervisor to (re)spawn the handler. Errors clearly if
+    /// the service daemon is not running.
+    Resume {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+    },
+
+    /// Mark the chat as Done and tag it `archived`. Out of the active
+    /// set; chat directory is preserved.
+    Archive {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+    },
+
+    /// Hard delete: abandon the graph task. Chat directory is preserved
+    /// (archived under `.archive/` by the daemon, or left in-place when
+    /// the daemon is down).
+    Delete {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+        /// Skip the confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 

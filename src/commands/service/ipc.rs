@@ -1304,18 +1304,23 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
     max_id.map_or(0, |id| id + 1)
 }
 
-/// Handle CreateCoordinator IPC request.
-fn handle_create_coordinator(
+/// Create a chat agent task in the graph and scaffold its on-disk state.
+///
+/// This is the shared core for both the IPC handler (`CreateChat`) and the
+/// CLI fallback path used when the service daemon is not running. Both
+/// paths must converge on identical on-disk state — the supervisor picks
+/// up new chats either way.
+///
+/// Returns the new chat agent's numeric ID on success.
+pub fn create_chat_in_graph(
     dir: &Path,
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
-) -> IpcResponse {
+) -> Result<u32> {
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph = match workgraph::parser::load_graph(&graph_path) {
-        Ok(g) => g,
-        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
-    };
+    let mut graph = workgraph::parser::load_graph(&graph_path)
+        .with_context(|| "Failed to load graph")?;
 
     let config = workgraph::config::Config::load_or_default(dir);
     let max = config.coordinator.max_coordinators;
@@ -1326,14 +1331,9 @@ fn handle_create_coordinator(
         .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
         .count();
     if alive >= max {
-        return IpcResponse::error(&format!(
-            "Chat cap reached ({}/{})",
-            alive, max
-        ));
+        anyhow::bail!("Chat cap reached ({}/{})", alive, max);
     }
 
-    // Find the next available chat ID by scanning both existing tasks
-    // and existing chat history files to ensure truly fresh chats.
     let next_id = find_next_fresh_coordinator_id(&graph, dir);
 
     // Create the chat task
@@ -1402,7 +1402,7 @@ fn handle_create_coordinator(
         // NOTE: No back-edge from coordinator to archive. Archive runs independently.
     }
 
-    match workgraph::parser::modify_graph(&graph_path, |fresh| {
+    workgraph::parser::modify_graph(&graph_path, |fresh| {
         // Re-apply all mutations to a fresh graph
         for node in graph.nodes() {
             if let workgraph::graph::Node::Task(t) = node {
@@ -1414,10 +1414,8 @@ fn handle_create_coordinator(
             }
         }
         true
-    }) {
-        Ok(_) => {}
-        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
-    }
+    })
+    .with_context(|| "Failed to save graph")?;
 
     // Record executor/model combo in launcher history
     {
@@ -1435,12 +1433,25 @@ fn handle_create_coordinator(
         state.save_for(dir, next_id);
     }
 
-    IpcResponse::success(serde_json::json!({
-        "coordinator_id": next_id,
-        "chat_id": next_id,
-        "task_id": workgraph::chat_id::format_chat_task_id(next_id),
-        "name": name,
-    }))
+    Ok(next_id)
+}
+
+/// Handle CreateCoordinator IPC request — wraps `create_chat_in_graph`.
+fn handle_create_coordinator(
+    dir: &Path,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+) -> IpcResponse {
+    match create_chat_in_graph(dir, name, model, executor) {
+        Ok(next_id) => IpcResponse::success(serde_json::json!({
+            "coordinator_id": next_id,
+            "chat_id": next_id,
+            "task_id": workgraph::chat_id::format_chat_task_id(next_id),
+            "name": name,
+        })),
+        Err(e) => IpcResponse::error(&e.to_string()),
+    }
 }
 
 /// Handle DeleteCoordinator IPC request.
