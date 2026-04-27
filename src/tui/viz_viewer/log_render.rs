@@ -152,94 +152,121 @@ pub fn render_high_level_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>>
         .collect()
 }
 
+/// Coarse semantic grouping used to decide where blank-line gaps go in
+/// the RawPretty view. Same-category neighbors run together; different
+/// categories are separated by one blank line. See `render_raw_pretty_view`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventCategory {
+    /// Tool calls + their results + tool-side errors. The agent is acting.
+    Tool,
+    /// User prompts, assistant text, internal thinking. The agent (or human) is speaking.
+    Text,
+    /// System / metadata events.
+    System,
+}
+
+fn categorize(kind: &AgentStreamEventKind) -> EventCategory {
+    match kind {
+        AgentStreamEventKind::ToolCall
+        | AgentStreamEventKind::ToolResult
+        | AgentStreamEventKind::Error => EventCategory::Tool,
+        AgentStreamEventKind::UserInput
+        | AgentStreamEventKind::TextOutput
+        | AgentStreamEventKind::Thinking => EventCategory::Text,
+        AgentStreamEventKind::SystemEvent => EventCategory::System,
+    }
+}
+
 /// Render the RawPretty view: full pretty-printed transcript of every
 /// event. Crucially: NO raw JSON dumps — each event kind gets its own
 /// formatter so the output reads as a clean transcript.
+///
+/// Blank-line policy: a blank line is inserted ONLY at category
+/// boundaries (text↔tool, tool↔system, etc.), never between events of
+/// the same category. This emphasizes the transition between speaking
+/// and acting without adding noise to consecutive same-mode events.
 pub fn render_raw_pretty_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
+    let mut prev_category: Option<EventCategory> = None;
 
     for event in events {
-        let details = match &event.details {
-            Some(d) => d,
-            None => {
-                // No structured details — fall back to the summary so
-                // we never produce a totally empty section.
-                push_header(&mut out, &event.kind, "untyped");
-                push_indented(&mut out, &event.summary, Color::Gray);
-                push_blank(&mut out);
-                continue;
-            }
-        };
+        let curr = categorize(&event.kind);
+        if let Some(prev) = prev_category
+            && prev != curr
+        {
+            push_blank(&mut out);
+        }
+        emit_event(&mut out, event);
+        prev_category = Some(curr);
+    }
 
-        match details {
-            EventDetails::UserInput { text } => {
-                push_header(&mut out, &event.kind, "[user]");
-                push_indented(&mut out, text, Color::Yellow);
-                push_blank(&mut out);
-            }
-            EventDetails::TextOutput { text } => {
-                push_header(&mut out, &event.kind, "[assistant]");
-                push_indented(&mut out, text, Color::White);
-                push_blank(&mut out);
-            }
-            EventDetails::Thinking { text } => {
-                push_header(&mut out, &event.kind, "<thinking>");
-                push_indented(&mut out, text, Color::Magenta);
-                out.push(Line::from(Span::styled(
-                    "</thinking>".to_string(),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::DIM),
-                )));
-                push_blank(&mut out);
-            }
-            EventDetails::ToolCall { name, input } => {
-                let label = format_tool_call_label(name, input);
-                out.push(Line::from(Span::styled(
-                    format!("⌁ {}", label),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                let body = format_tool_call_body(name, input);
-                if !body.is_empty() {
-                    push_indented(&mut out, &body, Color::Cyan);
-                }
-                push_blank(&mut out);
-            }
-            EventDetails::ToolResult { content, is_error } => {
-                let prefix = if *is_error { "✗ result" } else { "✓ result" };
-                let color = if *is_error { Color::Red } else { Color::Green };
-                out.push(Line::from(Span::styled(
-                    prefix.to_string(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                )));
-                let snippet = if content.is_empty() {
-                    "(empty result)".to_string()
-                } else {
-                    content.clone()
-                };
-                push_indented(&mut out, &snippet, color);
-                push_blank(&mut out);
-            }
-            EventDetails::SystemEvent { subtype, text } => {
-                out.push(Line::from(Span::styled(
-                    format!("⚙ system [{}]", subtype),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                push_indented(&mut out, text, Color::DarkGray);
-                push_blank(&mut out);
+    out
+}
+
+fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
+    let details = match &event.details {
+        Some(d) => d,
+        None => {
+            // No structured details — fall back to the summary so we
+            // never produce a totally empty section.
+            push_header(out, &event.kind, "untyped");
+            push_indented(out, &event.summary, Color::Gray);
+            return;
+        }
+    };
+
+    match details {
+        EventDetails::UserInput { text } => {
+            push_header(out, &event.kind, "[user]");
+            push_indented(out, text, Color::Yellow);
+        }
+        EventDetails::TextOutput { text } => {
+            push_header(out, &event.kind, "[assistant]");
+            push_indented(out, text, Color::White);
+        }
+        EventDetails::Thinking { text } => {
+            push_header(out, &event.kind, "<thinking>");
+            push_indented(out, text, Color::Magenta);
+            out.push(Line::from(Span::styled(
+                "</thinking>".to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        EventDetails::ToolCall { name, input } => {
+            let label = format_tool_call_label(name, input);
+            out.push(Line::from(Span::styled(
+                format!("⌁ {}", label),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let body = format_tool_call_body(name, input);
+            if !body.is_empty() {
+                push_indented(out, &body, Color::Cyan);
             }
         }
+        EventDetails::ToolResult { content, is_error } => {
+            let marker = if *is_error { "✗" } else { "✓" };
+            let color = if *is_error { Color::Red } else { Color::Green };
+            let body: &str = if content.is_empty() {
+                "(empty result)"
+            } else {
+                content.as_str()
+            };
+            push_marker_block(out, marker, body, color);
+        }
+        EventDetails::SystemEvent { subtype, text } => {
+            out.push(Line::from(Span::styled(
+                format!("⚙ system [{}]", subtype),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            push_indented(out, text, Color::DarkGray);
+        }
     }
-
-    // Trim trailing blank line for cleaner display.
-    while matches!(out.last(), Some(line) if line.spans.is_empty()) {
-        out.pop();
-    }
-    out
 }
 
 /// Emit the section header used by every event-kind in raw mode.
@@ -260,6 +287,35 @@ fn push_blank(out: &mut Vec<Line<'static>>) {
 /// Multiline input is split into one Line per source line.
 fn push_indented(out: &mut Vec<Line<'static>>, body: &str, color: Color) {
     for src_line in body.split('\n') {
+        out.push(Line::from(Span::styled(
+            format!("  {}", src_line),
+            Style::default().fg(color),
+        )));
+    }
+}
+
+/// Push a multi-line block with a single-character marker on the first
+/// line and a 2-space hanging indent on continuation lines:
+///
+/// ```text
+/// ✓ first content line
+///   second content line
+///   third content line
+/// ```
+///
+/// The marker is bolded; the content is plain. With a single-char marker
+/// this aligns content text at column 3 on every line.
+fn push_marker_block(out: &mut Vec<Line<'static>>, marker: &str, body: &str, color: Color) {
+    let mut iter = body.split('\n');
+    let first = iter.next().unwrap_or("");
+    out.push(Line::from(vec![
+        Span::styled(
+            format!("{} ", marker),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(first.to_string(), Style::default().fg(color)),
+    ]));
+    for src_line in iter {
         out.push(Line::from(Span::styled(
             format!("  {}", src_line),
             Style::default().fg(color),
@@ -462,6 +518,17 @@ mod tests {
         }
     }
 
+    fn text_output(text: &str) -> AgentStreamEvent {
+        AgentStreamEvent {
+            kind: AgentStreamEventKind::TextOutput,
+            agent_id: "agent-test".to_string(),
+            summary: format!("[assistant] {}", text),
+            details: Some(EventDetails::TextOutput {
+                text: text.to_string(),
+            }),
+        }
+    }
+
     fn lines_to_text(lines: &[Line]) -> String {
         lines
             .iter()
@@ -630,6 +697,160 @@ mod tests {
             high_text.contains("(x2)"),
             "high-level should collapse adjacent identical activities: {}",
             high_text
+        );
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
+    fn is_blank(line: &Line) -> bool {
+        line.spans.iter().all(|s| s.content.is_empty())
+    }
+
+    /// Hanging-indent rule for tool results: marker only on the first
+    /// content line, 2-space pure padding on continuation lines, with no
+    /// bare "result" header line.
+    #[test]
+    fn test_raw_mode_tool_result_uses_hanging_indent() {
+        let body = "1 #!/usr/bin/env bash\n\
+                    2 # Helpers shared by smoke-gate scenarios.\n\
+                    3 #\n\
+                    4 set -euo pipefail\n\
+                    5 echo done";
+        let events = vec![tool_result(body, false)];
+        let lines = render_raw_pretty_view(&events);
+
+        assert_eq!(
+            lines.len(),
+            5,
+            "expected 5 rendered lines for 5-line content (no separate header), got {}: {}",
+            lines.len(),
+            lines_to_text(&lines)
+        );
+
+        let l0 = line_text(&lines[0]);
+        assert_eq!(
+            l0, "✓ 1 #!/usr/bin/env bash",
+            "first line should merge marker with first content line, got: {:?}",
+            l0
+        );
+
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            let t = line_text(line);
+            assert!(
+                t.starts_with("  "),
+                "line {} must start with exactly 2 leading spaces (hanging indent), got {:?}",
+                i,
+                t
+            );
+            assert!(
+                !t.starts_with("   "),
+                "line {} must NOT have 3+ leading spaces, got {:?}",
+                i,
+                t
+            );
+        }
+
+        let text = lines_to_text(&lines);
+        assert!(
+            !text.lines().any(|l| l == "✓ result" || l == "✗ result"),
+            "bare 'result' header line must be removed: {}",
+            text
+        );
+    }
+
+    /// Hanging indent must also apply to error tool results.
+    #[test]
+    fn test_raw_mode_error_tool_result_uses_hanging_indent() {
+        let body = "line one\nline two";
+        let events = vec![tool_result(body, true)];
+        let lines = render_raw_pretty_view(&events);
+
+        assert_eq!(lines.len(), 2, "two content lines, no separate header");
+        assert_eq!(line_text(&lines[0]), "✗ line one");
+        assert_eq!(line_text(&lines[1]), "  line two");
+    }
+
+    /// Blank lines appear ONLY at category boundaries: text→tool and
+    /// tool→text. No blank between a tool call and its result.
+    #[test]
+    fn test_raw_mode_inserts_blank_at_text_to_tool_boundary() {
+        let events = vec![
+            text_output("here is the plan"),
+            tool_call_bash("cargo test"),
+            tool_result("ok", false),
+            text_output("done!"),
+        ];
+        let lines = render_raw_pretty_view(&events);
+        let text = lines_to_text(&lines);
+
+        let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
+        assert_eq!(
+            blanks, 2,
+            "expected exactly 2 blank lines (text→tool and tool→text), got {} in:\n{}",
+            blanks, text
+        );
+
+        // Verify there is NO blank line between the bash call and its result.
+        // Find the line containing "Bash" and the line containing "✓ ok".
+        let bash_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("Bash"))
+            .expect("Bash call line missing");
+        let ok_idx = lines
+            .iter()
+            .position(|l| line_text(l).starts_with("✓ ok"))
+            .expect("'✓ ok' result line missing");
+        assert!(bash_idx < ok_idx, "result must follow call");
+        for line in &lines[bash_idx + 1..ok_idx] {
+            assert!(
+                !is_blank(line),
+                "no blank line allowed between tool call and its result, got blank at:\n{}",
+                text
+            );
+        }
+    }
+
+    /// Consecutive same-category events render with no blank lines
+    /// between them — only one continuous text section.
+    #[test]
+    fn test_raw_mode_no_blank_between_consecutive_text_events() {
+        let events = vec![
+            text_output("part 1"),
+            text_output("part 2"),
+            text_output("part 3"),
+        ];
+        let lines = render_raw_pretty_view(&events);
+        let text = lines_to_text(&lines);
+
+        let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
+        assert_eq!(
+            blanks, 0,
+            "consecutive same-category events must not have blank gaps, got {} blanks:\n{}",
+            blanks, text
+        );
+    }
+
+    /// A run of consecutive ToolCall events should render without blank
+    /// lines between them either.
+    #[test]
+    fn test_raw_mode_no_blank_between_consecutive_tool_events() {
+        let events = vec![
+            tool_call_bash("cargo build"),
+            tool_call_bash("cargo test"),
+            tool_call_bash("cargo run"),
+        ];
+        let lines = render_raw_pretty_view(&events);
+        let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
+        assert_eq!(
+            blanks,
+            0,
+            "consecutive tool events must not have blank gaps:\n{}",
+            lines_to_text(&lines)
         );
     }
 }
