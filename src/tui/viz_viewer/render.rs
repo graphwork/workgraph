@@ -3313,24 +3313,26 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 (
                     format!("{}: ", name),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(super::chat_palette::USER_PREFIX)
                         .add_modifier(Modifier::BOLD),
                 )
             }
             super::state::ChatRole::Coordinator => (
                 "↯ ".to_string(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(super::chat_palette::COORDINATOR_PREFIX)
                     .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::System => (
                 "! ".to_string(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(super::chat_palette::ERROR)
+                    .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::SystemError => (
                 "⚠ ERROR: ".to_string(),
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(super::chat_palette::ERROR)
                     .bg(Color::Indexed(52))
                     .add_modifier(Modifier::BOLD),
             ),
@@ -3339,7 +3341,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 (
                     format!("→ {}: ", target),
                     Style::default()
-                        .fg(Color::Magenta)
+                        .fg(super::chat_palette::SENT_MESSAGE_PREFIX)
                         .add_modifier(Modifier::BOLD),
                 )
             }
@@ -3363,11 +3365,11 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // Build wrapped lines. For coordinator tool-box lines, use special
         // wrapping that maintains the │ prefix on continuation lines and
         // preserves content coloring.
-        let border_style = Style::default().fg(Color::DarkGray);
+        let border_style = Style::default().fg(super::chat_palette::TOOL_BORDER);
         let tool_name_style = Style::default()
-            .fg(Color::Indexed(75))
+            .fg(super::chat_palette::TOOL_CALL)
             .add_modifier(Modifier::BOLD);
-        let tool_content_style = Style::default().fg(Color::Indexed(252));
+        let tool_content_style = Style::default().fg(super::chat_palette::TOOL_RESULT);
 
         let wrapped: Vec<Line> = if md_lines.is_empty() {
             vec![Line::from("")]
@@ -3540,11 +3542,11 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // Show attachment indicators.
         for att_name in &msg.attachments {
             let att_text = format!("{}[Attached: {}]", indent, att_name);
+            // Attachments are metadata, not content — render in subtle gray
+            // so they don't compete visually with the message text itself.
             let mut att_line = Line::from(Span::styled(
                 att_text,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::ITALIC),
+                super::chat_palette::attachment_style(),
             ));
             if is_user {
                 att_line = apply_line_bg(att_line, msg_bg);
@@ -3587,11 +3589,11 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let md_lines = markdown_to_lines(&app.chat.streaming_text, text_width);
 
             // Wrap with tool-box awareness (same logic as finalized coordinator messages).
-            let border_style = Style::default().fg(Color::DarkGray);
+            let border_style = Style::default().fg(super::chat_palette::TOOL_BORDER);
             let tool_name_style = Style::default()
-                .fg(Color::Indexed(75))
+                .fg(super::chat_palette::TOOL_CALL)
                 .add_modifier(Modifier::BOLD);
-            let tool_content_style = Style::default().fg(Color::Indexed(252));
+            let tool_content_style = Style::default().fg(super::chat_palette::TOOL_RESULT);
 
             let wrapped: Vec<Line> = if md_lines.is_empty() {
                 vec![Line::from("")]
@@ -3979,7 +3981,7 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!(" \u{1F4CE} {}", att_text),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(super::chat_palette::METADATA),
                 ))),
                 Rect {
                     x: area.x,
@@ -4327,18 +4329,25 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else if !app.log_pane.stream_events.is_empty() {
         let mut out: Vec<Line> = Vec::new();
         for event in &app.log_pane.stream_events {
+            // Bulk content reads as default terminal text — color is reserved
+            // for structure (tool calls), de-emphasis (thinking, system), and
+            // failures (errors). See `chat_palette` for the rationale.
             let color = match event.kind {
-                AgentStreamEventKind::ToolCall => Color::Cyan,
-                AgentStreamEventKind::ToolResult => Color::Green,
-                AgentStreamEventKind::TextOutput => Color::White,
-                AgentStreamEventKind::Thinking => Color::Magenta,
+                AgentStreamEventKind::ToolCall => super::chat_palette::TOOL_CALL,
+                AgentStreamEventKind::ToolResult => super::chat_palette::DEFAULT_TEXT,
+                AgentStreamEventKind::TextOutput => super::chat_palette::DEFAULT_TEXT,
+                AgentStreamEventKind::Thinking => super::chat_palette::THINKING,
                 AgentStreamEventKind::SystemEvent => Color::DarkGray,
-                AgentStreamEventKind::Error => Color::Red,
+                AgentStreamEventKind::Error => super::chat_palette::ERROR,
+            };
+            let modifier = match event.kind {
+                AgentStreamEventKind::Thinking => Modifier::ITALIC,
+                _ => Modifier::empty(),
             };
             for sub_line in event.summary.split('\n') {
                 out.push(Line::from(Span::styled(
                     sub_line.to_string(),
-                    Style::default().fg(color),
+                    Style::default().fg(color).add_modifier(modifier),
                 )));
             }
         }
@@ -4452,9 +4461,15 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .entries
             .iter()
             .map(|entry| {
+                // Direction is a structural accent (matches the SentMessage
+                // role coloring in the chat tab — magenta for outgoing, cyan
+                // for incoming). Body text reads as default — color is for
+                // role, not for marking 'this is text'.
                 let (arrow, color) = match entry.direction {
                     MessageDirection::Incoming => ("←", Color::Cyan),
-                    MessageDirection::Outgoing => ("→", Color::Green),
+                    MessageDirection::Outgoing => {
+                        ("→", super::chat_palette::SENT_MESSAGE_PREFIX)
+                    }
                 };
                 let urgent_marker = if entry.is_urgent { " [!]" } else { "" };
                 Line::from(vec![
@@ -4468,7 +4483,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     ),
                     Span::styled(
                         format!("{}{}", entry.body, urgent_marker),
-                        Style::default().fg(Color::White),
+                        Style::default().fg(super::chat_palette::DEFAULT_TEXT),
                     ),
                 ])
             })
@@ -4716,7 +4731,13 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
             Span::styled(model, Style::default().fg(Color::White)),
         ]),
         Line::from(vec![
-            Span::styled("Chat compaction ", Style::default().fg(Color::Green)),
+            // Coordinator-tab cyan matches the "↯ " prefix branding so the
+            // header reads as part of the same role surface, not as a
+            // separate green status badge.
+            Span::styled(
+                "Chat compaction ",
+                Style::default().fg(super::chat_palette::COORDINATOR_PREFIX),
+            ),
             Span::raw("· "),
             Span::raw(format!("{}x", state.compaction_count)),
             Span::raw(" · "),
@@ -11981,6 +12002,143 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    /// Verifies the smart-coloration scheme from task `tui-chat-smart`:
+    /// bulk assistant prose renders with **default** terminal foreground (no
+    /// forced color), and attachment-metadata lines render as subtle gray —
+    /// not green. Role prefixes still carry their own structural accent.
+    ///
+    /// The test renders an assistant (coordinator) message that also carries
+    /// an attachment, then scans the buffer for two substrings:
+    ///   - `"plain assistant text marker"` — must have unset fg on every cell.
+    ///   - `"[Attached: notes.md]"` — must NOT be `Color::Green` (today it is).
+    ///
+    /// This guards against the regression where chat content was uniformly
+    /// green-washed, drowning out the meaning of color.
+    #[test]
+    fn test_chat_render_uses_no_color_for_default_text() {
+        use crate::tui::viz_viewer::state::{ChatMessage, ChatRole, ChatState, RightPanelTab};
+        use ratatui::style::Color;
+
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        app.chat = ChatState {
+            messages: vec![ChatMessage {
+                role: ChatRole::Coordinator,
+                text: "plain assistant text marker".to_string(),
+                full_text: None,
+                attachments: vec!["notes.md".to_string()],
+                edited: false,
+                inbox_id: None,
+                user: None,
+                target_task: None,
+                msg_timestamp: None,
+                read_at: None,
+                msg_queue_id: None,
+            }],
+            ..ChatState::default()
+        };
+
+        let buf = render_chat_tab_to_buffer(&mut app);
+        let area = buf.area();
+
+        // Helper: find first (x, y) of `needle` in the rendered cell grid.
+        let find_substr = |needle: &str| -> Option<(u16, u16)> {
+            let chars: Vec<char> = needle.chars().collect();
+            for y in 0..area.height {
+                if (chars.len() as u16) > area.width {
+                    continue;
+                }
+                for x in 0..=area.width - chars.len() as u16 {
+                    let ok = chars.iter().enumerate().all(|(i, c)| {
+                        buf.cell((x + i as u16, y))
+                            .map(|cell| cell.symbol().chars().next().unwrap_or(' ') == *c)
+                            .unwrap_or(false)
+                    });
+                    if ok {
+                        return Some((x, y));
+                    }
+                }
+            }
+            None
+        };
+
+        let dump = || {
+            let mut s = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    s.push_str(buf.cell((x, y)).unwrap().symbol());
+                }
+                s.push('\n');
+            }
+            s
+        };
+
+        // ── Bulk assistant prose: every cell of the marker must have unset fg.
+        let marker = "plain assistant text marker";
+        let (mx, my) = find_substr(marker).unwrap_or_else(|| {
+            panic!(
+                "marker `{}` not found in rendered chat buffer. Buffer:\n{}",
+                marker,
+                dump()
+            )
+        });
+        for (i, _ch) in marker.chars().enumerate() {
+            let cell = buf.cell((mx + i as u16, my)).unwrap();
+            assert_eq!(
+                cell.fg,
+                Color::Reset,
+                "assistant prose cell at ({}, {}) char `{}` has fg {:?}, expected Color::Reset",
+                mx + i as u16,
+                my,
+                cell.symbol(),
+                cell.fg,
+            );
+        }
+
+        // Sanity: the role prefix (`↯`) must still carry an accent color.
+        let prefix_x = mx.saturating_sub(2);
+        let prefix_cell = buf.cell((prefix_x, my)).unwrap();
+        assert_eq!(
+            prefix_cell.symbol(),
+            "↯",
+            "expected `↯` role glyph at column {}; got `{}`",
+            prefix_x,
+            prefix_cell.symbol(),
+        );
+        assert_ne!(
+            prefix_cell.fg,
+            Color::Reset,
+            "role prefix `↯` should have an accent color, not default",
+        );
+
+        // ── Attachment metadata: "[Attached: notes.md]" must be gray (or any
+        //    non-green metadata color) — green attachments are the wash the
+        //    user complained about. We assert "not green", which catches
+        //    today's `Color::Green` regression and stays robust to future
+        //    palette tweaks (DarkGray, Indexed(239), etc).
+        let att_marker = "[Attached: notes.md]";
+        let (ax, ay) = find_substr(att_marker).unwrap_or_else(|| {
+            panic!(
+                "attachment marker `{}` not found in rendered chat buffer. Buffer:\n{}",
+                att_marker,
+                dump()
+            )
+        });
+        for (i, _ch) in att_marker.chars().enumerate() {
+            let cell = buf.cell((ax + i as u16, ay)).unwrap();
+            assert_ne!(
+                cell.fg,
+                Color::Green,
+                "attachment metadata cell at ({}, {}) char `{}` is Color::Green; \
+                 attachments should be subtle gray, not green",
+                ax + i as u16,
+                ay,
+                cell.symbol(),
+            );
+        }
     }
 
     /// Verify chat-tab dot colors reflect chat state (per task tui-chat-tab):
