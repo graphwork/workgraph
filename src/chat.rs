@@ -778,6 +778,52 @@ pub fn read_history(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
     read_history_for(workgraph_dir, 0)
 }
 
+/// True when the chat session for `coordinator_id` has no work pending and
+/// no recently-active consumer.
+///
+/// Two conditions must both hold:
+/// 1. No unread inbox messages — every message id in `inbox.jsonl` is `<=` the
+///    coordinator-cursor (handler has processed everything written so far).
+/// 2. No recent consumer activity — the CLI/TUI cursor file (`.cursor`) was
+///    last touched longer ago than `idle_threshold`, or it does not exist.
+///
+/// Used by the dispatcher's chat supervisor to decide whether to respawn a
+/// handler subprocess after a clean exit. If the chat is idle, the supervisor
+/// exits cleanly instead of restarting a handler that would immediately exit
+/// again on an empty inbox — the auto-respawn-without-TUI bug from the parent
+/// task's bullet (a).
+///
+/// Failures reading the inbox or cursor file are treated as "no unread / no
+/// activity" — better to err toward "idle" than to keep respawning a handler
+/// when we cannot confirm there's pending work.
+pub fn chat_session_is_idle(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    idle_threshold: Duration,
+) -> bool {
+    // Pending inbox?
+    let coord_cursor = read_coordinator_cursor_for(workgraph_dir, coordinator_id).unwrap_or(0);
+    let unread = match read_inbox_since_for(workgraph_dir, coordinator_id, coord_cursor) {
+        Ok(msgs) => msgs.len(),
+        Err(_) => 0,
+    };
+    if unread > 0 {
+        return false;
+    }
+
+    // Recent consumer?
+    let cur_path = cursor_path_for(workgraph_dir, coordinator_id);
+    let consumer_recent = match fs::metadata(&cur_path).and_then(|m| m.modified()) {
+        Ok(modified) => modified
+            .elapsed()
+            .map(|e| e < idle_threshold)
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
+    !consumer_recent
+}
+
 /// Rotate old chat history (coordinator 0).
 pub fn rotate_history(workgraph_dir: &Path, keep_count: usize) -> Result<()> {
     rotate_history_for(workgraph_dir, 0, keep_count)
@@ -3446,5 +3492,82 @@ mod tests {
 
         let results = search_all_history_for(&wg_dir, 0, "hello").unwrap();
         assert_eq!(results.len(), 2, "Search should be case-insensitive");
+    }
+
+    /// Idle-respawn rule (parent task bullet a): the chat is "idle" when both
+    /// the inbox is fully drained AND the consumer cursor has not been
+    /// touched recently. Used by the chat supervisor to avoid burning LLM
+    /// tokens respawning a handler on a chat with no consumer.
+    #[test]
+    fn test_chat_session_is_idle_no_inbox_no_cursor_is_idle() {
+        let (_tmp, wg_dir) = setup();
+        // Brand new chat: no inbox, no cursor file. Treated as idle so the
+        // supervisor exits cleanly instead of spinning.
+        assert!(chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_chat_session_is_idle_pending_inbox_is_not_idle() {
+        let (_tmp, wg_dir) = setup();
+        append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
+        // Coord cursor is 0; one unread message.
+        assert!(!chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_chat_session_is_idle_drained_inbox_is_idle() {
+        let (_tmp, wg_dir) = setup();
+        let id = append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
+        // Coordinator processed the message — cursor advanced.
+        write_coordinator_cursor_for(&wg_dir, 0, id).unwrap();
+        // No consumer ever active (cursor file absent) → idle.
+        assert!(chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_chat_session_is_idle_recent_consumer_is_not_idle() {
+        let (_tmp, wg_dir) = setup();
+        // Drained inbox, but consumer cursor was just written.
+        write_cursor_for(&wg_dir, 0, 0).unwrap();
+        // 60s threshold; cursor is brand new.
+        assert!(!chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_chat_session_is_idle_stale_consumer_is_idle() {
+        let (_tmp, wg_dir) = setup();
+        write_cursor_for(&wg_dir, 0, 0).unwrap();
+        // Backdate the cursor file's mtime to 120s ago via libc::utimes.
+        let cur_path = cursor_path_for(&wg_dir, 0);
+        let cstr = std::ffi::CString::new(cur_path.to_string_lossy().as_bytes()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as libc::time_t;
+        let backdated = now - 120;
+        let times = [
+            libc::timeval {
+                tv_sec: backdated,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: backdated,
+                tv_usec: 0,
+            },
+        ];
+        let rc = unsafe { libc::utimes(cstr.as_ptr(), times.as_ptr()) };
+        assert_eq!(rc, 0, "utimes should succeed");
+        // 60s threshold; mtime is 120s old → idle.
+        assert!(chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_chat_session_is_idle_per_coordinator_isolation() {
+        let (_tmp, wg_dir) = setup();
+        // Coord 0 has a pending message; coord 1 is empty.
+        append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
+        assert!(!chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
+        assert!(chat_session_is_idle(&wg_dir, 1, Duration::from_secs(60)));
     }
 }

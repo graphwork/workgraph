@@ -48,6 +48,38 @@ const MAX_RESTARTS_PER_WINDOW: usize = 3;
 /// Restart window duration in seconds (10 minutes).
 const RESTART_WINDOW_SECS: u64 = 600;
 
+/// Idle threshold for the supervisor's no-respawn rule. After a clean handler
+/// exit, if the chat has no pending inbox messages AND its consumer cursor
+/// has not been touched within this window, the supervisor exits cleanly
+/// instead of respawning. Prevents the auto-respawn-without-TUI loop that
+/// burns LLM tokens on idle chats.
+const CHAT_IDLE_THRESHOLD_SECS: u64 = 300;
+
+/// Resolve the chat-supervisor's `coordinator_id` to a concrete task id
+/// present in the live graph. Prefers the new `.chat-N` prefix, falls back
+/// to the legacy `.coordinator-N` prefix for graphs that haven't been
+/// migrated yet. Returns `None` if neither form exists — the caller
+/// (supervisor pre-flight) treats that as orphan-supervisor and exits
+/// cleanly after removing the stale per-coord state file.
+///
+/// Extracted for testability — the supervisor loop spawns subprocesses so
+/// the resolution logic is isolated here so tests can drive every branch
+/// without needing a real handler.
+pub(crate) fn resolve_chat_task_id(
+    graph: &workgraph::graph::WorkGraph,
+    coordinator_id: u32,
+) -> Option<String> {
+    let new_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let legacy_id = format!(".coordinator-{}", coordinator_id);
+    if graph.get_task(&new_id).is_some() {
+        Some(new_id)
+    } else if graph.get_task(&legacy_id).is_some() {
+        Some(legacy_id)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event log: bounded ring buffer for inter-interaction event tracking
 // ---------------------------------------------------------------------------
@@ -666,13 +698,7 @@ fn subprocess_coordinator_loop(
             let graph_path = crate::commands::graph_path(dir);
             match workgraph::parser::load_graph(&graph_path) {
                 Ok(g) => {
-                    let resolved = if g.get_task(&new_id).is_some() {
-                        Some(new_id.clone())
-                    } else if g.get_task(&legacy_id).is_some() {
-                        Some(legacy_id.clone())
-                    } else {
-                        None
-                    };
+                    let resolved = resolve_chat_task_id(&g, coordinator_id);
                     let Some(rid) = resolved else {
                         logger.error(&format!(
                             "Coordinator-{}: orphan supervisor — neither {} nor {} exists in the graph. Exiting supervisor (no restart loop). \
@@ -861,6 +887,25 @@ fn subprocess_coordinator_loop(
                     "Coordinator-{}: nex subprocess exited cleanly ({})",
                     coordinator_id, status
                 ));
+                // Idle-respawn rule (parent task bullet a): if there's no
+                // unread inbox AND no recent consumer (TUI/CLI cursor older
+                // than CHAT_IDLE_THRESHOLD_SECS), exit cleanly instead of
+                // respawning a handler that would just exit again on an
+                // empty inbox. The chat task remains in the graph; the user
+                // resumes via `wg chat new`/the TUI, and a daemon restart
+                // will spawn a fresh supervisor for active chats via
+                // enumerate_chat_supervisors_for_boot. Without this gate the
+                // supervisor burns LLM tokens in a tight loop whenever no
+                // consumer is connected.
+                let idle_threshold =
+                    std::time::Duration::from_secs(CHAT_IDLE_THRESHOLD_SECS);
+                if chat::chat_session_is_idle(dir, coordinator_id, idle_threshold) {
+                    logger.info(&format!(
+                        "Coordinator-{}: idle (no consumer + empty inbox for {}s) — exiting supervisor (no respawn).",
+                        coordinator_id, CHAT_IDLE_THRESHOLD_SECS
+                    ));
+                    return;
+                }
                 // Clean exit (user ran /quit, or max-turns hit) — don't
                 // respawn in a tight loop. Sleep a moment to avoid eating
                 // the whole restart budget on clean exits.
@@ -1378,5 +1423,94 @@ mod tests {
         let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
 
         assert!(!ctx.contains("Injected History Context"));
+    }
+
+    /// resolve_chat_task_id is the chat-supervisor's pre-flight task lookup.
+    /// Prefers the new `.chat-N` prefix; falls back to `.coordinator-N` so we
+    /// keep supervising graphs that haven't run `wg migrate chat-rename` yet.
+    #[test]
+    fn test_resolve_chat_task_id_prefers_new_prefix() {
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-7".to_string(),
+            title: "Chat 7".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_chat_task_id(&graph, 7),
+            Some(".chat-7".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_chat_task_id_falls_back_to_legacy_prefix() {
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".coordinator-2".to_string(),
+            title: "Legacy 2".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_chat_task_id(&graph, 2),
+            Some(".coordinator-2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_chat_task_id_prefers_new_when_both_present() {
+        // Edge case: a half-migrated graph where both prefixes exist.
+        // The supervisor must commit to the new prefix so subsequent
+        // `wg spawn-task` invocations land on the canonical task.
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-3".to_string(),
+            title: "Chat 3".to_string(),
+            ..Default::default()
+        }));
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".coordinator-3".to_string(),
+            title: "Coordinator 3".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_chat_task_id(&graph, 3),
+            Some(".chat-3".to_string())
+        );
+    }
+
+    /// Stale `.coordinator-N` self-archive (parent task bullet 3): when neither
+    /// `.chat-N` nor `.coordinator-N` exists in the graph, the supervisor
+    /// pre-flight returns None — the caller exits cleanly and removes the
+    /// per-coord state file so daemon restarts do not resurrect dead chats.
+    #[test]
+    fn test_resolve_chat_task_id_returns_none_for_orphan_supervisor() {
+        let graph = workgraph::graph::WorkGraph::new();
+        assert!(resolve_chat_task_id(&graph, 99).is_none());
+    }
+
+    /// End-to-end of the orphan-exit cleanup path used by the supervisor:
+    /// when the chat task has been removed from the graph, `remove_for`
+    /// scrubs the per-coord state file. Boot enumeration then has nothing
+    /// to respawn, so dead chats stay dead across daemon restart.
+    #[test]
+    fn test_orphan_supervisor_removes_state_file() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Pretend the daemon previously wrote per-coord state for chat 5.
+        let state = super::super::CoordinatorState {
+            enabled: true,
+            ..Default::default()
+        };
+        state.save_for(dir, 5);
+        assert!(super::super::CoordinatorState::load_for(dir, 5).is_some());
+
+        // Graph contains neither `.chat-5` nor `.coordinator-5`.
+        let graph = workgraph::graph::WorkGraph::new();
+        assert!(resolve_chat_task_id(&graph, 5).is_none());
+
+        // Supervisor's orphan-exit calls remove_for; verify the file is gone.
+        super::super::CoordinatorState::remove_for(dir, 5);
+        assert!(super::super::CoordinatorState::load_for(dir, 5).is_none());
     }
 }
