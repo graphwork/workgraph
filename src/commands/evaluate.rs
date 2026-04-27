@@ -1585,22 +1585,20 @@ fn check_eval_gate(
         }
     }
 
-    // Reject the original task
-    super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
-
-    // Auto-rescue: evaluation-drives-remediation. The evaluator's notes
-    // become the rescue task's brief, so the rescue worker knows what
-    // went wrong and what the fix should be. The rescue task is
-    // first-class (no dot-prefix), visible in wg list / wg show, and
-    // inherits the failed task's graph slot — successors unblock from
-    // it instead of the failed target. See docs/design/
-    // nex-as-coordinator.md on the broader "real work in the regular
-    // graph" principle.
+    // Auto-rescue: evaluation-drives-remediation. Per the in-place-eval
+    // design (2026-04-27): when the eval gate fails, we DON'T spawn a
+    // fresh rescue task with a new agent identity. Instead we transition
+    // the SAME task back from PendingEval → Open, keeping `task.agent`
+    // (the persona hash) and the on-disk worktree intact, and let the
+    // dispatcher re-pick the same task on the next tick. The next agent
+    // sees the evaluator's notes via `previous_attempt_context` (gated
+    // by `task.rescue_count > 0` in spawn/execution.rs).
     //
-    // Cascade-failure cap: each rescue increments `rescue_count` on the
-    // new task. When the count reaches `coordinator.max_verify_failures`
-    // (alias `max_eval_rescues`), no further rescue is spawned — the task
-    // stays Failed so the loop terminates instead of cycling forever.
+    // Cascade-failure cap: each iteration increments `rescue_count`.
+    // When the count reaches `coordinator.max_verify_failures` (alias
+    // `max_eval_rescues`), the task transitions to Failed (terminal)
+    // instead of iterating again — the loop terminates and a human can
+    // triage.
     if config.agency.auto_rescue_on_eval_fail {
         let max_rescues = config.coordinator.max_verify_failures;
         let path = super::graph_path(dir);
@@ -1610,9 +1608,11 @@ fn check_eval_gate(
             .unwrap_or(0);
 
         if max_rescues > 0 && prior_rescue_count >= max_rescues {
+            // Cap reached — terminal failure so the loop ends.
+            super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
             let msg = format!(
-                "  [auto-rescue] cap reached: '{}' has been rescued {} time(s) \
-                 (max_verify_failures = {}). Leaving task Failed.",
+                "  [eval-rescue] cap reached: '{}' has been rescued {} time(s) \
+                 (max_verify_failures = {}). Leaving task Failed for triage.",
                 task_id, prior_rescue_count, max_rescues
             );
             if json {
@@ -1621,9 +1621,9 @@ fn check_eval_gate(
                 println!("{}", msg);
             }
             // Append a clear log entry on the failed task so wg show records
-            // why no further rescue spawned.
+            // why no further iteration spawned.
             let cap_msg = format!(
-                "Auto-rescue cap reached ({}/{}); no further rescue spawned",
+                "Auto-rescue cap reached ({}/{}); no further in-place iteration",
                 prior_rescue_count, max_rescues
             );
             let _ = workgraph::parser::modify_graph(&path, |graph| {
@@ -1641,61 +1641,63 @@ fn check_eval_gate(
             return Ok(true);
         }
 
-        let eval_task_id = format!(".evaluate-{}", task_id);
-        let rescue_desc = format!(
-            "Evaluation of the prior attempt scored {:.2}/1.0 (below the {:.2} \
-             threshold).\n\n**Evaluator's notes:**\n\n{}\n\n**Your job:** \
-             address the issues above and complete the task correctly. The \
-             full source task context is available via `wg show {}`. Evaluation \
-             artifacts are in `.workgraph/agency/evaluations/`.",
-            evaluation.score, threshold, evaluation.notes, task_id
+        // In-place iteration: PendingEval → Open, preserving `task.agent`
+        // identity hash and (transitively) the agent's worktree on disk
+        // (`is_safe_to_reap` requires Status::Done, so a non-terminal
+        // task keeps its worktree). Clear `task.assigned` so the
+        // dispatcher will re-pick this task on the next tick.
+        let next_count = prior_rescue_count.saturating_add(1);
+        let log_msg = format!(
+            "Eval rescue {}/{}: score {:.2} below threshold {:.2}. \
+             Re-iterating in place (same agent identity, same worktree). \
+             Evaluator notes: {}",
+            next_count,
+            max_rescues,
+            evaluation.score,
+            threshold,
+            evaluation.notes
         );
-
-        match super::rescue::run(
-            dir,
-            task_id,
-            &rescue_desc,
-            None,
-            None,
-            Some(&eval_task_id),
-            Some("eval-gate"),
-        ) {
-            Ok(new_id) => {
-                // Carry rescue_count forward on the new rescue task so the
-                // cap applies across the chain (R, R2, R3...) not just per task.
-                let new_id_clone = new_id.clone();
-                let _ = workgraph::parser::modify_graph(&path, |graph| {
-                    if let Some(task) = graph.get_task_mut(&new_id_clone) {
-                        task.rescue_count = prior_rescue_count.saturating_add(1);
-                        return true;
-                    }
-                    false
+        let mutated = workgraph::parser::modify_graph(&path, |graph| {
+            if let Some(task) = graph.get_task_mut(task_id) {
+                task.status = workgraph::graph::Status::Open;
+                task.rescue_count = next_count;
+                task.assigned = None;
+                task.failure_reason = None;
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("evaluator".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: log_msg.clone(),
                 });
-                let msg = format!(
-                    "  [auto-rescue] created '{}' from eval notes — successors now \
-                     unblock from the rescue instead of the failed target \
-                     (rescue {}/{})",
-                    new_id,
-                    prior_rescue_count.saturating_add(1),
-                    max_rescues
-                );
-                if json {
-                    eprintln!("{}", msg);
-                } else {
-                    println!("{}", msg);
-                }
+                return true;
             }
-            Err(e) => {
-                // Non-fatal: the fail-reject already landed. Rescue is
-                // bonus. Log and move on so the eval still records.
-                eprintln!(
-                    "\x1b[33mwarning:\x1b[0m auto-rescue failed for '{}': {}",
-                    task_id, e
-                );
+            false
+        });
+
+        if mutated.is_ok() {
+            let msg = format!(
+                "  [eval-rescue] '{}' → Open (in-place iteration {}/{}); \
+                 same agent identity + worktree preserved",
+                task_id, next_count, max_rescues
+            );
+            if json {
+                eprintln!("{}", msg);
+            } else {
+                println!("{}", msg);
             }
+        } else {
+            // Non-fatal: log and surface so the eval still records.
+            eprintln!(
+                "\x1b[33mwarning:\x1b[0m in-place eval rescue failed to update graph for '{}'",
+                task_id
+            );
         }
+
+        return Ok(true);
     }
 
+    // No auto-rescue configured: classic fail-reject path.
+    super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
     Ok(true)
 }
 
@@ -2199,6 +2201,263 @@ mod tests {
             GateDecision::from_evaluation(&mk_eval(0.55), &config).decision,
             GateVerdict::Uncertain
         );
+    }
+
+    // -------------------------------------------------------------------
+    // In-place eval-fail iteration tests (in-place-eval task)
+    // -------------------------------------------------------------------
+
+    fn setup_eval_gate_fixture(dir: &Path, agent_hash: &str, rescue_count: u32) {
+        fs::create_dir_all(dir).unwrap();
+        let path = super::super::graph_path(dir);
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "t1".to_string(),
+            title: "Test eval-gated task".to_string(),
+            status: Status::PendingEval,
+            agent: Some(agent_hash.to_string()),
+            assigned: Some("agent-1".to_string()),
+            tags: vec!["eval-gate".to_string()],
+            rescue_count,
+            ..Task::default()
+        }));
+        save_graph(&graph, &path).unwrap();
+    }
+
+    fn cfg_with_eval_gate(threshold: f64, max_rescues: u32) -> Config {
+        let mut cfg = Config::default();
+        cfg.agency.eval_gate_threshold = Some(threshold);
+        cfg.agency.auto_rescue_on_eval_fail = true;
+        cfg.coordinator.max_verify_failures = max_rescues;
+        cfg
+    }
+
+    fn mk_failing_eval(score: f64, notes: &str) -> Evaluation {
+        Evaluation {
+            id: "e1".into(),
+            task_id: "t1".into(),
+            agent_id: String::new(),
+            role_id: String::new(),
+            tradeoff_id: String::new(),
+            score,
+            dimensions: HashMap::new(),
+            notes: notes.to_string(),
+            evaluator: String::new(),
+            timestamp: String::new(),
+            model: None,
+            source: "llm".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_eval_fail_retries_in_place_with_same_agent() {
+        // Eval scores below threshold, rescue_count < max:
+        // task should transition PendingEval → Open with the SAME task.agent
+        // identity hash, rescue_count incremented, and NO new task created.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let agent_hash = "0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd";
+        setup_eval_gate_fixture(dir_path, agent_hash, 0);
+
+        let config = cfg_with_eval_gate(0.7, 3);
+        let eval = mk_failing_eval(0.3, "missing tests; see notes");
+
+        let rejected = check_eval_gate(
+            dir_path,
+            "t1",
+            &["eval-gate".to_string()],
+            &eval,
+            &config,
+            true, // json mode silences stdout for tests
+        )
+        .unwrap();
+        assert!(rejected, "eval gate should report rejection");
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+
+        assert_eq!(
+            task.status,
+            Status::Open,
+            "in-place rescue: PendingEval → Open"
+        );
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(agent_hash),
+            "agent identity hash MUST be preserved across in-place rescue"
+        );
+        assert_eq!(
+            task.rescue_count, 1,
+            "rescue_count should increment by 1"
+        );
+
+        // No new task created — only the original t1 in the graph.
+        let task_count = graph.tasks().count();
+        assert_eq!(
+            task_count, 1,
+            "in-place rescue must NOT create a new rescue task; saw {}",
+            task_count
+        );
+    }
+
+    #[test]
+    fn test_eval_fail_at_cap_transitions_to_failed() {
+        // rescue_count == max_eval_rescues: task should NOT iterate further;
+        // instead transition to Failed (terminal).
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let agent_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        setup_eval_gate_fixture(dir_path, agent_hash, 3); // already at cap
+
+        let config = cfg_with_eval_gate(0.7, 3);
+        let eval = mk_failing_eval(0.2, "still broken at cap");
+
+        let rejected = check_eval_gate(
+            dir_path,
+            "t1",
+            &["eval-gate".to_string()],
+            &eval,
+            &config,
+            true,
+        )
+        .unwrap();
+        assert!(rejected);
+
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+
+        assert_eq!(
+            task.status,
+            Status::Failed,
+            "at cap, in-place rescue MUST stop and transition to Failed"
+        );
+
+        // No new rescue task spawned at cap.
+        let task_count = graph.tasks().count();
+        assert_eq!(
+            task_count, 1,
+            "at cap, no further rescue task should be spawned; saw {}",
+            task_count
+        );
+    }
+
+    #[test]
+    fn test_eval_feedback_in_next_spawn_context() {
+        // After an in-place rescue, the spawn helper should inject the
+        // evaluator's notes into the next agent's previous_attempt_context.
+        // We exercise this end-to-end by:
+        //   1. Writing an evaluation JSON to .workgraph/agency/evaluations/
+        //   2. Running check_eval_gate (which transitions task to Open and
+        //      bumps rescue_count).
+        //   3. Calling build_previous_attempt_context() and asserting the
+        //      eval notes appear in the returned string.
+        use super::super::spawn::context::build_previous_attempt_context;
+
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let agent_hash = "feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed";
+        setup_eval_gate_fixture(dir_path, agent_hash, 0);
+
+        // Drop an evaluation file so build_previous_attempt_context can find
+        // it via the agency/evaluations lookup by task_id.
+        let evals_dir = dir_path.join("agency").join("evaluations");
+        fs::create_dir_all(&evals_dir).unwrap();
+        let eval_filename = "eval-t1-2026-04-27T15-00-00Z.json";
+        let eval_json = serde_json::json!({
+            "id": "eval-t1-001",
+            "task_id": "t1",
+            "score": 0.30,
+            "notes": "EVALUATOR_NOTE_FOR_TEST: implementation skipped tests",
+            "dimensions": {},
+            "evaluator": "test",
+            "timestamp": "2026-04-27T15:00:00Z",
+            "source": "llm",
+        });
+        fs::write(
+            evals_dir.join(eval_filename),
+            serde_json::to_string_pretty(&eval_json).unwrap(),
+        )
+        .unwrap();
+
+        let config = cfg_with_eval_gate(0.7, 3);
+        let eval = mk_failing_eval(0.30, "EVALUATOR_NOTE_FOR_TEST: implementation skipped tests");
+        let rejected = check_eval_gate(
+            dir_path,
+            "t1",
+            &["eval-gate".to_string()],
+            &eval,
+            &config,
+            true,
+        )
+        .unwrap();
+        assert!(rejected);
+
+        // Reload the task (now Open with rescue_count == 1).
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap().clone();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.rescue_count, 1);
+
+        let ctx = build_previous_attempt_context(&task, dir_path, 4096);
+        assert!(
+            ctx.contains("EVALUATOR_NOTE_FOR_TEST"),
+            "next-spawn previous_attempt_context must include evaluator's notes; got: {:?}",
+            ctx
+        );
+    }
+
+    #[test]
+    fn test_worktree_preserved_across_eval_iteration() {
+        // After an in-place eval-fail rescue, the prior agent's worktree must
+        // not be reaped: the task is still non-terminal (Open) so
+        // is_safe_to_reap returns false, and any sweep leaves the dir alone.
+        use super::super::service::worktree::is_safe_to_reap;
+
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let agent_hash = "11112222333344445555666677778888aaaabbbbccccddddeeeeffff00001111";
+        setup_eval_gate_fixture(dir_path, agent_hash, 0);
+
+        // Simulate a worktree dir on disk for agent-1 (matching task.assigned).
+        let project_root = dir_path.parent().unwrap();
+        let worktree_path = project_root.join(".wg-worktrees").join("agent-1");
+        fs::create_dir_all(&worktree_path).unwrap();
+        assert!(worktree_path.exists(), "precondition: worktree exists");
+
+        let config = cfg_with_eval_gate(0.7, 3);
+        let eval = mk_failing_eval(0.3, "incomplete");
+        check_eval_gate(
+            dir_path,
+            "t1",
+            &["eval-gate".to_string()],
+            &eval,
+            &config,
+            true,
+        )
+        .unwrap();
+
+        // Verify the worktree dir on disk is untouched by the rescue path.
+        assert!(
+            worktree_path.exists(),
+            "worktree dir for in-place rescue MUST NOT be removed during eval-fail handling"
+        );
+
+        // And: the GC safety predicate refuses to reap it because the task
+        // is now Open (non-terminal).
+        let path = super::super::graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        // is_safe_to_reap(graph, task_id, project_root, branch)
+        let safe = is_safe_to_reap(Some(&graph), Some("t1"), project_root, Some("dummy-branch"));
+        assert!(
+            !safe,
+            "is_safe_to_reap MUST return false for an in-place eval-rescue task (non-terminal)"
+        );
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&worktree_path);
     }
 
     #[test]

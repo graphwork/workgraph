@@ -153,8 +153,11 @@ pub(crate) fn spawn_agent_inner(
     // Build scope context for prompt assembly
     let mut scope_ctx = build_scope_context(&graph, task, scope, &config, dir);
 
-    // Inject previous attempt context on retry
-    if task.retry_count > 0 {
+    // Inject previous attempt context on retry OR on in-place eval rescue
+    // (rescue_count > 0 means the prior attempt failed the eval gate and we
+    // are iterating in place — the evaluator's notes belong in the next
+    // agent's context). See `commands::evaluate::check_eval_gate`.
+    if task.retry_count > 0 || task.rescue_count > 0 {
         let max_tokens = config.checkpoint.retry_context_tokens;
         scope_ctx.previous_attempt_context = build_previous_attempt_context(task, dir, max_tokens);
     }

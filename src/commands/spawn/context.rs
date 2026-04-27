@@ -1095,26 +1095,44 @@ pub(crate) fn resolve_task_scope(
 
 /// Build previous attempt context for retry injection.
 ///
-/// When a task has `retry_count > 0`, looks for the most recent archived agent
-/// attempt and extracts context in priority order:
+/// Triggered when `task.retry_count > 0` (classic fail-and-retry) OR
+/// `task.rescue_count > 0` (in-place eval-fail iteration — see
+/// `commands::evaluate::check_eval_gate`). Looks for the most recent archived
+/// agent attempt and extracts context in priority order:
 /// 1. Checkpoint summary (auto or explicit)
 /// 2. Truncated output.log tail
 /// 3. Task log entries
+/// 4. Eval rationale alone (in-place rescue path: no archive yet, but the
+///    evaluator wrote notes that the next iteration must see)
 ///
-/// Returns empty string if no previous attempt context is found or retry_count is 0.
+/// Returns empty string if both counts are 0 or there is no recoverable context.
 pub(crate) fn build_previous_attempt_context(
     task: &workgraph::graph::Task,
     workgraph_dir: &Path,
     max_tokens: u32,
 ) -> String {
-    if task.retry_count == 0 || max_tokens == 0 {
+    if (task.retry_count == 0 && task.rescue_count == 0) || max_tokens == 0 {
         return String::new();
     }
 
-    // Find the most recent archived agent for this task
-    let archive_base = workgraph_dir.join("log").join("agents").join(&task.id);
+    // Estimate max bytes (~4 chars per token as rough heuristic)
+    let max_bytes = (max_tokens as usize) * 4;
 
+    // In-place eval rescue may run before any archive directory exists for
+    // this task — the prior agent reported `wg done`, the eval ran and
+    // failed, and we transitioned PendingEval → Open without spawning a
+    // fresh archive. Surface eval rationale on its own when that's all we
+    // have (otherwise the early-return below would skip it).
+    let archive_base = workgraph_dir.join("log").join("agents").join(&task.id);
     if !archive_base.exists() {
+        let eval_context = build_eval_rationale_context(&task.id, workgraph_dir);
+        if !eval_context.is_empty() {
+            return format_previous_context(
+                &chrono::Utc::now().to_rfc3339(),
+                &eval_context,
+                max_bytes,
+            );
+        }
         return String::new();
     }
 
@@ -1141,10 +1159,8 @@ pub(crate) fn build_previous_attempt_context(
         .to_string_lossy()
         .to_string();
 
-    // Estimate max bytes (~4 chars per token as rough heuristic)
-    let max_bytes = (max_tokens as usize) * 4;
-
-    // Collect evaluation rationale if available
+    // Collect evaluation rationale if available (max_bytes computed above
+    // before the archive-existence early-return).
     let eval_context = build_eval_rationale_context(&task.id, workgraph_dir);
 
     // Priority 1: Look for checkpoint summary from the previous agent
