@@ -3457,65 +3457,6 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                             .add_modifier(Modifier::ITALIC),
                     ));
                 }
-                // Append read-at annotation for sent messages.
-                if is_sent_message && let Some(read_at) = &msg.read_at {
-                    let now = chrono::Utc::now();
-                    let rel = format_relative_time(read_at, &now);
-                    spans.push(Span::styled(
-                        format!("  read {}", rel),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                // Append timestamp for all messages.
-                if let Some(ts) = &msg.msg_timestamp {
-                    let now = chrono::Utc::now();
-                    let rel = format_relative_time(ts, &now);
-                    spans.push(Span::styled(
-                        format!("  {}", rel),
-                        Style::default().fg(Color::Indexed(239)),
-                    ));
-                }
-                // Position in chat sequence for user messages (e.g. "#5/12")
-                // so the user can see where their message landed relative to the
-                // full series of turns.
-                if is_user {
-                    let total = app.chat.messages.len();
-                    spans.push(Span::styled(
-                        format!("  #{}/{}", msg_idx + 1, total),
-                        Style::default().fg(Color::Indexed(239)),
-                    ));
-                }
-                // Delivery status for user messages.
-                if is_user {
-                    // Check if a coordinator message follows (= delivered).
-                    let has_response = app
-                        .chat
-                        .messages
-                        .get(msg_idx + 1..)
-                        .map(|rest| {
-                            rest.iter().any(|m| {
-                                m.role == super::state::ChatRole::Coordinator
-                                    || m.role == super::state::ChatRole::SystemError
-                            })
-                        })
-                        .unwrap_or(false);
-                    let status_span = if has_response {
-                        Span::styled("  ✓✓", Style::default().fg(Color::DarkGray))
-                    } else if app.chat.awaiting_response() {
-                        // Only the last user message shows processing indicator.
-                        let is_last_user = app.chat.messages[msg_idx + 1..]
-                            .iter()
-                            .all(|m| m.role != super::state::ChatRole::User);
-                        if is_last_user {
-                            Span::styled("  ⋯", Style::default().fg(Color::Yellow))
-                        } else {
-                            Span::styled("  ✓", Style::default().fg(Color::DarkGray))
-                        }
-                    } else {
-                        Span::styled("  ✓", Style::default().fg(Color::DarkGray))
-                    };
-                    spans.push(status_span);
-                }
                 let mut built = Line::from(spans);
                 if is_user {
                     built = apply_line_bg(built, msg_bg);
@@ -3538,6 +3479,86 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 rendered_lines.push(built);
                 line_to_message.push(Some(msg_idx));
             }
+        }
+        // Build the per-message annotation line (timestamp, position,
+        // status indicator, sent-message read-at) and render it on its
+        // own row directly below the body. Keeping these out of the
+        // first body line avoids the overflow that previously truncated
+        // them at narrow widths and prevents any visual confusion with
+        // the response alignment below.
+        let mut annot_spans: Vec<Span> = Vec::new();
+        if is_sent_message && let Some(read_at) = &msg.read_at {
+            let now = chrono::Utc::now();
+            let rel = format_relative_time(read_at, &now);
+            annot_spans.push(Span::styled(
+                format!("read {}  ", rel),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        if let Some(ts) = &msg.msg_timestamp {
+            let now = chrono::Utc::now();
+            let rel = format_relative_time(ts, &now);
+            annot_spans.push(Span::styled(
+                format!("{}  ", rel),
+                Style::default().fg(Color::Indexed(239)),
+            ));
+        }
+        if is_user {
+            let total = app.chat.messages.len();
+            annot_spans.push(Span::styled(
+                format!("#{}/{}  ", msg_idx + 1, total),
+                Style::default().fg(Color::Indexed(239)),
+            ));
+            // Delivery status: ✓ delivered, ✓✓ delivered+responded,
+            // ⋯ pending. Lives in the gutter on its own row so it is
+            // visible without disrupting text flow.
+            let has_response = app
+                .chat
+                .messages
+                .get(msg_idx + 1..)
+                .map(|rest| {
+                    rest.iter().any(|m| {
+                        m.role == super::state::ChatRole::Coordinator
+                            || m.role == super::state::ChatRole::SystemError
+                    })
+                })
+                .unwrap_or(false);
+            let status_span = if has_response {
+                Span::styled("✓✓", Style::default().fg(Color::DarkGray))
+            } else if app.chat.awaiting_response() {
+                let is_last_user = app.chat.messages[msg_idx + 1..]
+                    .iter()
+                    .all(|m| m.role != super::state::ChatRole::User);
+                if is_last_user {
+                    Span::styled("⋯", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled("✓", Style::default().fg(Color::DarkGray))
+                }
+            } else {
+                Span::styled("✓", Style::default().fg(Color::DarkGray))
+            };
+            annot_spans.push(status_span);
+        }
+        if !annot_spans.is_empty() {
+            // Right-justify the annotations within content_width so they
+            // sit at the trailing edge of the message column. Compute the
+            // total visual width and pad the leading edge with spaces.
+            let annot_w: usize = annot_spans
+                .iter()
+                .map(|s| s.content.as_ref().width())
+                .sum();
+            let pad = content_width.saturating_sub(annot_w);
+            let mut spans: Vec<Span> = Vec::with_capacity(annot_spans.len() + 1);
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.extend(annot_spans);
+            let mut annot_line = Line::from(spans);
+            if is_user {
+                annot_line = apply_line_bg(annot_line, msg_bg);
+            } else if is_sent_message {
+                annot_line = apply_line_bg(annot_line, sent_msg_bg);
+            }
+            rendered_lines.push(annot_line);
+            line_to_message.push(Some(msg_idx));
         }
         // Show attachment indicators.
         for att_name in &msg.attachments {
@@ -12012,6 +12033,170 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    /// Regression: agent response in the chat panel must have its first
+    /// line aligned with its continuation lines. Previously the user's
+    /// message line ended with a status indicator (`  ✓` / `  ✓✓`) that
+    /// could overflow the chat-pane width and visually shift the
+    /// response below.
+    ///
+    /// The fix moves the user-message annotations (timestamp, position,
+    /// status indicator) to a dedicated row below the message body, so
+    /// the body flows uniformly and never pushes other content around.
+    #[test]
+    fn test_response_first_line_aligns_with_continuation() {
+        use crate::tui::viz_viewer::state::{ChatMessage, ChatRole, ChatState, VizApp};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+
+        // A user message and a multi-line agent response. The response
+        // text is long enough to wrap to at least 3 lines at the test
+        // width (60 cols), so we exercise first-line + continuation
+        // rendering paths.
+        let user_msg = ChatMessage {
+            role: ChatRole::User,
+            text: "ping".to_string(),
+            full_text: None,
+            attachments: vec![],
+            edited: false,
+            inbox_id: None,
+            user: Some("erik".to_string()),
+            target_task: None,
+            msg_timestamp: None,
+            read_at: None,
+            msg_queue_id: None,
+        };
+        let agent_response_text = "Sure, here's a longer response that should wrap \
+                                   across several lines so we can verify that the \
+                                   first line of the response is column-aligned with \
+                                   its continuation lines and not visually shifted \
+                                   by some prefix mismatch.";
+        let agent_msg = ChatMessage {
+            role: ChatRole::Coordinator,
+            text: agent_response_text.to_string(),
+            full_text: None,
+            attachments: vec![],
+            edited: false,
+            inbox_id: None,
+            user: None,
+            target_task: None,
+            msg_timestamp: None,
+            read_at: None,
+            msg_queue_id: None,
+        };
+        app.chat = ChatState {
+            messages: vec![user_msg, agent_msg],
+            ..ChatState::default()
+        };
+
+        // Render at a moderate width so the response wraps to 3+ lines.
+        let backend = TestBackend::new(60, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let area = buffer.area();
+        let mut grid: Vec<String> = Vec::new();
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buffer[(x, y)].symbol());
+            }
+            grid.push(row);
+        }
+
+        // Locate the agent response's first line (starts with the `↯ `
+        // role-prefix), and the two continuation lines that follow it.
+        let first_idx = grid
+            .iter()
+            .position(|row| row.trim_start().starts_with("↯ "))
+            .unwrap_or_else(|| panic!("agent response (`↯ ` prefix) not found in:\n{}", grid.join("\n")));
+
+        // The continuation lines must exist directly after.
+        assert!(
+            first_idx + 2 < grid.len(),
+            "expected at least 2 continuation lines after first response line; grid:\n{}",
+            grid.join("\n")
+        );
+
+        // Find the column of the FIRST printable text glyph on each of
+        // the response's three rendered lines.
+        let first_text_col = |row: &str| -> Option<usize> {
+            row.chars()
+                .enumerate()
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(i, _)| i)
+        };
+
+        let line1_col = first_text_col(&grid[first_idx])
+            .unwrap_or_else(|| panic!("response line 1 had no printable glyph"));
+        let line2_col = first_text_col(&grid[first_idx + 1])
+            .unwrap_or_else(|| panic!("response line 2 had no printable glyph"));
+        let line3_col = first_text_col(&grid[first_idx + 2])
+            .unwrap_or_else(|| panic!("response line 3 had no printable glyph"));
+
+        // Line 1's first glyph is the role prefix `↯`. Lines 2/3 should
+        // begin at the column where the prefix's *text body* starts —
+        // which on a correctly-aligned response is the column of the
+        // FIRST CHARACTER AFTER `↯ ` on line 1.
+        use unicode_width::UnicodeWidthStr;
+        let prefix_w = "↯ ".width();
+        let expected_body_col = line1_col + prefix_w;
+
+        assert_eq!(
+            line2_col, expected_body_col,
+            "response continuation line 2 not aligned with line-1 body.\n\
+             line1='{}' (col {})\nline2='{}' (col {})\nline3='{}' (col {})\n\
+             expected body col: {}\n\nfull grid:\n{}",
+            grid[first_idx], line1_col,
+            grid[first_idx + 1], line2_col,
+            grid[first_idx + 2], line3_col,
+            expected_body_col,
+            grid.join("\n")
+        );
+        assert_eq!(
+            line3_col, expected_body_col,
+            "response continuation line 3 not aligned with line-1 body.\n\
+             line1='{}' (col {})\nline2='{}' (col {})\nline3='{}' (col {})\n\
+             expected body col: {}\n\nfull grid:\n{}",
+            grid[first_idx], line1_col,
+            grid[first_idx + 1], line2_col,
+            grid[first_idx + 2], line3_col,
+            expected_body_col,
+            grid.join("\n")
+        );
+
+        // Also verify the user-message line does NOT inject a status
+        // indicator inline at the end of the user's text — that was the
+        // original cause of the perceived shift on the response below.
+        // The status indicator (`✓`, `✓✓`) must appear in the gutter
+        // (column 0 of the user line) or on its own dedicated row, not
+        // appended after the text content of the user message.
+        let user_row_idx = grid
+            .iter()
+            .position(|row| row.contains("erik:"))
+            .unwrap_or_else(|| panic!("user message not found"));
+        let user_row = &grid[user_row_idx];
+        let after_user_text = user_row
+            .find("ping")
+            .map(|i| &user_row[i + "ping".len()..])
+            .unwrap_or("");
+        assert!(
+            !after_user_text.contains('✓'),
+            "user-message line should not inline `✓` indicator after text body.\n\
+             user_row='{}'\nfull grid:\n{}",
+            user_row,
+            grid.join("\n")
+        );
     }
 
     /// Verifies the smart-coloration scheme from task `tui-chat-smart`:
