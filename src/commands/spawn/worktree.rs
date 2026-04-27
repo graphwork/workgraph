@@ -88,6 +88,58 @@ pub fn create_worktree(
     })
 }
 
+/// Find an existing worktree for a given task by scanning `.wg-worktrees/`
+/// for branches named `wg/<agent-id>/<task-id>`. Returns the worktree path
+/// and branch name when one is found.
+///
+/// Used by the retry-in-place path: if a previous attempt left a worktree
+/// behind, the next agent reuses it (preserving uncommitted WIP and prior
+/// commits) rather than allocating a fresh worktree off `HEAD`.
+pub fn find_worktree_for_task(
+    project_root: &Path,
+    task_id: &str,
+) -> Option<(PathBuf, String)> {
+    let worktrees_dir = project_root.join(".wg-worktrees");
+    if !worktrees_dir.exists() {
+        return None;
+    }
+
+    let entries = std::fs::read_dir(&worktrees_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("agent-") {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let expected = format!("wg/{}/{}", name, task_id);
+        // Use git worktree list --porcelain to confirm the branch.
+        let output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(project_root)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut current: Option<&str> = None;
+        let path_str = path.to_string_lossy();
+        for line in text.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                current = Some(p);
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                let branch_name = b.strip_prefix("refs/heads/").unwrap_or(b);
+                if current == Some(path_str.as_ref()) && branch_name == expected {
+                    return Some((path.clone(), branch_name.to_string()));
+                }
+            } else if line.is_empty() {
+                current = None;
+            }
+        }
+    }
+    None
+}
+
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     // Remove the symlink first (git worktree remove won't remove it)

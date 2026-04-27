@@ -10,10 +10,52 @@ use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
-pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
+pub fn run(dir: &Path, id: &str, preserve_session: bool, fresh: bool) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+    }
+
+    // --fresh: discard the prior worktree (if any) so the next spawn allocates
+    // a clean one off main. Default behavior is retry-in-place, which preserves
+    // the existing worktree + branch so the next agent can resume WIP.
+    let mut fresh_removed_path: Option<std::path::PathBuf> = None;
+    if fresh {
+        if let Some(project_root) = dir.parent() {
+            if let Some((wt_path, branch)) =
+                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+            {
+                eprintln!(
+                    "[retry --fresh] Removing prior worktree for '{}' at {:?} (branch: {})",
+                    id, wt_path, branch
+                );
+                let _ = crate::commands::spawn::worktree::remove_worktree(
+                    project_root,
+                    &wt_path,
+                    &branch,
+                );
+                fresh_removed_path = Some(wt_path);
+            }
+        }
+    } else {
+        // Retry-in-place: clear any cleanup-pending marker so the dispatcher
+        // tick doesn't reap the worktree before the next agent picks it up.
+        if let Some(project_root) = dir.parent() {
+            if let Some((wt_path, _)) =
+                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+            {
+                let marker = wt_path.join(
+                    crate::commands::service::worktree::CLEANUP_PENDING_MARKER,
+                );
+                if marker.exists() {
+                    let _ = std::fs::remove_file(&marker);
+                    eprintln!(
+                        "[retry] Cleared cleanup-pending marker on prior worktree for '{}' (retry-in-place)",
+                        id
+                    );
+                }
+            }
+        }
     }
 
     let config = workgraph::config::Config::load_or_default(dir);
@@ -168,6 +210,20 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
         println!("  {}", msg);
     }
 
+    if let Some(p) = fresh_removed_path {
+        println!("  --fresh: discarded prior worktree at {:?}", p);
+    } else if !fresh {
+        // Inform the user that the next attempt will resume in-place if a
+        // prior worktree exists.
+        if let Some(project_root) = dir.parent() {
+            if let Some((wt, _)) =
+                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+            {
+                println!("  Next attempt will resume in-place at {:?}", wt);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -209,7 +265,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -226,7 +282,7 @@ mod tests {
         task.retry_count = 1;
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -244,7 +300,7 @@ mod tests {
         task.ready_after = Some("2099-01-01T00:00:00Z".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -261,7 +317,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -280,7 +336,7 @@ mod tests {
             vec![make_task("t1", "Test task", Status::InProgress)],
         );
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_err());
         assert!(
             result
@@ -296,7 +352,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_err());
         assert!(
             result
@@ -314,7 +370,7 @@ mod tests {
         task.retry_count = 3;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -334,7 +390,7 @@ mod tests {
         task.failure_reason = Some("compilation error".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -351,7 +407,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -368,7 +424,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -387,7 +443,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false);
+        let result = run(dir_path, "t1", false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -404,7 +460,7 @@ mod tests {
         task.retry_count = 2;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -429,7 +485,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Failed)]);
 
-        let result = run(dir_path, "nonexistent", false);
+        let result = run(dir_path, "nonexistent", false, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -444,7 +500,7 @@ mod tests {
         task.checkpoint = Some("Previous checkpoint context".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -469,7 +525,7 @@ mod tests {
         task.checkpoint = Some("checkpoint content".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", true).unwrap();
+        run(dir_path, "t1", true, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -495,7 +551,7 @@ mod tests {
         task.tags.push("converged".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -514,7 +570,7 @@ mod tests {
         task.retry_count = 1;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -546,7 +602,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -568,7 +624,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -586,7 +642,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -612,7 +668,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         // No escalation config — default is false
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -635,7 +691,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -657,7 +713,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false).unwrap();
+        run(dir_path, "t1", false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -666,6 +722,148 @@ mod tests {
             task.tier,
             Some("premium".to_string()),
             "Default tier (standard) should escalate to premium"
+        );
+    }
+
+    /// Helper: init a git repo with a "main" branch and one commit.
+    fn init_git_repo(path: &Path) {
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        fs::write(path.join("seed.txt"), "seed").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+    }
+
+    /// Helper: create a worktree with the wg/<agent>/<task> branch convention.
+    fn create_worktree(project: &Path, agent_id: &str, task_id: &str) -> std::path::PathBuf {
+        let branch = format!("wg/{}/{}", agent_id, task_id);
+        let wt = project.join(".wg-worktrees").join(agent_id);
+        fs::create_dir_all(project.join(".wg-worktrees")).unwrap();
+        std::process::Command::new("git")
+            .args(["worktree", "add"])
+            .arg(&wt)
+            .args(["-b", &branch, "HEAD"])
+            .current_dir(project)
+            .output()
+            .unwrap();
+        wt
+    }
+
+    /// New retention policy (worktree-retention-don):
+    /// `wg retry` (default) reuses the existing worktree + branch — does NOT
+    /// remove the dir, does NOT delete the branch. Clears the cleanup-pending
+    /// marker so the next sweep doesn't reap before the new agent picks up.
+    #[test]
+    fn test_retry_reuses_existing_worktree_by_default() {
+        let temp = tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(&wg_dir).unwrap();
+
+        let mut task = make_task("retry-here", "test", Status::Failed);
+        task.retry_count = 1;
+        setup_workgraph(&wg_dir, vec![task]);
+
+        // Pretend a prior agent ran in this worktree, made a commit, and
+        // exited with a cleanup-pending marker.
+        let wt = create_worktree(&project, "agent-prior", "retry-here");
+        fs::write(wt.join("wip.txt"), "uncommitted-wip").unwrap();
+        fs::write(
+            wt.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER),
+            "",
+        )
+        .unwrap();
+
+        let result = run(&wg_dir, "retry-here", false, /*fresh=*/ false);
+        assert!(result.is_ok(), "retry should succeed: {:?}", result);
+
+        // Default behavior: worktree dir SURVIVES.
+        assert!(wt.exists(), "retry must NOT remove worktree by default");
+        assert!(
+            wt.join("wip.txt").exists(),
+            "uncommitted WIP must survive"
+        );
+        // Cleanup-pending marker should be cleared so the next sweep doesn't reap.
+        assert!(
+            !wt.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER)
+                .exists(),
+            "cleanup-pending marker must be cleared on retry-in-place"
+        );
+        // Branch survives in git
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "wg/agent-prior/retry-here"])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).contains("wg/agent-prior/retry-here"),
+            "branch must survive retry-in-place"
+        );
+    }
+
+    /// `wg retry --fresh` discards the prior worktree + branch so the next
+    /// spawn allocates a clean one off main.
+    #[test]
+    fn test_retry_fresh_flag_allocates_new_worktree() {
+        let temp = tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(&wg_dir).unwrap();
+
+        let mut task = make_task("retry-fresh", "test", Status::Failed);
+        task.retry_count = 1;
+        setup_workgraph(&wg_dir, vec![task]);
+
+        let wt = create_worktree(&project, "agent-prior", "retry-fresh");
+        assert!(wt.exists());
+
+        let result = run(&wg_dir, "retry-fresh", false, /*fresh=*/ true);
+        assert!(result.is_ok(), "retry --fresh should succeed: {:?}", result);
+
+        // --fresh: worktree dir is REMOVED.
+        assert!(
+            !wt.exists(),
+            "retry --fresh must remove the prior worktree"
+        );
+        // Branch is also deleted
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "wg/agent-prior/retry-fresh"])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&branches.stdout).contains("wg/agent-prior/retry-fresh"),
+            "branch must be deleted on --fresh"
         );
     }
 }

@@ -556,7 +556,21 @@ You are running inside a **workgraph-managed worktree**. Your working directory 
 3. Cause ALL your commits to go to the wrong branch
 4. Result in your work being LOST — the merge-back will find no commits
 
-If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.\n";
+If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.
+
+### Prior WIP from a previous attempt
+
+This worktree may contain prior work-in-progress from an earlier agent attempt \
+(rate-limit, crash, or signal-induced exit, then `wg retry`). \
+**Before starting fresh, inspect what's already there**:
+- `git status` — uncommitted changes (the prior agent's in-flight edits)
+- `git log --oneline main..HEAD` — commits the prior agent made on this branch
+- `git diff main...HEAD` — full delta vs `main`
+
+If prior work is present and on-track, **continue from where it left off** \
+rather than redoing it. If it's broken or wrong, commit a clean reset and \
+start over from there. Either way, do not blindly overwrite the prior \
+agent's commits — they may contain valuable progress.\n";
 
 /// Message polling instructions for agents.
 /// Contains {{task_id}} placeholder for variable substitution.

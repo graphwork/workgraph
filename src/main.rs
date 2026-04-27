@@ -1035,7 +1035,8 @@ fn main() -> Result<()> {
         Commands::Retry {
             id,
             preserve_session,
-        } => commands::retry::run(&workgraph_dir, &id, preserve_session),
+            fresh,
+        } => commands::retry::run(&workgraph_dir, &id, preserve_session, fresh),
         Commands::Recover {
             yes,
             filter,

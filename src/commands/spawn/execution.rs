@@ -317,20 +317,51 @@ pub(crate) fn spawn_agent_inner(
         let project_root = dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-        match worktree::create_worktree(project_root, dir, &temp_agent_id, task_id) {
-            Ok(info) => {
-                eprintln!(
-                    "[spawn] Created worktree for {} at {:?} (branch: {})",
-                    temp_agent_id, info.path, info.branch
-                );
-                Some(info)
+
+        // Retry-in-place: if a prior worktree exists for this task (from a
+        // previous attempt that hit rate limit, crashed, or was killed),
+        // reuse it. Preserves uncommitted WIP and prior commits — the new
+        // agent starts in the same dir, on the same branch, with all that
+        // context intact. The retention policy in worktree-sweep keeps the
+        // dir alive until eval+merge so this path is reachable.
+        //
+        // Use `wg retry --fresh` to opt out and start clean.
+        if let Some((prior_path, prior_branch)) =
+            worktree::find_worktree_for_task(project_root, task_id)
+        {
+            // Clear any cleanup-pending marker that the prior agent's
+            // wrapper may have written so the next sweep doesn't reap it.
+            let marker = prior_path.join(
+                crate::commands::service::worktree::CLEANUP_PENDING_MARKER,
+            );
+            if marker.exists() {
+                let _ = fs::remove_file(&marker);
             }
-            Err(e) => {
-                eprintln!(
-                    "[spawn] Worktree creation failed for {}, falling back to shared working directory: {}",
-                    temp_agent_id, e
-                );
-                None
+            eprintln!(
+                "[spawn] Reusing prior worktree for task '{}' at {:?} (branch: {}) — retry-in-place",
+                task_id, prior_path, prior_branch
+            );
+            Some(worktree::WorktreeInfo {
+                path: prior_path,
+                branch: prior_branch,
+                project_root: project_root.to_path_buf(),
+            })
+        } else {
+            match worktree::create_worktree(project_root, dir, &temp_agent_id, task_id) {
+                Ok(info) => {
+                    eprintln!(
+                        "[spawn] Created worktree for {} at {:?} (branch: {})",
+                        temp_agent_id, info.path, info.branch
+                    );
+                    Some(info)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[spawn] Worktree creation failed for {}, falling back to shared working directory: {}",
+                        temp_agent_id, e
+                    );
+                    None
+                }
             }
         }
     } else {

@@ -568,6 +568,12 @@ pub enum Commands {
         /// Keep the stored Claude session ID (default: clear it so the retry starts fresh)
         #[arg(long)]
         preserve_session: bool,
+
+        /// Discard the prior worktree (if any) and start over from main.
+        /// Default is retry-in-place: the next agent reuses the existing
+        /// worktree + branch so uncommitted WIP and prior commits are preserved.
+        #[arg(long)]
+        fresh: bool,
     },
 
     /// Batch-recover from credit-exhaustion / mass-failure (default: dry-run)
