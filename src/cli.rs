@@ -69,6 +69,18 @@ pub enum Commands {
         /// Example: `wg init -m nemotron-h-8b -e http://127.0.0.1:8088`
         #[arg(short = 'e', long)]
         endpoint: Option<String>,
+
+        /// Pick one of the 5 named setup routes (openrouter, claude-cli,
+        /// codex-cli, local, nex-custom) and produce a complete config —
+        /// executor + tiers + endpoint when applicable. Alternative to
+        /// `-x <executor>` when you want fully-populated tiers out of the box.
+        #[arg(long)]
+        route: Option<String>,
+
+        /// Print the config that would be written but don't actually create
+        /// the workgraph directory or files.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Bulk-reset a subgraph: given one or more seed tasks, close the
@@ -1785,6 +1797,30 @@ pub enum Commands {
         /// Skip confirmation when overwriting existing global config
         #[arg(long)]
         force: bool,
+
+        /// Reset config to defaults. With `--route <name>` resets to that route's
+        /// defaults; without a route, picks the closest route based on the current
+        /// executor. Always backs up to config.toml.bak-<timestamp> first.
+        /// Also reachable as `wg config reset` (positional alias).
+        #[arg(long)]
+        reset: bool,
+
+        /// One of the 5 named routes for `--reset`: openrouter, claude-cli, codex-cli,
+        /// local, nex-custom.
+        #[arg(long = "route", value_name = "NAME")]
+        reset_route: Option<String>,
+
+        /// Preserve existing `[[llm_endpoints.endpoints]]` entries when resetting.
+        #[arg(long = "keep-keys")]
+        reset_keep_keys: bool,
+
+        /// Print the diff that `--reset` would apply, but don't actually write.
+        #[arg(long = "dry-run")]
+        reset_dry_run: bool,
+
+        /// Skip confirmation when `--reset` would replace a non-empty config.
+        #[arg(long = "yes")]
+        reset_yes: bool,
     },
 
     /// Detect and clean up dead agents
@@ -1950,24 +1986,36 @@ pub enum Commands {
 
     /// Interactive configuration wizard for first-time setup
     Setup {
-        /// Provider (anthropic, openrouter, openai, local, custom) — enables non-interactive mode
+        /// One of the 5 named routes: openrouter, claude-cli, codex-cli, local, nex-custom.
+        /// Picks a complete, working config end-to-end (executor + tiers + endpoint
+        /// when applicable). Use with `--yes` for non-interactive setup.
+        #[arg(long)]
+        route: Option<String>,
+        /// [DEPRECATED] Use `--route` instead. Still accepted: anthropic, openrouter,
+        /// openai, local, custom. Maps internally onto the closest route.
         #[arg(long)]
         provider: Option<String>,
-        /// Path to API key file
+        /// Path to API key file (route-dependent: openrouter / nex-custom).
         #[arg(long)]
         api_key_file: Option<String>,
-        /// Environment variable name for API key
+        /// Environment variable name for API key (route-dependent).
         #[arg(long)]
         api_key_env: Option<String>,
-        /// API endpoint URL
+        /// API endpoint URL (route-dependent: local / nex-custom).
         #[arg(long)]
         url: Option<String>,
-        /// Default model ID
+        /// Default model ID (route-dependent).
         #[arg(long)]
         model: Option<String>,
         /// Skip API key validation
         #[arg(long)]
         skip_validation: bool,
+        /// Non-interactive: write the route's config without prompting.
+        #[arg(long)]
+        yes: bool,
+        /// Print the config that would be written but don't write it.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Print a concise cheat sheet for agent onboarding

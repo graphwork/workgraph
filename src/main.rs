@@ -495,6 +495,36 @@ fn maybe_print_subcommand_help() -> bool {
     false
 }
 
+/// Rewrite `wg config reset ...` to `wg config --reset ...` so the
+/// positional `reset` token works alongside the existing flag-driven
+/// `Config` command shape (which is too large to convert to a nested
+/// Subcommand without a major refactor). Idempotent: leaves all other
+/// argv shapes untouched.
+fn rewrite_config_reset_argv(args: Vec<String>) -> Vec<String> {
+    // Find the first non-`--dir`/`--json` etc. positional that is "config".
+    // For simplicity we scan for the literal pair ["config", "reset"] in
+    // order, since "config" is never used as a value for any flag.
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    let mut rewrote = false;
+    while i < args.len() {
+        if !rewrote
+            && i + 1 < args.len()
+            && args[i] == "config"
+            && args[i + 1] == "reset"
+        {
+            out.push("config".to_string());
+            out.push("--reset".to_string());
+            rewrote = true;
+            i += 2;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}
+
 fn main() -> Result<()> {
     // Handle subcommand-level help before clap parses (since we disable_help_flag globally)
     maybe_print_subcommand_help();
@@ -521,7 +551,11 @@ fn main() -> Result<()> {
         .format_timestamp(None)
         .init();
 
-    let cli = Cli::parse();
+    let cli = {
+        let argv: Vec<String> = std::env::args().collect();
+        let rewritten = rewrite_config_reset_argv(argv);
+        Cli::parse_from(rewritten)
+    };
 
     let workgraph_dir = resolve_workgraph_dir(
         cli.dir.clone(),
@@ -663,6 +697,8 @@ fn main() -> Result<()> {
             executor,
             model,
             endpoint,
+            route,
+            dry_run,
         } => {
             // Init is special: it declares a NEW project at a specific
             // place. Unlike every other command (which walks up from
@@ -688,12 +724,14 @@ fn main() -> Result<()> {
                     .context("cannot resolve current directory for wg init")?
                     .join(".wg")
             };
-            commands::init::run(
+            commands::init::run_with_route(
                 &target_dir,
                 no_agency,
                 executor.as_deref(),
                 model.as_deref(),
                 endpoint.as_deref(),
+                route.as_deref(),
+                dry_run,
             )
         }
         Commands::Reset {
@@ -2238,6 +2276,11 @@ fn main() -> Result<()> {
             max_coordinators,
             endpoint,
             no_reload,
+            reset,
+            reset_route,
+            reset_keep_keys,
+            reset_dry_run,
+            reset_yes,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -2247,6 +2290,20 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --reset (also reachable as positional `wg config reset`)
+            if reset {
+                let reset_scope =
+                    scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
+                return commands::config_cmd::reset_to_route(
+                    &workgraph_dir,
+                    reset_scope,
+                    reset_route.as_deref(),
+                    reset_keep_keys,
+                    reset_dry_run,
+                    reset_yes,
+                );
+            }
 
             // Handle --set-key <provider> --file <path>
             if let Some(ref provider) = set_key {
@@ -2800,20 +2857,26 @@ fn main() -> Result<()> {
             ServerCommands::Connect { user } => commands::server::connect(user.as_deref()),
         },
         Commands::Setup {
+            route,
             provider,
             api_key_file,
             api_key_env,
             url,
             model,
             skip_validation,
+            yes,
+            dry_run,
         } => {
             let args = commands::setup::SetupArgs {
+                route,
                 provider,
                 api_key_file,
                 api_key_env,
                 url,
                 model,
                 skip_validation,
+                yes,
+                dry_run,
             };
             commands::setup::run_with_args(&args)
         }

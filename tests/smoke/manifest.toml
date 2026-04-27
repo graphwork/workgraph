@@ -76,6 +76,16 @@ description = "Open a chat and send 'hi'; expect a non-error coordinator respons
 timeout_seconds = 90
 
 [[scenario]]
+name = "setup_routes_complete_configs"
+script = "scenarios/setup_routes_complete_configs.sh"
+owners = [
+    "wg-setup-5-smooth-2",
+    "wg-setup-5-smooth",
+]
+description = "Five setup routes (openrouter / claude-cli / codex-cli / local / nex-custom) each write a complete config (filled [tiers] + endpoint when applicable). `wg init -x claude` populates [tiers] (the bug). `wg config reset` backs up. `wg setup --route nex-custom --yes` without --url refuses."
+timeout_seconds = 60
+
+[[scenario]]
 name = "nex_resume_oversized_journal_does_not_loop"
 script = "scenarios/nex_resume_oversized_journal_does_not_loop.sh"
 owners = [

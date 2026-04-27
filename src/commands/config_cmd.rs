@@ -1776,6 +1776,157 @@ pub fn install_global_to(
     Ok(())
 }
 
+/// Reset config to one of the 5 named routes' defaults.
+///
+/// - `route` = `Some(name)` resets to that route's defaults.
+/// - `route` = `None` picks the closest route based on the current
+///   executor (e.g. `claude` → `claude-cli`).
+/// - `keep_keys = true` preserves any existing `[[llm_endpoints.endpoints]]`
+///   entries (their api_key / api_key_file / api_key_env are *not* lost).
+/// - `dry_run = true` prints the diff but doesn't write.
+/// - `yes = false` confirms before overwriting a non-empty config.
+///
+/// Always backs up `config.toml` to `config.toml.bak-<timestamp>` before
+/// writing.
+pub fn reset_to_route(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    route: Option<&str>,
+    keep_keys: bool,
+    dry_run: bool,
+    yes: bool,
+) -> Result<()> {
+    use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+
+    // Resolve the target path + load the existing config (if any).
+    let (target_path, existing) = match scope {
+        ConfigScope::Global => {
+            let path = Config::global_config_path()?;
+            let cfg = Config::load_global()?.unwrap_or_default();
+            (path, cfg)
+        }
+        ConfigScope::Local => {
+            let path = workgraph_dir.join("config.toml");
+            let cfg = if path.exists() {
+                Config::load(workgraph_dir)?
+            } else {
+                Config::default()
+            };
+            (path, cfg)
+        }
+    };
+
+    // Pick a route: explicit > derived from existing executor.
+    let resolved_route: SetupRoute = if let Some(name) = route {
+        SetupRoute::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown route '{}'. Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom",
+                name,
+            )
+        })?
+    } else {
+        let exec = existing
+            .coordinator
+            .executor
+            .as_deref()
+            .unwrap_or(&existing.agent.executor);
+        let r = SetupRoute::from_executor(exec);
+        eprintln!(
+            "No --route given; deriving from current executor ({}) → {}",
+            exec,
+            r.as_name()
+        );
+        r
+    };
+
+    // Build the new config from route defaults. Carry over endpoints if
+    // --keep-keys was passed.
+    let mut new_config = config_for_route(resolved_route, RouteParams::default());
+    if keep_keys && !existing.llm_endpoints.endpoints.is_empty() {
+        new_config.llm_endpoints = existing.llm_endpoints.clone();
+        eprintln!(
+            "Preserved {} existing [[llm_endpoints.endpoints]] entry/entries (--keep-keys).",
+            existing.llm_endpoints.endpoints.len()
+        );
+    }
+
+    // Diff preview.
+    let old_toml = toml::to_string_pretty(&existing)
+        .map_err(|e| anyhow::anyhow!("serialize old config: {}", e))?;
+    let new_toml = toml::to_string_pretty(&new_config)
+        .map_err(|e| anyhow::anyhow!("serialize new config: {}", e))?;
+
+    if dry_run {
+        println!("# wg config reset --dry-run (route: {})", resolved_route.as_name());
+        println!("# Target: {}", target_path.display());
+        if old_toml == new_toml {
+            println!("# No changes.");
+        } else {
+            println!("# Diff:");
+            print_diff_summary(&old_toml, &new_toml);
+        }
+        println!("---");
+        println!("{}", new_toml);
+        return Ok(());
+    }
+
+    // Confirmation gate (skipped if --yes or if the target file doesn't exist).
+    if !yes && target_path.exists() && !old_toml.is_empty() {
+        let confirm = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Reset {} to '{}' route defaults? Existing config will be backed up.",
+                target_path.display(),
+                resolved_route.as_name(),
+            ))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+        if !confirm {
+            println!("Reset cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Backup if a real file is on disk.
+    if target_path.exists() {
+        let backup = backup_config_file(&target_path)?;
+        println!("Backed up existing config → {}", backup.display());
+    }
+
+    // Write the new config.
+    match scope {
+        ConfigScope::Global => new_config.save_global()?,
+        ConfigScope::Local => new_config.save(workgraph_dir)?,
+    }
+
+    println!(
+        "Reset {} to route '{}' (executor={}, tiers={}/{}/{})",
+        target_path.display(),
+        resolved_route.as_name(),
+        resolved_route.executor(),
+        new_config.tiers.fast.as_deref().unwrap_or("?"),
+        new_config.tiers.standard.as_deref().unwrap_or("?"),
+        new_config.tiers.premium.as_deref().unwrap_or("?"),
+    );
+
+    Ok(())
+}
+
+/// Copy a config file to a `.bak-<timestamp>` sibling. Returns the backup path.
+fn backup_config_file(path: &Path) -> Result<std::path::PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let backup = path.with_file_name(format!(
+        "{}.bak-{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml"),
+        stamp,
+    ));
+    std::fs::copy(path, &backup)
+        .map_err(|e| anyhow::anyhow!("Failed to back up {}: {}", path.display(), e))?;
+    Ok(backup)
+}
+
 /// Print a brief summary of differences between two TOML config strings.
 fn print_diff_summary(old: &str, new: &str) {
     let old_lines: Vec<&str> = old.lines().collect();

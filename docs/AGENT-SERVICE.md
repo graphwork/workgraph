@@ -281,6 +281,8 @@ The coordinator spawns agents via a configurable executor. Built-in executors:
 | Executor | Command | Use case |
 |----------|---------|----------|
 | **claude** | `claude --print --model <M>` | Default — Anthropic Claude CLI agents |
+| **codex** | `codex --model <M>` | OpenAI Codex CLI agents |
+| **native** (a.k.a. **nex**) | In-process OAI-compatible HTTP client | OpenRouter, local Ollama / vLLM, custom OAI-compatible endpoints. Used by the `openrouter`, `local`, and `nex-custom` setup routes |
 | **amplifier** | `amplifier run --mode single -m <M>` | OpenRouter-backed models, supports `provider:model` syntax (e.g., `provider-openai:gpt-4o`) |
 | **shell** | Custom command from task `exec` field | Non-LLM tasks, scripts, builds |
 
@@ -288,6 +290,8 @@ The coordinator spawns agents via a configurable executor. Built-in executors:
 wg config --coordinator-executor claude      # default
 wg config --coordinator-executor amplifier   # switch to amplifier
 ```
+
+The `nex` executor is the **native path for any OAI-compatible endpoint** — when you pick the `openrouter`, `local`, or `nex-custom` route in `wg setup`, it's the executor wired in under the hood. The legacy alias `nex` is normalized to the canonical `native` in config.
 
 Custom executors can be defined in `.workgraph/executors/<name>.toml`.
 

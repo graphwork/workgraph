@@ -9,6 +9,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use workgraph::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
+use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
 use workgraph::models::ModelRegistry;
 use workgraph::notify::config as notify_config;
 
@@ -52,7 +53,11 @@ Everything gets dispatched through `wg add` and `wg service start`.
 /// CLI arguments for `wg setup` (non-interactive mode).
 #[derive(Debug, Clone, Default)]
 pub struct SetupArgs {
-    /// Provider name: "anthropic", "openrouter", "openai", "local", "custom"
+    /// One of the 5 named routes (preferred): openrouter, claude-cli,
+    /// codex-cli, local, nex-custom.
+    pub route: Option<String>,
+    /// [Legacy] Provider name: "anthropic", "openrouter", "openai", "local", "custom".
+    /// Maps onto the closest route when used.
     pub provider: Option<String>,
     /// Path to API key file
     pub api_key_file: Option<String>,
@@ -64,6 +69,28 @@ pub struct SetupArgs {
     pub model: Option<String>,
     /// Skip API key validation
     pub skip_validation: bool,
+    /// Non-interactive: write the route's config without prompting.
+    pub yes: bool,
+    /// Print the config that would be written but don't write it.
+    pub dry_run: bool,
+}
+
+impl SetupArgs {
+    /// Resolve the user's intent into a `SetupRoute`. Prefers explicit
+    /// `--route`; falls back to mapping `--provider` onto the closest route.
+    pub fn resolved_route(&self) -> Option<SetupRoute> {
+        if let Some(name) = self.route.as_deref() {
+            return SetupRoute::from_name(name);
+        }
+        match self.provider.as_deref() {
+            Some("anthropic") | Some("claude") => Some(SetupRoute::ClaudeCli),
+            Some("openrouter") => Some(SetupRoute::Openrouter),
+            Some("codex") => Some(SetupRoute::CodexCli),
+            Some("local") | Some("ollama") => Some(SetupRoute::Local),
+            Some("custom") | Some("openai") | Some("oai-compat") => Some(SetupRoute::NexCustom),
+            _ => None,
+        }
+    }
 }
 
 /// Choices gathered from the interactive wizard.
@@ -766,10 +793,215 @@ fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
 pub fn run_with_args(args: &SetupArgs) -> Result<()> {
+    // New route-driven path: when --route is given (or --yes / --dry-run),
+    // skip the legacy provider-shaped flow and write the route's complete
+    // defaults directly.
+    if args.route.is_some() || (args.yes && args.resolved_route().is_some()) || args.dry_run {
+        return run_route(args);
+    }
+
+    // Legacy --provider path (still used by older callers + tests).
     if !std::io::stdin().is_terminal() || args.provider.is_some() {
         return run_non_interactive(args);
     }
     run()
+}
+
+/// Non-interactive route-driven setup: writes one of the 5 named routes'
+/// complete defaults to the global config. Used by:
+///
+/// - `wg setup --route <name> --yes`
+/// - `wg setup --route <name> --dry-run` (prints, does not write)
+fn run_route(args: &SetupArgs) -> Result<()> {
+    let route = args.resolved_route().ok_or_else(|| {
+        anyhow::anyhow!(
+            "--route is required for non-interactive setup. \
+             Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom"
+        )
+    })?;
+
+    // Required-input validation per route.
+    match route {
+        SetupRoute::Openrouter => {
+            if args.api_key_env.is_none() && args.api_key_file.is_none() {
+                // OpenRouter has a sensible default env var, so we don't bail —
+                // we just default to OPENROUTER_API_KEY. Surface a hint though.
+                eprintln!(
+                    "Note: --api-key-env / --api-key-file not given; defaulting to OPENROUTER_API_KEY."
+                );
+            }
+        }
+        SetupRoute::Local => {
+            if args.url.is_none() {
+                eprintln!(
+                    "Note: --url not given; defaulting to http://localhost:11434/v1 (Ollama)."
+                );
+            }
+        }
+        SetupRoute::NexCustom => {
+            if args.url.is_none() {
+                bail!(
+                    "Route 'nex-custom' requires --url <ENDPOINT_URL>. \
+                     Add --api-key-env / --api-key-file if your endpoint needs auth, \
+                     and --model <MODEL_ID> for the model identifier."
+                );
+            }
+            if args.model.is_none() {
+                bail!(
+                    "Route 'nex-custom' requires --model <MODEL_ID>. \
+                     This is the identifier passed to your custom OAI-compatible endpoint."
+                );
+            }
+        }
+        SetupRoute::ClaudeCli | SetupRoute::CodexCli => {
+            // No required params — auth comes from the local CLI login.
+        }
+    }
+
+    let params = RouteParams {
+        api_key_env: args.api_key_env.clone(),
+        api_key_file: args.api_key_file.clone(),
+        url: args.url.clone(),
+        model: args.model.clone(),
+    };
+    let new_config = config_for_route(route, params);
+
+    // Diff vs current global config.
+    let existing = Config::load_global()?.unwrap_or_default();
+    let global_path = Config::global_config_path()?;
+    let diff = diff_summary(&existing, &new_config);
+
+    if args.dry_run {
+        println!("# wg setup --dry-run (route: {})", route.as_name());
+        if !global_path.exists() {
+            println!("# (no current config — would create)");
+        } else {
+            println!("# Current config: {}", global_path.display());
+        }
+        if diff.is_empty() {
+            println!("# No changes.");
+        } else {
+            println!("# Diff vs current:");
+            for line in &diff {
+                println!("{}", line);
+            }
+        }
+        println!("---");
+        let toml_str = toml::to_string_pretty(&new_config)
+            .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+        println!("{}", toml_str);
+        return Ok(());
+    }
+
+    // Backup if existing global config has any content.
+    if global_path.exists() {
+        backup_global_config(&global_path)?;
+    }
+
+    new_config.save_global()?;
+
+    println!("Wrote {}: route={}, executor={}, tiers={}/{}/{}",
+        global_path.display(),
+        route.as_name(),
+        route.executor(),
+        new_config.tiers.fast.as_deref().unwrap_or("?"),
+        new_config.tiers.standard.as_deref().unwrap_or("?"),
+        new_config.tiers.premium.as_deref().unwrap_or("?"),
+    );
+    if !diff.is_empty() {
+        println!();
+        println!("Changes:");
+        for line in diff {
+            println!("{}", line);
+        }
+    }
+    Ok(())
+}
+
+/// Produce a small diff summary (added / changed lines only) between two configs.
+/// Used by `wg setup --dry-run` and the diff preview.
+pub fn diff_summary(old: &Config, new: &Config) -> Vec<String> {
+    let mut out = Vec::new();
+
+    if old.coordinator.executor != new.coordinator.executor {
+        out.push(format!(
+            "- dispatcher.executor: {:?} → {:?}",
+            old.coordinator.executor, new.coordinator.executor
+        ));
+    }
+    if old.agent.executor != new.agent.executor {
+        out.push(format!(
+            "- agent.executor: {:?} → {:?}",
+            old.agent.executor, new.agent.executor
+        ));
+    }
+    if old.coordinator.model != new.coordinator.model {
+        out.push(format!(
+            "- dispatcher.model: {:?} → {:?}",
+            old.coordinator.model, new.coordinator.model
+        ));
+    }
+    if old.tiers.fast != new.tiers.fast
+        || old.tiers.standard != new.tiers.standard
+        || old.tiers.premium != new.tiers.premium
+    {
+        out.push(format!(
+            "- tiers: {}/{}/{} → {}/{}/{}",
+            old.tiers.fast.as_deref().unwrap_or("(unset)"),
+            old.tiers.standard.as_deref().unwrap_or("(unset)"),
+            old.tiers.premium.as_deref().unwrap_or("(unset)"),
+            new.tiers.fast.as_deref().unwrap_or("(unset)"),
+            new.tiers.standard.as_deref().unwrap_or("(unset)"),
+            new.tiers.premium.as_deref().unwrap_or("(unset)"),
+        ));
+    }
+    if old.llm_endpoints.endpoints.len() != new.llm_endpoints.endpoints.len() {
+        out.push(format!(
+            "- llm_endpoints.endpoints: {} → {}",
+            old.llm_endpoints.endpoints.len(),
+            new.llm_endpoints.endpoints.len(),
+        ));
+    } else {
+        // Same count — diff names + URLs
+        for (a, b) in old
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .zip(new.llm_endpoints.endpoints.iter())
+        {
+            if a.name != b.name || a.url != b.url || a.provider != b.provider {
+                out.push(format!(
+                    "- endpoint[{}]: {}({:?}) → {}({:?})",
+                    a.name, a.provider, a.url, b.provider, b.url
+                ));
+            }
+        }
+    }
+    if old.model_registry.len() != new.model_registry.len() {
+        out.push(format!(
+            "- model_registry: {} entries → {} entries",
+            old.model_registry.len(),
+            new.model_registry.len()
+        ));
+    }
+    out
+}
+
+/// Copy the global config.toml to a `.bak-<timestamp>` sibling.
+fn backup_global_config(global_path: &Path) -> Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let backup = global_path.with_file_name(format!(
+        "{}.bak-{}",
+        global_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml"),
+        stamp,
+    ));
+    std::fs::copy(global_path, &backup)
+        .with_context(|| format!("Failed to back up {}", global_path.display()))?;
+    eprintln!("Backed up existing config → {}", backup.display());
+    Ok(backup)
 }
 
 /// Run the interactive setup wizard.
@@ -786,6 +1018,7 @@ pub fn run() -> Result<()> {
 
     println!("Hey! Welcome to workgraph setup.");
     println!("We'll get you configured at {}", global_path.display());
+    println!("(Press Ctrl-C at any prompt to exit without saving.)");
     println!();
 
     // Auto-detection phase — show what's already in place
@@ -800,40 +1033,46 @@ pub fn run() -> Result<()> {
         println!();
     }
 
-    // 1. Provider selection (primary decision point)
-    let provider_options = &[
-        "Anthropic (direct)",
-        "OpenRouter",
-        "OpenAI",
-        "Local (Ollama/vLLM)",
-        "Custom",
-    ];
-    let provider_keys = &["anthropic", "openrouter", "openai", "local", "custom"];
-
-    // Smart default: use existing config, or infer from detected API keys
-    let current_provider = existing.coordinator.provider.as_deref().unwrap_or({
-        if detection.anthropic_key {
-            "anthropic"
-        } else if detection.openrouter_key {
-            "openrouter"
-        } else if detection.openai_key {
-            "openai"
-        } else {
-            "anthropic"
-        }
-    });
-    let current_provider_idx = provider_keys
+    // 1. Route selection — the 5 named smooth routes (primary decision point).
+    let route_choices: Vec<SetupRoute> = SetupRoute::all().to_vec();
+    let route_labels: Vec<String> = route_choices
         .iter()
-        .position(|&p| p == current_provider)
+        .map(|r| format!("{} — {}", r.as_name(), r.description()))
+        .collect();
+
+    // Smart default: derive from existing executor, falling back to detected
+    // API keys, falling back to claude-cli (the most common starting point).
+    let current_route = if let Some(ref exec) = existing.coordinator.executor {
+        SetupRoute::from_executor(exec)
+    } else if detection.openrouter_key {
+        SetupRoute::Openrouter
+    } else if detection.claude_cli {
+        SetupRoute::ClaudeCli
+    } else {
+        SetupRoute::ClaudeCli
+    };
+    let current_route_idx = route_choices
+        .iter()
+        .position(|r| *r == current_route)
         .unwrap_or(0);
 
-    let provider_idx = Select::new()
-        .with_prompt("Which LLM provider?")
-        .items(provider_options)
-        .default(current_provider_idx)
+    let route_idx = Select::new()
+        .with_prompt("Pick a route (each one is a complete, working setup)")
+        .items(&route_labels)
+        .default(current_route_idx)
         .interact()?;
+    let route = route_choices[route_idx];
 
-    let provider = provider_keys[provider_idx].to_string();
+    // Map the chosen route back into the legacy `provider` string so the
+    // rest of the wizard (which is parameterized by `provider`) still
+    // works. The route also drives the executor and tier defaults below.
+    let provider = match route {
+        SetupRoute::Openrouter => "openrouter".to_string(),
+        SetupRoute::ClaudeCli => "anthropic".to_string(),
+        SetupRoute::CodexCli => "openai".to_string(),
+        SetupRoute::Local => "local".to_string(),
+        SetupRoute::NexCustom => "custom".to_string(),
+    };
 
     // 2. Auto-set executor based on provider, with override option
     let default_executor = match provider.as_str() {

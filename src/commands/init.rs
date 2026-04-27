@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
+use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
 
 /// Default content for .workgraph/.gitignore
 const GITIGNORE_CONTENT: &str = r#"# Workgraph gitignore
@@ -15,6 +16,224 @@ matrix.toml
 *.secret
 *.credentials
 "#;
+
+/// Init entry that supports the new `--route <name>` flag and `--dry-run`.
+///
+/// When `route` is `Some`, the route's complete defaults populate `[tiers]`
+/// + endpoint + model registry. When only `executor` is given, the closest
+/// matching route is used (so `wg init -x claude` still produces filled
+/// tiers, fixing the "empty [tiers]" bug). Falls back to the legacy
+/// `executor`-only path when neither is specified.
+pub fn run_with_route(
+    dir: &Path,
+    no_agency: bool,
+    executor: Option<&str>,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+    route: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    // Explicit --route always wins. Otherwise, derive a route from
+    // --executor — but ONLY when the executor maps to one of the 5
+    // routes. Unknown executors (`shell`, `amplifier`, custom names)
+    // fall through to the legacy path so we don't clobber them with
+    // claude defaults.
+    let resolved_route: Option<SetupRoute> = if let Some(name) = route {
+        Some(SetupRoute::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown route '{}'. Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom",
+                name,
+            )
+        })?)
+    } else {
+        executor.and_then(SetupRoute::try_from_executor)
+    };
+
+    if dry_run {
+        if let Some(r) = resolved_route {
+            let params = RouteParams {
+                api_key_env: None,
+                api_key_file: None,
+                url: endpoint.map(|s| s.to_string()),
+                model: model.map(|s| s.to_string()),
+            };
+            let cfg = config_for_route(r, params);
+            let toml = toml::to_string_pretty(&cfg)
+                .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+            println!("# wg init --dry-run (route: {})", r.as_name());
+            println!("# Would create: {}", dir.display());
+            println!("# Would write the following config.toml:");
+            println!("---");
+            println!("{}", toml);
+            return Ok(());
+        }
+        anyhow::bail!(
+            "--dry-run requires either --route or --executor so the would-be config can be shown."
+        );
+    }
+
+    // If no route was resolved, fall back to the legacy executor-only path.
+    let Some(route) = resolved_route else {
+        return run(dir, no_agency, executor, model, endpoint);
+    };
+
+    // Route-driven init: create dir, write config from route defaults.
+    if dir.exists() {
+        anyhow::bail!("Workgraph already initialized at {}", dir.display());
+    }
+    if let Some(parent) = dir.parent()
+        && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
+    {
+        for sibling in [".wg", ".workgraph"] {
+            if sibling == target_name {
+                continue;
+            }
+            let sibling_path = parent.join(sibling);
+            if sibling_path.is_dir() {
+                anyhow::bail!(
+                    "Workgraph already initialized at {} (legacy dir name). \
+                     Either use it as-is, or remove/rename it before running `wg init`.",
+                    sibling_path.display()
+                );
+            }
+        }
+    }
+
+    fs::create_dir_all(dir).context("Failed to create workgraph directory")?;
+    write_repo_gitignore(dir)?;
+    let graph_path = dir.join("graph.jsonl");
+    fs::write(&graph_path, "").context("Failed to create graph.jsonl")?;
+    let gitignore_path = dir.join(".gitignore");
+    fs::write(&gitignore_path, GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
+    write_executor_templates(dir)?;
+
+    println!("Initialized workgraph at {}", dir.display());
+
+    let params = RouteParams {
+        api_key_env: None,
+        api_key_file: None,
+        url: endpoint.map(|s| s.to_string()),
+        model: model.map(|s| s.to_string()),
+    };
+    let mut config = config_for_route(route, params);
+
+    // Apply -m / -e overrides on top of the route defaults so the user's
+    // explicit flags win.
+    if model.is_some() || endpoint.is_some() {
+        let summary = config
+            .apply_model_endpoint(model, endpoint)
+            .context("apply -m / -e on top of route defaults")?;
+        for line in summary {
+            println!("{}", line);
+        }
+    }
+
+    config.save(dir).context("Failed to save config.toml")?;
+
+    let tier_summary = format!(
+        "{}/{}/{}",
+        config.tiers.fast.as_deref().unwrap_or("?"),
+        config.tiers.standard.as_deref().unwrap_or("?"),
+        config.tiers.premium.as_deref().unwrap_or("?"),
+    );
+    println!(
+        "Wrote {}/config.toml: route={}, executor={}, tiers={}",
+        dir.display(),
+        route.as_name(),
+        route.executor(),
+        tier_summary,
+    );
+
+    if !no_agency {
+        super::agency_init::run(dir).context("Failed to initialize agency")?;
+    }
+
+    if let Ok(global_path) = workgraph::config::Config::global_config_path()
+        && !global_path.exists()
+    {
+        println!();
+        println!("No global config found. Run `wg setup` to configure defaults.");
+    }
+
+    if route == SetupRoute::ClaudeCli && !super::setup::is_claude_skill_installed() {
+        println!();
+        println!("Hint: The wg skill for Claude Code is not installed.");
+        println!("  Spawned agents won't know wg commands without it.");
+        println!("  Run: wg skill install");
+    }
+
+    if route == SetupRoute::ClaudeCli
+        && let Some(project_dir) = dir.parent()
+    {
+        let (status, changed) = super::setup::configure_project_claude_md(project_dir)?;
+        if changed {
+            println!();
+            println!("{}", status);
+        }
+    }
+
+    Ok(())
+}
+
+/// Write the repo-level .gitignore entry for the workgraph dir basename.
+fn write_repo_gitignore(dir: &Path) -> Result<()> {
+    let dir_basename = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".wg")
+        .to_string();
+    let repo_gitignore = dir.parent().map(|p| p.join(".gitignore"));
+    if let Some(gitignore_path_repo) = repo_gitignore {
+        let entry = dir_basename.as_str();
+        if gitignore_path_repo.exists() {
+            let contents =
+                fs::read_to_string(&gitignore_path_repo).context("Failed to read .gitignore")?;
+            let already_present = contents.lines().any(|line| line.trim() == entry);
+            if !already_present {
+                let separator = if contents.ends_with('\n') || contents.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                };
+                fs::write(
+                    &gitignore_path_repo,
+                    format!("{contents}{separator}{entry}\n"),
+                )
+                .context("Failed to update .gitignore")?;
+                println!("Added {} to .gitignore", entry);
+            }
+        } else {
+            fs::write(&gitignore_path_repo, format!("{entry}\n"))
+                .context("Failed to create .gitignore")?;
+            println!("Added {} to .gitignore", entry);
+        }
+    }
+    Ok(())
+}
+
+/// Write `.workgraph/executors/*.example` template files.
+fn write_executor_templates(dir: &Path) -> Result<()> {
+    let executors_dir = dir.join("executors");
+    fs::create_dir_all(&executors_dir).context("Failed to create executors directory")?;
+    for (name, contents) in [
+        (
+            "claude.toml.example",
+            include_str!("../../templates/executors/claude.toml.example"),
+        ),
+        (
+            "codex.toml.example",
+            include_str!("../../templates/executors/codex.toml.example"),
+        ),
+        (
+            "amplifier.toml.example",
+            include_str!("../../templates/executors/amplifier.toml.example"),
+        ),
+    ] {
+        fs::write(executors_dir.join(name), contents)
+            .with_context(|| format!("Failed to write executor template {}", name))?;
+    }
+    Ok(())
+}
 
 pub fn run(
     dir: &Path,
@@ -221,15 +440,63 @@ pub fn run(
 }
 
 /// Write the chosen executor into the project's `config.toml`.
+///
+/// When the executor maps to one of the known routes (claude → claude-cli,
+/// codex → codex-cli, nex/native → openrouter), the route's defaults are
+/// used to populate `[tiers]` and the model registry — fixing the empty
+/// `[tiers]` bug from the old `wg init -x claude` flow.
+///
+/// For executors with no matching route (`shell`, `amplifier`, custom),
+/// only `coordinator.executor` is set and `[tiers]` is left empty so the
+/// custom-executor user can decide for themselves.
 fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
     let canonical = match executor {
         "nex" => "native",
         other => other,
     };
+
+    let route = match canonical {
+        "claude" => Some(SetupRoute::ClaudeCli),
+        "codex" => Some(SetupRoute::CodexCli),
+        "native" => Some(SetupRoute::Openrouter),
+        _ => None,
+    };
+
     let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
-    config.coordinator.executor = Some(canonical.to_string());
+
+    if let Some(route) = route {
+        let route_cfg = config_for_route(route, RouteParams::default());
+        config.coordinator.executor = route_cfg.coordinator.executor.clone();
+        config.agent.executor = route_cfg.agent.executor.clone();
+        config.tiers = route_cfg.tiers.clone();
+        if !route_cfg.model_registry.is_empty() {
+            config.model_registry = route_cfg.model_registry.clone();
+        }
+        // Only seed the default model if the existing config doesn't have one
+        // (i.e. fresh init). Don't clobber a user-set model.
+        if config.coordinator.model.is_none() {
+            config.coordinator.model = route_cfg.coordinator.model.clone();
+        }
+        if config.agent.model.is_empty() || config.agent.model == "sonnet" {
+            config.agent.model = route_cfg.agent.model.clone();
+        }
+        // Wire models.evaluator/assigner so eval doesn't fall back to a
+        // model the route doesn't actually own.
+        config.models = route_cfg.models.clone();
+    } else {
+        config.coordinator.executor = Some(canonical.to_string());
+    }
     config.save(dir).context("Failed to save config.toml")?;
     println!("Set coordinator.executor = \"{}\"", canonical);
+    if route.is_some() {
+        let tier_summary = format!(
+            "{}/{}/{}",
+            config.tiers.fast.as_deref().unwrap_or("?"),
+            config.tiers.standard.as_deref().unwrap_or("?"),
+            config.tiers.premium.as_deref().unwrap_or("?"),
+        );
+        println!("Populated [tiers]: {}", tier_summary);
+    }
     Ok(())
 }
 
