@@ -15749,7 +15749,8 @@ mod hud_tests {
                 output_file: "output.log".to_string(),
                 model: Some("openrouter/minimax".to_string()),
                 completed_at: None,
-            },
+            worktree_path: None,
+        },
         );
         registry.save(_tmp.path()).unwrap();
 

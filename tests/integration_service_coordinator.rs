@@ -63,6 +63,7 @@ fn make_agent_entry(id: &str, pid: u32, task_id: &str, status: AgentStatus) -> A
         output_file: format!("/tmp/{}.log", id),
         model: None,
         completed_at: None,
+        worktree_path: None,
     }
 }
 

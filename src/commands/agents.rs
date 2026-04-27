@@ -323,6 +323,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         let status = effective_status(&agent);
@@ -346,6 +347,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         let status = effective_status(&agent);
@@ -368,6 +370,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         let status = effective_status(&agent);

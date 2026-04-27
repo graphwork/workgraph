@@ -149,6 +149,7 @@ fn create_agent_registry(service_dir: &Path, agents: Vec<(&str, u32, bool)>) -> 
             output_file: format!("/tmp/{}.log", agent_id),
             model: Some("test-model".to_string()),
             completed_at: if is_alive { None } else { Some(now.clone()) },
+            worktree_path: None,
         };
 
         registry.agents.insert(agent_id.to_string(), agent_entry);

@@ -439,7 +439,8 @@ mod tests {
                 completed_at: Some(Utc::now().to_rfc3339()),
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
-            },
+            worktree_path: None,
+        },
         );
 
         // alive-agent-1 is NOT in registry (simulates purged agent)

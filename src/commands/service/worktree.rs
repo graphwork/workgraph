@@ -849,10 +849,18 @@ pub fn reap_target_dir(worktree_path: &Path) -> Result<u64> {
 
 /// Reap `target/` directories from worktrees whose owning agent is NOT live.
 ///
-/// Walks `.wg-worktrees/<agent-N>` and, for each agent whose registry entry
-/// is missing or not [`AgentEntry::is_live`], removes the worktree's
-/// `target/` directory. Source files, the `.git` pointer, and the worktree
-/// itself are preserved — only build artifacts are reaped.
+/// Walks `.wg-worktrees/<agent-N>` and, for each worktree that has no
+/// live occupant, removes the worktree's `target/` directory. Source
+/// files, the `.git` pointer, and the worktree itself are preserved —
+/// only build artifacts are reaped.
+///
+/// "Live occupant" means *any* registry entry whose `worktree_path`
+/// matches the directory AND is [`AgentEntry::is_live`]. This protects
+/// `wg retry`-in-place: agent-806 may run inside `agent-772/`, and the
+/// directory-name lookup alone would (incorrectly) treat it as dead.
+/// As a fallback when no agent records a worktree_path (legacy entries
+/// from before this field was added), we also check the entry whose ID
+/// matches the directory name.
 ///
 /// This is the safety-net half of the target-reaper protocol (see
 /// `docs/AGENT-LIFECYCLE.md`). The happy-path reaper runs inline in the
@@ -888,17 +896,28 @@ pub fn reap_dead_target_dirs(dir: &Path) -> Result<(usize, u64)> {
             continue;
         }
 
-        // Live agents may be actively building — leave their target/ alone.
-        let is_alive = registry
+        let wt_path = entry.path();
+
+        // Primary: live occupant per registered worktree_path. Catches
+        // `wg retry`-in-place where the new agent's ID differs from the
+        // directory name.
+        if registry.is_worktree_occupied(&wt_path, HEARTBEAT_LIVENESS_TIMEOUT_SECS) {
+            continue;
+        }
+
+        // Fallback: legacy registry entries (pre-worktree_path) — use the
+        // directory-name → agent-id correspondence. Skip when that agent
+        // is live to preserve backwards compatibility for in-flight
+        // agents that registered before the upgrade.
+        let legacy_alive = registry
             .agents
             .get(&name)
             .map(|a| a.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS))
             .unwrap_or(false);
-        if is_alive {
+        if legacy_alive {
             continue;
         }
 
-        let wt_path = entry.path();
         if !wt_path.join("target").exists() {
             continue;
         }
@@ -2287,6 +2306,7 @@ mod tests {
                 output_file: String::new(),
                 model: None,
                 completed_at: None,
+                worktree_path: None,
             },
         );
         registry.agents.insert(
@@ -2302,6 +2322,7 @@ mod tests {
                 output_file: String::new(),
                 model: None,
                 completed_at: None,
+                worktree_path: None,
             },
         );
         registry.save(&wg_dir).unwrap();
@@ -2350,6 +2371,17 @@ mod tests {
         pid: u32,
         status: workgraph::service::registry::AgentStatus,
     ) {
+        register_agent_with_worktree(wg_dir, agent_id, task_id, pid, status, None);
+    }
+
+    fn register_agent_with_worktree(
+        wg_dir: &Path,
+        agent_id: &str,
+        task_id: &str,
+        pid: u32,
+        status: workgraph::service::registry::AgentStatus,
+        worktree_path: Option<&Path>,
+    ) {
         use workgraph::service::registry::{AgentEntry, AgentRegistry};
         let now = chrono::Utc::now().to_rfc3339();
         let mut registry = AgentRegistry::load(wg_dir).unwrap_or_default();
@@ -2366,6 +2398,7 @@ mod tests {
                 output_file: String::new(),
                 model: None,
                 completed_at: None,
+                worktree_path: worktree_path.map(|p| p.to_string_lossy().to_string()),
             },
         );
         registry.save(wg_dir).unwrap();
@@ -2912,6 +2945,62 @@ mod tests {
         let (second, second_bytes) = reap_dead_target_dirs(&wg_dir).unwrap();
         assert_eq!(second, 0);
         assert_eq!(second_bytes, 0);
+    }
+
+    /// Regression — reaper-edge-case:
+    ///
+    /// `wg retry`-in-place reuses agent-A's worktree for the new agent-B.
+    /// Registry now has TWO entries that point at the same worktree path:
+    /// agent-A (Dead, the original owner that gave the dir its name) and
+    /// agent-B (Working, the live retry agent). The reaper must NOT touch
+    /// `target/` while agent-B is alive, even though the directory-name
+    /// lookup (agent-A) reports dead.
+    #[test]
+    fn reap_dead_target_dirs_protects_retry_in_place_worktree() {
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Worktree directory was created for agent-A; the dir is named "agent-A".
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-A", "task-shared");
+        populate_fake_target(&wt_path);
+
+        // agent-A: original owner, now dead (failed task → wg retry).
+        register_agent_with_worktree(
+            &wg_dir,
+            "agent-A",
+            "task-shared",
+            999_999_999,
+            AgentStatus::Failed,
+            Some(&wt_path),
+        );
+
+        // agent-B: the live `wg retry` agent occupying agent-A's worktree.
+        // Same worktree_path, but its ID does NOT match the directory name.
+        register_agent_with_worktree(
+            &wg_dir,
+            "agent-B",
+            "task-shared",
+            std::process::id(), // our own PID — definitely alive
+            AgentStatus::Working,
+            Some(&wt_path),
+        );
+
+        let (reaped, freed) = reap_dead_target_dirs(&wg_dir).unwrap();
+        assert_eq!(
+            reaped, 0,
+            "MUST NOT reap target/ when ANY live agent occupies the worktree (wg retry-in-place)"
+        );
+        assert_eq!(freed, 0);
+        assert!(
+            wt_path.join("target").exists(),
+            "live retry agent's target/ must survive — would force slow rebuild on resume"
+        );
     }
 
     #[test]

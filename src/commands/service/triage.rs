@@ -1418,6 +1418,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         assert!(
@@ -1442,6 +1443,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS, 60);
@@ -1470,6 +1472,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         let reason = detect_dead_reason(&agent, 0, 60);
@@ -1497,6 +1500,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         assert!(
@@ -1519,6 +1523,7 @@ mod tests {
             output_file: "/tmp/test.log".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
 
         // On Linux, verify_process_identity may detect PID reuse since our

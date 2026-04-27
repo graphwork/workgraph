@@ -436,6 +436,7 @@ mod tests {
             output_file: String::new(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         }
     }
 

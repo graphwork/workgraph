@@ -806,6 +806,12 @@ pub(crate) fn spawn_agent_inner(
         &output_file_str,
         effective_model.as_deref(),
     );
+    // Record the worktree path so the target-dir reaper can detect
+    // `wg retry`-in-place: the new agent's ID differs from the directory
+    // name (which was minted by a prior, now-dead agent).
+    if let Some(ref wt) = worktree_info {
+        locked_registry.set_worktree_path(&agent_id, &wt.path);
+    }
     // save() consumes the LockedRegistry, releasing the lock after write.
     if let Err(save_err) = locked_registry.save() {
         // Registry save failed — kill the orphaned process to prevent invisible agents

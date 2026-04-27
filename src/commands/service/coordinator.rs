@@ -4516,6 +4516,7 @@ mod tests {
             output_file: output_file.to_str().unwrap().to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         }
     }
 

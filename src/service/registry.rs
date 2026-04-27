@@ -80,6 +80,15 @@ pub struct AgentEntry {
     /// When the agent finished (ISO 8601), set on transition to Done/Failed/Dead
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    /// Absolute path to the agent's worktree directory.
+    ///
+    /// Recorded by spawn so the target-dir reaper can detect when a
+    /// `wg retry`-in-place agent is occupying a worktree whose original
+    /// owner (per directory name) shows as dead. Without this, the
+    /// reaper would yank `target/` from under an actively-building retry
+    /// agent — see `reaper-edge-case`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 impl AgentEntry {
@@ -353,10 +362,65 @@ impl AgentRegistry {
             output_file: output_file.to_string(),
             model: model.map(std::string::ToString::to_string),
             completed_at: None,
+            worktree_path: None,
         };
 
         self.agents.insert(agent_id.clone(), entry);
         agent_id
+    }
+
+    /// Record the worktree path the agent runs in. Idempotent — overwrites.
+    ///
+    /// Called by spawn after `register_agent_*` so the target-dir reaper
+    /// can answer "is this worktree currently occupied?" by walking the
+    /// registry, regardless of which agent ID gave the worktree its
+    /// directory name (relevant for `wg retry`-in-place: the new agent
+    /// runs in the prior agent's worktree).
+    pub fn set_worktree_path(&mut self, agent_id: &str, worktree_path: &Path) -> bool {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.worktree_path = Some(worktree_path.to_string_lossy().to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return true if any agent in the registry is currently *live* and
+    /// claims the given worktree path.
+    ///
+    /// "Live" uses [`AgentEntry::is_live`] (status + process + heartbeat).
+    /// Path comparison canonicalizes both sides when possible, falling
+    /// back to lexical equality otherwise (so missing-on-disk paths still
+    /// match string-equal entries).
+    ///
+    /// This is the primitive that lets the target-dir reaper protect
+    /// `wg retry`-in-place worktrees: agent-806 may be running inside
+    /// `agent-772/`, and only this lookup catches that.
+    pub fn is_worktree_occupied(
+        &self,
+        worktree_path: &Path,
+        heartbeat_timeout_secs: u64,
+    ) -> bool {
+        let target_canon = worktree_path.canonicalize().ok();
+        let target_lex = worktree_path.to_string_lossy().to_string();
+        for agent in self.agents.values() {
+            let Some(ref wt) = agent.worktree_path else {
+                continue;
+            };
+            if !agent.is_live(heartbeat_timeout_secs) {
+                continue;
+            }
+            let agent_path = Path::new(wt);
+            let agent_canon = agent_path.canonicalize().ok();
+            let matches = match (target_canon.as_ref(), agent_canon.as_ref()) {
+                (Some(a), Some(b)) => a == b,
+                _ => *wt == target_lex,
+            };
+            if matches {
+                return true;
+            }
+        }
+        false
     }
 
     /// Get an agent by ID
@@ -589,6 +653,7 @@ mod tests {
             output_file: "/tmp/out".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         assert!(!entry.is_live(300), "Done status should not be live");
 
@@ -604,6 +669,7 @@ mod tests {
             output_file: "/tmp/out".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         assert!(
             entry.is_live(300),
@@ -624,6 +690,7 @@ mod tests {
             output_file: "/tmp/out".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         assert!(
             !entry.is_live(300),
@@ -643,6 +710,7 @@ mod tests {
             output_file: "/tmp/out".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         assert!(
             !entry.is_live(300),
@@ -663,6 +731,7 @@ mod tests {
             output_file: "/tmp/out".to_string(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         assert!(
             !entry.is_live(0),
@@ -1177,6 +1246,65 @@ mod tests {
         assert_eq!(registry.agents.len(), 2, "Both agents should be registered");
         assert!(registry.agents.contains_key(&id1));
         assert!(registry.agents.contains_key(&id2));
+    }
+
+    /// Verify active_count counts agents consistently across all executor types
+    /// (claude, eval/assign, shell) — no executor-based filtering.
+    /// This is the same logic the TUI and `wg service status` use.
+    #[test]
+    fn test_set_worktree_path_persists() {
+        let mut registry = AgentRegistry::new();
+        registry.register_agent(std::process::id(), "task-1", "claude", "/tmp/a.log");
+        let path = std::path::PathBuf::from("/tmp/wt/agent-1");
+        assert!(registry.set_worktree_path("agent-1", &path));
+        assert_eq!(
+            registry.get_agent("agent-1").unwrap().worktree_path.as_deref(),
+            Some("/tmp/wt/agent-1")
+        );
+        assert!(!registry.set_worktree_path("agent-missing", &path));
+    }
+
+    #[test]
+    fn test_is_worktree_occupied_matches_live_agent_regardless_of_id() {
+        let mut registry = AgentRegistry::new();
+        // Original owner (dead) — gave the worktree dir its name.
+        registry.register_agent(0x7FFF_FFFE, "task-x", "claude", "/tmp/a.log");
+        // Retry occupant (live) with a different agent ID.
+        registry.register_agent(std::process::id(), "task-x", "claude", "/tmp/b.log");
+
+        let path = std::path::PathBuf::from("/tmp/wt/agent-1");
+
+        // Wire BOTH agents to the same worktree path. agent-1 is dead
+        // (PID 0x7FFF_FFFE), agent-2 is live (our PID).
+        registry.set_worktree_path("agent-1", &path);
+        registry.set_worktree_path("agent-2", &path);
+
+        assert!(
+            registry.is_worktree_occupied(&path, 300),
+            "live agent-2 must protect the worktree even though agent-1 is dead"
+        );
+
+        // Mark agent-2 dead too — now the worktree is unoccupied.
+        registry
+            .get_agent_mut("agent-2")
+            .unwrap()
+            .status = AgentStatus::Dead;
+        assert!(
+            !registry.is_worktree_occupied(&path, 300),
+            "no live agent → worktree is not occupied"
+        );
+    }
+
+    #[test]
+    fn test_is_worktree_occupied_false_when_no_agents_record_path() {
+        let mut registry = AgentRegistry::new();
+        registry.register_agent(std::process::id(), "task-1", "claude", "/tmp/a.log");
+        // No set_worktree_path call.
+        let path = std::path::PathBuf::from("/tmp/wt/agent-1");
+        assert!(
+            !registry.is_worktree_occupied(&path, 300),
+            "an agent without a recorded worktree_path cannot occupy a worktree"
+        );
     }
 
     /// Verify active_count counts agents consistently across all executor types

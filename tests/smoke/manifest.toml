@@ -202,6 +202,17 @@ description = "Pins the smoke-tests-leak regression: production runs left 70+ or
 timeout_seconds = 60
 
 [[scenario]]
+name = "reaper_retry_in_place_protected"
+script = "scenarios/reaper_retry_in_place_protected.sh"
+owners = [
+    "reaper-edge-case",
+    "worktree-target-dirs",
+    "smoke-gate-is",
+]
+description = "Pins reaper-edge-case: `wg sweep --reap-targets` MUST NOT remove `target/` from a worktree currently occupied by a `wg retry`-in-place agent whose ID differs from the directory name. Asserts (a) live agent-B at $$ + worktree_path = .wg-worktrees/agent-A protects target/ even though agent-A (matching the dir name) is dead, and (b) negative control — once agent-B is also marked dead with an unreachable PID, target/ is correctly reaped. No LLM credentials needed; pure registry+filesystem assertions."
+timeout_seconds = 30
+
+[[scenario]]
 name = "tui_chat_redesign_modal_close_persist"
 script = "scenarios/tui_chat_redesign_modal_close_persist.sh"
 owners = [

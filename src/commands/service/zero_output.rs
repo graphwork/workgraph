@@ -616,6 +616,7 @@ mod tests {
             output_file: "/nonexistent/output.log".into(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         // Dead agents should be ignored
         assert!(check_zero_output(&agent).is_none());
@@ -644,6 +645,7 @@ mod tests {
             output_file: output_file.to_str().unwrap().into(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         // Has content, so should return None
         assert!(check_zero_output(&agent).is_none());
@@ -672,6 +674,7 @@ mod tests {
             output_file: output_file.to_str().unwrap().into(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         // Too young, should return None
         assert!(check_zero_output(&agent).is_none());
@@ -700,6 +703,7 @@ mod tests {
             output_file: output_file.to_str().unwrap().into(),
             model: None,
             completed_at: None,
+            worktree_path: None,
         };
         // Old with zero output, should return Some
         let result = check_zero_output(&agent);
