@@ -6339,7 +6339,7 @@ fn render_filter_picker(
     lines
 }
 
-fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use super::state::{LauncherListHit, LauncherSection};
 
     // Snapshot read-only data we need from the launcher so we can mutate
@@ -6409,14 +6409,12 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     )));
-    lines.push(Line::from(Span::styled(
-        format!("  {}", "\u{2500}".repeat(w.saturating_sub(4).min(40))),
-        Style::default().fg(Color::DarkGray),
-    )));
 
-    // Name field
+    // Action row: [Launch] [Cancel] + Name input live at the TOP. The user
+    // asked for "launch at top of view so its clear why we are doing the
+    // list below" — this is that row. Mouse hits are wired to the same
+    // handlers as the legacy footer buttons.
     let name_active = active_section == LauncherSection::Name;
-    let name_prefix = if name_active { "  \u{25b8} " } else { "    " };
     let name_style = if name_active {
         Style::default()
             .fg(Color::Yellow)
@@ -6424,44 +6422,78 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         Style::default().fg(Color::White)
     };
-    let name_display = if name.is_empty() {
-        if name_active { "\u{2588}" } else { "(optional)" }
-    } else {
-        ""
+    let action_line_idx = lines.len();
+    let action_y = area.y.saturating_add(action_line_idx as u16);
+    let launch_x = area.x.saturating_add(2);
+    let launch_w: u16 = 8; // "[Launch]"
+    let cancel_x = launch_x.saturating_add(launch_w + 1);
+    let cancel_w: u16 = 8; // "[Cancel]"
+    app.launcher_launch_btn_hit = Rect {
+        x: launch_x,
+        y: action_y,
+        width: launch_w,
+        height: 1,
     };
-    let name_line_idx = lines.len();
+    app.launcher_cancel_btn_hit = Rect {
+        x: cancel_x,
+        y: action_y,
+        width: cancel_w,
+        height: 1,
+    };
+    let mut action_spans: Vec<Span> = vec![
+        Span::raw("  "),
+        Span::styled(
+            "[Launch]",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            "[Cancel]",
+            Style::default().fg(Color::White).bg(Color::DarkGray),
+        ),
+        Span::raw("   "),
+    ];
+    let name_prefix = if name_active { "\u{25b8} Name: " } else { "  Name: " };
+    action_spans.push(Span::styled(name_prefix.to_string(), name_style));
     if name.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{}Name: ", name_prefix), name_style),
-            Span::styled(
-                name_display,
-                if name_active {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::SLOW_BLINK)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            ),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{}Name: ", name_prefix), name_style),
-            Span::raw(name.clone()),
+        action_spans.push(Span::styled(
+            if name_active { "\u{2588}" } else { "(optional)" },
             if name_active {
-                Span::styled(
-                    "\u{2588}",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                )
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK)
             } else {
-                Span::raw("")
+                Style::default().fg(Color::DarkGray)
             },
-        ]));
+        ));
+    } else {
+        action_spans.push(Span::raw(name.clone()));
+        if name_active {
+            action_spans.push(Span::styled(
+                "\u{2588}",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
+        }
     }
-    app.launcher_name_hit = row_rect(name_line_idx);
-    lines.push(Line::from(""));
+    lines.push(Line::from(action_spans));
+    // Hit area for the Name input is the right portion of the action row,
+    // starting after "[Launch] [Cancel]   " (2 + 8 + 1 + 8 + 3 = 22 cols).
+    let name_x = area.x.saturating_add(22);
+    app.launcher_name_hit = Rect {
+        x: name_x,
+        y: action_y,
+        width: area.width.saturating_sub(22),
+        height: 1,
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  {}", "\u{2500}".repeat(w.saturating_sub(4).min(60))),
+        Style::default().fg(Color::DarkGray),
+    )));
 
     // Executor section
     let exec_active = active_section == LauncherSection::Executor;
@@ -6627,47 +6659,13 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    // Action button row: [Launch] and [Cancel] are clickable. Mouse hits
-    // route to launch_from_launcher / close_launcher respectively. The
-    // bracketed glyphs are 8 wide ("[Launch]") and 8 wide ("[Cancel]")
-    // separated by 3 spaces.
-    let footer_idx = lines.len();
-    let footer_y = area.y.saturating_add(footer_idx as u16);
-    let launch_x = area.x.saturating_add(2);
-    let launch_w: u16 = 8;
-    let cancel_x = launch_x.saturating_add(launch_w + 3);
-    let cancel_w: u16 = 8;
-    app.launcher_launch_btn_hit = Rect {
-        x: launch_x,
-        y: footer_y,
-        width: launch_w,
-        height: 1,
-    };
-    app.launcher_cancel_btn_hit = Rect {
-        x: cancel_x,
-        y: footer_y,
-        width: cancel_w,
-        height: 1,
-    };
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            "[Launch]",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled(
-            "[Cancel]",
-            Style::default().fg(Color::White).bg(Color::DarkGray),
-        ),
-        Span::styled(
-            "    Enter / Ctrl+Enter create  ·  Tab section  ·  scroll/click select  ·  Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    // Footer hint only — the [Launch] / [Cancel] buttons live at the top
+    // of the dialog now (see action row above), so users see the action
+    // before scrolling through the list of choices.
+    lines.push(Line::from(Span::styled(
+        "    Enter / Ctrl+Enter / Shift+Enter launch  ·  Tab section  ·  ↑↓ pgup/pgdn scroll  ·  Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);

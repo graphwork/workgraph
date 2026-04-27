@@ -2633,4 +2633,73 @@ poll_interval = 120
             "bob's state should be untouched"
         );
     }
+
+    /// Regression: each launcher submit must allocate a brand-new chat id,
+    /// not reuse the most recent one. The user complaint was "it doesnt
+    /// convert into chat-2 or whatever it takes over the last coordinator
+    /// chat". `find_next_fresh_coordinator_id` must return max(existing) + 1.
+    #[test]
+    fn test_dialog_enter_creates_new_chat_with_fresh_id() {
+        use workgraph::chat_id::{CHAT_LOOP_TAG, format_chat_task_id};
+        use workgraph::graph::{CycleConfig, Status, Task, WorkGraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Empty graph -> id 0
+        let empty_graph = WorkGraph::new();
+        assert_eq!(
+            find_next_fresh_coordinator_id(&empty_graph, dir),
+            0,
+            "first chat in empty graph gets id 0"
+        );
+
+        // Graph with .chat-0 already present -> next is 1
+        let mut graph_with_zero = WorkGraph::new();
+        let chat0 = Task {
+            id: format_chat_task_id(0),
+            title: "Chat 0".to_string(),
+            status: Status::InProgress,
+            tags: vec![CHAT_LOOP_TAG.to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0,
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            ..Default::default()
+        };
+        graph_with_zero.add_node(workgraph::graph::Node::Task(chat0));
+        assert_eq!(
+            find_next_fresh_coordinator_id(&graph_with_zero, dir),
+            1,
+            "with .chat-0 present, next fresh id must be 1 (NOT 0 — would overwrite)"
+        );
+
+        // Graph with .chat-0 + .chat-3 -> next is 4 (max + 1, not just count)
+        let mut graph_with_gap = graph_with_zero.clone();
+        let chat3 = Task {
+            id: format_chat_task_id(3),
+            title: "Chat 3".to_string(),
+            status: Status::InProgress,
+            tags: vec![CHAT_LOOP_TAG.to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0,
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            ..Default::default()
+        };
+        graph_with_gap.add_node(workgraph::graph::Node::Task(chat3));
+        assert_eq!(
+            find_next_fresh_coordinator_id(&graph_with_gap, dir),
+            4,
+            "with .chat-0 + .chat-3, next fresh id is 4 (max+1), not 1 or 2"
+        );
+    }
 }

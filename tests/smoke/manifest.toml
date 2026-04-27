@@ -136,3 +136,14 @@ owners = [
 ]
 description = "Dispatcher's explicit `-x codex` MUST win when the assigned agent has only the default claude executor and the task model is `local:qwen3-coder`. Regression for agency-still-picks: the previous fix (agency-picks-claude) put the model-compat override INSIDE the agency, where it fired BEFORE the dispatcher's executor floor in resolve_executor's precedence — silently rewriting `-x codex` to native. Asserts SpawnPlan executor=codex (never native, never claude) for the codex+local: combo."
 timeout_seconds = 30
+
+[[scenario]]
+name = "tui_new_chat_creates_fresh_ids"
+script = "scenarios/tui_new_chat_creates_fresh_ids.sh"
+owners = [
+    "tui-new-chat",
+    "tui-new-coordinator",
+    "smoke-gate-is",
+]
+description = "Three back-to-back `wg service create-coordinator` IPCs (the call the TUI launcher dialog drives) MUST allocate three distinct .chat-N task ids — not reuse the most recent slot. Pins the user-reported regression on tui-new-chat: 'it doesnt convert into chat-2 or whatever it takes over the last coordinator chat.' Independent of LLM credentials — a graph + IPC correctness check."
+timeout_seconds = 60

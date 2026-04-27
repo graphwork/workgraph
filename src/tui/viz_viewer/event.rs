@@ -7677,6 +7677,128 @@ mod scrollbar_tests {
         assert_eq!(l.active_section, LauncherSection::Model);
         assert_eq!(l.model_picker.selected, 1);
     }
+
+    /// Test: Shift+Enter on Model section also submits, mirroring the
+    /// common chat-input convention where Shift+Enter is a "send"
+    /// affordance. Plain Enter has always submitted; this guards against
+    /// regressions if Shift gets accidentally captured elsewhere.
+    #[test]
+    fn test_dialog_shift_enter_also_submits() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "Most capable")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Move to Model section so Enter is unambiguously a submit action.
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(
+            app.launcher.is_none(),
+            "Shift+Enter should submit + close launcher (mirror of plain Enter)"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    /// Test: keyboard ↑/↓ moves the model list selection. Regression guard
+    /// for "we still cant scroll the coordinator config" — selection-by-
+    /// keyboard is the primary navigation path when the list overflows.
+    #[test]
+    fn test_dialog_scroll_with_keyboard() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        let many_models: Vec<(&str, &str)> = (0..20)
+            .map(|i| {
+                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
+                (s, "")
+            })
+            .collect();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            many_models,
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Park focus on the Model section so up/down navigates the picker.
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
+        let initial = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert_eq!(initial, 0);
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        let after_down = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(
+            after_down > initial,
+            "keyboard down should advance the model selection"
+        );
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        let after_more = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(after_more > after_down, "more downs should keep advancing");
+        handle_launcher_input(&mut app, KeyCode::Up, KeyModifiers::empty());
+        let after_up = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(after_up < after_more, "keyboard up should move selection back");
+    }
+
+    /// Test: after rendering the launcher, the [Launch] button hit area
+    /// is positioned ABOVE the model list. This pins the user-requested
+    /// layout — "launch at top of view so its clear why we are doing the
+    /// list below". Without this assertion the renderer is free to put
+    /// Launch at the bottom (the old layout) and users keep getting lost.
+    #[test]
+    fn test_dialog_launch_at_top_of_layout() {
+        use crate::tui::viz_viewer::render::draw_launcher_pane;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_test_app();
+        let many_models: Vec<(&str, &str)> = (0..30)
+            .map(|i| {
+                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
+                (s, "")
+            })
+            .collect();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            many_models,
+        ));
+        app.input_mode = InputMode::Launcher;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let launcher_area = Rect {
+            x: 0,
+            y: 1,
+            width: 120,
+            height: 38,
+        };
+        terminal
+            .draw(|frame| draw_launcher_pane(frame, &mut app, launcher_area))
+            .unwrap();
+
+        let launch_y = app.launcher_launch_btn_hit.y;
+        let model_list_y = app.launcher_model_list_area.y;
+        let model_list_h = app.launcher_model_list_area.height;
+        assert!(
+            launch_y > 0 && model_list_y > 0,
+            "render should populate hit areas for both launch and model list (got launch={}, model={})",
+            launch_y,
+            model_list_y,
+        );
+        assert!(
+            launch_y < model_list_y,
+            "[Launch] button must render ABOVE the model list — \
+             launch_y={}, model_list_y={}",
+            launch_y,
+            model_list_y,
+        );
+        // Also assert the model list is given enough vertical real estate
+        // to actually scroll. With 30 models and a 40-row terminal, we
+        // expect at least 10 rows of list visible.
+        assert!(
+            model_list_h >= 10,
+            "model list should dominate vertical space — got height={}, expected >=10",
+            model_list_h,
+        );
+    }
 }
 
 #[cfg(test)]
