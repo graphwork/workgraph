@@ -4,6 +4,7 @@ pub mod event;
 pub mod file_browser;
 #[allow(dead_code)]
 pub mod file_browser_render;
+pub mod log_render;
 pub mod render;
 pub mod screen_dump;
 pub mod state;

@@ -2790,6 +2790,36 @@ pub enum AgentStreamEventKind {
     Thinking,
     SystemEvent,
     Error,
+    UserInput,
+}
+
+/// Richer payload for an agent-stream event, used by the RAW pretty-printer
+/// in the log pane. The `summary` field on `AgentStreamEvent` is kept for
+/// backward-compatible event-mode rendering; `details` carries the
+/// untruncated source so renderers can format full transcripts.
+#[derive(Clone, Debug)]
+pub enum EventDetails {
+    ToolCall {
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        content: String,
+        is_error: bool,
+    },
+    Thinking {
+        text: String,
+    },
+    TextOutput {
+        text: String,
+    },
+    UserInput {
+        text: String,
+    },
+    SystemEvent {
+        subtype: String,
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -2797,6 +2827,43 @@ pub struct AgentStreamEvent {
     pub kind: AgentStreamEventKind,
     pub agent_id: String,
     pub summary: String,
+    /// Optional rich payload for renderers that need more than the summary
+    /// line (notably the RAW pretty-printer).
+    pub details: Option<EventDetails>,
+}
+
+/// Three view modes available in the per-task Log pane (right panel tab 4).
+/// Cycled with the `4` key while the Log pane is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogViewMode {
+    /// Structured event log: tool calls, results, errors — one per line.
+    Events,
+    /// Coarse, "what is the agent doing right now" — collapses adjacent
+    /// events of the same kind/target into a single activity entry.
+    HighLevel,
+    /// Pretty-printed full transcript: every event rendered with its own
+    /// formatter, NOT a JSON dump.
+    RawPretty,
+}
+
+impl LogViewMode {
+    /// Cycle to the next mode in the order Events -> HighLevel -> RawPretty -> Events.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Events => Self::HighLevel,
+            Self::HighLevel => Self::RawPretty,
+            Self::RawPretty => Self::Events,
+        }
+    }
+
+    /// Short label for the pane header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Events => "events",
+            Self::HighLevel => "high-level",
+            Self::RawPretty => "raw",
+        }
+    }
 }
 
 pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<AgentStreamEvent> {
@@ -2825,16 +2892,22 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                                 kind: AgentStreamEventKind::TextOutput,
                                 agent_id: default_agent_id.to_string(),
                                 summary: text.to_string(),
+                                details: Some(EventDetails::TextOutput {
+                                    text: text.to_string(),
+                                }),
                             });
                         }
                     }
                     "tool_use" => {
                         let name =
                             block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let input = block
+                            .get("input")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         let detail = match name {
-                            "Bash" => block
-                                .get("input")
-                                .and_then(|i| i.get("command"))
+                            "Bash" => input
+                                .get("command")
                                 .and_then(|v| v.as_str())
                                 .map(|c| {
                                     let c = c.trim();
@@ -2844,22 +2917,19 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                                         c.to_string()
                                     }
                                 }),
-                            "Read" | "Write" => block
-                                .get("input")
-                                .and_then(|i| i.get("file_path"))
+                            "Read" | "Write" => input
+                                .get("file_path")
                                 .and_then(|v| v.as_str())
                                 .map(|p| p.to_string()),
                             "Edit" => {
-                                let path = block
-                                    .get("input")
-                                    .and_then(|i| i.get("file_path"))
+                                let path = input
+                                    .get("file_path")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("?");
                                 Some(format!("{}", path))
                             }
-                            "Grep" | "Glob" => block
-                                .get("input")
-                                .and_then(|i| i.get("pattern"))
+                            "Grep" | "Glob" => input
+                                .get("pattern")
                                 .and_then(|v| v.as_str())
                                 .map(|p| p.to_string()),
                             _ => None,
@@ -2872,6 +2942,10 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                             kind: AgentStreamEventKind::ToolCall,
                             agent_id: default_agent_id.to_string(),
                             summary,
+                            details: Some(EventDetails::ToolCall {
+                                name: name.to_string(),
+                                input,
+                            }),
                         });
                     }
                     "thinking" => {
@@ -2893,6 +2967,9 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                                 kind: AgentStreamEventKind::Thinking,
                                 agent_id: default_agent_id.to_string(),
                                 summary: format!("💭 {}", truncated),
+                                details: Some(EventDetails::Thinking {
+                                    text: text.to_string(),
+                                }),
                             });
                         }
                     }
@@ -2907,16 +2984,41 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                     kind: events[0].kind.clone(),
                     agent_id: default_agent_id.to_string(),
                     summary: combined,
+                    details: None,
                 })
             } else {
                 None
             }
         }
         "user" => {
-            let content_arr = val
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())?;
+            // Two cases:
+            //   1. Plain user input (string content OR text-block content) — surfaced
+            //      as UserInput so the RAW pretty view can render the prompt going IN.
+            //   2. Tool results (assistant tool_use replies) — surfaced as ToolResult / Error.
+            let content = val.get("message").and_then(|m| m.get("content"))?;
+
+            // Case 1a: content is a plain string (user prompt).
+            if let Some(s) = content.as_str() {
+                let s = s.trim();
+                if s.is_empty() {
+                    return None;
+                }
+                let truncated = if s.len() > 200 {
+                    format!("{}…", &s[..s.floor_char_boundary(200)])
+                } else {
+                    s.to_string()
+                };
+                return Some(AgentStreamEvent {
+                    kind: AgentStreamEventKind::UserInput,
+                    agent_id: default_agent_id.to_string(),
+                    summary: format!("👤 {}", truncated),
+                    details: Some(EventDetails::UserInput {
+                        text: s.to_string(),
+                    }),
+                });
+            }
+
+            let content_arr = content.as_array()?;
             for block in content_arr {
                 let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if block_type == "tool_result" {
@@ -2943,6 +3045,30 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                         kind,
                         agent_id: default_agent_id.to_string(),
                         summary: format!("{} {}", prefix, truncated),
+                        details: Some(EventDetails::ToolResult {
+                            content: content.to_string(),
+                            is_error,
+                        }),
+                    });
+                } else if block_type == "text" {
+                    // Case 1b: user prompt as a text block.
+                    let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let text = text.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let truncated = if text.len() > 200 {
+                        format!("{}…", &text[..text.floor_char_boundary(200)])
+                    } else {
+                        text.to_string()
+                    };
+                    return Some(AgentStreamEvent {
+                        kind: AgentStreamEventKind::UserInput,
+                        agent_id: default_agent_id.to_string(),
+                        summary: format!("👤 {}", truncated),
+                        details: Some(EventDetails::UserInput {
+                            text: text.to_string(),
+                        }),
                     });
                 }
             }
@@ -2970,6 +3096,10 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                         kind: AgentStreamEventKind::SystemEvent,
                         agent_id: default_agent_id.to_string(),
                         summary: format!("⚙ {}", summary),
+                        details: Some(EventDetails::SystemEvent {
+                            subtype: subtype.to_string(),
+                            text: summary.clone(),
+                        }),
                     })
                 }
             }
@@ -2977,10 +3107,13 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
         "tool_call" => {
             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
             let is_error = val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            let input = val
+                .get("input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let detail = match name {
-                "Bash" | "bash" => val
-                    .get("input")
-                    .and_then(|i| i.get("command"))
+                "Bash" | "bash" => input
+                    .get("command")
                     .and_then(|v| v.as_str())
                     .map(|c| {
                         let c = c.trim();
@@ -2990,14 +3123,12 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                             c.to_string()
                         }
                     }),
-                "Read" | "Write" | "Edit" => val
-                    .get("input")
-                    .and_then(|i| i.get("file_path"))
+                "Read" | "Write" | "Edit" => input
+                    .get("file_path")
                     .and_then(|v| v.as_str())
                     .map(|p| p.to_string()),
-                "Grep" | "Glob" => val
-                    .get("input")
-                    .and_then(|i| i.get("pattern"))
+                "Grep" | "Glob" => input
+                    .get("pattern")
                     .and_then(|v| v.as_str())
                     .map(|p| p.to_string()),
                 _ => None,
@@ -3031,6 +3162,10 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                 },
                 agent_id: default_agent_id.to_string(),
                 summary: full,
+                details: Some(EventDetails::ToolCall {
+                    name: name.to_string(),
+                    input,
+                }),
             })
         }
         "turn" => {
@@ -3045,6 +3180,9 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                                 kind: AgentStreamEventKind::TextOutput,
                                 agent_id: default_agent_id.to_string(),
                                 summary: text.to_string(),
+                                details: Some(EventDetails::TextOutput {
+                                    text: text.to_string(),
+                                }),
                             });
                         }
                     }
@@ -3064,9 +3202,9 @@ pub struct LogPaneState {
     pub auto_tail: bool,
     /// Whether to show raw JSON format (toggled by `J`).
     pub json_mode: bool,
-    /// Whether to view the top (true) or bottom (false) of the log.
-    /// Top view shows structured summaries/events, bottom view shows latest activity.
-    pub view_top: bool,
+    /// Which of the three view modes is active. Cycled by pressing `4`
+    /// while the Log pane is focused: events → high-level → raw → events.
+    pub view_mode: LogViewMode,
     /// Cached rendered log lines for the currently selected task.
     pub rendered_lines: Vec<String>,
     /// Task ID these lines were rendered for (to detect staleness).
@@ -3096,7 +3234,7 @@ impl Default for LogPaneState {
             scroll: 0,
             auto_tail: true,
             json_mode: false,
-            view_top: false, // Default to bottom view (latest activity)
+            view_mode: LogViewMode::Events,
             rendered_lines: Vec::new(),
             task_id: None,
             viewport_height: 0,
@@ -8318,11 +8456,6 @@ impl VizApp {
         self.log_pane.scroll = self.log_pane.scroll.saturating_sub(amount);
         // User scrolled up — disable auto-tail.
         self.log_pane.auto_tail = false;
-
-        // Smart default switch: if scrolled all the way to top, switch to top view
-        if self.log_pane.scroll == 0 && !self.log_pane.view_top {
-            self.log_pane.view_top = true;
-        }
     }
 
     /// Scroll log pane down.
@@ -8336,11 +8469,6 @@ impl VizApp {
         if self.log_pane.scroll >= max_scroll {
             self.log_pane.auto_tail = true;
             self.log_pane.has_new_content = false;
-
-            // Smart default switch: if scrolled all the way to bottom, switch to bottom view
-            if self.log_pane.view_top {
-                self.log_pane.view_top = false;
-            }
         }
     }
 
@@ -8367,17 +8495,13 @@ impl VizApp {
         self.invalidate_log_pane();
     }
 
-    /// Toggle log pane top/bottom view mode.
-    pub fn toggle_log_view(&mut self) {
-        self.log_pane.view_top = !self.log_pane.view_top;
-
-        // When switching to top view, scroll to the top and disable auto-tail
-        if self.log_pane.view_top {
-            self.log_scroll_to_top();
-        } else {
-            // When switching to bottom view, scroll to bottom and enable auto-tail
-            self.log_scroll_to_bottom();
-        }
+    /// Cycle the log pane through its three view modes:
+    /// Events → HighLevel → RawPretty → Events.
+    /// Resets scroll position to keep the most recent content visible
+    /// (auto-tail enabled).
+    pub fn cycle_log_view(&mut self) {
+        self.log_pane.view_mode = self.log_pane.view_mode.next();
+        self.log_scroll_to_bottom();
     }
 
     // ── Coordinator log (panel 7) ──
@@ -21538,6 +21662,63 @@ mod agent_stream_tests {
             app.log_pane.stream_events[3].kind,
             AgentStreamEventKind::Thinking
         );
+    }
+
+    /// Pressing the `4` key while focused on the Log pane must cycle
+    /// the view through three modes in stable order:
+    /// Events → HighLevel → RawPretty → Events. Required by the
+    /// per-task Log "three view modes" feature.
+    #[test]
+    fn test_log_view_cycles_through_three_modes() {
+        use crate::commands::viz::{LayoutMode, VizOutput};
+        use crate::commands::viz::ascii::generate_ascii;
+        use std::collections::{HashMap, HashSet};
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::test_helpers::make_task_with_status;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task_with_status(
+            "t",
+            "T",
+            Status::Open,
+        )));
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz: VizOutput = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+
+        // Default mode is Events (least disruptive vs the previous behavior).
+        assert_eq!(app.log_pane.view_mode, LogViewMode::Events);
+
+        app.cycle_log_view();
+        assert_eq!(app.log_pane.view_mode, LogViewMode::HighLevel);
+
+        app.cycle_log_view();
+        assert_eq!(app.log_pane.view_mode, LogViewMode::RawPretty);
+
+        app.cycle_log_view();
+        assert_eq!(
+            app.log_pane.view_mode,
+            LogViewMode::Events,
+            "after three cycles we should be back at Events"
+        );
+
+        // The mode label exposed in the pane header must match.
+        assert_eq!(LogViewMode::Events.label(), "events");
+        assert_eq!(LogViewMode::HighLevel.label(), "high-level");
+        assert_eq!(LogViewMode::RawPretty.label(), "raw");
     }
 }
 

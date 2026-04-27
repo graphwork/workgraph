@@ -2201,7 +2201,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 // Special behavior for '4' (Log tab): toggle view mode if already active
                 if d == '4' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log
                 {
-                    app.toggle_log_view();
+                    app.cycle_log_view();
                 } else {
                     app.right_panel_visible = true;
                     app.right_panel_tab = tab;
@@ -2435,7 +2435,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     if let Some(tab) = RightPanelTab::from_index(idx) {
                         // Special behavior for '4' (Log tab): toggle view mode if already active
                         if d == '4' && app.right_panel_tab == RightPanelTab::Log {
-                            app.toggle_log_view();
+                            app.cycle_log_view();
                         } else {
                             app.right_panel_tab = tab;
                         }
@@ -2537,7 +2537,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 // Special behavior for '2' key (Log tab): toggle view mode if already active
                 if d == '4' && app.right_panel_tab == RightPanelTab::Log {
-                    app.toggle_log_view();
+                    app.cycle_log_view();
                 } else {
                     app.right_panel_tab = tab;
                 }
@@ -3778,7 +3778,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     if let Some(tab) = tab_at_column(col_in_tabs, app) {
                         // Special behavior for Log tab: toggle view mode if already active
                         if tab == RightPanelTab::Log && app.right_panel_tab == RightPanelTab::Log {
-                            app.toggle_log_view();
+                            app.cycle_log_view();
                         } else {
                             app.right_panel_tab = tab;
                         }
@@ -5262,11 +5262,11 @@ fn tab_at_column(col: u16, app: &VizApp) -> Option<RightPanelTab> {
         }
         let base_label = format!("{}:{}", tab.index(), tab.label());
         let label_width = if *tab == RightPanelTab::Log {
-            // Render adds " ▲" or " ▼" indicator (2 extra columns)
-            let indicator = if app.log_pane.view_top { "▲" } else { "▼" };
-            format!("{} {}", base_label, indicator).len() as u16
+            // Render adds " [<mode>]" indicator after the label.
+            let mode = app.log_pane.view_mode.label();
+            format!("{} [{}]", base_label, mode).chars().count() as u16
         } else {
-            base_label.len() as u16
+            base_label.chars().count() as u16
         };
         let tab_width = label_width + 2; // " label " padding
         if col >= pos && col < pos + tab_width {

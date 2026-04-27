@@ -7,7 +7,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ActivityEventKind, AgentStreamEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
+    ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
     ConfirmAction, ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus,
     FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     SinglePanelView, SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction,
@@ -2343,10 +2343,11 @@ fn draw_tab_bar(
                 ]);
             }
 
-            // Special handling for Log tab: add visual indicator
+            // Special handling for Log tab: show current view-mode in the label
+            // so the user can see at a glance which renderer the pane is using.
             if *t == RightPanelTab::Log {
-                let indicator = if app.log_pane.view_top { "▲" } else { "▼" };
-                return Line::from(format!("{}:{} {}", t.index(), t.label(), indicator));
+                let mode = app.log_pane.view_mode.label();
+                return Line::from(format!("{}:{} [{}]", t.index(), t.label(), mode));
             }
 
             Line::from(format!("{}:{}", t.index(), t.label()))
@@ -4269,15 +4270,15 @@ fn render_editor_word_wrap(
     }
 }
 
-/// Draw the per-task Log tab — live agent output (default) or the
-/// structured task.log entries (when `log_pane.view_top` is true,
-/// toggled with `v`).
+/// Draw the per-task Log tab. Three view modes are available, cycled
+/// with the `4` key while the Log pane is focused:
+///   * `Events` — one structured event per line (legacy view)
+///   * `HighLevel` — coarse activity summaries
+///   * `RawPretty` — full pretty-printed transcript
 ///
-/// Data sources:
-/// - `app.log_pane.rendered_lines`: `[<rel-time>] <message>` entries
-///   populated by `load_log_pane()` from `task.log`.
-/// - `app.log_pane.agent_output.full_text`: live agent stdout,
-///   populated by `update_log_output()` from `agents/<id>/output.log`.
+/// All three modes consume `app.log_pane.stream_events` (parsed
+/// raw_stream.jsonl). When no stream events have been parsed yet, falls
+/// back to the raw agent output buffer.
 fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use ratatui::widgets::Paragraph;
 
@@ -4297,13 +4298,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .as_deref()
             .map(|id| format!("agent={}", id))
             .unwrap_or_else(|| "no agent".to_string());
-        let view_label = if app.log_pane.view_top {
-            "view=events"
-        } else if !app.log_pane.stream_events.is_empty() {
-            "view=activity"
-        } else {
-            "view=stream"
-        };
+        let mode_label = format!("view=[{}]", app.log_pane.view_mode.label());
         let tail_label = if app.log_pane.auto_tail {
             "tail=on"
         } else {
@@ -4317,11 +4312,11 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {}  {}  {}", agent_label, view_label, tail_label),
+                format!(" {}  {}  {}", agent_label, mode_label, tail_label),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                "    [4] toggle view  [J] json",
+                "    [4] cycle view  [J] json",
                 Style::default().fg(Color::Indexed(239)),
             ),
         ])
@@ -4333,46 +4328,19 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     app.log_pane.viewport_height = body_area.height as usize;
 
-    // Collect display lines for whichever view is active.
-    let raw_lines: Vec<Line> = if app.log_pane.view_top {
-        if app.log_pane.rendered_lines.is_empty() {
-            vec![Line::from(Span::styled(
-                "(no log entries yet)",
-                Style::default().fg(Color::DarkGray),
-            ))]
-        } else {
-            app.log_pane
-                .rendered_lines
-                .iter()
-                .map(|s| Line::from(s.clone()))
-                .collect()
+    use super::log_render::{
+        render_events_view, render_high_level_view, render_raw_pretty_view,
+    };
+    use super::state::LogViewMode;
+
+    // Collect display lines for whichever view is active. All three
+    // modes share the same data source (parsed raw_stream events).
+    let raw_lines: Vec<Line> = if !app.log_pane.stream_events.is_empty() {
+        match app.log_pane.view_mode {
+            LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
+            LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
+            LogViewMode::RawPretty => render_raw_pretty_view(&app.log_pane.stream_events),
         }
-    } else if !app.log_pane.stream_events.is_empty() {
-        let mut out: Vec<Line> = Vec::new();
-        for event in &app.log_pane.stream_events {
-            // Bulk content reads as default terminal text — color is reserved
-            // for structure (tool calls), de-emphasis (thinking, system), and
-            // failures (errors). See `chat_palette` for the rationale.
-            let color = match event.kind {
-                AgentStreamEventKind::ToolCall => super::chat_palette::TOOL_CALL,
-                AgentStreamEventKind::ToolResult => super::chat_palette::DEFAULT_TEXT,
-                AgentStreamEventKind::TextOutput => super::chat_palette::DEFAULT_TEXT,
-                AgentStreamEventKind::Thinking => super::chat_palette::THINKING,
-                AgentStreamEventKind::SystemEvent => Color::DarkGray,
-                AgentStreamEventKind::Error => super::chat_palette::ERROR,
-            };
-            let modifier = match event.kind {
-                AgentStreamEventKind::Thinking => Modifier::ITALIC,
-                _ => Modifier::empty(),
-            };
-            for sub_line in event.summary.split('\n') {
-                out.push(Line::from(Span::styled(
-                    sub_line.to_string(),
-                    Style::default().fg(color).add_modifier(modifier),
-                )));
-            }
-        }
-        out
     } else {
         let text = &app.log_pane.agent_output.full_text;
         if text.is_empty() {
@@ -14330,10 +14298,10 @@ mod tests {
         let (viz, _) = build_hud_test_graph();
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_tab = RightPanelTab::Log;
-        // Configure the log pane: NOT view_top, no stream events, agent output
-        // is the long synthetic response.
+        // Configure the log pane with no stream events; with the events
+        // list empty draw_log_tab falls back to rendering
+        // agent_output.full_text directly, exercising the wrap path.
         app.log_pane = LogPaneState::default();
-        app.log_pane.view_top = false;
         app.log_pane.task_id = Some("my-task".to_string());
         app.log_pane.agent_id = Some("agent-99".to_string());
         app.log_pane.agent_output.full_text = response.clone();
@@ -14422,7 +14390,6 @@ mod tests {
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_tab = RightPanelTab::Log;
         app.log_pane = LogPaneState::default();
-        app.log_pane.view_top = false;
         app.log_pane.task_id = Some("my-task".to_string());
         app.log_pane.agent_id = Some("agent-99".to_string());
         app.log_pane.auto_tail = true;
@@ -14468,11 +14435,9 @@ mod tests {
         use ratatui::widgets::Wrap;
 
         // Build a response with multi-span styled lines that include inline
-        // code (`foo`). Use stream_events to exercise the path that builds
-        // single-span Lines, AND embed a multi-span Line via raw_lines path
-        // by populating rendered_lines (view_top mode).
-        // Easier: use agent_output with text containing many inline-code-like
-        // tokens so each visual line has plenty of content to lose.
+        // code (`foo`). Use agent_output with text containing many inline-
+        // code-like tokens so each visual line has plenty of content to
+        // lose if wrapping is broken.
         let line1 = "**`scripts/smoke/wave-1-smoke.sh`** — 5-scenario assertion-driven smoke test that runs every codepath end-to-end.";
         let line2 = "BULLET_TAIL_MARKER_GAMMA: this content must NOT be lost.";
         let response = format!("{}\n{}", line1, line2);
@@ -14481,7 +14446,6 @@ mod tests {
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_tab = RightPanelTab::Log;
         app.log_pane = LogPaneState::default();
-        app.log_pane.view_top = false;
         app.log_pane.task_id = Some("my-task".to_string());
         app.log_pane.agent_id = Some("agent-99".to_string());
         app.log_pane.auto_tail = true;
@@ -14594,7 +14558,6 @@ mod tests {
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_tab = RightPanelTab::Log;
         app.log_pane = LogPaneState::default();
-        app.log_pane.view_top = false;
         app.log_pane.task_id = Some("my-task".to_string());
         app.log_pane.agent_id = Some("agent-99".to_string());
         app.log_pane.auto_tail = true;
