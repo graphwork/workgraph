@@ -2776,7 +2776,12 @@ pub struct CoordinatorConfig {
     /// When a task's verify command fails this many times in a row, the task
     /// transitions to Failed with a descriptive error. Default: 3.
     /// Set to 0 to disable the circuit breaker (unlimited retries).
-    #[serde(default = "default_max_verify_failures")]
+    ///
+    /// Also serves as the cap for cascade-failure auto-rescue chains: if eval
+    /// rejects a task and the rescue chain has reached this depth, the task
+    /// stays Failed instead of spawning yet another rescue. Accepts the alias
+    /// `max_eval_rescues` for forward-compat clarity.
+    #[serde(default = "default_max_verify_failures", alias = "max_eval_rescues")]
     pub max_verify_failures: u32,
 
     /// Default verify timeout for tasks without specific override

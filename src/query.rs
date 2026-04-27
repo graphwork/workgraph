@@ -256,6 +256,32 @@ pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
     index
 }
 
+/// Returns true if `.evaluate-{blocker_id}` exists in the graph and is non-terminal.
+/// This is the eval gate: when an evaluation task is scaffolded for a completed
+/// task, downstream dependents wait for the evaluation to finish before unblocking.
+/// Agency eval IS the verification — `wg approve`/`wg reject` are no longer
+/// routine human gates.
+///
+/// Returns false (gate satisfied) when:
+/// - `.evaluate-{blocker_id}` does not exist (no eval scheduled)
+/// - `.evaluate-{blocker_id}` is terminal (Done/Failed/Abandoned)
+///
+/// Returns true (gate pending) when:
+/// - `.evaluate-{blocker_id}` exists and is Open/InProgress/Waiting/PendingValidation
+///
+/// System tasks (dot-prefixed) are exempt from eval gating to avoid recursive
+/// gates on `.evaluate-X`, `.assign-X`, etc.
+pub fn is_eval_gate_pending(blocker_id: &str, graph: &WorkGraph) -> bool {
+    if blocker_id.starts_with('.') {
+        return false;
+    }
+    let eval_id = format!(".evaluate-{}", blocker_id);
+    match graph.get_task(&eval_id) {
+        Some(eval_task) => !eval_task.status.is_terminal(),
+        None => false,
+    }
+}
+
 /// Find all tasks that are ready to work on (no open blockers, past not_before)
 pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
     graph
@@ -278,11 +304,23 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             // (not satisfied). This prevents premature dispatch when tasks
             // reference dependencies that haven't been created yet during
             // burst graph construction.
+            //
+            // Eval gate: even when blocker is terminal, wait for `.evaluate-X`
+            // to also be terminal — agency eval gates dependent unblocking.
+            // System tasks (dot-prefixed) are exempt from this gate.
             task.after.iter().all(|blocker_id| {
-                graph
+                let blocker_done = graph
                     .get_task(blocker_id)
                     .map(|t| t.status.is_terminal())
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                if !blocker_done {
+                    return false;
+                }
+                if task.id.starts_with('.') {
+                    // System tasks (e.g. .flip-X, .evaluate-X) skip eval gating.
+                    return true;
+                }
+                !is_eval_gate_pending(blocker_id, graph)
             })
         })
         .collect()
@@ -292,6 +330,9 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
 ///
 /// Handles both local and remote (`peer:task-id`) references.
 /// For remote refs, resolves via federation config using IPC or direct file access.
+///
+/// Note: this does NOT apply the eval-gate (`.evaluate-X` pending). Use
+/// `is_blocker_satisfied_with_eval_gate` to include the eval gate.
 pub fn is_blocker_satisfied(
     blocker_id: &str,
     graph: &WorkGraph,
@@ -315,6 +356,29 @@ pub fn is_blocker_satisfied(
     }
 }
 
+/// Like `is_blocker_satisfied` but also applies the eval gate: even when the
+/// blocker is terminal, returns false if `.evaluate-{blocker_id}` exists in the
+/// graph and is not yet terminal.
+///
+/// Used by readiness queries so dependents wait for agency evaluation before
+/// unblocking. Skip-callers should pass `dependent_is_system=true` when the
+/// dependent itself is a system task (dot-prefixed) — system tasks bypass
+/// eval gating to avoid `.evaluate-.evaluate-X` recursion.
+pub fn is_blocker_satisfied_with_eval_gate(
+    blocker_id: &str,
+    graph: &WorkGraph,
+    workgraph_dir: Option<&Path>,
+    dependent_is_system: bool,
+) -> bool {
+    if !is_blocker_satisfied(blocker_id, graph, workgraph_dir) {
+        return false;
+    }
+    if dependent_is_system {
+        return true;
+    }
+    !is_eval_gate_pending(blocker_id, graph)
+}
+
 /// Find all tasks that are ready to work on, resolving cross-repo dependencies.
 ///
 /// This is the cross-repo-aware variant of `ready_tasks()`. The coordinator
@@ -333,9 +397,15 @@ pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) ->
             if !is_time_ready(task) {
                 return false;
             }
-            task.after
-                .iter()
-                .all(|blocker_id| is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)))
+            let dependent_is_system = task.id.starts_with('.');
+            task.after.iter().all(|blocker_id| {
+                is_blocker_satisfied_with_eval_gate(
+                    blocker_id,
+                    graph,
+                    Some(workgraph_dir),
+                    dependent_is_system,
+                )
+            })
         })
         .collect()
 }
@@ -362,6 +432,7 @@ pub fn ready_tasks_cycle_aware<'a>(
             if !is_time_ready(task) {
                 return false;
             }
+            let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
                 // Normal check: predecessor is terminal.
                 // Non-existent blocker blocks (prevents premature dispatch).
@@ -370,7 +441,13 @@ pub fn ready_tasks_cycle_aware<'a>(
                     .map(|t| t.status.is_terminal())
                     .unwrap_or(false);
                 if blocker_done {
-                    return true;
+                    // Eval gate: even when blocker is terminal, wait for
+                    // `.evaluate-X` to also be terminal. System dependents
+                    // (dot-prefixed) skip the gate.
+                    if dependent_is_system {
+                        return true;
+                    }
+                    return !is_eval_gate_pending(blocker_id, graph);
                 }
                 // Back-edge exemption: if this dependency edge is a structural
                 // back-edge in the cycle analysis, skip it. Only forward
@@ -466,9 +543,16 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
             if !is_time_ready(task) {
                 return false;
             }
+            let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
                 if is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)) {
-                    return true;
+                    // Eval gate: even when blocker is terminal, wait for
+                    // `.evaluate-X` to also be terminal. System dependents
+                    // (dot-prefixed) skip the gate.
+                    if dependent_is_system {
+                        return true;
+                    }
+                    return !is_eval_gate_pending(blocker_id, graph);
                 }
                 // Back-edge exemption: if this dependency edge is a structural
                 // back-edge in the cycle analysis, skip it. Only forward

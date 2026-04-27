@@ -840,6 +840,22 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
 /// 4. Logs diagnostic info for stale blocked states
 ///
 /// Returns `true` if the graph was modified.
+/// Dispatcher-side wrapper around `workgraph::lifecycle::migrate_pending_validation_tasks`.
+/// Performs the migration and emits a `[dispatcher] Migrated …` banner per task
+/// so the operator sees the one-time event in `daemon.log`. Returns true if any
+/// task was migrated.
+fn migrate_pending_validation_tasks(graph: &mut workgraph::graph::WorkGraph) -> bool {
+    let migrated = workgraph::lifecycle::migrate_pending_validation_tasks(graph);
+    for id in &migrated {
+        eprintln!(
+            "[dispatcher] Migrated '{}' from PendingValidation to Done \
+             (legacy state — agency eval is now the unblock gate)",
+            id
+        );
+    }
+    !migrated.is_empty()
+}
+
 fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> bool {
     let mut modified = false;
 
@@ -1512,6 +1528,7 @@ fn build_auto_assign_tasks(
                     rejection_count: 0,
                     max_rejections: None,
                     verify_failures: 0,
+                    rescue_count: 0,
                     spawn_failures: 0,
                     dispatch_count: 0,
                     tier: None,
@@ -1902,6 +1919,7 @@ fn build_flip_verification_tasks(
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2167,6 +2185,7 @@ fn build_separate_verify_tasks(
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2364,6 +2383,7 @@ fn build_auto_evolve_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -2564,6 +2584,7 @@ fn build_auto_create_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -4050,6 +4071,14 @@ pub fn coordinator_tick(
     // inserts a task between our load and save, and our save clobbers it.
     modify_graph(&graph_path, |graph| {
         let mut modified = false;
+
+        // Phase 2.45: Legacy PendingValidation migration.
+        // PendingValidation is deprecated as a routine task lifecycle state
+        // (deprecate-pending-validation). Existing tasks stuck in this status
+        // are auto-transitioned to Done with a one-time log entry — the
+        // assumption per spec is that "if a user wanted to reject the work,
+        // they would have run `wg reject` already."
+        modified |= migrate_pending_validation_tasks(graph);
 
         // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
         {

@@ -75,6 +75,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,

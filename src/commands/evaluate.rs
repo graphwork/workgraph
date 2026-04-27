@@ -1596,7 +1596,51 @@ fn check_eval_gate(
     // it instead of the failed target. See docs/design/
     // nex-as-coordinator.md on the broader "real work in the regular
     // graph" principle.
+    //
+    // Cascade-failure cap: each rescue increments `rescue_count` on the
+    // new task. When the count reaches `coordinator.max_verify_failures`
+    // (alias `max_eval_rescues`), no further rescue is spawned — the task
+    // stays Failed so the loop terminates instead of cycling forever.
     if config.agency.auto_rescue_on_eval_fail {
+        let max_rescues = config.coordinator.max_verify_failures;
+        let path = super::graph_path(dir);
+        let prior_rescue_count = workgraph::parser::load_graph(&path)
+            .ok()
+            .and_then(|g| g.get_task(task_id).map(|t| t.rescue_count))
+            .unwrap_or(0);
+
+        if max_rescues > 0 && prior_rescue_count >= max_rescues {
+            let msg = format!(
+                "  [auto-rescue] cap reached: '{}' has been rescued {} time(s) \
+                 (max_verify_failures = {}). Leaving task Failed.",
+                task_id, prior_rescue_count, max_rescues
+            );
+            if json {
+                eprintln!("{}", msg);
+            } else {
+                println!("{}", msg);
+            }
+            // Append a clear log entry on the failed task so wg show records
+            // why no further rescue spawned.
+            let cap_msg = format!(
+                "Auto-rescue cap reached ({}/{}); no further rescue spawned",
+                prior_rescue_count, max_rescues
+            );
+            let _ = workgraph::parser::modify_graph(&path, |graph| {
+                if let Some(task) = graph.get_task_mut(task_id) {
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: None,
+                        user: Some(workgraph::current_user()),
+                        message: cap_msg.clone(),
+                    });
+                    return true;
+                }
+                false
+            });
+            return Ok(true);
+        }
+
         let eval_task_id = format!(".evaluate-{}", task_id);
         let rescue_desc = format!(
             "Evaluation of the prior attempt scored {:.2}/1.0 (below the {:.2} \
@@ -1617,10 +1661,23 @@ fn check_eval_gate(
             Some("eval-gate"),
         ) {
             Ok(new_id) => {
+                // Carry rescue_count forward on the new rescue task so the
+                // cap applies across the chain (R, R2, R3...) not just per task.
+                let new_id_clone = new_id.clone();
+                let _ = workgraph::parser::modify_graph(&path, |graph| {
+                    if let Some(task) = graph.get_task_mut(&new_id_clone) {
+                        task.rescue_count = prior_rescue_count.saturating_add(1);
+                        return true;
+                    }
+                    false
+                });
                 let msg = format!(
                     "  [auto-rescue] created '{}' from eval notes — successors now \
-                     unblock from the rescue instead of the failed target",
-                    new_id
+                     unblock from the rescue instead of the failed target \
+                     (rescue {}/{})",
+                    new_id,
+                    prior_rescue_count.saturating_add(1),
+                    max_rescues
                 );
                 if json {
                     eprintln!("{}", msg);

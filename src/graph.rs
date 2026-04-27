@@ -436,6 +436,12 @@ pub struct Task {
     /// Number of consecutive verify command failures (circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub verify_failures: u32,
+    /// Number of times this task has been rescued via auto-rescue on eval-fail.
+    /// Used to cap cascade-failure loops: when this exceeds
+    /// `coordinator.max_verify_failures`, eval rejection no longer spawns a rescue
+    /// and the task stays Failed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rescue_count: u32,
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
@@ -559,6 +565,7 @@ impl Default for Task {
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             tier: None,
             no_tier_escalation: false,
@@ -1152,6 +1159,8 @@ struct TaskHelper {
     #[serde(default)]
     verify_failures: u32,
     #[serde(default)]
+    rescue_count: u32,
+    #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
     tier: Option<String>,
@@ -1262,6 +1271,7 @@ impl<'de> Deserialize<'de> for Task {
             rejection_count: helper.rejection_count,
             max_rejections: helper.max_rejections,
             verify_failures: helper.verify_failures,
+            rescue_count: helper.rescue_count,
             spawn_failures: helper.spawn_failures,
             tier: helper.tier,
             no_tier_escalation: helper.no_tier_escalation,
