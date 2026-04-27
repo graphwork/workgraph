@@ -136,3 +136,14 @@ owners = [
 ]
 description = "Dispatcher's explicit `-x codex` MUST win when the assigned agent has only the default claude executor and the task model is `local:qwen3-coder`. Regression for agency-still-picks: the previous fix (agency-picks-claude) put the model-compat override INSIDE the agency, where it fired BEFORE the dispatcher's executor floor in resolve_executor's precedence — silently rewriting `-x codex` to native. Asserts SpawnPlan executor=codex (never native, never claude) for the codex+local: combo."
 timeout_seconds = 30
+
+[[scenario]]
+name = "codex_oai_5turn_lambda01"
+script = "scenarios/codex_oai_5turn_lambda01.sh"
+owners = [
+    "thin-wrapper-impl",
+    "thin-wrapper-smoke",
+    "smoke-gate-is",
+]
+description = "Live 5-turn wg chat against a real lambda01-style endpoint via the codex thin-wrapper executor. Reproduces the user's verbatim repro (`wg init -m qwen3-coder -e https://lambda01...:30000 -x codex; wg service start; send 5 messages back-to-back`). Asserts behaviorally — outbox has 5 'coordinator' responses, each non-empty, each with a distinct request_id — so silent-dedup or stuck-after-turn-1 regressions cannot pass. Loud-skips when codex CLI is missing or the endpoint's Responses API is unreachable."
+timeout_seconds = 600

@@ -176,23 +176,27 @@ pub fn resolve_handler(
 
     // chat_ref convention: task id IS the chat alias, until Phase 5
     // migration swaps to `.chat-<uuid>`. Exception: `.coordinator-N`
-    // task ids map to the existing `coordinator-N` chat alias the
-    // daemon registers via `register_coordinator_session` — so IPC
-    // writers (`wg chat --coordinator N`) and the handler land on
-    // the SAME underlying chat dir. Without this, the handler would
-    // use a fresh `chat/.coordinator-N/` dir that no other code
-    // writes to, and the coordinator's inbox would appear empty.
+    // and `.chat-N` (current chat-task ID format from `chat_id::format_chat_task_id`)
+    // both map to the existing `coordinator-N` chat alias the daemon registers
+    // via `register_coordinator_session` — so IPC writers
+    // (`wg chat --coordinator N` writing under alias `0` / `coordinator-0`)
+    // and the handler land on the SAME underlying chat dir. Without this, the
+    // handler would use a fresh `chat/.chat-N/` (or `.coordinator-N/`) dir
+    // that no other code writes to, and the coordinator's inbox would appear
+    // empty (the bug the codex thin-wrapper smoke catches against lambda01).
     let chat_ref = if let Some(n) = task.id.strip_prefix(".coordinator-") {
+        format!("coordinator-{}", n)
+    } else if let Some(n) = task.id.strip_prefix(".chat-") {
         format!("coordinator-{}", n)
     } else {
         task.id.clone()
     };
 
-    // Role: coordinator tasks get `--role coordinator`. Caller
+    // Role: coordinator/chat tasks get `--role coordinator`. Caller
     // override wins. `.compact-*`, `.assign-*`, etc. inherit no
     // special role — they're just task-agent runs.
     let role = role_override.map(|s| s.to_string()).or_else(|| {
-        if task.id.starts_with(".coordinator-") {
+        if task.id.starts_with(".coordinator-") || task.id.starts_with(".chat-") {
             Some("coordinator".to_string())
         } else {
             None
@@ -478,6 +482,33 @@ mod tests {
         match spec {
             HandlerSpec::Native { resume, .. } => assert!(!resume),
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn chat_task_id_maps_to_coordinator_alias() {
+        // Regression for the codex thin-wrapper smoke: `.chat-N` task IDs
+        // (current `chat_id::format_chat_task_id` output) must map to
+        // `coordinator-N` so the handler's chat dir matches the dir that
+        // `wg chat --coordinator N` writes to. Without this, the supervisor
+        // spawned for a `.chat-0` task reads from `chat/.chat-0/` while
+        // `wg chat` writes to `chat/<uuid>/` (via alias `coordinator-0`),
+        // and every chat message times out.
+        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
+        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
+        let dir = tempfile::tempdir().unwrap();
+        let task = mktask(".chat-0");
+        let spec = resolve_handler(dir.path(), &task, None).unwrap();
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
+        }
+        match spec {
+            HandlerSpec::Native { chat_ref, role, .. } => {
+                assert_eq!(chat_ref, "coordinator-0");
+                assert_eq!(role, Some("coordinator".to_string()));
+            }
+            other => panic!("expected Native handler, got {:?}", other),
         }
     }
 
