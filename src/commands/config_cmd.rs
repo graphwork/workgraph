@@ -39,6 +39,40 @@ fn try_restart_daemon(_dir: &Path) -> Result<bool> {
     Ok(false)
 }
 
+/// Render the `[llm_endpoints]` section of the effective merged config.
+/// Always shows `inherit_global` so the user can immediately see whether
+/// global endpoints are being cascaded in or not — this is the symptom
+/// that motivated the inheritance opt-in change.
+pub fn format_endpoints_section(config: &Config) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "[llm_endpoints]");
+    let _ = writeln!(
+        out,
+        "  inherit_global = {}{}",
+        config.llm_endpoints.inherit_global,
+        if config.llm_endpoints.inherit_global {
+            " (legacy cascade enabled — global endpoints merged in)"
+        } else {
+            " (default — local endpoints fully replace global)"
+        }
+    );
+    if config.llm_endpoints.endpoints.is_empty() {
+        let _ = writeln!(out, "  # (no endpoints configured)");
+    } else {
+        for ep in &config.llm_endpoints.endpoints {
+            let url = ep.url.as_deref().unwrap_or("");
+            let _ = writeln!(
+                out,
+                "  {} = {{ provider = \"{}\", url = \"{}\", is_default = {} }}",
+                ep.name, ep.provider, url, ep.is_default
+            );
+        }
+    }
+    let _ = writeln!(out);
+    out
+}
+
 /// Scope for config operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigScope {
@@ -287,6 +321,11 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                 println!();
             }
         }
+
+        // [llm_endpoints] — show effective endpoints + inheritance flag.
+        // This is the section users come to `wg config --merged` to debug
+        // ("why is openrouter still here?"), so always print it.
+        print!("{}", format_endpoints_section(&config));
 
         // Health check
         let validation = config.validate_config();
@@ -1737,6 +1776,157 @@ pub fn install_global_to(
     Ok(())
 }
 
+/// Reset config to one of the 5 named routes' defaults.
+///
+/// - `route` = `Some(name)` resets to that route's defaults.
+/// - `route` = `None` picks the closest route based on the current
+///   executor (e.g. `claude` → `claude-cli`).
+/// - `keep_keys = true` preserves any existing `[[llm_endpoints.endpoints]]`
+///   entries (their api_key / api_key_file / api_key_env are *not* lost).
+/// - `dry_run = true` prints the diff but doesn't write.
+/// - `yes = false` confirms before overwriting a non-empty config.
+///
+/// Always backs up `config.toml` to `config.toml.bak-<timestamp>` before
+/// writing.
+pub fn reset_to_route(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    route: Option<&str>,
+    keep_keys: bool,
+    dry_run: bool,
+    yes: bool,
+) -> Result<()> {
+    use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+
+    // Resolve the target path + load the existing config (if any).
+    let (target_path, existing) = match scope {
+        ConfigScope::Global => {
+            let path = Config::global_config_path()?;
+            let cfg = Config::load_global()?.unwrap_or_default();
+            (path, cfg)
+        }
+        ConfigScope::Local => {
+            let path = workgraph_dir.join("config.toml");
+            let cfg = if path.exists() {
+                Config::load(workgraph_dir)?
+            } else {
+                Config::default()
+            };
+            (path, cfg)
+        }
+    };
+
+    // Pick a route: explicit > derived from existing executor.
+    let resolved_route: SetupRoute = if let Some(name) = route {
+        SetupRoute::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown route '{}'. Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom",
+                name,
+            )
+        })?
+    } else {
+        let exec = existing
+            .coordinator
+            .executor
+            .as_deref()
+            .unwrap_or(&existing.agent.executor);
+        let r = SetupRoute::from_executor(exec);
+        eprintln!(
+            "No --route given; deriving from current executor ({}) → {}",
+            exec,
+            r.as_name()
+        );
+        r
+    };
+
+    // Build the new config from route defaults. Carry over endpoints if
+    // --keep-keys was passed.
+    let mut new_config = config_for_route(resolved_route, RouteParams::default());
+    if keep_keys && !existing.llm_endpoints.endpoints.is_empty() {
+        new_config.llm_endpoints = existing.llm_endpoints.clone();
+        eprintln!(
+            "Preserved {} existing [[llm_endpoints.endpoints]] entry/entries (--keep-keys).",
+            existing.llm_endpoints.endpoints.len()
+        );
+    }
+
+    // Diff preview.
+    let old_toml = toml::to_string_pretty(&existing)
+        .map_err(|e| anyhow::anyhow!("serialize old config: {}", e))?;
+    let new_toml = toml::to_string_pretty(&new_config)
+        .map_err(|e| anyhow::anyhow!("serialize new config: {}", e))?;
+
+    if dry_run {
+        println!("# wg config reset --dry-run (route: {})", resolved_route.as_name());
+        println!("# Target: {}", target_path.display());
+        if old_toml == new_toml {
+            println!("# No changes.");
+        } else {
+            println!("# Diff:");
+            print_diff_summary(&old_toml, &new_toml);
+        }
+        println!("---");
+        println!("{}", new_toml);
+        return Ok(());
+    }
+
+    // Confirmation gate (skipped if --yes or if the target file doesn't exist).
+    if !yes && target_path.exists() && !old_toml.is_empty() {
+        let confirm = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Reset {} to '{}' route defaults? Existing config will be backed up.",
+                target_path.display(),
+                resolved_route.as_name(),
+            ))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+        if !confirm {
+            println!("Reset cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Backup if a real file is on disk.
+    if target_path.exists() {
+        let backup = backup_config_file(&target_path)?;
+        println!("Backed up existing config → {}", backup.display());
+    }
+
+    // Write the new config.
+    match scope {
+        ConfigScope::Global => new_config.save_global()?,
+        ConfigScope::Local => new_config.save(workgraph_dir)?,
+    }
+
+    println!(
+        "Reset {} to route '{}' (executor={}, tiers={}/{}/{})",
+        target_path.display(),
+        resolved_route.as_name(),
+        resolved_route.executor(),
+        new_config.tiers.fast.as_deref().unwrap_or("?"),
+        new_config.tiers.standard.as_deref().unwrap_or("?"),
+        new_config.tiers.premium.as_deref().unwrap_or("?"),
+    );
+
+    Ok(())
+}
+
+/// Copy a config file to a `.bak-<timestamp>` sibling. Returns the backup path.
+fn backup_config_file(path: &Path) -> Result<std::path::PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let backup = path.with_file_name(format!(
+        "{}.bak-{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml"),
+        stamp,
+    ));
+    std::fs::copy(path, &backup)
+        .map_err(|e| anyhow::anyhow!("Failed to back up {}: {}", path.display(), e))?;
+    Ok(backup)
+}
+
 /// Print a brief summary of differences between two TOML config strings.
 fn print_diff_summary(old: &str, new: &str) {
     let old_lines: Vec<&str> = old.lines().collect();
@@ -2127,6 +2317,84 @@ mod tests {
 
         let result = list(temp_dir.path(), true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_show_merged_displays_effective() {
+        // The merged-config display (rendered by `wg config --merged`) must
+        // surface the effective endpoint state, including the inherit_global
+        // flag. This is what users will check when asking "is openrouter
+        // still being inherited from global?"
+        use workgraph::config::{EndpointConfig, EndpointsConfig};
+
+        // Effective config with NO endpoints and inherit_global=false (the
+        // new default behavior — what the user wants).
+        let mut config = Config::default();
+        config.llm_endpoints = EndpointsConfig::default();
+        let rendered = format_endpoints_section(&config);
+        assert!(
+            rendered.contains("[llm_endpoints]"),
+            "merged display must include [llm_endpoints] header; got:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("inherit_global = false"),
+            "merged display must show inherit_global flag; got:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("default — local endpoints fully replace global"),
+            "merged display must explain the default behavior; got:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("(no endpoints configured)"),
+            "empty endpoints must be visible to the user; got:\n{}",
+            rendered
+        );
+
+        // Effective config WITH a local-only endpoint (the user's override).
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "claude-direct".to_string(),
+            provider: "anthropic".to_string(),
+            url: Some("https://api.anthropic.com/v1".to_string()),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            is_default: true,
+            context_window: None,
+        });
+        let rendered = format_endpoints_section(&config);
+        assert!(
+            rendered.contains("claude-direct"),
+            "endpoint name must appear in merged display; got:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("is_default = true"),
+            "is_default flag must appear in merged display; got:\n{}",
+            rendered
+        );
+        assert!(
+            !rendered.contains("openrouter"),
+            "no global openrouter leakage in effective display; got:\n{}",
+            rendered
+        );
+
+        // Flip inherit_global on and verify the explanatory text changes.
+        config.llm_endpoints.inherit_global = true;
+        let rendered = format_endpoints_section(&config);
+        assert!(
+            rendered.contains("inherit_global = true"),
+            "inherit_global=true must be displayed; got:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("legacy cascade enabled"),
+            "explanatory text for inherit_global=true must appear; got:\n{}",
+            rendered
+        );
     }
 
     #[test]

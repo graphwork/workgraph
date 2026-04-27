@@ -218,6 +218,14 @@ impl ToolRegistry {
         }
     }
 
+    /// Keep only the specified tools by name, removing all others.
+    /// Used by `wg nex --minimal-tools` to provide a lean tool surface
+    /// for small local models (reduces prefill cost).
+    pub fn keep_only_tools(&mut self, names: &[&str]) {
+        let keep_set: std::collections::HashSet<&str> = names.iter().copied().collect();
+        self.tools.retain(|name, _| keep_set.contains(name.as_str()));
+    }
+
     /// Check whether a tool is read-only by name.
     pub fn is_read_only(&self, name: &str) -> bool {
         self.tools.get(name).is_some_and(|t| t.is_read_only())

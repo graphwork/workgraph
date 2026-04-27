@@ -54,6 +54,23 @@ You MUST use these commands to track your work:
      wg log {{task_id}} \"Validated: cargo build + cargo test pass\"
      ```
 
+3a. **Smoke gate (HARD GATE on `wg done`)**:
+   `wg done` automatically runs every scenario in `tests/smoke/manifest.toml` whose \
+`owners = [...]` list contains your task id. If any scenario FAILs, `wg done` refuses \
+with the broken scenario name and the task stays in-progress.
+   - You CANNOT bypass this gate as an agent. `--skip-smoke` is refused for agents \
+unless a human explicitly exports `WG_SMOKE_AGENT_OVERRIDE=1`.
+   - If a scenario emits SKIP (loud banner, exit 77 — endpoint unreachable, missing \
+credential), the gate does not block, but the SKIP is surfaced — verify the gap is \
+acceptable for your change.
+   - If you fixed a regression that should have been caught earlier, **add a permanent \
+scenario** to `tests/smoke/manifest.toml` listing your task id in `owners`. The manifest \
+is grow-only.
+   - Local dry run before `wg done`:
+     ```bash
+     wg done {{task_id}} --full-smoke    # runs every scenario, not just owned
+     ```
+
 4. **Commit and push** if you modified files:
    - Run `cargo build` and `cargo test` BEFORE committing — never commit broken code
    - Stage ONLY your files (never `git add -A`) and commit with a descriptive message:
@@ -539,7 +556,21 @@ You are running inside a **workgraph-managed worktree**. Your working directory 
 3. Cause ALL your commits to go to the wrong branch
 4. Result in your work being LOST — the merge-back will find no commits
 
-If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.\n";
+If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.
+
+### Prior WIP from a previous attempt
+
+This worktree may contain prior work-in-progress from an earlier agent attempt \
+(rate-limit, crash, or signal-induced exit, then `wg retry`). \
+**Before starting fresh, inspect what's already there**:
+- `git status` — uncommitted changes (the prior agent's in-flight edits)
+- `git log --oneline main..HEAD` — commits the prior agent made on this branch
+- `git diff main...HEAD` — full delta vs `main`
+
+If prior work is present and on-track, **continue from where it left off** \
+rather than redoing it. If it's broken or wrong, commit a clean reset and \
+start over from there. Either way, do not blindly overwrite the prior \
+agent's commits — they may contain valuable progress.\n";
 
 /// Message polling instructions for agents.
 /// Contains {{task_id}} placeholder for variable substitution.
@@ -1661,6 +1692,7 @@ mod tests {
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,

@@ -154,11 +154,13 @@ impl Default for VizOptions {
 }
 
 /// Returns true if the task is an auto-generated internal task (assignment or evaluation).
-/// Coordinator and compact tasks are exempt — always visible.
+/// Chat (coordinator) tasks are exempt — always visible.
 fn is_internal_task(task: &Task) -> bool {
-    if task.tags.iter().any(|t| {
-        t == "coordinator-loop" || t == "compact-loop" || t == "user-board" || t == "evolution"
-    }) {
+    if task
+        .tags
+        .iter()
+        .any(|t| t == "coordinator-loop" || t == "chat-loop" || t == "user-board" || t == "evolution")
+    {
         return false;
     }
     workgraph::graph::is_system_task(&task.id)
@@ -310,57 +312,6 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
         .collect();
 
     (filtered, annotations)
-}
-
-/// Compute the annotation text for the `.compact-0` node.
-///
-/// Shows compaction state and context pressure so it's immediately visible in
-/// the graph view whether compaction is idle, running, or overdue.
-///
-/// Format examples:
-/// - `[idle · 40% ctx]`   – idle, far below threshold
-/// - `[⚠ 85% ctx]`       – approaching threshold (yellow when colored)
-/// - `[⚠ 102% ctx]`      – past threshold, overdue (red when colored)
-/// - `[⟳ compacting · 50% ctx]` – actively running (red + spinner)
-/// - `[✓ compacted 12s ago]`     – recently finished (green flash)
-fn compact_node_annotation(
-    compact_task_status: Status,
-    accumulated_tokens: u64,
-    threshold: u64,
-    last_compaction: Option<&str>,
-) -> String {
-    let now = chrono::Utc::now();
-
-    // Check if recently completed (within 60s): show green "done" indicator.
-    if let Some(ts_str) = last_compaction
-        && let Ok(dt) = ts_str.parse::<chrono::DateTime<chrono::Utc>>()
-    {
-        let secs_ago = (now - dt).num_seconds().max(0);
-        if secs_ago < 60 {
-            return format!("[✓ compacted {}s ago]", secs_ago);
-        }
-    }
-
-    // While actively compacting, show spinner + context pressure.
-    if compact_task_status == Status::InProgress {
-        if threshold > 0 {
-            let pct = (accumulated_tokens as f64 / threshold as f64 * 100.0) as u64;
-            return format!("[⟳ compacting · {}% ctx]", pct);
-        }
-        return "[⟳ compacting]".to_string();
-    }
-
-    // Idle — show context pressure relative to threshold.
-    if threshold > 0 {
-        let pct = (accumulated_tokens as f64 / threshold as f64 * 100.0) as u64;
-        if pct >= 70 {
-            // Warning (yellow ≥70%) or overdue (red ≥100%)
-            return format!("[⚠ {}% ctx]", pct);
-        }
-        return format!("[idle · {}% ctx]", pct);
-    }
-
-    "[idle]".to_string()
 }
 
 /// Generate the ASCII viz output string for the given directory and options.
@@ -567,40 +518,13 @@ pub fn generate_viz_output_from_graph(
 
     // Filter out internal tasks (assign-*, evaluate-*) unless --show-internal
     let empty_annotations: HashMap<String, AnnotationInfo> = HashMap::new();
-    let (tasks_to_show, mut annotations) = if options.show_internal {
+    let (tasks_to_show, annotations) = if options.show_internal {
         (tasks_to_show, empty_annotations)
     } else if options.show_internal_running_only {
         filter_internal_tasks_running_only(graph, tasks_to_show, &empty_annotations)
     } else {
         filter_internal_tasks(graph, tasks_to_show, &empty_annotations)
     };
-
-    // Inject compaction status annotation onto the .compact-0 node.
-    // This shows context pressure and compaction state directly in the graph view.
-    if tasks_to_show.iter().any(|t| t.id == ".compact-0") {
-        let compact_task_status = graph
-            .get_task(".compact-0")
-            .map(|t| t.status)
-            .unwrap_or(Status::Open);
-        let total_tokens =
-            crate::commands::service::CoordinatorState::total_accumulated_tokens(dir);
-        let config = workgraph::config::Config::load_or_default(dir);
-        let threshold = config.effective_compaction_threshold();
-        let compactor_state = workgraph::service::compactor::CompactorState::load(dir);
-        let annotation_text = compact_node_annotation(
-            compact_task_status,
-            total_tokens,
-            threshold,
-            compactor_state.last_compaction.as_deref(),
-        );
-        annotations.insert(
-            ".compact-0".to_string(),
-            AnnotationInfo {
-                text: annotation_text,
-                dot_task_ids: vec![],
-            },
-        );
-    }
 
     // Resolve cross-repo peer dependencies: create synthetic Task nodes for peer refs
     // so they appear in the graph with their resolved remote status.
@@ -1530,72 +1454,4 @@ mod tests {
         );
     }
 
-    // --- compact_node_annotation tests ---
-
-    #[test]
-    fn test_compact_annotation_idle_no_threshold() {
-        let text = compact_node_annotation(Status::Open, 0, 0, None);
-        assert_eq!(text, "[idle]");
-    }
-
-    #[test]
-    fn test_compact_annotation_idle_low_pressure() {
-        let text = compact_node_annotation(Status::Open, 400, 1000, None);
-        assert_eq!(text, "[idle · 40% ctx]");
-    }
-
-    #[test]
-    fn test_compact_annotation_warning_threshold() {
-        let text = compact_node_annotation(Status::Open, 850, 1000, None);
-        assert_eq!(text, "[⚠ 85% ctx]");
-        assert!(text.contains('⚠'));
-    }
-
-    #[test]
-    fn test_compact_annotation_overdue() {
-        let text = compact_node_annotation(Status::Open, 1100, 1000, None);
-        assert_eq!(text, "[⚠ 110% ctx]");
-        assert!(text.contains('⚠'));
-    }
-
-    #[test]
-    fn test_compact_annotation_running() {
-        let text = compact_node_annotation(Status::InProgress, 500, 1000, None);
-        assert_eq!(text, "[⟳ compacting · 50% ctx]");
-        assert!(text.contains('⟳'));
-    }
-
-    #[test]
-    fn test_compact_annotation_running_no_threshold() {
-        let text = compact_node_annotation(Status::InProgress, 0, 0, None);
-        assert_eq!(text, "[⟳ compacting]");
-    }
-
-    #[test]
-    fn test_compact_annotation_recently_completed() {
-        // Use a timestamp 10 seconds ago
-        let ts = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
-        let text = compact_node_annotation(Status::Open, 0, 1000, Some(&ts));
-        // Should show "✓ compacted Xs ago" for recent completion
-        assert!(text.contains('✓'), "Expected ✓ in: {}", text);
-        assert!(
-            text.contains("compacted"),
-            "Expected 'compacted' in: {}",
-            text
-        );
-    }
-
-    #[test]
-    fn test_compact_annotation_old_completion_shows_pressure() {
-        // Timestamp 2 minutes ago — should fall through to pressure display
-        let ts = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
-        let text = compact_node_annotation(Status::Open, 300, 1000, Some(&ts));
-        // Should show pressure, not "compacted X ago"
-        assert!(
-            !text.contains('✓'),
-            "Old completion should not show ✓: {}",
-            text
-        );
-        assert_eq!(text, "[idle · 30% ctx]");
-    }
 }

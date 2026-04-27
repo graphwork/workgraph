@@ -45,10 +45,34 @@ wg --help
 ### 1. Global config (once, after install)
 
 ```bash
-wg setup    # interactive wizard — executor, model, agency defaults
+wg setup    # interactive wizard — pick one of 5 named routes
 ```
 
-Writes `~/.workgraph/config.toml`. Configures your executor (claude/amplifier), default model, whether to auto-assign agents and auto-evaluate, and which lightweight model to use for assignment/evaluation (haiku recommended).
+Writes `~/.workgraph/config.toml`. Pick one of 5 smooth routes — each produces a complete, working config (executor + tiers + endpoint when applicable) end-to-end:
+
+| Route | Executor | Use case |
+|-------|----------|----------|
+| `claude-cli` | `claude` | Local `claude` CLI login (no API key in config) |
+| `codex-cli` | `codex` | Local `codex` CLI login |
+| `openrouter` | `nex` (native) | One API key, every major provider |
+| `local` | `nex` (native) | Ollama / vLLM / llama.cpp on `localhost` |
+| `nex-custom` | `nex` (native) | Bring your own OAI-compatible URL + key + model |
+
+The `nex` (a.k.a. `native`) executor is the in-process OAI-compatible HTTP client — three of the five routes use it under the hood.
+
+Non-interactive use:
+
+```bash
+wg setup --route claude-cli --yes
+wg setup --route openrouter --api-key-env OPENROUTER_API_KEY --yes
+wg setup --route local --url http://localhost:11434/v1 --model qwen3:4b --yes
+wg setup --route nex-custom --url https://my.endpoint/v1 --api-key-env MY_KEY --model my-model --yes
+
+# Preview without writing
+wg setup --route claude-cli --dry-run
+```
+
+Switch routes later with `wg config reset --route <name>` (always backs up the existing config first; `--keep-keys` preserves existing endpoint entries).
 
 ### 2. Initialize a project
 

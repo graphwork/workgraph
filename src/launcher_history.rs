@@ -6,10 +6,16 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+
+/// Cap entries kept per (executor, model, endpoint) tuple. Prevents the
+/// JSONL file from growing unboundedly when one combo is invoked many
+/// times. Dedup-on-read still collapses duplicates to a single combo,
+/// but the file itself shouldn't accumulate forever.
+pub const DEFAULT_MAX_PER_TUPLE: usize = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HistoryEntry {
@@ -47,7 +53,15 @@ impl HistoryEntry {
     }
 }
 
+/// Path to the launcher history JSONL. Tests can override via the
+/// `WG_LAUNCHER_HISTORY_PATH` env var so they don't pollute the real
+/// `~/.workgraph/launcher-history.jsonl`.
 fn history_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("WG_LAUNCHER_HISTORY_PATH")
+        && !p.is_empty()
+    {
+        return Ok(PathBuf::from(p));
+    }
     let global_dir = crate::config::Config::global_dir()?;
     Ok(global_dir.join("launcher-history.jsonl"))
 }
@@ -57,10 +71,53 @@ pub fn record_use(entry: &HistoryEntry) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-    let line = serde_json::to_string(entry)?;
-    writeln!(file, "{}", line)?;
+    {
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let line = serde_json::to_string(entry)?;
+        writeln!(file, "{}", line)?;
+    }
+    // Keep the JSONL bounded. Cheap to do on every write because the
+    // file is tiny in practice; correctness wins over micro-perf.
+    let _ = prune_file(&path, DEFAULT_MAX_PER_TUPLE);
     Ok(())
+}
+
+/// Keep only the most-recent `max_per_tuple` entries for each
+/// (executor, model, endpoint) tuple. Rewrites the file in place.
+fn prune_file(path: &Path, max_per_tuple: usize) -> Result<()> {
+    let entries = load_all(path);
+    let pruned = prune_by_tuple(entries, max_per_tuple);
+    // Atomic rewrite: write to a tmp file, rename over the original.
+    let tmp_path = path.with_extension("jsonl.tmp");
+    {
+        let mut tmp = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp_path)?;
+        for e in &pruned {
+            writeln!(tmp, "{}", serde_json::to_string(e)?)?;
+        }
+    }
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// For each tuple, keep at most `max_per_tuple` of the most-recent
+/// entries. Preserves chronological order in the result.
+fn prune_by_tuple(entries: Vec<HistoryEntry>, max_per_tuple: usize) -> Vec<HistoryEntry> {
+    let mut counts: HashMap<(String, Option<String>, Option<String>), usize> = HashMap::new();
+    let mut keep_reverse = Vec::with_capacity(entries.len());
+    for entry in entries.into_iter().rev() {
+        let key = entry.combo_key();
+        let count = counts.entry(key).or_insert(0);
+        if *count < max_per_tuple {
+            keep_reverse.push(entry);
+            *count += 1;
+        }
+    }
+    keep_reverse.reverse();
+    keep_reverse
 }
 
 fn load_all(path: &Path) -> Vec<HistoryEntry> {
@@ -362,5 +419,103 @@ mod tests {
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0].executor, "native");
         assert_eq!(deduped[1].executor, "claude");
+    }
+
+    fn make_entry(ts: &str, exec: &str, model: Option<&str>, endpoint: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            timestamp: ts.to_string(),
+            executor: exec.to_string(),
+            model: model.map(String::from),
+            endpoint: endpoint.map(String::from),
+            source: "test".to_string(),
+            project: None,
+        }
+    }
+
+    #[test]
+    fn test_history_dedup_by_tuple() {
+        // Same (executor, model, endpoint) tuple appears multiple times;
+        // dedup_newest_first should collapse to one entry, keeping newest.
+        let entries = vec![
+            make_entry("2026-01-01T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
+            make_entry("2026-01-02T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
+            make_entry("2026-01-03T00:00:00Z", "claude", Some("opus"), None),
+            make_entry("2026-01-04T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
+        ];
+        let deduped = dedup_newest_first(entries);
+        assert_eq!(deduped.len(), 2, "two distinct tuples expected");
+        assert_eq!(deduped[0].timestamp, "2026-01-04T00:00:00Z");
+        assert_eq!(deduped[0].executor, "native");
+        assert_eq!(deduped[1].timestamp, "2026-01-03T00:00:00Z");
+        assert_eq!(deduped[1].executor, "claude");
+    }
+
+    #[test]
+    fn test_history_pruning_to_max_n() {
+        // 6 entries for the same tuple; pruning to 3 keeps only the 3 newest.
+        let mut entries = Vec::new();
+        for i in 0..6 {
+            entries.push(make_entry(
+                &format!("2026-01-0{}T00:00:00Z", i + 1),
+                "native",
+                Some("qwen3"),
+                Some("http://lambda01"),
+            ));
+        }
+        // Mix in another tuple, which should be unaffected.
+        entries.insert(3, make_entry("2026-02-01T00:00:00Z", "claude", Some("opus"), None));
+
+        let pruned = prune_by_tuple(entries, 3);
+        // 3 native + 1 claude = 4 entries kept.
+        assert_eq!(pruned.len(), 4);
+
+        let native_kept: Vec<&HistoryEntry> = pruned
+            .iter()
+            .filter(|e| e.executor == "native")
+            .collect();
+        assert_eq!(native_kept.len(), 3, "native tuple capped to 3");
+        // Newest 3 by timestamp: dates 04, 05, 06.
+        let timestamps: Vec<&str> = native_kept.iter().map(|e| e.timestamp.as_str()).collect();
+        assert!(timestamps.contains(&"2026-01-04T00:00:00Z"));
+        assert!(timestamps.contains(&"2026-01-05T00:00:00Z"));
+        assert!(timestamps.contains(&"2026-01-06T00:00:00Z"));
+        assert!(!timestamps.contains(&"2026-01-01T00:00:00Z"));
+        assert!(!timestamps.contains(&"2026-01-02T00:00:00Z"));
+        assert!(!timestamps.contains(&"2026-01-03T00:00:00Z"));
+
+        // Claude tuple untouched.
+        let claude_kept: Vec<&HistoryEntry> = pruned
+            .iter()
+            .filter(|e| e.executor == "claude")
+            .collect();
+        assert_eq!(claude_kept.len(), 1);
+    }
+
+    #[test]
+    fn test_prune_file_rewrites_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+
+        // Seed with 5 entries for one tuple, all from oldest to newest.
+        {
+            let mut f = fs::File::create(&path).unwrap();
+            for i in 0..5 {
+                let e = make_entry(
+                    &format!("2026-01-0{}T00:00:00Z", i + 1),
+                    "native",
+                    Some("qwen3"),
+                    None,
+                );
+                writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
+            }
+        }
+
+        prune_file(&path, 2).unwrap();
+
+        let loaded = load_all(&path);
+        assert_eq!(loaded.len(), 2, "should keep only 2 newest");
+        // Order preserved (oldest of the kept first).
+        assert_eq!(loaded[0].timestamp, "2026-01-04T00:00:00Z");
+        assert_eq!(loaded[1].timestamp, "2026-01-05T00:00:00Z");
     }
 }

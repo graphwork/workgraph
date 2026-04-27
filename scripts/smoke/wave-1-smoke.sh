@@ -542,6 +542,43 @@ RESP
     fi
 }
 
+# ── Scenario 4b: Bug A regression — orphan chat supervisor ─────────
+#
+# Pins the orphan-guard fix that the rename-dispatcher-daemon agent
+# silently REVERTED. The bug was: daemon-boot hardcoded "spawn
+# coordinator-0 with task .chat-0", so a fresh `wg init` (which has no
+# `.chat-0` task) sent `wg spawn-task .chat-0` into a perpetual restart
+# loop chasing a phantom. The fix: enumerate `.chat-N` (and legacy
+# `.coordinator-N`) tasks from the graph; spawn one supervisor per task;
+# subprocess loop pre-flight checks task existence and exits cleanly on
+# orphan instead of restart-looping.
+#
+# Verification: run the regression test suite directly. These tests are
+# fast (pure-function + 3 short-running daemon subprocesses) and will
+# fail if anyone reverts the orphan-guard logic.
+
+scenario_4b_dispatch_boot_regression() {
+    local desc="Bug A regression suite: dispatcher boot enumerates chat tasks (no orphan supervisor)"
+    TOTAL=$((TOTAL + 1))
+    echo "[$TOTAL] $desc"
+
+    if ! command -v cargo >/dev/null; then
+        skip "$desc — cargo not available"
+        return
+    fi
+
+    # Run the full integration_dispatch_boot suite (incl. ignored subprocess
+    # tests). Total runtime should be a few seconds.
+    local out
+    out=$(cd "$REPO_ROOT" && cargo test --test integration_dispatch_boot \
+              -- --include-ignored 2>&1 | tail -20)
+    if echo "$out" | grep -qE 'test result: ok\. [0-9]+ passed; 0 failed'; then
+        pass "$desc"
+    else
+        fail "$desc — integration_dispatch_boot tests failed:\n$out"
+    fi
+}
+
 # ── Scenario 5: Model alias resolution ────────────────────────────
 
 scenario_5_model_alias() {
@@ -878,6 +915,8 @@ else
 fi
 
 scenario_3_setup_routes
+
+scenario_4b_dispatch_boot_regression
 
 if [[ "$QUICK" == "false" ]]; then
     scenario_4_launcher_history

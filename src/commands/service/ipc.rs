@@ -327,6 +327,7 @@ fn handle_request(
                 &executor,
                 timeout.as_deref(),
                 model.as_deref(),
+                logger,
             );
             if !resp.ok {
                 logger.error(&format!(
@@ -583,22 +584,93 @@ fn handle_request(
     }
 }
 
-/// Handle spawn request
+/// Handle spawn request.
+///
+/// Routes through `workgraph::dispatch::plan_spawn` so the IPC spawn entry
+/// honors the same {executor, model, endpoint} precedence as the
+/// dispatcher tick. The IPC-passed `executor` is treated as a manual hint
+/// that plan_spawn consults at the `agent_executor` level (wins over
+/// `[dispatcher].executor` but loses to `task.exec` / `task.exec_mode`).
 fn handle_spawn(
     dir: &Path,
     task_id: &str,
     executor: &str,
     timeout: Option<&str>,
     model: Option<&str>,
+    logger: &DaemonLogger,
 ) -> IpcResponse {
-    // Use the spawn command implementation
-    match crate::commands::spawn::spawn_agent(dir, task_id, executor, timeout, model) {
+    let gp = graph_path(dir);
+    let graph = match load_graph(&gp) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+    let task = match graph.get_task(task_id) {
+        Some(t) => t.clone(),
+        None => return IpcResponse::error(&format!("Task '{}' not found", task_id)),
+    };
+
+    let config = Config::load_or_default(dir);
+
+    // Agency-derived executor wins over the IPC hint. If the task is bound
+    // to an agent, use that agent's effective_executor; otherwise fall
+    // back to the IPC-passed executor (`wg spawn --executor X`). The
+    // model-compat override (claude → native for non-Anthropic models)
+    // lives in `plan_spawn`'s `enforce_model_compat` so it doesn't fire
+    // before the dispatcher's explicit executor choice.
+    let agents_dir = dir.join("agency").join("cache/agents");
+    let agent_entity = task
+        .agent
+        .as_ref()
+        .and_then(|hash| workgraph::agency::find_agent_by_prefix(&agents_dir, hash).ok());
+    let agency_executor = agent_entity
+        .as_ref()
+        .and_then(|a| a.explicit_executor().map(str::to_string));
+    let ipc_executor = if executor.is_empty() {
+        None
+    } else {
+        Some(executor.to_string())
+    };
+    let agent_executor_owned = agency_executor.or(ipc_executor);
+
+    // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
+    let plan = match workgraph::dispatch::plan_spawn(
+        &task,
+        &config,
+        agent_executor_owned.as_deref(),
+        model,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("plan_spawn for {}: {}", task_id, e);
+            logger.error(&msg);
+            return IpcResponse::error(&msg);
+        }
+    };
+
+    // Provenance: every IPC-driven spawn emits one line tracing each
+    // decision back to the config knob that produced it.
+    logger.info(&format!(
+        "[ipc] {}: {}",
+        task_id,
+        plan.provenance.log_line(&plan)
+    ));
+
+    let resolved_executor = plan.executor.as_str().to_string();
+    let resolved_model = plan.model.raw.clone();
+
+    match crate::commands::spawn::spawn_agent(
+        dir,
+        task_id,
+        &resolved_executor,
+        timeout,
+        Some(&resolved_model),
+    ) {
         Ok((agent_id, pid)) => IpcResponse::success(serde_json::json!({
             "agent_id": agent_id,
             "pid": pid,
             "task_id": task_id,
-            "executor": executor,
-            "model": model,
+            "executor": resolved_executor,
+            "model": resolved_model,
         })),
         Err(e) => IpcResponse::error(&e.to_string()),
     }
@@ -1117,6 +1189,7 @@ fn handle_add_task(
         max_rejections: None,
         exec_mode: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -1372,35 +1445,9 @@ pub fn create_chat_in_graph(
 
     graph.add_node(workgraph::graph::Node::Task(task));
 
-    // Create companion .archive-N task (NO back-edge to chat agent).
-    // Archive runs independently and must NOT create a circular dependency.
-    // The chat agent should NOT wait for archive to complete — that creates
-    // deadlock: .chat → .archive → .chat
-    let archive_id = format!(".archive-{}", next_id);
-    if graph.get_task(&archive_id).is_none() {
-        let archive_task = workgraph::graph::Task {
-            id: archive_id.clone(),
-            title: format!("Archive {}", next_id),
-            description: Some(format!(
-                "Archive task — moves old done/abandoned tasks to archive.jsonl. \
-                 Forms a cycle with chat agent {}.",
-                next_id
-            )),
-            status: workgraph::graph::Status::Open,
-            tags: vec!["archive-loop".to_string()],
-            after: vec![workgraph::chat_id::format_chat_task_id(next_id)],
-            created_at: Some(chrono::Utc::now().to_rfc3339()),
-            log: vec![workgraph::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: Some("daemon".to_string()),
-                user: Some(workgraph::current_user()),
-                message: format!("Archive {} task created via IPC", next_id),
-            }],
-            ..Default::default()
-        };
-        graph.add_node(workgraph::graph::Node::Task(archive_task));
-        // NOTE: No back-edge from coordinator to archive. Archive runs independently.
-    }
+    // Companion `.archive-N` and `.compact-N` tasks are no longer created.
+    // Archival runs natively in the dispatcher (see `run_automatic_archival`);
+    // graph-cycle compaction has been retired entirely.
 
     workgraph::parser::modify_graph(&graph_path, |fresh| {
         // Re-apply all mutations to a fresh graph
@@ -2595,6 +2642,75 @@ poll_interval = 120
         assert_eq!(
             bob_check.accumulated_tokens, 200,
             "bob's state should be untouched"
+        );
+    }
+
+    /// Regression: each launcher submit must allocate a brand-new chat id,
+    /// not reuse the most recent one. The user complaint was "it doesnt
+    /// convert into chat-2 or whatever it takes over the last coordinator
+    /// chat". `find_next_fresh_coordinator_id` must return max(existing) + 1.
+    #[test]
+    fn test_dialog_enter_creates_new_chat_with_fresh_id() {
+        use workgraph::chat_id::{CHAT_LOOP_TAG, format_chat_task_id};
+        use workgraph::graph::{CycleConfig, Status, Task, WorkGraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Empty graph -> id 0
+        let empty_graph = WorkGraph::new();
+        assert_eq!(
+            find_next_fresh_coordinator_id(&empty_graph, dir),
+            0,
+            "first chat in empty graph gets id 0"
+        );
+
+        // Graph with .chat-0 already present -> next is 1
+        let mut graph_with_zero = WorkGraph::new();
+        let chat0 = Task {
+            id: format_chat_task_id(0),
+            title: "Chat 0".to_string(),
+            status: Status::InProgress,
+            tags: vec![CHAT_LOOP_TAG.to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0,
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            ..Default::default()
+        };
+        graph_with_zero.add_node(workgraph::graph::Node::Task(chat0));
+        assert_eq!(
+            find_next_fresh_coordinator_id(&graph_with_zero, dir),
+            1,
+            "with .chat-0 present, next fresh id must be 1 (NOT 0 — would overwrite)"
+        );
+
+        // Graph with .chat-0 + .chat-3 -> next is 4 (max + 1, not just count)
+        let mut graph_with_gap = graph_with_zero.clone();
+        let chat3 = Task {
+            id: format_chat_task_id(3),
+            title: "Chat 3".to_string(),
+            status: Status::InProgress,
+            tags: vec![CHAT_LOOP_TAG.to_string()],
+            cycle_config: Some(CycleConfig {
+                max_iterations: 0,
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            ..Default::default()
+        };
+        graph_with_gap.add_node(workgraph::graph::Node::Task(chat3));
+        assert_eq!(
+            find_next_fresh_coordinator_id(&graph_with_gap, dir),
+            4,
+            "with .chat-0 + .chat-3, next fresh id is 4 (max+1), not 1 or 2"
         );
     }
 }

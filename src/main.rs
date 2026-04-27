@@ -495,6 +495,36 @@ fn maybe_print_subcommand_help() -> bool {
     false
 }
 
+/// Rewrite `wg config reset ...` to `wg config --reset ...` so the
+/// positional `reset` token works alongside the existing flag-driven
+/// `Config` command shape (which is too large to convert to a nested
+/// Subcommand without a major refactor). Idempotent: leaves all other
+/// argv shapes untouched.
+fn rewrite_config_reset_argv(args: Vec<String>) -> Vec<String> {
+    // Find the first non-`--dir`/`--json` etc. positional that is "config".
+    // For simplicity we scan for the literal pair ["config", "reset"] in
+    // order, since "config" is never used as a value for any flag.
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    let mut rewrote = false;
+    while i < args.len() {
+        if !rewrote
+            && i + 1 < args.len()
+            && args[i] == "config"
+            && args[i + 1] == "reset"
+        {
+            out.push("config".to_string());
+            out.push("--reset".to_string());
+            rewrote = true;
+            i += 2;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}
+
 fn main() -> Result<()> {
     // Handle subcommand-level help before clap parses (since we disable_help_flag globally)
     maybe_print_subcommand_help();
@@ -521,7 +551,11 @@ fn main() -> Result<()> {
         .format_timestamp(None)
         .init();
 
-    let cli = Cli::parse();
+    let cli = {
+        let argv: Vec<String> = std::env::args().collect();
+        let rewritten = rewrite_config_reset_argv(argv);
+        Cli::parse_from(rewritten)
+    };
 
     let workgraph_dir = resolve_workgraph_dir(
         cli.dir.clone(),
@@ -663,6 +697,8 @@ fn main() -> Result<()> {
             executor,
             model,
             endpoint,
+            route,
+            dry_run,
         } => {
             // Init is special: it declares a NEW project at a specific
             // place. Unlike every other command (which walks up from
@@ -688,12 +724,14 @@ fn main() -> Result<()> {
                     .context("cannot resolve current directory for wg init")?
                     .join(".wg")
             };
-            commands::init::run(
+            commands::init::run_with_route(
                 &target_dir,
                 no_agency,
                 executor.as_deref(),
                 model.as_deref(),
                 endpoint.as_deref(),
+                route.as_deref(),
+                dry_run,
             )
         }
         Commands::Reset {
@@ -964,12 +1002,16 @@ fn main() -> Result<()> {
             converged,
             skip_verify,
             ignore_unmerged_worktree,
+            full_smoke,
+            skip_smoke,
         } => commands::done::run(
             &workgraph_dir,
             &id,
             converged,
             skip_verify,
             ignore_unmerged_worktree,
+            full_smoke,
+            skip_smoke,
         ),
         Commands::Fail {
             id,
@@ -993,7 +1035,28 @@ fn main() -> Result<()> {
         Commands::Retry {
             id,
             preserve_session,
-        } => commands::retry::run(&workgraph_dir, &id, preserve_session),
+            fresh,
+        } => commands::retry::run(&workgraph_dir, &id, preserve_session, fresh),
+        Commands::Recover {
+            yes,
+            filter,
+            set_model,
+            set_endpoint,
+            keep_agency,
+            max_attempts,
+            reason,
+        } => commands::recover::run(
+            &workgraph_dir,
+            commands::recover::RecoverOptions {
+                yes,
+                filter,
+                set_model,
+                set_endpoint,
+                keep_agency,
+                max_attempts,
+                reason,
+            },
+        ),
         Commands::Requeue { id, reason } => commands::requeue::run(&workgraph_dir, &id, &reason),
         Commands::Approve { id } => commands::approve::run(&workgraph_dir, &id),
         Commands::Reject { id, reason } => commands::reject::run(&workgraph_dir, &id, &reason),
@@ -1036,6 +1099,7 @@ fn main() -> Result<()> {
             paused,
             tags,
             cron,
+            all,
         } => commands::list::run(
             &workgraph_dir,
             status.as_deref(),
@@ -1044,6 +1108,7 @@ fn main() -> Result<()> {
             None,
             cron,
             cli.json,
+            all,
         ),
         Commands::Viz {
             focus,
@@ -1929,7 +1994,6 @@ fn main() -> Result<()> {
                 )
             }
         }
-        Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
         Commands::Session { command } => commands::chat_session::run(&workgraph_dir, command),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
@@ -2185,6 +2249,7 @@ fn main() -> Result<()> {
         },
         Commands::Config {
             show,
+            merged,
             init,
             global,
             local,
@@ -2257,6 +2322,11 @@ fn main() -> Result<()> {
             max_coordinators,
             endpoint,
             no_reload,
+            reset,
+            reset_route,
+            reset_keep_keys,
+            reset_dry_run,
+            reset_yes,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -2266,6 +2336,20 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            // Handle --reset (also reachable as positional `wg config reset`)
+            if reset {
+                let reset_scope =
+                    scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
+                return commands::config_cmd::reset_to_route(
+                    &workgraph_dir,
+                    reset_scope,
+                    reset_route.as_deref(),
+                    reset_keep_keys,
+                    reset_dry_run,
+                    reset_yes,
+                );
+            }
 
             // Handle --set-key <provider> --file <path>
             if let Some(ref provider) = set_key {
@@ -2439,6 +2523,11 @@ fn main() -> Result<()> {
                 commands::config_cmd::list(&workgraph_dir, cli.json)
             } else if init {
                 commands::config_cmd::init(&workgraph_dir, scope)
+            } else if merged {
+                // `--merged` is an explicit alias for "show effective config":
+                // ignore any --global/--local scope so the user sees what the
+                // running system actually sees.
+                commands::config_cmd::show(&workgraph_dir, None, cli.json)
             } else if show
                 || (executor.is_none()
                     && model.is_none()
@@ -2547,6 +2636,9 @@ fn main() -> Result<()> {
         Commands::Migrate { cmd } => match cmd {
             MigrateCommands::ChatRename { dry_run } => {
                 commands::migrate::run_chat_rename(&workgraph_dir, dry_run, cli.json)
+            }
+            MigrateCommands::RetireCompactArchive { dry_run } => {
+                commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
             }
         },
         Commands::Agents {
@@ -2825,25 +2917,31 @@ fn main() -> Result<()> {
             ServerCommands::Connect { user } => commands::server::connect(user.as_deref()),
         },
         Commands::Setup {
+            route,
             provider,
             api_key_file,
             api_key_env,
             url,
             model,
             skip_validation,
+            yes,
+            dry_run,
         } => {
             let args = commands::setup::SetupArgs {
+                route,
                 provider,
                 api_key_file,
                 api_key_env,
                 url,
                 model,
                 skip_validation,
+                yes,
+                dry_run,
             };
             commands::setup::run_with_args(&args)
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
-        Commands::Status => commands::status::run(&workgraph_dir, cli.json),
+        Commands::Status { all } => commands::status::run(&workgraph_dir, cli.json, all),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
         Commands::Metrics { json } => commands::metrics::run(&workgraph_dir, json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -3074,6 +3172,8 @@ fn main() -> Result<()> {
             autonomous,
             no_mcp,
             eval_mode,
+            idle_timeout_secs,
+            minimal_tools,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -3091,6 +3191,8 @@ fn main() -> Result<()> {
             autonomous,
             no_mcp,
             eval_mode,
+            idle_timeout_secs,
+            minimal_tools,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

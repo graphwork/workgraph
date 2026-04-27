@@ -69,6 +69,18 @@ pub enum Commands {
         /// Example: `wg init -m nemotron-h-8b -e http://127.0.0.1:8088`
         #[arg(short = 'e', long)]
         endpoint: Option<String>,
+
+        /// Pick one of the 5 named setup routes (openrouter, claude-cli,
+        /// codex-cli, local, nex-custom) and produce a complete config —
+        /// executor + tiers + endpoint when applicable. Alternative to
+        /// `-x <executor>` when you want fully-populated tiers out of the box.
+        #[arg(long)]
+        route: Option<String>,
+
+        /// Print the config that would be written but don't actually create
+        /// the workgraph directory or files.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Bulk-reset a subgraph: given one or more seed tasks, close the
@@ -491,6 +503,16 @@ pub enum Commands {
         /// cannot be cleanly merged, creating a .merge-<id> task for later resolution.
         #[arg(long)]
         ignore_unmerged_worktree: bool,
+
+        /// Run every scenario in the smoke manifest, not just those owned by
+        /// this task. Use before merging high-impact changes.
+        #[arg(long = "full-smoke")]
+        full_smoke: bool,
+
+        /// Bypass the smoke gate. Loud-warns; refused for agents (WG_AGENT_ID set)
+        /// unless WG_SMOKE_AGENT_OVERRIDE=1 is also exported.
+        #[arg(long = "skip-smoke")]
+        skip_smoke: bool,
     },
 
     /// Mark a task as failed (can be retried)
@@ -546,6 +568,49 @@ pub enum Commands {
         /// Keep the stored Claude session ID (default: clear it so the retry starts fresh)
         #[arg(long)]
         preserve_session: bool,
+
+        /// Discard the prior worktree (if any) and start over from main.
+        /// Default is retry-in-place: the next agent reuses the existing
+        /// worktree + branch so uncommitted WIP and prior commits are preserved.
+        #[arg(long)]
+        fresh: bool,
+    },
+
+    /// Batch-recover from credit-exhaustion / mass-failure (default: dry-run)
+    ///
+    /// Surveys failed tasks and resets them in one operation: retries
+    /// user-tasks, abandons agency followups so they regenerate from parents.
+    /// Without --yes this only prints the plan.
+    Recover {
+        /// Execute the plan (default: dry-run)
+        #[arg(long)]
+        yes: bool,
+
+        /// Filter clauses (repeatable, comma-separated). Examples:
+        /// `status=failed`, `tag=eval-scheduled`, `id-prefix=tui-`,
+        /// `attempts<=2`, `error~credit`
+        #[arg(long, value_name = "EXPR")]
+        filter: Vec<String>,
+
+        /// Override model on each user-task before retry (provider:model format)
+        #[arg(long, value_name = "MODEL")]
+        set_model: Option<String>,
+
+        /// Override endpoint on each user-task before retry
+        #[arg(long, value_name = "ENDPOINT")]
+        set_endpoint: Option<String>,
+
+        /// Don't abandon agency followups (`.evaluate-*` / `.flip-*` / `.assign-*` / `.verify-*`)
+        #[arg(long)]
+        keep_agency: bool,
+
+        /// Skip tasks whose attempt-count >= N (default: 5; protects against retry loops)
+        #[arg(long, default_value_t = 5)]
+        max_attempts: u32,
+
+        /// Reason for recovery — recorded as a log entry on each retried task
+        #[arg(long)]
+        reason: Option<String>,
     },
 
     /// Requeue an in-progress task for failed-dependency triage (resets to open)
@@ -733,6 +798,10 @@ pub enum Commands {
         /// Only show cron-scheduled tasks
         #[arg(long)]
         cron: bool,
+
+        /// Show all tasks including dot-prefixed system tasks (hidden by default)
+        #[arg(long)]
+        all: bool,
     },
 
     /// Visualize the dependency graph (ASCII tree by default)
@@ -1152,9 +1221,6 @@ pub enum Commands {
         list: bool,
     },
 
-    /// Compact: distill graph state into context.md
-    Compact,
-
     /// Chat with the coordinator agent.
     ///
     /// `wg chat <subcommand>` (create, list, show, attach, send, stop,
@@ -1444,6 +1510,13 @@ pub enum Commands {
         /// Show current configuration
         #[arg(long)]
         show: bool,
+
+        /// Show the effective merged config (global + local) — exactly what
+        /// the running daemon and agents will see. Use this to debug e.g.
+        /// "why is openrouter still in my routing when I removed it locally?"
+        /// Equivalent to `wg config show` with no scope, but explicit.
+        #[arg(long)]
+        merged: bool,
 
         /// Initialize default config file
         #[arg(long)]
@@ -1747,6 +1820,30 @@ pub enum Commands {
         /// Skip confirmation when overwriting existing global config
         #[arg(long)]
         force: bool,
+
+        /// Reset config to defaults. With `--route <name>` resets to that route's
+        /// defaults; without a route, picks the closest route based on the current
+        /// executor. Always backs up to config.toml.bak-<timestamp> first.
+        /// Also reachable as `wg config reset` (positional alias).
+        #[arg(long)]
+        reset: bool,
+
+        /// One of the 5 named routes for `--reset`: openrouter, claude-cli, codex-cli,
+        /// local, nex-custom.
+        #[arg(long = "route", value_name = "NAME")]
+        reset_route: Option<String>,
+
+        /// Preserve existing `[[llm_endpoints.endpoints]]` entries when resetting.
+        #[arg(long = "keep-keys")]
+        reset_keep_keys: bool,
+
+        /// Print the diff that `--reset` would apply, but don't actually write.
+        #[arg(long = "dry-run")]
+        reset_dry_run: bool,
+
+        /// Skip confirmation when `--reset` would replace a non-empty config.
+        #[arg(long = "yes")]
+        reset_yes: bool,
     },
 
     /// Detect and clean up dead agents
@@ -1912,31 +2009,47 @@ pub enum Commands {
 
     /// Interactive configuration wizard for first-time setup
     Setup {
-        /// Provider (anthropic, openrouter, openai, local, custom) — enables non-interactive mode
+        /// One of the 5 named routes: openrouter, claude-cli, codex-cli, local, nex-custom.
+        /// Picks a complete, working config end-to-end (executor + tiers + endpoint
+        /// when applicable). Use with `--yes` for non-interactive setup.
+        #[arg(long)]
+        route: Option<String>,
+        /// [DEPRECATED] Use `--route` instead. Still accepted: anthropic, openrouter,
+        /// openai, local, custom. Maps internally onto the closest route.
         #[arg(long)]
         provider: Option<String>,
-        /// Path to API key file
+        /// Path to API key file (route-dependent: openrouter / nex-custom).
         #[arg(long)]
         api_key_file: Option<String>,
-        /// Environment variable name for API key
+        /// Environment variable name for API key (route-dependent).
         #[arg(long)]
         api_key_env: Option<String>,
-        /// API endpoint URL
+        /// API endpoint URL (route-dependent: local / nex-custom).
         #[arg(long)]
         url: Option<String>,
-        /// Default model ID
+        /// Default model ID (route-dependent).
         #[arg(long)]
         model: Option<String>,
         /// Skip API key validation
         #[arg(long)]
         skip_validation: bool,
+        /// Non-interactive: write the route's config without prompting.
+        #[arg(long)]
+        yes: bool,
+        /// Print the config that would be written but don't write it.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Print a concise cheat sheet for agent onboarding
     Quickstart,
 
     /// Quick one-screen status overview
-    Status,
+    Status {
+        /// Include dot-prefixed system tasks in counts (hidden by default)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Show time counters and agent statistics
     Stats,
@@ -2150,6 +2263,22 @@ pub enum Commands {
         /// the autonomous task-agent path already uses.
         #[arg(long = "eval-mode")]
         eval_mode: bool,
+
+        /// Streaming idle timeout in seconds (default: 600). How long to
+        /// wait for new chunks before aborting a streaming request.
+        /// Useful for slow local models where prefill can take minutes.
+        /// Also configurable via WG_STREAM_IDLE_TIMEOUT_SECS env var
+        /// (flag takes precedence).
+        #[arg(long = "idle-timeout-secs")]
+        idle_timeout_secs: Option<u64>,
+
+        /// Minimal tool surface: expose only the canonical local-dev
+        /// tool set (Read, Edit, Write, Bash, Grep, Glob, TodoWrite)
+        /// and omit everything else (WebFetch, WebSearch, NotebookEdit,
+        /// Monitor, Task*, Remote*, Cron*, MCP tools). Dramatically
+        /// reduces prefill cost for small local models. Implies --no-mcp.
+        #[arg(long = "minimal-tools")]
+        minimal_tools: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)
@@ -4101,6 +4230,18 @@ pub enum MigrateCommands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Mark all legacy `.compact-N` and `.archive-N` tasks as Abandoned.
+    /// The graph-cycle compactor and archive-loop scaffolding were retired
+    /// — archival now runs natively in the dispatcher; chat memory is
+    /// handled by the chat agent's own memory subsystem.
+    ///
+    /// Safe to run multiple times — idempotent.
+    RetireCompactArchive {
+        /// Only report what would change, don't write.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4427,6 +4568,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Recover { .. } => "recover",
         Commands::Requeue { .. } => "requeue",
         Commands::Approve { .. } => "approve",
         Commands::Reject { .. } => "reject",
@@ -4487,7 +4629,6 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
         Commands::Checkpoint { .. } => "checkpoint",
-        Commands::Compact => "compact",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
@@ -4513,7 +4654,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiDump { .. } => "tui-dump",
         Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
-        Commands::Status => "status",
+        Commands::Status { .. } => "status",
         Commands::Stats => "stats",
         Commands::Metrics { .. } => "metrics",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -4585,7 +4726,6 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Checkpoint { .. }
-            | Commands::Compact
             | Commands::Artifact { .. }
             | Commands::Context { .. }
             | Commands::Next { .. }
@@ -4608,7 +4748,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Cleanup { .. }
             | Commands::Cycles
             | Commands::Quickstart
-            | Commands::Status
+            | Commands::Status { .. }
             | Commands::Stats
             | Commands::Metrics { .. }
             | Commands::Chat { .. }

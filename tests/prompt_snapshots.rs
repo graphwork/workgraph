@@ -197,6 +197,8 @@ fn snapshot_evaluator_prompt_full() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -225,6 +227,8 @@ fn snapshot_evaluator_prompt_minimal() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -255,6 +259,8 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -297,6 +303,8 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let output = render_evaluator_prompt(&input);

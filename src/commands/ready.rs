@@ -73,7 +73,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     .map(|a| format!(" ({})", a))
                     .unwrap_or_default();
                 let priority_str = if task.priority != PRIORITY_DEFAULT {
-                    format!(" ▴{}", task.priority)
+                    format!(" ⌁{}", task.priority)
                 } else {
                     String::new()
                 };

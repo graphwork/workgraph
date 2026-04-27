@@ -282,6 +282,7 @@ fn build_assign_subgraph(dir: &Path) {
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,

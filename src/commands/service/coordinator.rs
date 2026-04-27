@@ -135,9 +135,16 @@ fn cleanup_and_count_alive(
 }
 
 /// Tags for daemon-managed loop tasks that should not be spawned as regular agents.
+///
+/// `chat-loop` (new) and `coordinator-loop` (legacy) both identify chat-agent
+/// supervisors. The daemon's `subprocess_coordinator_loop` spawns these via
+/// `wg spawn-task` directly; if the dispatcher were also allowed to claim them
+/// it would spawn a regular worker that idle-loops `wg log` + `wg done` and
+/// burns tokens (see chat-agent-loops bug A).
 const DAEMON_MANAGED_TAGS: &[&str] = &[
     "compact-loop",
     "archive-loop",
+    "chat-loop",
     "coordinator-loop",
     "registry-refresh-loop",
     "user-board",
@@ -840,6 +847,22 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
 /// 4. Logs diagnostic info for stale blocked states
 ///
 /// Returns `true` if the graph was modified.
+/// Dispatcher-side wrapper around `workgraph::lifecycle::migrate_pending_validation_tasks`.
+/// Performs the migration and emits a `[dispatcher] Migrated …` banner per task
+/// so the operator sees the one-time event in `daemon.log`. Returns true if any
+/// task was migrated.
+fn migrate_pending_validation_tasks(graph: &mut workgraph::graph::WorkGraph) -> bool {
+    let migrated = workgraph::lifecycle::migrate_pending_validation_tasks(graph);
+    for id in &migrated {
+        eprintln!(
+            "[dispatcher] Migrated '{}' from PendingValidation to Done \
+             (legacy state — agency eval is now the unblock gate)",
+            id
+        );
+    }
+    !migrated.is_empty()
+}
+
 fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> bool {
     let mut modified = false;
 
@@ -1512,6 +1535,7 @@ fn build_auto_assign_tasks(
                     rejection_count: 0,
                     max_rejections: None,
                     verify_failures: 0,
+                    rescue_count: 0,
                     spawn_failures: 0,
                     dispatch_count: 0,
                     tier: None,
@@ -1902,6 +1926,7 @@ fn build_flip_verification_tasks(
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2167,6 +2192,7 @@ fn build_separate_verify_tasks(
             rejection_count: 0,
             max_rejections: None,
             verify_failures: 0,
+            rescue_count: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2364,6 +2390,7 @@ fn build_auto_evolve_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -2564,6 +2591,7 @@ fn build_auto_create_task(
         rejection_count: 0,
         max_rejections: None,
         verify_failures: 0,
+        rescue_count: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -2658,6 +2686,64 @@ fn write_inline_artifacts(
 ///
 /// The forked process is still tracked in the agent registry for dead-agent
 /// detection.
+/// Build the bash script that runs an inline eval, optionally records a
+/// special-agent performance row, and marks the eval task done/failed.
+///
+/// Inputs `escaped_eval_id` and `escaped_output` are already shell-escaped
+/// for single-quoted contexts (i.e. each `'` already replaced with `'\''`).
+/// `special_agent_id`, when present, is similarly escaped by the caller.
+fn build_inline_eval_script(
+    eval_cmd: &str,
+    escaped_eval_id: &str,
+    escaped_output: &str,
+    special_agent_id: Option<&str>,
+) -> String {
+    if let Some(sa_id) = special_agent_id {
+        let escaped_sa_id = sa_id.replace('\'', "'\\''");
+        format!(
+            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+_WG_STDERR=$(mktemp)
+{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
+if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$_WG_STDERR"
+    wg evaluate record --task '{escaped_eval_id}' --score 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
+    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
+else
+    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
+    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
+    rm -f "$_WG_STDERR"
+    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    wg evaluate record --task '{escaped_eval_id}' --score 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
+    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+fi
+exit $EXIT_CODE"#,
+        )
+    } else {
+        format!(
+            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+_WG_STDERR=$(mktemp)
+{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
+if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$_WG_STDERR"
+    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
+else
+    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
+    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
+    rm -f "$_WG_STDERR"
+    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+fi
+exit $EXIT_CODE"#,
+        )
+    }
+}
+
 fn spawn_eval_inline(
     dir: &Path,
     eval_task_id: &str,
@@ -2774,50 +2860,12 @@ fn spawn_eval_inline(
     // Single script: run eval, record special agent perf, then mark done/failed.
     // Token usage is captured by `wg done` which parses __WG_TOKENS__ lines
     // from the output.log directly.
-    let script = if let Some(ref sa_id) = special_agent_verified {
-        let escaped_sa_id = sa_id.replace('\'', "'\\''");
-        format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-_WG_STDERR=$(mktemp)
-{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
-EXIT_CODE=$?
-cat "$_WG_STDERR" >> '{escaped_output}'
-if [ $EXIT_CODE -eq 0 ]; then
-    rm -f "$_WG_STDERR"
-    wg evaluate record '{escaped_eval_id}' 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
-else
-    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
-    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
-    rm -f "$_WG_STDERR"
-    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    wg evaluate record '{escaped_eval_id}' 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
-fi
-exit $EXIT_CODE"#,
-        )
-    } else {
-        format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-_WG_STDERR=$(mktemp)
-{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
-EXIT_CODE=$?
-cat "$_WG_STDERR" >> '{escaped_output}'
-if [ $EXIT_CODE -eq 0 ]; then
-    rm -f "$_WG_STDERR"
-    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
-else
-    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
-    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
-    rm -f "$_WG_STDERR"
-    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
-fi
-exit $EXIT_CODE"#,
-        )
-    };
+    let script = build_inline_eval_script(
+        &eval_cmd,
+        &escaped_eval_id,
+        &escaped_output,
+        special_agent_verified.as_deref(),
+    );
 
     write_inline_artifacts(&output_dir, &agent_id, eval_task_id, "eval", evaluator_model, &script);
 
@@ -3054,6 +3102,125 @@ exit $EXIT_CODE"#,
     Ok((agent_id, pid))
 }
 
+/// Spawn a shell-mode task inline: fork `wg exec --shell <task_id>` as a
+/// lightweight subprocess instead of going through the full agent spawn path.
+fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
+    use std::process::{Command, Stdio};
+
+    let graph_path = graph_path(dir);
+
+    let mut locked_registry = AgentRegistry::load_locked(dir)?;
+    let agent_id = format!("agent-{}", locked_registry.next_agent_id);
+
+    let output_dir = dir.join("agents").join(&agent_id);
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create shell output dir: {:?}", output_dir))?;
+    let output_file = output_dir.join("output.log");
+    let output_file_str = output_file.to_string_lossy().to_string();
+
+    let escaped_task_id = task_id.replace('\'', "'\\''");
+    let escaped_output = output_file_str.replace('\'', "'\\''");
+
+    let mut claim_error: Option<String> = None;
+    let agent_id_clone = agent_id.clone();
+
+    modify_graph(&graph_path, |graph| {
+        let task = match graph.get_task_mut(task_id) {
+            Some(t) => t,
+            None => {
+                claim_error = Some(format!("Shell task '{}' not found", task_id));
+                return false;
+            }
+        };
+
+        if task.status != Status::Open {
+            claim_error = Some(format!(
+                "Shell task '{}' is not open (status: {:?})",
+                task_id, task.status
+            ));
+            return false;
+        }
+
+        task.status = Status::InProgress;
+        task.started_at = Some(Utc::now().to_rfc3339());
+        task.assigned = Some(agent_id_clone.clone());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(agent_id_clone.clone()),
+            user: Some(workgraph::current_user()),
+            message: "Spawned shell task inline".to_string(),
+        });
+
+        true
+    })
+    .context("Failed to load/save graph for shell spawn")?;
+
+    if let Some(err) = claim_error {
+        anyhow::bail!("{}", err);
+    }
+
+    let script = format!(
+        r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+_WG_STDERR=$(mktemp)
+wg exec '{escaped_task_id}' --shell >> '{escaped_output}' 2>"$_WG_STDERR"
+EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
+rm -f "$_WG_STDERR"
+exit $EXIT_CODE"#,
+    );
+
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(&script);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let agent_id_rollback = agent_id.clone();
+            let err_msg = e.to_string();
+            let _ = modify_graph(&graph_path, |graph| {
+                if let Some(t) = graph.get_task_mut(task_id) {
+                    t.status = Status::Open;
+                    t.started_at = None;
+                    t.assigned = None;
+                    t.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some(agent_id_rollback.clone()),
+                        user: Some(workgraph::current_user()),
+                        message: format!("Shell spawn failed, reverting claim: {}", err_msg),
+                    });
+                    true
+                } else {
+                    false
+                }
+            });
+            return Err(anyhow::anyhow!("Failed to spawn shell process: {}", e));
+        }
+    };
+
+    let pid = child.id();
+
+    locked_registry.register_agent_with_model(pid, task_id, "shell", &output_file_str, None);
+    locked_registry
+        .save()
+        .context("Failed to save agent registry after shell spawn")?;
+
+    Ok((agent_id, pid))
+}
+
 /// Priority-aware task sorting with starvation prevention and priority inheritance.
 ///
 /// Features:
@@ -3264,39 +3431,6 @@ fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result
     Ok(())
 }
 
-/// Check if a model string represents a non-Anthropic model that requires the
-/// native executor instead of the Claude CLI.
-///
-/// Checks three things in order:
-/// 1. If the model uses `provider:model` format, the provider prefix determines
-///    the executor directly (only `claude:*` uses the Claude CLI).
-/// 2. If the model contains a `/` and doesn't start with `anthropic/`, it's a
-///    non-Anthropic full model ID (e.g. `google/gemini-2.0-flash-001`).
-/// 3. If the model is a registry alias (e.g. `gemini-flash`), look up its provider
-///    in the registry — if the provider isn't `anthropic`, it needs native.
-///
-/// Returns `false` for Anthropic models, bare Anthropic model names, and
-/// built-in tier aliases (`haiku`, `sonnet`, `opus`).
-pub(crate) fn requires_native_executor(model: &str, config: &Config) -> bool {
-    // 1. Unified provider:model check — provider prefix determines executor directly
-    let spec = workgraph::config::parse_model_spec(model);
-    if let Some(ref prefix) = spec.provider {
-        return workgraph::config::provider_to_executor(prefix) != "claude";
-    }
-
-    // 2. Legacy: direct provider/model format check (org/model without provider: prefix)
-    if spec.model_id.contains('/') {
-        return !spec.model_id.starts_with("anthropic/");
-    }
-    // 3. Registry alias check: look up the model and check its provider
-    if let Some(entry) = config.registry_lookup(&spec.model_id) {
-        return entry.provider != "anthropic";
-    }
-    // Bare model names without registry entries are assumed Anthropic-compatible
-    // (e.g. "claude-sonnet-4-6", "haiku", "sonnet", "opus")
-    false
-}
-
 /// Check if a task has exceeded the spawn failure threshold and should be skipped.
 ///
 /// Returns:
@@ -3448,6 +3582,44 @@ fn spawn_agents_for_ready_tasks(
             }
         }
 
+        // Shell-mode tasks run inline: fork `wg exec --shell` directly instead
+        // of going through the full agent spawn path. Must be checked before the
+        // auto_assign gate because shell tasks are intentionally excluded from
+        // auto-assign (they run commands, not agents) and thus have no agent field.
+        let is_shell_task = task.exec_mode.as_deref() == Some("shell") && task.exec.is_some();
+        if is_shell_task {
+            let task_id = task.id.clone();
+            let title = task.title.clone();
+            eprintln!(
+                "[coordinator] Spawning shell task inline for: {} - {}",
+                task_id, title,
+            );
+            match spawn_shell_inline(dir, &task_id) {
+                Ok((agent_id, pid)) => {
+                    eprintln!(
+                        "[coordinator] Spawned shell {} (PID {})",
+                        agent_id, pid
+                    );
+                    spawned += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[coordinator] Failed to spawn shell for {}: {}",
+                        task_id, e
+                    );
+                    record_spawn_failure(
+                        &gp,
+                        &task_id,
+                        &format!("{}", e),
+                        "inline-shell",
+                        task.exec_mode.as_deref(),
+                        config.coordinator.max_spawn_failures,
+                    );
+                }
+            }
+            continue;
+        }
+
         // Defense-in-depth: when auto_assign is enabled, non-system tasks
         // should have an agent set before being spawned. Normally the graph
         // dependency on `.assign-*` prevents reaching here without an agent,
@@ -3531,22 +3703,6 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Resolve executor: tasks with exec commands or exec_mode=shell use shell executor,
-        // otherwise: agent.executor > config.coordinator.executor
-        let agent_entity = task
-            .agent
-            .as_ref()
-            .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
-        let mut effective_executor =
-            if task.exec.is_some() || task.exec_mode.as_deref() == Some("shell") {
-                "shell".to_string()
-            } else {
-                agent_entity
-                    .as_ref()
-                    .map(|agent| agent.effective_executor().to_string())
-                    .unwrap_or_else(|| executor.to_string())
-            };
-
         // Resolve model per-task: system tasks use their respective role models,
         // all other tasks use the default (TaskAgent) model.
         let task_model = if task.id.starts_with(".assign-") {
@@ -3559,35 +3715,50 @@ fn spawn_agents_for_ready_tasks(
             default_model.map(String::from)
         };
 
-        // Auto-detect native executor for non-Anthropic models.
-        // If the resolved executor is "claude" but the effective model is a non-Anthropic
-        // model (e.g. "google/gemini-2.0-flash-001"), the Claude CLI won't be able to
-        // route it — switch to "native" executor which handles OpenRouter/OpenAI-compat.
-        if effective_executor == "claude" {
-            let effective_model_for_detect = task
-                .model
-                .as_deref()
-                .or(agent_entity
-                    .as_ref()
-                    .and_then(|a| a.preferred_model.as_deref()))
-                .or(task_model.as_deref());
-            if let Some(model) = effective_model_for_detect
-                && requires_native_executor(model, config)
-            {
-                // Log the model's context_window so operators can see what
-                // compaction_threshold the native coordinator will enforce.
-                let spec = workgraph::config::parse_model_spec(model);
-                let context_window = config
-                    .registry_lookup(&spec.model_id)
-                    .map(|e| e.context_window)
-                    .unwrap_or(0);
-                eprintln!(
-                    "[dispatcher] Model '{}' is non-Anthropic (context_window={}), switching executor from claude to native",
-                    model, context_window
+        // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
+        // This is the ONLY place that decides {executor, model, endpoint} for
+        // a task spawn.
+        //
+        // Agency reports the agent's preferred executor when it has an
+        // explicit one (non-default `executor` field, or `preferred_provider`).
+        // For default agents, agency abstains and the dispatcher's executor
+        // floor wins. The model-compat override (claude → native when the
+        // model is non-Anthropic) is applied INSIDE `plan_spawn` after
+        // executor resolution — see `enforce_model_compat`.
+        let agent_entity = task
+            .agent
+            .as_ref()
+            .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
+        let agent_executor = agent_entity.as_ref().and_then(|a| a.explicit_executor());
+        let plan = match workgraph::dispatch::plan_spawn(
+            task,
+            config,
+            agent_executor,
+            task_model.as_deref(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[dispatcher] plan_spawn failed for {}: {}", task.id, e);
+                record_spawn_failure(
+                    &gp,
+                    &task.id,
+                    &format!("plan_spawn: {}", e),
+                    "unknown",
+                    task.exec_mode.as_deref(),
+                    config.coordinator.max_spawn_failures,
                 );
-                effective_executor = "native".to_string();
+                continue;
             }
-        }
+        };
+        let effective_executor = plan.executor.as_str().to_string();
+
+        // Provenance: every spawn emits one line tracing each decision back to
+        // the config knob that produced it. Eliminates silent-routing bugs.
+        eprintln!(
+            "[dispatcher] {}: {}",
+            task.id,
+            plan.provenance.log_line(&plan)
+        );
         eprintln!(
             "[dispatcher] Spawning agent for: {} - {} (executor: {})",
             task.id, task.title, effective_executor
@@ -3894,6 +4065,14 @@ pub fn coordinator_tick(
     // inserts a task between our load and save, and our save clobbers it.
     modify_graph(&graph_path, |graph| {
         let mut modified = false;
+
+        // Phase 2.45: Legacy PendingValidation migration.
+        // PendingValidation is deprecated as a routine task lifecycle state
+        // (deprecate-pending-validation). Existing tasks stuck in this status
+        // are auto-transitioned to Done with a one-time log entry — the
+        // assumption per spec is that "if a user wanted to reject the work,
+        // they would have run `wg reject` already."
+        modified |= migrate_pending_validation_tasks(graph);
 
         // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
         {
@@ -4283,6 +4462,64 @@ mod tests {
                     .unwrap_or(eval_task_id)
             });
         assert_eq!(source_id, "some-task");
+    }
+
+    #[test]
+    fn test_flip_eval_record_invocation_uses_flag_args() {
+        // Regression test: the inline-eval script that wraps FLIP / agency
+        // evaluations MUST invoke `wg evaluate record` with flag-style args
+        // (`--task <id> --score <n>`), not positional, because the CLI now
+        // requires them. Positional args here cause:
+        //   error: unexpected argument '.flip-...' found
+        // and the eval result is silently dropped.
+        let script = build_inline_eval_script(
+            "wg evaluate run my-source",
+            ".flip-my-source",
+            "/tmp/out.log",
+            Some("agent-hash-deadbeef"),
+        );
+
+        // Success branch: must use --task / --score, NOT positional.
+        assert!(
+            script.contains(
+                "wg evaluate record --task '.flip-my-source' --score 1.0 --source system"
+            ),
+            "success branch must use flag-style record invocation; got:\n{script}"
+        );
+
+        // Failure branch: same contract, score 0.0.
+        assert!(
+            script.contains(
+                "wg evaluate record --task '.flip-my-source' --score 0.0 --source system"
+            ),
+            "failure branch must use flag-style record invocation; got:\n{script}"
+        );
+
+        // Negative assertion: no positional `record <task-id>` form survives.
+        assert!(
+            !script.contains("wg evaluate record '.flip-my-source'"),
+            "positional record invocation must not appear; got:\n{script}"
+        );
+        assert!(
+            !script.contains("wg evaluate record '.flip-my-source' 1.0"),
+            "positional record invocation must not appear; got:\n{script}"
+        );
+    }
+
+    #[test]
+    fn test_inline_eval_script_without_special_agent_skips_record() {
+        // When there is no resolved special agent, the script must NOT
+        // emit a `wg evaluate record` line at all (success or failure branch).
+        let script =
+            build_inline_eval_script("wg evaluate run my-source", "evaluate-my-source", "/tmp/out.log", None);
+
+        assert!(
+            !script.contains("wg evaluate record"),
+            "no-special-agent branch must skip record entirely; got:\n{script}"
+        );
+        // Sanity: still wraps the eval and finalizes the task.
+        assert!(script.contains("wg evaluate run my-source"));
+        assert!(script.contains("wg done 'evaluate-my-source'"));
     }
 
     #[test]
@@ -5391,110 +5628,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // requires_native_executor: model-based executor detection
+    // Model-based executor detection (formerly `requires_native_executor`)
+    // is gone — the dispatcher's executor pin is no longer overridden by
+    // model spec. The single source of truth is now
+    // `dispatch::plan::resolve_executor`; see tests in src/dispatch/plan.rs.
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_requires_native_for_non_anthropic_models() {
-        let config = Config::default();
-        assert!(requires_native_executor(
-            "google/gemini-2.0-flash-001",
-            &config
-        ));
-        assert!(requires_native_executor("deepseek/deepseek-chat", &config));
-        assert!(requires_native_executor("qwen/qwen-2.5-72b", &config));
-        assert!(requires_native_executor("meta-llama/llama-3-70b", &config));
-        assert!(requires_native_executor("openai/gpt-4o", &config));
-    }
-
-    #[test]
-    fn test_does_not_require_native_for_anthropic_models() {
-        let config = Config::default();
-        assert!(!requires_native_executor(
-            "anthropic/claude-sonnet-4-6",
-            &config
-        ));
-        assert!(!requires_native_executor(
-            "anthropic/claude-opus-4-6",
-            &config
-        ));
-        assert!(!requires_native_executor(
-            "anthropic/claude-3.5-haiku",
-            &config
-        ));
-    }
-
-    #[test]
-    fn test_does_not_require_native_for_bare_model_names() {
-        // Bare model names (no slash) are assumed Anthropic / Claude CLI compatible
-        let config = Config::default();
-        assert!(!requires_native_executor("claude-sonnet-4-6", &config));
-        assert!(!requires_native_executor("haiku", &config));
-        assert!(!requires_native_executor("sonnet", &config));
-        assert!(!requires_native_executor("opus", &config));
-    }
-
-    #[test]
-    fn test_requires_native_for_registry_alias_non_anthropic() {
-        // Registry aliases with non-Anthropic providers should require native
-        let mut config = Config::default();
-        config
-            .model_registry
-            .push(workgraph::config::ModelRegistryEntry {
-                id: "gemini-flash".to_string(),
-                provider: "openrouter".to_string(),
-                model: "google/gemini-2.0-flash-001".to_string(),
-                tier: workgraph::config::Tier::Fast,
-                endpoint: None,
-                ..Default::default()
-            });
-        assert!(requires_native_executor("gemini-flash", &config));
-    }
-
-    #[test]
-    fn test_does_not_require_native_for_registry_alias_anthropic() {
-        // Built-in aliases like "haiku" resolve to Anthropic provider
-        let config = Config::default();
-        // "haiku" is a built-in registry alias with provider "anthropic"
-        assert!(!requires_native_executor("haiku", &config));
-    }
-
-    // provider:model format tests
-    #[test]
-    fn test_requires_native_for_openrouter_prefix() {
-        let config = Config::default();
-        assert!(requires_native_executor(
-            "openrouter:deepseek/deepseek-v3.2",
-            &config
-        ));
-        assert!(requires_native_executor(
-            "openrouter:minimax/minimax-m2.5",
-            &config
-        ));
-    }
-
-    #[test]
-    fn test_does_not_require_native_for_claude_prefix() {
-        let config = Config::default();
-        assert!(!requires_native_executor("claude:opus", &config));
-        assert!(!requires_native_executor("claude:sonnet", &config));
-        assert!(!requires_native_executor(
-            "claude:claude-sonnet-4-6",
-            &config
-        ));
-    }
-
-    #[test]
-    fn test_requires_native_for_other_provider_prefixes() {
-        let config = Config::default();
-        assert!(requires_native_executor("openai:gpt-5", &config));
-        assert!(requires_native_executor(
-            "gemini:gemini-2.0-flash-001",
-            &config
-        ));
-        assert!(requires_native_executor("ollama:llama3", &config));
-        assert!(requires_native_executor("local:my-model", &config));
-    }
 
     ///.assign-* tasks with `assignment` tag and `exec` field are detected as inline
     /// tasks and spawned via the lightweight inline path, not as full Claude agents.
@@ -6569,5 +6707,61 @@ mod tests {
                 f
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // chat-agent-loops bug A: chat-loop tagged tasks must NOT be claimed
+    // by the dispatcher — the daemon's `subprocess_coordinator_loop`
+    // owns spawning chat handlers via `wg spawn-task` directly. Letting
+    // the dispatcher also claim them spawns a regular worker that idle-
+    // loops `wg log` + `wg done`, which is the user's repro.
+    // ------------------------------------------------------------------
+
+    fn task_with_tags(id: &str, tags: &[&str]) -> Task {
+        let mut t = Task::default();
+        t.id = id.to_string();
+        t.title = id.to_string();
+        t.status = Status::Open;
+        t.tags = tags.iter().map(|s| s.to_string()).collect();
+        t
+    }
+
+    #[test]
+    fn test_is_daemon_managed_skips_chat_loop_tag() {
+        let chat_new = task_with_tags(".chat-2", &[workgraph::chat_id::CHAT_LOOP_TAG]);
+        assert!(
+            is_daemon_managed(&chat_new),
+            "chat-loop tagged tasks must be daemon-managed (bug A regression)"
+        );
+
+        let chat_legacy =
+            task_with_tags(".coordinator-0", &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG]);
+        assert!(
+            is_daemon_managed(&chat_legacy),
+            "legacy coordinator-loop tag still daemon-managed"
+        );
+
+        let regular = task_with_tags("real-work", &["impl", "test"]);
+        assert!(
+            !is_daemon_managed(&regular),
+            "regular tasks must remain spawnable by the dispatcher"
+        );
+    }
+
+    #[test]
+    fn test_daemon_managed_tags_includes_chat_loop() {
+        // Lock the constant against accidental removal — every other
+        // entry has callers in the codebase but the chat-loop entry
+        // is here purely as a dispatcher-skip rule.
+        assert!(
+            DAEMON_MANAGED_TAGS.contains(&workgraph::chat_id::CHAT_LOOP_TAG),
+            "DAEMON_MANAGED_TAGS must contain '{}' to prevent dispatcher from claiming chat tasks",
+            workgraph::chat_id::CHAT_LOOP_TAG,
+        );
+        assert!(
+            DAEMON_MANAGED_TAGS.contains(&workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG),
+            "DAEMON_MANAGED_TAGS must still contain legacy '{}' until migration is complete",
+            workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG,
+        );
     }
 }

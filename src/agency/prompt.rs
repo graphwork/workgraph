@@ -345,6 +345,12 @@ pub struct EvaluatorInput<'a> {
     /// Each entry: (task_title, status_str, description_snippet).
     /// When populated, indicates the task decomposed work into subtasks.
     pub child_tasks: &'a [(String, String, Option<String>)],
+    /// Constraint-fidelity score (from deterministic lint), if available.
+    /// When present, indicates unanchored gating constraints were detected
+    /// in the task description.
+    pub constraint_fidelity_score: Option<f64>,
+    /// Number of unanchored constraints detected by constraint-fidelity lint.
+    pub constraint_fidelity_unanchored: Option<usize>,
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -571,6 +577,23 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
                  may have been a false alarm.\n\n",
             );
         }
+    }
+
+    // -- Constraint-fidelity lint results --
+    if let Some(cf_score) = input.constraint_fidelity_score {
+        out.push_str("## Constraint-Fidelity Lint Results\n\n");
+        let _ = writeln!(out, "Constraint-Fidelity Score: {:.2}", cf_score);
+        if let Some(count) = input.constraint_fidelity_unanchored {
+            let _ = writeln!(out, "Unanchored Constraints: {}", count);
+        }
+        out.push('\n');
+        out.push_str(
+            "NOTE: `constraint_fidelity` is mechanically injected from the lint and does not \
+             need to be scored by the evaluator. Do not include it in your output dimensions.\n\
+             A low score indicates the task description may contain fabricated gating constraints \
+             not present in the user's original request. Consider whether the agent's output was \
+             influenced by phantom restrictions.\n\n",
+        );
     }
 
     // -- Evaluation rubric & output format --
@@ -1277,6 +1300,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1373,6 +1398,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1417,6 +1444,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1474,6 +1503,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1522,6 +1553,8 @@ mod tests {
             ),
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1558,6 +1591,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1604,6 +1639,8 @@ mod tests {
             verify_findings: Some("Verification failed - verify criteria not met directly"),
             resolved_outcome_name: None,
             child_tasks: &child_tasks,
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1657,6 +1694,8 @@ mod tests {
             verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
+            constraint_fidelity_score: None,
+            constraint_fidelity_unanchored: None,
         };
 
         let output = render_evaluator_prompt(&input);

@@ -57,6 +57,84 @@ pub const CLEANUP_PENDING_MARKER: &str = ".wg-cleanup-pending";
 /// See `AgentEntry::is_live` for the full invariant.
 pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 
+/// Determine whether a task's worktree is safe to reap under the retention policy.
+///
+/// A worktree is **only** safe to reap when BOTH:
+/// 1. The task's evaluation passed — `task.status == Done` AND any
+///    `.evaluate-<task_id>` task is also `Done`.
+/// 2. The branch has been merged into `main` (or `master`) — i.e., the branch
+///    tip is reachable from the main branch, so all commits are permanently
+///    captured.
+///
+/// Either condition alone is insufficient: eval-pass-only means the work hasn't
+/// landed in main and the agent might still need to handle merge conflicts;
+/// merge-only means the eval might still be failing and the work is unverified.
+///
+/// Returns `false` (do NOT reap) when any signal is missing — including unknown
+/// task IDs, missing graph entries, unfindable branches, or unreachable git.
+/// This is the safe default: keep the worktree until we can affirmatively prove
+/// the work is captured. See task `worktree-retention-don` for motivation.
+pub fn is_safe_to_reap(
+    graph: Option<&workgraph::graph::WorkGraph>,
+    task_id: Option<&str>,
+    project_root: &Path,
+    branch: Option<&str>,
+) -> bool {
+    let graph = match graph {
+        Some(g) => g,
+        None => return false,
+    };
+    let task_id = match task_id {
+        Some(t) => t,
+        None => return false,
+    };
+    let task = match graph.get_task(task_id) {
+        Some(t) => t,
+        None => return false,
+    };
+    if task.status != workgraph::graph::Status::Done {
+        return false;
+    }
+    let eval_id = format!(".evaluate-{}", task_id);
+    if let Some(eval) = graph.get_task(&eval_id)
+        && eval.status != workgraph::graph::Status::Done
+    {
+        return false;
+    }
+    let branch = match branch {
+        Some(b) => b,
+        None => return false,
+    };
+    is_branch_merged(project_root, branch)
+}
+
+/// Returns true if the named branch's tip is an ancestor of `main` (or `master`).
+/// Equivalent to: "all commits on this branch are also reachable from main."
+pub fn is_branch_merged(project_root: &Path, branch: &str) -> bool {
+    for main in &["main", "master"] {
+        let exists = Command::new("git")
+            .args(["rev-parse", "--verify"])
+            .arg(format!("refs/heads/{}", main))
+            .current_dir(project_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
+        let output = Command::new("git")
+            .args(["merge-base", "--is-ancestor", branch, main])
+            .current_dir(project_root)
+            .output();
+        if let Ok(out) = output
+            && out.status.success()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Maximum number of retry attempts for transient failures.
 const MAX_RETRIES: usize = 3;
 
@@ -606,6 +684,16 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
     }
 
     let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+
+    // Load graph so the retention policy can verify task state. If the graph
+    // can't be read, fall back to retain-by-default (don't reap).
+    let graph_path = dir.join("graph.jsonl");
+    let graph = if graph_path.exists() {
+        workgraph::parser::load_graph(&graph_path).ok()
+    } else {
+        None
+    };
+
     let mut cleaned = 0;
 
     for entry in fs::read_dir(&worktrees_dir)? {
@@ -626,10 +714,37 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
 
         if !is_alive {
             let wt_path = entry.path();
+
+            // Retention policy: even orphaned worktrees are preserved until
+            // the task is eval-passed AND its branch is merged into main.
+            // This protects WIP from crashes / kill -9 / rate-limit scenarios
+            // so `wg retry` can resume in-place.
+            let branch_opt = find_branch_for_worktree(project_root, &wt_path);
+            let task_id_opt: Option<String> = registry
+                .agents
+                .get(&name)
+                .map(|a| a.task_id.clone())
+                .or_else(|| {
+                    branch_opt.as_deref().and_then(|b| {
+                        b.strip_prefix(&format!("wg/{}/", name)).map(str::to_string)
+                    })
+                });
+            if !is_safe_to_reap(
+                graph.as_ref(),
+                task_id_opt.as_deref(),
+                project_root,
+                branch_opt.as_deref(),
+            ) {
+                eprintln!(
+                    "[worktree] Preserving orphan {} (task '{:?}' not yet eval-passed AND merged — retention policy)",
+                    name, task_id_opt
+                );
+                continue;
+            }
             eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
 
             // Try to find the branch from git porcelain output
-            let branch = find_branch_for_worktree(project_root, &wt_path);
+            let branch = branch_opt;
 
             if let Some(ref branch) = branch {
                 // Use the enhanced cleanup function with retry logic
@@ -778,7 +893,12 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
         // when the agent is missing from the registry (orphan).
         let branch = find_branch_for_worktree(project_root, &wt_path);
 
-        // Safety check 2: task must be terminal (or missing from graph).
+        // Safety check 2: retention policy. Reap ONLY when the task has
+        // both evaluation-passed AND has been merged into main. Either alone
+        // is insufficient — eval-pass without merge means the work hasn't
+        // landed and may still need conflict handling; merge without eval-pass
+        // means unverified work that may need rescue. See `is_safe_to_reap`.
+        //
         // Prefer registry's task_id; fall back to parsing the branch name
         // (`wg/<agent-id>/<task-id>`) when the agent has no registry entry.
         let task_id: Option<String> = registry
@@ -793,19 +913,20 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
                 })
             });
 
-        if let Some(task_id) = task_id.as_deref()
-            && let Some(graph) = &graph
-            && let Some(task) = graph.get_task(task_id)
-            && !task.status.is_terminal()
-        {
+        if !is_safe_to_reap(
+            graph.as_ref(),
+            task_id.as_deref(),
+            project_root,
+            branch.as_deref(),
+        ) {
             eprintln!(
-                "[worktree-sweep] Skipping {}: task '{}' is {:?} (not terminal)",
-                name, task_id, task.status
+                "[worktree-sweep] Skipping {}: task '{:?}' not yet eval-passed AND merged (retention policy)",
+                name, task_id
             );
             continue;
         }
         eprintln!(
-            "[worktree-sweep] Removing {} (marker present, agent not live, task terminal)",
+            "[worktree-sweep] Removing {} (eval-passed AND merged — safe to reap)",
             name
         );
 
@@ -1525,12 +1646,18 @@ mod tests {
 
     fn init_git_repo(path: &Path) {
         Command::new("git")
-            .args(["init"])
+            .args(["init", "-b", "main"])
             .arg(path)
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        // Some old git versions ignore -b on init — force the branch name.
+        Command::new("git")
+            .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+            .current_dir(path)
             .output()
             .unwrap();
         fs::write(path.join("file.txt"), "hello").unwrap();
@@ -1548,6 +1675,46 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
             .output()
             .unwrap();
+    }
+
+    /// Merge a branch into main so the retention policy sees it as merged.
+    fn merge_branch_into_main(project: &Path, branch: &str) {
+        Command::new("git")
+            .args(["merge", "--no-ff", "--no-edit", branch])
+            .current_dir(project)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+    }
+
+    /// Write a graph file with one task at the given status. Used by sweep tests.
+    fn write_graph_with_task_and_eval(
+        wg_dir: &Path,
+        task_id: &str,
+        status: workgraph::graph::Status,
+        eval_status: Option<workgraph::graph::Status>,
+    ) {
+        use workgraph::graph::{Node, Task, WorkGraph};
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: task_id.to_string(),
+            title: "test".to_string(),
+            status,
+            ..Task::default()
+        }));
+        if let Some(es) = eval_status {
+            graph.add_node(Node::Task(Task {
+                id: format!(".evaluate-{}", task_id),
+                title: format!("eval {}", task_id),
+                status: es,
+                ..Task::default()
+            }));
+        }
+        let graph_path = wg_dir.join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
     }
 
     fn create_test_worktree(
@@ -2038,6 +2205,16 @@ mod tests {
         );
         registry.save(&wg_dir).unwrap();
 
+        // Set up the dead-agent task as Done + eval-pass + merged so the
+        // retention policy permits cleanup. The live-agent task is left Open.
+        write_graph_with_task_and_eval(
+            &wg_dir,
+            "task-dead",
+            workgraph::graph::Status::Done,
+            Some(workgraph::graph::Status::Done),
+        );
+        merge_branch_into_main(&project, "wg/agent-200/task-dead");
+
         // Run orphan cleanup
         let cleaned = cleanup_orphaned_worktrees(&wg_dir).unwrap();
 
@@ -2106,10 +2283,11 @@ mod tests {
         let wg_dir = project.join(".workgraph");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
-        // Agent completed successfully: task=Done, agent=Done, marker present.
-        let (wt_path, _branch) = create_test_worktree(&project, "agent-ok", "task-ok");
+        // Agent completed successfully AND eval passed AND branch merged into main.
+        // Only this combination is safe to reap under the retention policy.
+        let (wt_path, branch) = create_test_worktree(&project, "agent-ok", "task-ok");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
-        write_graph_with_task(&wg_dir, "task-ok", Status::Done);
+        write_graph_with_task_and_eval(&wg_dir, "task-ok", Status::Done, Some(Status::Done));
         register_agent(
             &wg_dir,
             "agent-ok",
@@ -2117,6 +2295,7 @@ mod tests {
             999_999_999,
             AgentStatus::Done,
         );
+        merge_branch_into_main(&project, &branch);
 
         assert!(wt_path.exists(), "precondition: worktree exists");
 
@@ -2124,12 +2303,15 @@ mod tests {
         assert_eq!(removed, 1, "should remove exactly one worktree");
         assert!(
             !wt_path.exists(),
-            "worktree must be removed on successful completion"
+            "worktree must be removed when eval-passed AND merged"
         );
     }
 
+    /// New retention policy (worktree-retention-don):
+    /// Failed tasks must NOT have their worktree reaped, regardless of marker
+    /// or agent state. The WIP needs to survive for `wg retry`-in-place.
     #[test]
-    fn atomic_worktree_cleanup_on_failure() {
+    fn test_worktree_not_reaped_on_agent_failure() {
         use workgraph::graph::Status;
         use workgraph::service::registry::AgentStatus;
 
@@ -2142,9 +2324,10 @@ mod tests {
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
         // Agent failed: task=Failed, agent=Failed, marker present.
+        // Under new policy: must NOT be reaped (preserves WIP for retry).
         let (wt_path, _branch) = create_test_worktree(&project, "agent-fail", "task-fail");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
-        write_graph_with_task(&wg_dir, "task-fail", Status::Failed);
+        write_graph_with_task_and_eval(&wg_dir, "task-fail", Status::Failed, None);
         register_agent(
             &wg_dir,
             "agent-fail",
@@ -2154,10 +2337,10 @@ mod tests {
         );
 
         let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
-        assert_eq!(removed, 1);
+        assert_eq!(removed, 0, "MUST NOT reap on failure — WIP must survive");
         assert!(
-            !wt_path.exists(),
-            "worktree must be removed on failed completion"
+            wt_path.exists(),
+            "worktree must survive agent failure for retry-in-place"
         );
     }
 
@@ -2302,13 +2485,15 @@ mod tests {
         let wg_dir = project.join(".workgraph");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
-        // Same as above but task is Done — now it's safe to remove.
-        let (wt_path, _branch) = create_test_worktree(&project, "agent-orph2", "task-orph2");
+        // Same as above but task is Done with eval pass + merged branch —
+        // now it's safe to remove.
+        let (wt_path, branch) = create_test_worktree(&project, "agent-orph2", "task-orph2");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
-        write_graph_with_task(&wg_dir, "task-orph2", Status::Done);
+        write_graph_with_task_and_eval(&wg_dir, "task-orph2", Status::Done, Some(Status::Done));
         workgraph::service::registry::AgentRegistry::default()
             .save(&wg_dir)
             .unwrap();
+        merge_branch_into_main(&project, &branch);
 
         let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
         assert_eq!(removed, 1);
@@ -2328,9 +2513,9 @@ mod tests {
         let wg_dir = project.join(".workgraph");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
-        let (wt_path, _branch) = create_test_worktree(&project, "agent-idem", "task-idem");
+        let (wt_path, branch) = create_test_worktree(&project, "agent-idem", "task-idem");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
-        write_graph_with_task(&wg_dir, "task-idem", Status::Done);
+        write_graph_with_task_and_eval(&wg_dir, "task-idem", Status::Done, Some(Status::Done));
         register_agent(
             &wg_dir,
             "agent-idem",
@@ -2338,6 +2523,7 @@ mod tests {
             999_999_995,
             AgentStatus::Done,
         );
+        merge_branch_into_main(&project, &branch);
 
         // First sweep removes it
         assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 1);
@@ -2345,6 +2531,122 @@ mod tests {
 
         // Second sweep is a no-op (worktree already gone) — must not error
         assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 0);
+    }
+
+    /// New retention policy (worktree-retention-don):
+    /// Both eval-pass AND merge-to-main are required. Either alone keeps the
+    /// worktree alive.
+    #[test]
+    fn test_worktree_reaped_only_after_eval_pass_and_merge() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        // ---- Scenario A: Done but eval pending → KEEP ----
+        let temp_a = TempDir::new().unwrap();
+        let project_a = temp_a.path().join("project");
+        fs::create_dir_all(&project_a).unwrap();
+        init_git_repo(&project_a);
+        let wg_dir_a = project_a.join(".workgraph");
+        fs::create_dir_all(wg_dir_a.join("service")).unwrap();
+
+        let (wt_a, branch_a) = create_test_worktree(&project_a, "agent-a", "task-a");
+        fs::write(wt_a.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task_and_eval(&wg_dir_a, "task-a", Status::Done, Some(Status::Open));
+        register_agent(&wg_dir_a, "agent-a", "task-a", 999_999_991, AgentStatus::Done);
+        merge_branch_into_main(&project_a, &branch_a);
+
+        assert_eq!(
+            sweep_cleanup_pending_worktrees(&wg_dir_a).unwrap(),
+            0,
+            "Done + merged but eval not yet Done → MUST keep worktree"
+        );
+        assert!(wt_a.exists());
+
+        // ---- Scenario B: Done + eval-pass but NOT merged → KEEP ----
+        let temp_b = TempDir::new().unwrap();
+        let project_b = temp_b.path().join("project");
+        fs::create_dir_all(&project_b).unwrap();
+        init_git_repo(&project_b);
+        let wg_dir_b = project_b.join(".workgraph");
+        fs::create_dir_all(wg_dir_b.join("service")).unwrap();
+
+        let (wt_b, _branch_b) = create_test_worktree(&project_b, "agent-b", "task-b");
+        // Add a commit on the branch so it's distinguishable from main.
+        // Without this, the new branch shares HEAD with main and the
+        // is-ancestor check trivially succeeds.
+        fs::write(wt_b.join("delta.txt"), "branch-only").unwrap();
+        Command::new("git")
+            .args(["add", "delta.txt"])
+            .current_dir(&wt_b)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "branch work"])
+            .current_dir(&wt_b)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        fs::write(wt_b.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task_and_eval(&wg_dir_b, "task-b", Status::Done, Some(Status::Done));
+        register_agent(&wg_dir_b, "agent-b", "task-b", 999_999_990, AgentStatus::Done);
+        // Branch has its own commit, NOT merged into main.
+
+        assert_eq!(
+            sweep_cleanup_pending_worktrees(&wg_dir_b).unwrap(),
+            0,
+            "Done + eval-pass but not merged → MUST keep worktree"
+        );
+        assert!(wt_b.exists());
+
+        // ---- Scenario C: Done + eval-pass + merged → REAP ----
+        let temp_c = TempDir::new().unwrap();
+        let project_c = temp_c.path().join("project");
+        fs::create_dir_all(&project_c).unwrap();
+        init_git_repo(&project_c);
+        let wg_dir_c = project_c.join(".workgraph");
+        fs::create_dir_all(wg_dir_c.join("service")).unwrap();
+
+        let (wt_c, branch_c) = create_test_worktree(&project_c, "agent-c", "task-c");
+        fs::write(wt_c.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task_and_eval(&wg_dir_c, "task-c", Status::Done, Some(Status::Done));
+        register_agent(&wg_dir_c, "agent-c", "task-c", 999_999_989, AgentStatus::Done);
+        merge_branch_into_main(&project_c, &branch_c);
+
+        assert_eq!(
+            sweep_cleanup_pending_worktrees(&wg_dir_c).unwrap(),
+            1,
+            "Done + eval-pass + merged → reap"
+        );
+        assert!(!wt_c.exists());
+    }
+
+    /// Crash without marker: under new policy, orphan cleanup should ALSO
+    /// preserve the worktree until eval+merge — so `wg retry` can resume.
+    #[test]
+    fn test_orphan_cleanup_preserves_unfinished_work() {
+        use workgraph::graph::Status;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Worktree exists, no agent registered (crash scenario), no marker.
+        // Task is Failed (crashed). Under new policy: KEEP.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-crash", "task-crash");
+        write_graph_with_task_and_eval(&wg_dir, "task-crash", Status::Failed, None);
+        workgraph::service::registry::AgentRegistry::default()
+            .save(&wg_dir)
+            .unwrap();
+
+        let cleaned = cleanup_orphaned_worktrees(&wg_dir).unwrap();
+        assert_eq!(cleaned, 0, "MUST NOT reap orphan with unfinished work");
+        assert!(wt_path.exists(), "WIP must survive for retry");
     }
 }
 

@@ -363,16 +363,49 @@ impl Agent {
     /// If executor was explicitly set to a non-default value, returns that.
     /// Otherwise, if `preferred_provider` is openrouter/openai/local, returns "native".
     pub fn effective_executor(&self) -> &str {
+        self.effective_executor_for_model(None)
+    }
+
+    /// Return the effective executor for this agent. The `model` parameter
+    /// is accepted but no longer used to override the agent's choice — that
+    /// override lives at the dispatch layer (see [`crate::dispatch::plan_spawn`]).
+    ///
+    /// Returns the agent's choice as a string, defaulting to `"claude"` when
+    /// the agent has no opinion. Spawn-site code should prefer
+    /// [`Self::explicit_executor`] which returns `None` for the abstain
+    /// case so the dispatcher's executor floor can take effect.
+    pub fn effective_executor_for_model(&self, _model: Option<&str>) -> &str {
+        self.explicit_executor().unwrap_or("claude")
+    }
+
+    /// Return the agent's explicit executor preference, or `None` if it has
+    /// none. An agent has an explicit preference iff:
+    /// - `executor` is set to a non-default value (e.g. `codex`, `native`), OR
+    /// - `preferred_provider` is non-Anthropic (implies `native`).
+    ///
+    /// When this returns `None`, the dispatcher's executor floor
+    /// (`[dispatcher].executor`, then default) takes over.
+    ///
+    /// History (agency-still-picks): the previous implementation overrode
+    /// claude → native here whenever a `local:` / `openrouter:` / `oai-compat:`
+    /// / `openai:` model met a default-claude agent. That fix was correct
+    /// in spirit but wrong in placement: an agency-level override sits in
+    /// `resolve_executor`'s precedence step 3 and overrides the dispatcher's
+    /// explicit `-x codex` (step 4). So `wg init -x codex -m local:qwen3`
+    /// silently routed to native instead of codex. Moving the override to
+    /// the dispatch layer (after the executor floor is applied) AND making
+    /// agency abstain for default agents fixes both directions: explicit
+    /// `-x codex` is honored, and `-x claude` + `local:` model still
+    /// switches to native via `enforce_model_compat`.
+    pub fn explicit_executor(&self) -> Option<&str> {
         if !is_default_executor(&self.executor) {
-            &self.executor
-        } else if let Some(ref provider) = self.preferred_provider {
-            if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
-                "native"
-            } else {
-                &self.executor
-            }
+            Some(self.executor.as_str())
+        } else if let Some(ref provider) = self.preferred_provider
+            && NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str())
+        {
+            Some("native")
         } else {
-            &self.executor
+            None
         }
     }
 }
@@ -535,6 +568,8 @@ pub mod eval_source {
     pub const MANUAL: &str = "manual";
     /// FLIP (roundtrip intent fidelity) evaluation.
     pub const FLIP: &str = "flip";
+    /// Constraint-fidelity lint (detect orchestrator-fabricated constraints).
+    pub const CONSTRAINT_FIDELITY: &str = "constraint-fidelity";
     /// Human reviewing evaluator output (meta-evaluation).
     pub const META_HUMAN_REVIEW: &str = "meta:human-review";
 
@@ -675,6 +710,148 @@ pub struct TaskAssignmentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_agent_with_executor(executor: &str, preferred_provider: Option<&str>) -> Agent {
+        Agent {
+            id: "test-agent".to_string(),
+            role_id: "test-role".to_string(),
+            tradeoff_id: "test-tradeoff".to_string(),
+            name: "TestAgent".to_string(),
+            performance: PerformanceRecord {
+                task_count: 0,
+                avg_score: None,
+                evaluations: vec![],
+            },
+            lineage: Lineage::default(),
+            capabilities: vec![],
+            rate: None,
+            capacity: None,
+            trust_level: TrustLevel::Provisional,
+            contact: None,
+            executor: executor.to_string(),
+            preferred_model: None,
+            preferred_provider: preferred_provider.map(String::from),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
+        }
+    }
+
+    /// Regression: agency-still-picks. Agency MUST abstain (return its
+    /// default-claude candidate as-is) for an agent on the default executor,
+    /// even when the model has a non-Anthropic provider prefix. The
+    /// model-compatibility override now lives at the dispatch layer
+    /// (`crate::dispatch::plan_spawn`) so it can run AFTER the dispatcher's
+    /// explicit executor floor is honored. This way, `wg init -x codex -m
+    /// local:qwen3` gets codex (the user's choice), not native (the previous
+    /// agency override that ignored the dispatcher).
+    #[test]
+    fn test_agency_abstains_for_default_agent_with_local_model() {
+        let agent = test_agent_with_executor("claude", None);
+
+        // Sanity: with no model, default behavior is preserved.
+        assert_eq!(agent.effective_executor(), "claude");
+
+        // Default agent + non-Anthropic model → agency abstains (returns
+        // "claude"). The dispatch layer will apply the model-compat override
+        // if no explicit dispatcher executor takes precedence.
+        assert_eq!(
+            agent.effective_executor_for_model(Some("local:qwen3-coder")),
+            "claude",
+            "agency must abstain for default agents — let dispatcher decide"
+        );
+        assert_eq!(
+            agent.effective_executor_for_model(Some("openrouter:deepseek/deepseek-v3.2")),
+            "claude",
+        );
+        assert_eq!(
+            agent.effective_executor_for_model(Some("oai-compat:llama3")),
+            "claude",
+        );
+        assert_eq!(
+            agent.effective_executor_for_model(Some("openai:gpt-4o")),
+            "claude",
+        );
+    }
+
+    /// claude:opus + claude executor is a valid combination — agency returns
+    /// its default candidate unchanged.
+    #[test]
+    fn test_agency_keeps_claude_for_anthropic_model() {
+        let agent = test_agent_with_executor("claude", None);
+        assert_eq!(
+            agent.effective_executor_for_model(Some("claude:opus")),
+            "claude",
+        );
+        assert_eq!(agent.effective_executor_for_model(Some("opus")), "claude");
+        assert_eq!(agent.effective_executor_for_model(Some("sonnet")), "claude");
+    }
+
+    /// codex executor explicitly chosen + non-Anthropic model: agency keeps
+    /// the agent's explicit choice. Explicit choices are preserved at the
+    /// agency layer; the dispatch layer's model-compat override only fires
+    /// when the resolved executor is claude.
+    #[test]
+    fn test_agency_does_not_override_explicit_non_claude_executor() {
+        let agent = test_agent_with_executor("codex", None);
+        assert_eq!(
+            agent.effective_executor_for_model(Some("local:qwen3-coder")),
+            "codex",
+        );
+    }
+
+    /// preferred_provider = "openrouter" / "local" / etc. is an explicit
+    /// agent preference — agency reflects it (returns "native"). This is
+    /// distinct from the default-claude-agent case above.
+    #[test]
+    fn test_agency_returns_native_for_non_anthropic_preferred_provider() {
+        let agent = test_agent_with_executor("claude", Some("openrouter"));
+        assert_eq!(
+            agent.effective_executor_for_model(Some("openrouter:deepseek/deepseek-v3.2")),
+            "native",
+        );
+    }
+
+    /// `explicit_executor` returns `None` when the agent has no opinion —
+    /// default executor + no preferred_provider. This is the abstain case
+    /// the dispatch layer relies on so the dispatcher's `-x codex` floor
+    /// can take effect.
+    #[test]
+    fn test_explicit_executor_abstains_for_default_agent() {
+        let agent = test_agent_with_executor("claude", None);
+        assert_eq!(agent.explicit_executor(), None);
+    }
+
+    /// `explicit_executor` returns `Some` for an agent with a non-default
+    /// `executor` field — that's an explicit choice the agency must report.
+    #[test]
+    fn test_explicit_executor_returns_explicit_executor_field() {
+        let agent = test_agent_with_executor("codex", None);
+        assert_eq!(agent.explicit_executor(), Some("codex"));
+
+        let agent = test_agent_with_executor("native", None);
+        assert_eq!(agent.explicit_executor(), Some("native"));
+    }
+
+    /// `explicit_executor` reports `Some("native")` when the agent has a
+    /// non-Anthropic `preferred_provider` (even though `executor` is the
+    /// default), because that's an explicit "I run on native" preference.
+    #[test]
+    fn test_explicit_executor_returns_native_for_non_anthropic_provider() {
+        let agent = test_agent_with_executor("claude", Some("openrouter"));
+        assert_eq!(agent.explicit_executor(), Some("native"));
+
+        let agent = test_agent_with_executor("claude", Some("local"));
+        assert_eq!(agent.explicit_executor(), Some("native"));
+    }
+
+    /// An Anthropic `preferred_provider` on a default-claude agent is the
+    /// same as no preference — agency abstains.
+    #[test]
+    fn test_explicit_executor_abstains_for_anthropic_preferred_provider() {
+        let agent = test_agent_with_executor("claude", Some("anthropic"));
+        assert_eq!(agent.explicit_executor(), None);
+    }
 
     /// Existing YAML files without `assignment_source` should deserialize
     /// with the default value (Native).

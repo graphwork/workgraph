@@ -983,6 +983,13 @@ impl AgentLoop {
         let mut turns: usize = 0;
         let mut consecutive_server_errors: u32 = 0;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
+        // Counter for consecutive 4xx "context too long" errors that
+        // hard-emergency-compaction failed to fix. If compaction can't
+        // make progress, looping `compact → retry → 400 → compact …`
+        // floods the endpoint forever (the autohaiku 311-message
+        // resume + 32k-window repro). Bound this loop hard.
+        let mut consecutive_context_too_long: u32 = 0;
+        const MAX_CONSECUTIVE_CONTEXT_TOO_LONG: u32 = 2;
         // After a cooperative or hard cancel, force the next iteration to
         // prompt the user for fresh input even if the last message in the
         // vec is user-role. Without this the loop simply re-sends the
@@ -1121,6 +1128,7 @@ impl AgentLoop {
                     .unwrap_or_else(|| Path::new("."));
                 let resume_config = ResumeConfig {
                     context_window_tokens: self.client.context_window(),
+                    model: Some(self.client.model().to_string()),
                     ..ResumeConfig::default()
                 };
                 match resume::load_resume_data(path, working_dir, &resume_config) {
@@ -1911,7 +1919,7 @@ impl AgentLoop {
                 // quiet for STREAM_IDLE_TIMEOUT_SECS (600s default),
                 // abort it. Prevents indefinite hangs on silently
                 // dropped connections. Override via env var
-                // WG_STREAM_IDLE_TIMEOUT_SECS.
+                // WG_STREAM_IDLE_TIMEOUT_SECS or --idle-timeout-secs flag.
                 //
                 // 600s because local llama.cpp / vLLM servers on modest
                 // hardware can spend several minutes on prompt-processing
@@ -1973,21 +1981,53 @@ impl AgentLoop {
                         Err(e) => {
                             if super::openai_client::is_context_too_long(&e) {
                                 let pre_tokens = self.context_budget.effective_tokens(&messages);
+                                let pre_count = messages.len();
                                 messages = ContextBudget::hard_emergency_compact(messages, 1);
                                 let post_tokens = self.context_budget.effective_tokens(&messages);
-                                let err_text = format!(
-                                    "Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})",
-                                    pre_tokens,
-                                    post_tokens,
-                                    pre_tokens.saturating_sub(post_tokens),
-                                );
+                                let made_progress = post_tokens < pre_tokens
+                                    || messages.len() < pre_count;
+                                consecutive_context_too_long += 1;
+                                let err_text = if made_progress {
+                                    format!(
+                                        "Context too long — hard compaction: ~{} → ~{} tokens (Δ -{}) attempt {}/{}",
+                                        pre_tokens,
+                                        post_tokens,
+                                        pre_tokens.saturating_sub(post_tokens),
+                                        consecutive_context_too_long,
+                                        MAX_CONSECUTIVE_CONTEXT_TOO_LONG,
+                                    )
+                                } else {
+                                    format!(
+                                        "Context too long — hard compaction made no progress (~{} tokens, {} messages) attempt {}/{}",
+                                        post_tokens,
+                                        messages.len(),
+                                        consecutive_context_too_long,
+                                        MAX_CONSECUTIVE_CONTEXT_TOO_LONG,
+                                    )
+                                };
                                 if self.nex_verbose {
                                     eprintln!("\n\x1b[33m[nex] {}\x1b[0m", err_text);
                                 }
                                 if let Some(ref mut s) = surface {
                                     s.on_error(&err_text);
                                 }
+                                if !made_progress
+                                    || consecutive_context_too_long >= MAX_CONSECUTIVE_CONTEXT_TOO_LONG
+                                {
+                                    let final_err = format!(
+                                        "Context too long — aborting after {} compaction attempt(s); endpoint keeps rejecting the request. \
+                                         Original error: {:#}",
+                                        consecutive_context_too_long, e,
+                                    );
+                                    eprintln!("[native-agent] {}", final_err);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&final_err);
+                                    }
+                                    return Err(e).context(final_err);
+                                }
                                 continue;
+                            } else {
+                                consecutive_context_too_long = 0;
                             }
                             if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
                                 if api_err.status == 401 || api_err.status == 403 {
@@ -2054,8 +2094,9 @@ impl AgentLoop {
                 }
             };
 
-            // Successful response — reset consecutive error counter
+            // Successful response — reset consecutive error counters
             consecutive_server_errors = 0;
+            consecutive_context_too_long = 0;
 
             // Clean up .streaming file after each turn
             if let Some(ref path) = self.streaming_file_path {

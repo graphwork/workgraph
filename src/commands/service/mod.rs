@@ -124,6 +124,75 @@ pub fn log_file_path(dir: &Path) -> PathBuf {
     dir.join("service").join("daemon.log")
 }
 
+/// Create a self-pipe with both ends set to non-blocking and CLOEXEC.
+///
+/// Used by the daemon's main loop to wake `poll()` from a background thread
+/// (specifically: the graph filesystem watcher writes a byte when a debounced
+/// change arrives). Returns `(read_fd, write_fd)`.
+///
+/// Both ends are leaked into raw fds; the daemon owns them for the life of the
+/// process and never closes them explicitly (the kernel reaps them on exit).
+/// Non-blocking write means the watcher callback never stalls if the read end
+/// hasn't drained the previous wake.
+#[cfg(unix)]
+fn make_self_pipe() -> std::io::Result<(std::os::raw::c_int, std::os::raw::c_int)> {
+    let mut fds: [libc::c_int; 2] = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let r = fds[0];
+    let w = fds[1];
+    for fd in [r, w] {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Best-effort CLOEXEC so child agents don't inherit it.
+            let cflags = libc::fcntl(fd, libc::F_GETFD);
+            if cflags >= 0 {
+                let _ = libc::fcntl(fd, libc::F_SETFD, cflags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Ok((r, w))
+}
+
+/// Drain all bytes currently buffered on a non-blocking pipe read fd.
+///
+/// Returns the number of bytes drained. Used to clear graph-watcher wake
+/// signals after the daemon has handled them.
+#[cfg(unix)]
+fn drain_pipe(fd: std::os::raw::c_int) -> usize {
+    if fd < 0 {
+        return 0;
+    }
+    let mut buf = [0u8; 256];
+    let mut total = 0usize;
+    loop {
+        let n = unsafe {
+            libc::read(
+                fd,
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len() as libc::size_t,
+            )
+        };
+        if n <= 0 {
+            // 0 = EOF (pipe closed, write end gone); negative = error or EAGAIN.
+            break;
+        }
+        total += n as usize;
+        if (n as usize) < buf.len() {
+            break;
+        }
+    }
+    total
+}
+
 /// A simple file-based logger with timestamps and size-based rotation.
 ///
 /// The logger keeps one backup (`daemon.log.1`) and truncates when the active
@@ -592,6 +661,10 @@ impl CoordinatorState {
 
     /// Sum `accumulated_tokens` across all per-coordinator state files.
     /// Falls back to the legacy shared file when no per-ID files are found.
+    /// Currently exercised only by tests now that the graph-cycle compaction
+    /// widget has been retired; kept as a stable API for future per-chat
+    /// memory accounting.
+    #[allow(dead_code)]
     pub fn total_accumulated_tokens(dir: &Path) -> u64 {
         let service_dir = dir.join("service");
         let entries = match fs::read_dir(&service_dir) {
@@ -1538,14 +1611,12 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 /// Mark legacy daemon-managed graph tasks as abandoned.
 ///
 /// Older coordinator implementations represented daemon control flow as
-/// graph tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`). These
-/// are abandoned to keep the control plane out of the graph.
+/// graph tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`,
+/// `.compact-*`). These are abandoned to keep the control plane out of
+/// the graph.
 ///
-/// Coordinator tasks (`.coordinator-*`) are preserved because the TUI
-/// depends on them for coordinator discovery and tab restoration.
-///
-/// Note: `.compact-*` tasks are no longer managed here — compaction is
-/// now handled natively via the journal/compactor without graph control.
+/// Chat tasks (`.coordinator-*` / `.chat-*`) are preserved because the
+/// TUI depends on them for chat discovery and tab restoration.
 fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     let gp = graph_path(dir);
     let Ok(graph) = load_graph(&gp) else {
@@ -1554,10 +1625,11 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
 
     let mut stale_ids = Vec::new();
     for task in graph.tasks() {
-        // Don't abandon coordinator tasks - TUI depends on them for coordinator discovery
+        // Don't abandon chat tasks - TUI depends on them for chat discovery
         let is_legacy = task.id.starts_with(".archive-")
             || task.id.starts_with(".registry-refresh-")
-            || task.id.starts_with(".user-");
+            || task.id.starts_with(".user-")
+            || task.id.starts_with(".compact-");
         if is_legacy && task.status != workgraph::graph::Status::Abandoned {
             stale_ids.push(task.id.clone());
         }
@@ -1568,6 +1640,9 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     }
 
     let ids_for_log = stale_ids.clone();
+    let has_compact_or_archive = stale_ids
+        .iter()
+        .any(|id| id.starts_with(".compact-") || id.starts_with(".archive-"));
     match workgraph::parser::modify_graph(&gp, |graph| {
         let mut changed = false;
         for task_id in &stale_ids {
@@ -1576,15 +1651,34 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
                 task.completed_at
                     .get_or_insert_with(|| Utc::now().to_rfc3339());
                 task.cycle_config = None;
+                let msg = if task_id.starts_with(".compact-") || task_id.starts_with(".archive-") {
+                    "Retired: .compact-N / .archive-N cycles were removed; \
+                     archival now runs natively in the dispatcher"
+                        .to_string()
+                } else {
+                    "Superseded by native coordinator control plane; no longer graph-managed"
+                        .to_string()
+                };
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
                     user: Some(workgraph::current_user()),
-                    message:
-                        "Superseded by native coordinator control plane; no longer graph-managed"
-                            .to_string(),
+                    message: msg,
                 });
+                // Also drop dependencies on .compact-* / .archive-* tasks from
+                // any other task's `after` list so chat agents don't stay
+                // blocked waiting on retired companions.
                 changed = true;
+            }
+        }
+        if has_compact_or_archive {
+            let all_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
+            for tid in &all_ids {
+                if let Some(t) = graph.get_task_mut(tid) {
+                    t.after.retain(|dep| {
+                        !(dep.starts_with(".compact-") || dep.starts_with(".archive-"))
+                    });
+                }
             }
         }
         changed
@@ -1878,6 +1972,23 @@ pub fn run_daemon(
     // Load coordinator config strictly: invalid config must abort startup.
     let config = Config::load_merged(&dir)?;
 
+    // Surface legacy / deprecated config keys before we start the loop, so
+    // users see a one-shot warning per legacy key they're still using.
+    // This scans the merged TOML directly because by the time it lands in
+    // `Config`, serde aliases have collapsed the old and new names together.
+    let legacy_global = Config::global_config_path()
+        .ok()
+        .and_then(|p| Config::load_toml_value(&p).ok());
+    let legacy_local = Config::load_toml_value(&dir.join("config.toml")).ok();
+    for raw in [legacy_global, legacy_local].into_iter().flatten() {
+        for dep in workgraph::config::detect_deprecated_keys(&raw) {
+            logger.warn(&format!(
+                "Deprecated config key '{}' is still accepted; please rename to '{}'",
+                dep.path, dep.replacement,
+            ));
+        }
+    }
+
     // Validate configuration before starting
     let validation = config.validate_config();
     for diag in &validation.warnings {
@@ -2005,9 +2116,19 @@ pub fn run_daemon(
     let event_log = coordinator_agent::new_event_log();
 
     // Spawn the persistent coordinator agent(s) (LLM sessions for chat).
-    // Each coordinator gets its own Claude CLI session. Coordinator 0 is
-    // spawned at startup; additional coordinators are created on-demand via
-    // the CreateCoordinator IPC request.
+    //
+    // Bug A (orphan chat supervisor) regression-guard: enumerate the live
+    // graph for tasks tagged with a chat-loop tag (`.chat-N` and legacy
+    // `.coordinator-N`) and spawn ONE supervisor per task. Do NOT hardcode
+    // 'always spawn coordinator-0' — a fresh `wg init` has no `.chat-0`, so
+    // hardcoding sends `wg spawn-task .chat-0` into a perpetual restart loop
+    // chasing a task that does not exist. See `tests/integration_dispatch_boot.rs`
+    // for the regression tests that pin this behavior.
+    //
+    // Additional supervisors for new chats are created on-demand via the
+    // CreateCoordinator IPC request, which appends a `.chat-N` task to the
+    // graph and tells the daemon to spawn a supervisor for it.
+    //
     // Enabled by default; disable with --no-coordinator-agent or
     // coordinator.coordinator_agent = false in config.toml.
     let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
@@ -2016,24 +2137,56 @@ pub fn run_daemon(
         coordinator_agent::CoordinatorAgent,
     > = std::collections::HashMap::new();
     if enable_coordinator_agent {
-        match coordinator_agent::CoordinatorAgent::spawn(
-            &dir,
-            0, // coordinator ID
-            daemon_cfg.model.as_deref(),
-            Some(&daemon_cfg.executor),
-            daemon_cfg.provider.as_deref(),
-            &logger,
-            event_log.clone(),
-        ) {
-            Ok(agent) => {
-                logger.info("Coordinator agent 0 spawned successfully");
-                coordinator_agents.insert(0, agent);
-            }
-            Err(e) => {
+        let to_spawn = workgraph::service::enumerate_chat_supervisors_for_boot(&dir);
+        if to_spawn.is_empty() {
+            logger.info(
+                "No chat-loop tasks in graph — no chat supervisors spawned at boot. \
+                 Use `wg chat new` (or the TUI '+' key) to create a chat agent.",
+            );
+        } else {
+            logger.info(&format!(
+                "Spawning {} chat supervisor(s) from graph: {}",
+                to_spawn.len(),
+                to_spawn
+                    .iter()
+                    .map(|s| if s.is_legacy {
+                        format!(".coordinator-{}", s.chat_id)
+                    } else {
+                        format!(".chat-{}", s.chat_id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        for spec in to_spawn {
+            if spec.is_legacy {
                 logger.warn(&format!(
-                    "Failed to spawn coordinator agent 0: {}. Chat will use stub responses.",
-                    e
+                    "Loading legacy `.coordinator-{}` task; please run `wg migrate chat-rename` to rename to `.chat-{}` (deprecation will be removed in a future release)",
+                    spec.chat_id, spec.chat_id
                 ));
+            }
+            match coordinator_agent::CoordinatorAgent::spawn(
+                &dir,
+                spec.chat_id,
+                daemon_cfg.model.as_deref(),
+                Some(&daemon_cfg.executor),
+                daemon_cfg.provider.as_deref(),
+                &logger,
+                event_log.clone(),
+            ) {
+                Ok(agent) => {
+                    logger.info(&format!(
+                        "Coordinator agent {} spawned successfully",
+                        spec.chat_id
+                    ));
+                    coordinator_agents.insert(spec.chat_id, agent);
+                }
+                Err(e) => {
+                    logger.warn(&format!(
+                        "Failed to spawn coordinator agent {}: {}. Chat will use stub responses.",
+                        spec.chat_id, e
+                    ));
+                }
             }
         }
     } else if no_coordinator_agent {
@@ -2051,6 +2204,96 @@ pub fn run_daemon(
     // after a settling delay. Each subsequent GraphChanged resets the deadline,
     // debouncing burst additions so the coordinator sees the full graph.
     let mut settling_deadline: Option<Instant> = None;
+
+    // Self-write quiet window: a coordinator tick can itself write the graph
+    // (status transitions, auto-assign placeholders, agency phases, etc.). Each
+    // such write triggers an inotify event that arrives ~debounce_ms later,
+    // which would re-wake us in a tight feedback loop. We track when those
+    // self-induced events are expected to land and silently drain them when
+    // they do.
+    //
+    // Window = (graph debounce) + slack for kernel/notify queue delay. External
+    // writes that happen *after* the quiet window expires still trigger a wake;
+    // external writes during the window are absorbed and picked up either by a
+    // later external write or by the safety timer (poll_interval).
+    let self_write_quiet_window = Duration::from_millis(
+        config
+            .coordinator
+            .graph_watch_debounce_ms
+            .saturating_add(150),
+    );
+    let mut self_write_quiet_until: Option<Instant> = None;
+
+    // ---- Graph filesystem watcher + self-pipe wakeup ----------------------
+    //
+    // The watcher runs in a background thread (spawned by notify) and observes
+    // writes to `graph.jsonl`. To wake the daemon's main poll() syscall as
+    // soon as a debounced event arrives, we use a self-pipe: the watcher
+    // writes one byte to the write end, which makes poll() return on the
+    // read end. The daemon then drains the pipe and treats it like a
+    // GraphChanged IPC event (sets the settling deadline).
+    //
+    // If the watcher fails to initialise (rare: NFS mounts, certain WSL
+    // setups), we log one warning and fall back to safety-timer-only polling.
+    // The pipe is created either way so the poll() call sites stay uniform.
+    let (graph_pipe_read_fd, graph_pipe_write_fd) = match make_self_pipe() {
+        Ok(pair) => pair,
+        Err(e) => {
+            logger.error(&format!(
+                "Failed to create graph watcher self-pipe: {} — proceeding with polling only",
+                e
+            ));
+            // Use sentinel -1 fds; poll() will skip them via revents stays 0
+            // because we'll mark them as non-watched in the pollfd array below.
+            (-1, -1)
+        }
+    };
+
+    let _graph_watcher: Option<workgraph::service::graph_watcher::GraphWatcher> =
+        if config.coordinator.graph_watch_enabled && graph_pipe_write_fd >= 0 {
+            let debounce_ms = config.coordinator.graph_watch_debounce_ms;
+            let graph_file = super::graph_path(&dir);
+            let pipe_w = graph_pipe_write_fd;
+            match workgraph::service::graph_watcher::GraphWatcher::start(
+                &graph_file,
+                Duration::from_millis(debounce_ms),
+                move || {
+                    // Best-effort wake: write one byte. EAGAIN means the pipe
+                    // is already non-empty (a previous wake hasn't been drained
+                    // yet) which is fine — that wake is still pending.
+                    let byte: u8 = 1;
+                    unsafe {
+                        libc::write(pipe_w, std::ptr::from_ref(&byte).cast::<libc::c_void>(), 1);
+                    }
+                },
+            ) {
+                Ok(watcher) => {
+                    logger.info(&format!(
+                        "Graph watcher active on {} (debounce={}ms, primary trigger; safety_interval={}s)",
+                        graph_file.display(),
+                        debounce_ms,
+                        daemon_cfg.poll_interval.as_secs(),
+                    ));
+                    Some(watcher)
+                }
+                Err(e) => {
+                    logger.warn(&format!(
+                        "Graph watcher init failed ({}); falling back to safety-timer polling at {}s",
+                        e,
+                        daemon_cfg.poll_interval.as_secs(),
+                    ));
+                    None
+                }
+            }
+        } else {
+            if !config.coordinator.graph_watch_enabled {
+                logger.info(&format!(
+                    "Graph watcher disabled (coordinator.graph_watch_enabled = false); using safety-timer polling at {}s",
+                    daemon_cfg.poll_interval.as_secs(),
+                ));
+            }
+            None
+        };
 
     // Urgent wake: when a UserChat IPC arrives, tick immediately without settling delay.
     // This flag bypasses both the settling delay and the paused state, because
@@ -2100,17 +2343,64 @@ pub fn run_daemon(
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
 
-        // Wait for an incoming connection or timeout.
-        let mut pollfd = libc::pollfd {
-            fd: listener_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let poll_ret = unsafe { libc::poll(&mut pollfd, 1, poll_timeout_ms) };
+        // Wait for an incoming connection, a graph-watcher wake, or timeout.
+        // pollfds[0] = unix socket listener; pollfds[1] = graph-watcher self-pipe.
+        // When the self-pipe fd is -1 (creation failed), libc::poll() returns
+        // POLLNVAL on it — we tolerate that and ignore the entry.
+        let mut pollfds = [
+            libc::pollfd {
+                fd: listener_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: graph_pipe_read_fd,
+                events: if graph_pipe_read_fd >= 0 {
+                    libc::POLLIN
+                } else {
+                    0
+                },
+                revents: 0,
+            },
+        ];
+        let poll_ret = unsafe { libc::poll(pollfds.as_mut_ptr(), 2, poll_timeout_ms) };
 
         if poll_ret < 0 {
             // EINTR (e.g. SIGCHLD) — just loop back to reap and retry.
             continue;
+        }
+
+        // Drain any graph-watcher wakes and treat them as a GraphChanged event:
+        // schedule a settled tick. This is the primary trigger now; CLI commands
+        // sending IPC GraphChanged remain a redundant secondary trigger.
+        //
+        // Self-write filter: events that arrive while we're inside the post-tick
+        // quiet window are almost always echoes of writes the dispatcher itself
+        // just made. Drain them so the pipe doesn't stay readable, but don't
+        // schedule a tick.
+        if graph_pipe_read_fd >= 0 && (pollfds[1].revents & libc::POLLIN) != 0 {
+            let drained = drain_pipe(graph_pipe_read_fd);
+            let in_quiet = self_write_quiet_until
+                .as_ref()
+                .map(|q| Instant::now() < *q)
+                .unwrap_or(false);
+            if drained > 0 && !in_quiet {
+                let new_deadline = Instant::now() + daemon_cfg.settling_delay;
+                let was_pending = settling_deadline.is_some();
+                settling_deadline = Some(new_deadline);
+                if !was_pending {
+                    logger.info(&format!(
+                        "Graph file changed (fs watcher), scheduling dispatcher tick in {}ms (settling delay)",
+                        daemon_cfg.settling_delay.as_millis()
+                    ));
+                }
+            }
+            // Once we observe events past the quiet window, the dispatcher's
+            // own echoes are gone; clear the marker so it's not unnecessarily
+            // checked next iteration.
+            if !in_quiet {
+                self_write_quiet_until = None;
+            }
         }
 
         // Try to accept; may still get WouldBlock if poll was a timeout.
@@ -2321,6 +2611,16 @@ pub fn run_daemon(
         if should_tick {
             last_coordinator_tick = Instant::now();
 
+            // Open the self-write quiet window: any graph-watcher events that
+            // arrive between now and `tick_end + window` are very likely echoes
+            // of writes we're about to make ourselves (status transitions,
+            // agency-phase task creation, etc.). The pipe drain logic above
+            // silently absorbs them while this window is active. The window
+            // also stays open for a short slack past the tick so the debounced
+            // event (~debounce_ms after the tick's last write) is still inside
+            // it.
+            self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
+
             // Aggregate usage stats periodically
             match workgraph::usage::aggregate_usage_stats(&dir) {
                 Ok(count) if count > 0 => {
@@ -2380,6 +2680,14 @@ pub fn run_daemon(
 
                     // Registry refresh runs directly in the daemon and is time-gated.
                     run_registry_refresh(&dir, &mut refresh_error_count, &logger);
+
+                    // Re-arm the self-write quiet window after the tick: the
+                    // archival / registry-refresh phases above can also write
+                    // the graph, and inotify events for any of those writes
+                    // arrive ~debounce_ms later. We extend the window from
+                    // *now* so the post-tick wake gets absorbed even if the
+                    // tick itself was long-running.
+                    self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
                 Err(e) => {
                     coord_state.ticks += 1;
@@ -2388,6 +2696,7 @@ pub fn run_daemon(
                     }
                     coord_state.save(&dir);
                     logger.error(&format!("Coordinator tick error: {}", e));
+                    self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
             }
 
@@ -2740,11 +3049,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
 
-    // Compaction progress
-    let config = workgraph::config::Config::load_or_default(dir);
-    let compaction_threshold = config.effective_compaction_threshold();
-    let compactor_state = workgraph::service::compactor::CompactorState::load(dir);
-
     // Log file info
     let log_path = log_file_path(dir);
     let log_path_str = log_path.to_string_lossy().to_string();
@@ -2779,12 +3083,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "agents_alive": coord.agents_alive,
                 "tasks_ready": coord.tasks_ready,
                 "agents_spawned_last_tick": coord.agents_spawned,
-            },
-            "compaction": {
-                "accumulated_tokens": coord.accumulated_tokens,
-                "threshold": compaction_threshold,
-                "last_compaction": compactor_state.last_compaction,
-                "compaction_count": compactor_state.compaction_count,
             },
             "log": {
                 "path": log_path_str,
@@ -2861,31 +3159,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             );
         } else {
             println!("  No ticks yet");
-        }
-        if compaction_threshold > 0 {
-            let pct = if compaction_threshold > 0 {
-                ((coord.accumulated_tokens as f64 / compaction_threshold as f64) * 100.0).min(100.0)
-                    as u8
-            } else {
-                0
-            };
-            let last_str = match compactor_state.last_compaction {
-                Some(ref ts) => {
-                    if let Ok(parsed) = ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                        let ago = chrono::Utc::now()
-                            .signed_duration_since(parsed)
-                            .num_seconds();
-                        format!("last: {} ago", workgraph::format_duration(ago, true))
-                    } else {
-                        "last: unknown".to_string()
-                    }
-                }
-                None => "last: never".to_string(),
-            };
-            println!(
-                "Compaction: {}/{} tokens ({}%) — {}",
-                coord.accumulated_tokens, compaction_threshold, pct, last_str
-            );
         }
         println!("Log: {}", log_path_str);
         if !recent_errors.is_empty() || !recent_fatals.is_empty() {
@@ -3874,12 +4147,13 @@ mod tests {
         let gp = dir.join("graph.jsonl");
 
         let mut graph = workgraph::graph::WorkGraph::new();
-        // Note: .compact-* is no longer cleaned up — compaction is now native/journal-based
+        // .compact-* and .archive-* are now retired and should be abandoned on boot.
         for id in [
             ".coordinator-0",
             ".archive-0",
             ".registry-refresh-0",
             ".user-erik-0",
+            ".compact-0",
         ] {
             graph.add_node(Node::Task(Task {
                 id: id.to_string(),
@@ -3888,13 +4162,6 @@ mod tests {
                 ..Default::default()
             }));
         }
-        // Add a .compact-0 task that should NOT be abandoned (native compaction handles it)
-        graph.add_node(Node::Task(Task {
-            id: ".compact-0".to_string(),
-            title: "Compact 0".to_string(),
-            status: Status::Open,
-            ..Default::default()
-        }));
         graph.add_node(Node::Task(Task {
             id: "real-task".to_string(),
             title: "real-task".to_string(),
@@ -3907,18 +4174,21 @@ mod tests {
         cleanup_legacy_daemon_tasks(dir, &logger);
 
         let graph = load_graph(&gp).unwrap();
-        // Coordinator tasks should NOT be abandoned (TUI needs them for discovery)
+        // Chat tasks should NOT be abandoned (TUI needs them for discovery)
         assert_eq!(
             graph.get_task(".coordinator-0").unwrap().status,
             Status::Open
         );
 
-        // Other legacy tasks should still be abandoned
-        for id in [".archive-0", ".registry-refresh-0", ".user-erik-0"] {
+        // All legacy daemon-managed tasks (including retired compact/archive) are abandoned.
+        for id in [
+            ".archive-0",
+            ".registry-refresh-0",
+            ".user-erik-0",
+            ".compact-0",
+        ] {
             assert_eq!(graph.get_task(id).unwrap().status, Status::Abandoned);
         }
-        // .compact-0 should NOT be abandoned — it's now handled by native compaction
-        assert_eq!(graph.get_task(".compact-0").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("real-task").unwrap().status, Status::Open);
     }
 

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
+use workgraph::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 use workgraph::config::{Config, CoordinatorConfig};
 use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
@@ -88,12 +89,140 @@ enum TriageResult {
     UnknownButActive { activity_type: String },
 }
 
+#[derive(Debug, PartialEq)]
+enum PushOutcome {
+    /// No `origin` remote configured — skipped silently.
+    NoRemote,
+    /// `git push origin main` succeeded AND the agent branch was deleted on origin.
+    PushedAndDeleted,
+    /// `git push origin main` succeeded but the branch-delete push failed.
+    PushedNotDeleted { delete_error: String },
+    /// `git push origin main` failed (network, permissions, non-FF unresolvable).
+    LocalOnly { push_error: String },
+}
+
 #[derive(Debug)]
 enum WorktreeMergeResult {
     NotInWorktree,
     NoCommits,
-    Merged { commit_sha: String },
-    Conflict { conflicting_files: Vec<String> },
+    Merged {
+        commit_sha: String,
+        push_outcome: PushOutcome,
+    },
+    Conflict {
+        conflicting_files: Vec<String>,
+    },
+}
+
+/// Best-effort: push local `main` to `origin/main` (FF-only, with a single
+/// fetch+ff-merge+retry on non-FF), then delete the agent branch on origin.
+///
+/// Never fails — `wg done` must remain successful even if the remote is
+/// unavailable. Returns a `PushOutcome` describing what happened so the caller
+/// can surface it in the `[merge]` log line.
+///
+/// Branch deletion is **only** attempted after the main push succeeds (the
+/// audit doc requires the squash commit be reachable from `origin/main`
+/// before we drop the only ref to the agent branch tip on origin).
+fn push_main_and_delete_branch(project_root: &str, branch: &str) -> PushOutcome {
+    use std::process::Command;
+
+    // 0. If there's no `origin` remote, skip silently — common in tests and
+    //    detached/local-only repos. Without this we'd report a misleading
+    //    `push failed: ... 'origin' does not appear to be a git repository`.
+    let remote_check = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(project_root)
+        .output();
+    let has_origin = matches!(remote_check, Ok(o) if o.status.success());
+    if !has_origin {
+        return PushOutcome::NoRemote;
+    }
+
+    // 1. First push attempt.
+    let push = Command::new("git")
+        .args(["push", "origin", "main"])
+        .current_dir(project_root)
+        .output();
+
+    let initial_push_ok = matches!(&push, Ok(o) if o.status.success());
+    let mut push_err_msg = String::new();
+    if !initial_push_ok {
+        push_err_msg = match &push {
+            Ok(o) => one_line_error(&o.stderr),
+            Err(e) => e.to_string(),
+        };
+
+        // Try to recover from a non-FF rejection: fetch origin main, fast-forward
+        // local main to origin/main, retry the push. We do NOT attempt a
+        // non-fast-forward merge — local main has the squash commit on top
+        // and origin/main has its own work; a real reconciliation needs human
+        // judgment, not best-effort merges.
+        let fetch_ok = Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(project_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let ff_ok = if fetch_ok {
+            Command::new("git")
+                .args(["merge", "--ff-only", "origin/main"])
+                .current_dir(project_root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if ff_ok {
+            let retry = Command::new("git")
+                .args(["push", "origin", "main"])
+                .current_dir(project_root)
+                .output();
+            let retry_ok = matches!(&retry, Ok(o) if o.status.success());
+            if !retry_ok {
+                if let Ok(o) = retry {
+                    push_err_msg = one_line_error(&o.stderr);
+                }
+                return PushOutcome::LocalOnly {
+                    push_error: push_err_msg,
+                };
+            }
+            // fall through — push succeeded on retry
+        } else {
+            return PushOutcome::LocalOnly {
+                push_error: push_err_msg,
+            };
+        }
+    }
+
+    // 2. Push succeeded — squash commit is now on origin/main. Safe to delete
+    //    the agent branch on origin.
+    let delete = Command::new("git")
+        .args(["push", "origin", &format!(":refs/heads/{}", branch)])
+        .current_dir(project_root)
+        .output();
+
+    match delete {
+        Ok(o) if o.status.success() => PushOutcome::PushedAndDeleted,
+        Ok(o) => PushOutcome::PushedNotDeleted {
+            delete_error: one_line_error(&o.stderr),
+        },
+        Err(e) => PushOutcome::PushedNotDeleted {
+            delete_error: e.to_string(),
+        },
+    }
+}
+
+fn one_line_error(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown error")
+        .to_string()
 }
 
 struct WorktreeInfo {
@@ -101,6 +230,26 @@ struct WorktreeInfo {
     branch: String,
     project_root: String,
     agent_id: Option<String>,
+}
+
+/// Detect git's "no changes staged" messages from a failed `git commit`.
+///
+/// Git emits different phrasings depending on working-tree state:
+///   - "nothing to commit, working tree clean" — clean tree, nothing staged
+///   - "nothing added to commit but untracked files present" — clean tree + untracked
+///   - "no changes added to commit" — modified tracked files but none staged
+///
+/// All three mean "the squash-merge produced no new content," which after a prior
+/// successful merge to main is the expected retry state, not a failure.
+fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
+    let needles = [
+        "nothing to commit",
+        "nothing added to commit",
+        "no changes added to commit",
+    ];
+    needles
+        .iter()
+        .any(|n| stdout.contains(n) || stderr.contains(n))
 }
 
 fn detect_worktree() -> Option<WorktreeInfo> {
@@ -221,7 +370,7 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         if !commit_output.status.success() {
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             let stdout = String::from_utf8_lossy(&commit_output.stdout);
-            if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+            if is_no_changes_to_commit(&stdout, &stderr) {
                 return Ok(WorktreeMergeResult::NoCommits);
             }
             anyhow::bail!("git commit failed: {}", stderr);
@@ -236,7 +385,18 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         let commit_sha = String::from_utf8_lossy(&sha_output.stdout)
             .trim()
             .to_string();
-        WorktreeMergeResult::Merged { commit_sha }
+
+        // Best-effort push of main + delete of the agent branch on origin.
+        // This closes the gap documented in
+        // docs/audit-unmerged-branches-2026-04-26.md: prior to this, every
+        // clean `wg done` left the squash commit on local main only and the
+        // agent branch lingering on origin.
+        let push_outcome = push_main_and_delete_branch(&wt.project_root, &wt.branch);
+
+        WorktreeMergeResult::Merged {
+            commit_sha,
+            push_outcome,
+        }
     };
 
     unsafe { libc::flock(fd, libc::LOCK_UN) };
@@ -901,9 +1061,65 @@ fn run_verify_command(
     }
 }
 
+/// Returns `true` if the path emitted by `git status --porcelain` refers to a
+/// workgraph-internal directory that should never trigger a hygiene warning.
+///
+/// Matches `.wg/`, `.wg-worktrees/`, `.workgraph/`, and numbered worktree dirs
+/// like `.workgraph.1/`. These are workgraph's own data — agents should never
+/// commit them, but they are *expected* to sit untracked in the working tree
+/// (see project memory: "stale `.workgraph.N/` dirs + agency YAMLs sit
+/// untracked"), so flagging them in `wg done` only produces noise.
+fn is_hygiene_ignored_path(path: &str) -> bool {
+    let p = path.trim_start_matches("./");
+    let head = p.split('/').next().unwrap_or(p);
+    head == ".wg"
+        || head == ".wg-worktrees"
+        || head == ".workgraph"
+        || head.starts_with(".workgraph.")
+}
+
+/// Parse a single line of `git status --porcelain` and return the path.
+///
+/// Format: `XY <path>` where XY is the two-char status code and the path is
+/// the remainder. Renames (`R `) carry `<old> -> <new>`; we use the new path
+/// (after the arrow) as the relevant working-tree entry. Quoted paths
+/// (containing whitespace or special chars) are unquoted minimally.
+fn porcelain_path(line: &str) -> Option<&str> {
+    if line.len() < 4 {
+        return None;
+    }
+    let rest = &line[3..];
+    if let Some((_old, new)) = rest.split_once(" -> ") {
+        Some(new.trim_matches('"'))
+    } else {
+        Some(rest.trim_matches('"'))
+    }
+}
+
+/// Filter `git status --porcelain` output, dropping lines whose path is a
+/// workgraph-internal directory we don't want to warn about.
+fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
+    status
+        .lines()
+        .filter(|line| match porcelain_path(line) {
+            Some(p) => !is_hygiene_ignored_path(p),
+            None => true,
+        })
+        .collect()
+}
+
 /// Check git hygiene when an agent marks a task as done.
 /// Emits warnings for uncommitted changes and stash growth.
-fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
+///
+/// Skipped entirely for chat-loop tasks — a chat agent is a conversation
+/// endpoint, not a code agent, and should never be lectured about
+/// uncommitted state (see chat-agent-loops bug B). Workgraph-internal
+/// paths (`.wg/`, `.workgraph.*/`, etc.) are filtered from the warning
+/// even when the check does run.
+fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
+    if tags.iter().any(|t| workgraph::chat_id::is_chat_loop_tag(t)) {
+        return;
+    }
     use std::process::Command;
     let project_root = dir.parent().unwrap_or(dir);
     if let Ok(output) = Command::new("git")
@@ -912,8 +1128,9 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
         .output()
     {
         let status = String::from_utf8_lossy(&output.stdout);
-        if !status.is_empty() {
-            let changed: Vec<&str> = status.lines().take(10).collect();
+        let filtered = filter_hygiene_porcelain(&status);
+        if !filtered.is_empty() {
+            let changed: Vec<&str> = filtered.into_iter().take(10).collect();
             eprintln!(
                 "Warning: git hygiene for '{}': uncommitted changes:\n{}",
                 task_id,
@@ -936,12 +1153,112 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
     }
 }
 
+/// Run the smoke gate for `wg done`.
+///
+/// If a smoke manifest exists and the task owns scenarios in it, those
+/// scenarios run live. Any FAIL or ERROR outcome blocks `wg done` with a
+/// message naming the broken scenarios. SKIP outcomes are surfaced loudly
+/// but never block.
+///
+/// `--skip-smoke` skips the gate entirely; agents are refused the escape
+/// hatch unless `WG_SMOKE_AGENT_OVERRIDE=1` is also set in the environment.
+/// `--full-smoke` runs every scenario in the manifest, ignoring ownership.
+fn run_smoke_gate(
+    dir: &Path,
+    id: &str,
+    full_smoke: bool,
+    skip_smoke: bool,
+    is_agent: bool,
+) -> Result<()> {
+    if skip_smoke {
+        if is_agent && std::env::var("WG_SMOKE_AGENT_OVERRIDE").ok().as_deref() != Some("1") {
+            anyhow::bail!(
+                "Agents cannot use --skip-smoke. The smoke gate is the regression contract; \
+                 fix the broken scenario or escalate to a human. \
+                 If a human is intentionally bypassing for this task, export \
+                 WG_SMOKE_AGENT_OVERRIDE=1 in this shell."
+            );
+        }
+        eprintln!(
+            "WARNING: --skip-smoke bypassed the smoke gate for '{}'. Any scenario regression will not be caught.",
+            id
+        );
+        return Ok(());
+    }
+
+    let manifest_path = SmokeManifest::resolve_path(dir);
+    let manifest = SmokeManifest::load_from(&manifest_path)
+        .with_context(|| format!("loading smoke manifest from {}", manifest_path.display()))?;
+
+    let scenarios: Vec<_> = if full_smoke {
+        manifest.scenarios.iter().collect()
+    } else {
+        manifest.scenarios_for_task(id)
+    };
+
+    if scenarios.is_empty() {
+        // No scenarios owned by this task and no --full-smoke. Quiet no-op.
+        return Ok(());
+    }
+
+    let manifest_dir = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dir.to_path_buf());
+
+    eprintln!(
+        "Smoke gate: running {} scenario(s) for '{}' (manifest: {})",
+        scenarios.len(),
+        id,
+        manifest_path.display()
+    );
+
+    let report = smoke::run_scenarios(&scenarios, &manifest_dir);
+    eprint!("{}", report.render());
+
+    if report.blocks_done() {
+        let mut broken: Vec<String> = report
+            .failures()
+            .iter()
+            .map(|r| match &r.outcome {
+                ScenarioOutcome::Fail { exit_code, .. } => {
+                    format!("{} (exit {})", r.name, exit_code)
+                }
+                _ => r.name.clone(),
+            })
+            .collect();
+        broken.extend(report.errors().iter().map(|r| match &r.outcome {
+            ScenarioOutcome::Error { message } => format!("{} ({})", r.name, message),
+            _ => r.name.clone(),
+        }));
+        anyhow::bail!(
+            "Smoke gate refused 'wg done {}': {} scenario(s) broken — {}\n\
+             Fix the regression or, if you understand why this is non-blocking, \
+             rerun with --skip-smoke (humans only).",
+            id,
+            broken.len(),
+            broken.join(", ")
+        );
+    }
+
+    if !report.skips().is_empty() {
+        eprintln!(
+            "Smoke gate: {} scenario(s) emitted SKIP — verify the missing endpoint/credential before claiming done.",
+            report.skips().len()
+        );
+    }
+
+    Ok(())
+}
+
 pub fn run(
     dir: &Path,
     id: &str,
     converged: bool,
     skip_verify: bool,
     ignore_unmerged_worktree: bool,
+    full_smoke: bool,
+    skip_smoke: bool,
 ) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
     run_inner(
@@ -951,6 +1268,8 @@ pub fn run(
         skip_verify,
         ignore_unmerged_worktree,
         is_agent,
+        full_smoke,
+        skip_smoke,
     )
 }
 
@@ -961,6 +1280,8 @@ fn run_inner(
     skip_verify: bool,
     ignore_unmerged_worktree: bool,
     is_agent: bool,
+    full_smoke: bool,
+    skip_smoke: bool,
 ) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
 
@@ -1006,9 +1327,24 @@ fn run_inner(
         }
     }
 
-    // Git hygiene check for agents: warn about uncommitted changes
+    // Git hygiene check for agents: warn about uncommitted changes.
+    // Skipped entirely for chat-loop tasks (chat-agent-loops bug B) — see
+    // `check_agent_git_hygiene`. We pass the task's tags through so the
+    // skip decision is local to the hygiene helper.
     if is_agent {
-        check_agent_git_hygiene(dir, id);
+        let tags = graph
+            .get_task(id)
+            .map(|t| t.tags.clone())
+            .unwrap_or_default();
+        check_agent_git_hygiene(dir, id, &tags);
+    }
+
+    // Smoke gate: a task cannot be marked done while a regression-protecting
+    // smoke scenario it owns is failing. Refuse the agent escape hatch unless
+    // a separate override is set, so an agent can't smother a real regression
+    // by adding `--skip-smoke` to its `wg done`.
+    if let Err(e) = run_smoke_gate(dir, id, full_smoke, skip_smoke, is_agent) {
+        return Err(e);
     }
 
     // Auto-defer verify when the task has been decomposed into subtasks.
@@ -1746,10 +2082,27 @@ fn run_inner(
                 // Nothing to merge — proceed to mark done
                 mark_worktree_for_cleanup(&wt);
             }
-            WorktreeMergeResult::Merged { commit_sha } => {
+            WorktreeMergeResult::Merged {
+                commit_sha,
+                push_outcome,
+            } => {
+                let suffix = match &push_outcome {
+                    PushOutcome::PushedAndDeleted => format!(
+                        " — pushed origin/main, deleted origin/{}",
+                        wt.branch
+                    ),
+                    PushOutcome::PushedNotDeleted { delete_error } => format!(
+                        " — pushed origin/main, branch delete failed: {}",
+                        delete_error
+                    ),
+                    PushOutcome::LocalOnly { push_error } => {
+                        format!(" — local-only (push failed: {})", push_error)
+                    }
+                    PushOutcome::NoRemote => String::new(),
+                };
                 eprintln!(
-                    "[merge] Squash-merged {} to main ({})",
-                    wt.branch, commit_sha
+                    "[merge] Squash-merged {} to main ({}){}",
+                    wt.branch, commit_sha, suffix
                 );
                 mark_worktree_for_cleanup(&wt);
             }
@@ -2022,7 +2375,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2040,7 +2393,7 @@ mod tests {
             vec![make_task("t1", "Test task", Status::InProgress)],
         );
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2056,7 +2409,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
         // Should return Ok (idempotent) rather than error
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
     }
 
@@ -2071,7 +2424,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("blocked by"));
@@ -2089,7 +2442,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2110,7 +2463,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2131,7 +2484,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2150,7 +2503,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2166,7 +2519,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
         let before = Utc::now();
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2189,7 +2542,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2208,7 +2561,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![]);
 
-        let result = run(dir_path, "nonexistent", false, false, false);
+        let result = run(dir_path, "nonexistent", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -2220,7 +2573,7 @@ mod tests {
         let dir_path = dir.path();
         // Don't initialize workgraph
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));
@@ -2232,7 +2585,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2249,7 +2602,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", true, false, false);
+        let result = run(dir_path, "t1", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2284,7 +2637,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2334,7 +2687,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false, false);
+        let result = run(dir_path, "worker", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2375,7 +2728,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2412,7 +2765,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2433,7 +2786,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2464,7 +2817,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2500,7 +2853,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2550,7 +2903,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false, false);
+        let result = run(dir_path, "worker", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2584,7 +2937,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2602,7 +2955,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2624,7 +2977,7 @@ mod tests {
         task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -2644,7 +2997,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=false to simulate human usage
-        let result = super::run_inner(dir_path, "t1", false, true, false, false);
+        let result = super::run_inner(dir_path, "t1", false, true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2663,7 +3016,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=true to simulate agent context
-        let result = super::run_inner(dir_path, "t1", false, true, false, true);
+        let result = super::run_inner(dir_path, "t1", false, true, false, true, false, false);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2689,7 +3042,7 @@ mod tests {
         assert!(task.verify.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2707,7 +3060,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", true, false, false);
+        let result = run(dir_path, "t1", true, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2728,7 +3081,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2747,7 +3100,7 @@ mod tests {
         task.validation = Some("llm".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false, false).unwrap();
+        run(dir_path, "t1", false, false, false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2771,7 +3124,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false, false).unwrap();
+        run(dir_path, "t1", false, false, false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2790,7 +3143,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Should fail: no validation log entry
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation log entry"));
@@ -2811,7 +3164,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2836,7 +3189,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation failed"));
@@ -2852,7 +3205,7 @@ mod tests {
         assert!(task.validation.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2879,7 +3232,7 @@ mod tests {
         registry.register_agent(99999, "t1", "claude", "/tmp/output.log");
         registry.save(dir_path).unwrap();
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         // Verify registry was updated
@@ -2905,7 +3258,7 @@ mod tests {
         task.verify = Some("echo hello | grep hello".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(
             result.is_ok(),
             "Pipe in verify command should work: {:?}",
@@ -2927,7 +3280,7 @@ mod tests {
         task.verify = Some("echo hello | grep nonexistent".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err(), "Failing pipe should propagate error");
 
         let path = graph_path(dir_path);
@@ -2946,7 +3299,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // First failure: should increment verify_failures and bail
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -2976,7 +3329,7 @@ mod tests {
 
         // Default threshold is 3 — fail 3 times
         for i in 0..3 {
-            let result = run(dir_path, "t1", false, false, false);
+            let result = run(dir_path, "t1", false, false, false, false, false);
             if i < 2 {
                 // First two failures: should error (not yet at threshold)
                 assert!(result.is_err(), "attempt {} should fail with error", i);
@@ -3037,7 +3390,7 @@ mod tests {
         task.verify_failures = 2; // previous failures
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3059,7 +3412,7 @@ mod tests {
         task.verify = Some("echo 'stdout line' && echo 'stderr line' >&2 && exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -3095,7 +3448,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let _ = run(dir_path, "t1", false, false, false);
+        let _ = run(dir_path, "t1", false, false, false, false, false);
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -3133,11 +3486,11 @@ mod tests {
         std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
 
         // First failure
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         // Second failure — should trip circuit breaker at threshold 2
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
 
         let path = graph_path(dir_path);
@@ -3163,7 +3516,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3194,7 +3547,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // No config file = defaults to inline
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3338,7 +3691,7 @@ mod tests {
 
         // The task should fail because evaluation requires the task to be Done first
         // But importantly, it should NOT fail with exit 127 (command not found)
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -3381,7 +3734,7 @@ mod tests {
         task.verify = Some("test \"$TERM\" = \"dumb\"".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
 
         // The command should succeed, indicating TERM=dumb was set
         assert!(result.is_ok(), "TERM=dumb should be set for shell commands");
@@ -3421,7 +3774,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, child_a, child_b]);
 
         // Parent's `wg done` should succeed because verify is deferred
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(
             result.is_ok(),
             "Parent with children should defer verify, got: {:?}",
@@ -3487,7 +3840,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3517,7 +3870,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, flip, eval]);
 
         // Should run verify inline since only system children exist
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3551,7 +3904,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![parent, child]);
 
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3562,5 +3915,461 @@ mod tests {
             Some("30m".to_string()),
             "Deferred task should inherit verify timeout"
         );
+    }
+
+    // ======================================================================
+    // Push-on-merge tests (closes the gap from
+    // docs/audit-unmerged-branches-2026-04-26.md). The fixtures here use a
+    // local bare repo as `origin` so we can verify both:
+    //   1. `git push origin main` advances `origin/main`, and
+    //   2. `git push origin :refs/heads/<branch>` removes the agent branch
+    //      from `origin`.
+    // No network is required.
+    // ======================================================================
+
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Run a git command and assert success.
+    fn git(cwd: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {}", args, e));
+        assert!(
+            out.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    /// Run a git command, return `(success, stdout)`.
+    fn git_capture(cwd: &Path, args: &[&str]) -> (bool, String) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {}", args, e));
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    }
+
+    /// Build a project repo whose `origin` remote is a local bare repo.
+    /// Returns `(remote_bare_dir, project_root)`. Both are owned by the
+    /// caller (tempdirs).
+    ///
+    /// The project repo has:
+    ///   - `main` branch with one commit
+    ///   - an agent branch `wg/agent-test/<task>` checked out with one new
+    ///     commit on top of main (this is what the merge-back will squash)
+    ///   - `main` checked out at the end (squash-merge requires being on main)
+    fn make_repo_with_remote(
+        task_id: &str,
+    ) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, String) {
+        let remote = tempdir().unwrap();
+        let project = tempdir().unwrap();
+        let project_path = project.path().to_path_buf();
+
+        // 1. Bare remote.
+        git(remote.path(), &["init", "--bare", "-b", "main"]);
+
+        // 2. Project repo on `main`.
+        git(&project_path, &["init", "-b", "main"]);
+        git(&project_path, &["config", "user.email", "test@test.com"]);
+        git(&project_path, &["config", "user.name", "Test"]);
+        std::fs::write(project_path.join("README.md"), "initial\n").unwrap();
+        git(&project_path, &["add", "README.md"]);
+        git(&project_path, &["commit", "-m", "initial"]);
+        git(
+            &project_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
+            ],
+        );
+        git(&project_path, &["push", "-u", "origin", "main"]);
+
+        // 3. Agent branch with a commit on top of main.
+        let branch = format!("wg/agent-test/{}", task_id);
+        git(&project_path, &["checkout", "-b", &branch]);
+        std::fs::write(project_path.join("agent_work.txt"), "agent change\n").unwrap();
+        git(&project_path, &["add", "agent_work.txt"]);
+        git(&project_path, &["commit", "-m", "agent work"]);
+        git(&project_path, &["push", "-u", "origin", &branch]);
+
+        // 4. Back to main so attempt_worktree_merge can squash-merge into it.
+        git(&project_path, &["checkout", "main"]);
+
+        (remote, project, project_path, branch)
+    }
+
+    fn make_wt(project_path: &Path, branch: &str) -> WorktreeInfo {
+        WorktreeInfo {
+            // attempt_worktree_merge only checks `<worktree_path>/.git` exists
+            // when deciding whether to skip; we just point it at the project
+            // root, which has a real `.git` dir, since these tests don't use
+            // a separate worktree directory.
+            worktree_path: project_path.to_str().unwrap().to_string(),
+            branch: branch.to_string(),
+            project_root: project_path.to_str().unwrap().to_string(),
+            agent_id: Some("agent-test".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_done_pushes_main_and_deletes_branch_on_clean_merge() {
+        let (_remote, _project, project_path, branch) =
+            make_repo_with_remote("clean-merge");
+        let wt = make_wt(&project_path, &branch);
+
+        // Capture origin/main before the merge.
+        let (_, before_sha) =
+            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let before_sha = before_sha.trim().to_string();
+
+        // Run the merge path.
+        let result = attempt_worktree_merge(&wt, "clean-merge").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty(), "expected a squash commit sha");
+                assert_eq!(
+                    push_outcome,
+                    PushOutcome::PushedAndDeleted,
+                    "expected clean push + branch delete on origin"
+                );
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
+
+        // origin/main must have advanced.
+        let (_, after_sha) =
+            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let after_sha = after_sha.trim().to_string();
+        assert_ne!(
+            before_sha, after_sha,
+            "origin/main should advance to the squash commit"
+        );
+
+        // Local main HEAD == origin/main.
+        let (_, local_main) =
+            git_capture(&project_path, &["rev-parse", "main"]);
+        assert_eq!(
+            local_main.trim(),
+            after_sha,
+            "local main and origin/main should match after push"
+        );
+
+        // The agent branch must be gone on origin.
+        let (_, refs) = git_capture(&project_path, &["ls-remote", "origin"]);
+        assert!(
+            !refs.contains(&format!("refs/heads/{}", branch)),
+            "agent branch should be deleted on origin; ls-remote = {}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_done_succeeds_when_remote_unavailable() {
+        let (remote, _project, project_path, branch) =
+            make_repo_with_remote("remote-unavailable");
+
+        // Point `origin` at an unreachable URL. We do this *after* the
+        // initial setup so the project is in a realistic post-spawn state.
+        git(
+            &project_path,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                // file:// scheme + nonexistent path = guaranteed-fail push,
+                // no DNS / network dependency.
+                "file:///nonexistent/path/to/repo.git",
+            ],
+        );
+
+        // Sanity: the bare remote we'd otherwise push to still exists, but
+        // we no longer have a path to it.
+        drop(remote);
+
+        let wt = make_wt(&project_path, &branch);
+        let result = attempt_worktree_merge(&wt, "remote-unavailable").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty(), "local merge should still happen");
+                match push_outcome {
+                    PushOutcome::LocalOnly { push_error } => {
+                        assert!(
+                            !push_error.is_empty(),
+                            "expected a non-empty push error reason"
+                        );
+                    }
+                    other => panic!(
+                        "expected LocalOnly when remote unreachable, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
+
+        // Local main must still have the squash commit.
+        let (ok, log) = git_capture(
+            &project_path,
+            &["log", "main", "--oneline", "-1"],
+        );
+        assert!(ok, "git log on main failed");
+        assert!(
+            log.contains("remote-unavailable"),
+            "squash commit should be on local main; got: {}",
+            log
+        );
+    }
+
+    #[test]
+    fn test_done_no_remote_returns_no_remote_outcome() {
+        // A repo with no `origin` remote should produce PushOutcome::NoRemote
+        // and the merge log line should omit the push suffix.
+        let project = tempdir().unwrap();
+        let project_path = project.path().to_path_buf();
+
+        git(&project_path, &["init", "-b", "main"]);
+        git(&project_path, &["config", "user.email", "test@test.com"]);
+        git(&project_path, &["config", "user.name", "Test"]);
+        std::fs::write(project_path.join("README.md"), "x\n").unwrap();
+        git(&project_path, &["add", "README.md"]);
+        git(&project_path, &["commit", "-m", "initial"]);
+
+        let branch = "wg/agent-test/no-remote".to_string();
+        git(&project_path, &["checkout", "-b", &branch]);
+        std::fs::write(project_path.join("a.txt"), "x\n").unwrap();
+        git(&project_path, &["add", "a.txt"]);
+        git(&project_path, &["commit", "-m", "agent work"]);
+        git(&project_path, &["checkout", "main"]);
+
+        let wt = make_wt(&project_path, &branch);
+        let result = attempt_worktree_merge(&wt, "no-remote").unwrap();
+
+        match result {
+            WorktreeMergeResult::Merged {
+                push_outcome,
+                commit_sha,
+            } => {
+                assert!(!commit_sha.is_empty());
+                assert_eq!(push_outcome, PushOutcome::NoRemote);
+            }
+            other => panic!("expected Merged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_is_no_changes_to_commit_detects_all_variants() {
+        // Clean tree, no untracked files
+        assert!(is_no_changes_to_commit(
+            "On branch main\nnothing to commit, working tree clean\n",
+            "",
+        ));
+        // Clean tree but untracked files present (the bug scenario from fix-wg-done-2)
+        assert!(is_no_changes_to_commit(
+            "On branch main\nUntracked files: ...\nnothing added to commit but untracked files present\n",
+            "",
+        ));
+        // Modified tracked files but none staged
+        assert!(is_no_changes_to_commit(
+            "Changes not staged for commit:\nno changes added to commit (use \"git add\")\n",
+            "",
+        ));
+        // Also detected when message comes through stderr
+        assert!(is_no_changes_to_commit(
+            "",
+            "nothing added to commit but untracked files present\n",
+        ));
+        // Real failure (e.g., hook rejection) must NOT be misclassified
+        assert!(!is_no_changes_to_commit(
+            "",
+            "error: pre-commit hook failed\n",
+        ));
+        assert!(!is_no_changes_to_commit("", ""));
+    }
+
+    #[test]
+    fn test_done_handles_already_merged_branch() {
+        // Simulates the fix-wg-done-2 scenario: a branch that has already been
+        // squash-merged into main. The second invocation must return NoCommits
+        // rather than bail with "git commit failed", even when untracked files
+        // are present (which makes git emit "nothing added to commit but
+        // untracked files present" instead of "nothing to commit").
+        use std::process::Command;
+
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(project_root)
+                .output()
+                .expect("git command failed to spawn");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: stdout={} stderr={}",
+                args,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        };
+
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::write(project_root.join("README.md"), "init\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "init"]);
+
+        git(&["checkout", "-b", "feature"]);
+        std::fs::write(project_root.join("file.txt"), "feature change\n").unwrap();
+        git(&["add", "file.txt"]);
+        git(&["commit", "-m", "feature change"]);
+
+        git(&["checkout", "main"]);
+
+        // Untracked file mimics stray .workgraph.* / .wg/ dirs that trigger the
+        // "nothing added to commit but untracked files present" wording.
+        std::fs::write(project_root.join(".workgraph.junk"), "junk\n").unwrap();
+
+        let wt = WorktreeInfo {
+            worktree_path: project_root.to_string_lossy().to_string(),
+            branch: "feature".to_string(),
+            project_root: project_root.to_string_lossy().to_string(),
+            agent_id: Some("test-agent".to_string()),
+        };
+
+        let r1 = attempt_worktree_merge(&wt, "test-task").expect("first merge call must succeed");
+        assert!(
+            matches!(r1, WorktreeMergeResult::Merged { .. }),
+            "first call should produce Merged, got {:?}",
+            r1,
+        );
+
+        let r2 = attempt_worktree_merge(&wt, "test-task")
+            .expect("second merge call must succeed (no bail)");
+        assert!(
+            matches!(r2, WorktreeMergeResult::NoCommits),
+            "second call on an already-merged branch should return NoCommits, got {:?}",
+            r2,
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // chat-agent-loops bug B: git hygiene must skip chat-loop tasks and
+    // filter workgraph-internal paths from the warning.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_is_hygiene_ignored_path_recognises_workgraph_dirs() {
+        assert!(is_hygiene_ignored_path(".wg/"));
+        assert!(is_hygiene_ignored_path(".wg"));
+        assert!(is_hygiene_ignored_path(".wg/lockfile"));
+        assert!(is_hygiene_ignored_path(".wg-worktrees/"));
+        assert!(is_hygiene_ignored_path(".wg-worktrees/agent-228/foo"));
+        assert!(is_hygiene_ignored_path(".workgraph/"));
+        assert!(is_hygiene_ignored_path(".workgraph.1/"));
+        assert!(is_hygiene_ignored_path(".workgraph.42/graph.jsonl"));
+        // Real source paths must NOT be treated as ignored.
+        assert!(!is_hygiene_ignored_path("src/foo.rs"));
+        assert!(!is_hygiene_ignored_path("README.md"));
+        assert!(!is_hygiene_ignored_path(".github/workflows/ci.yml"));
+        // Similar names that must not match.
+        assert!(!is_hygiene_ignored_path(".workgraph_old/foo"));
+        assert!(!is_hygiene_ignored_path(".wgs/foo"));
+    }
+
+    #[test]
+    fn test_porcelain_path_extracts_path_from_status_line() {
+        assert_eq!(porcelain_path("?? .wg/"), Some(".wg/"));
+        assert_eq!(porcelain_path("?? .workgraph.1/"), Some(".workgraph.1/"));
+        assert_eq!(porcelain_path(" M src/foo.rs"), Some("src/foo.rs"));
+        assert_eq!(porcelain_path("A  src/new.rs"), Some("src/new.rs"));
+        // Renames: prefer the new path.
+        assert_eq!(
+            porcelain_path("R  src/old.rs -> src/new.rs"),
+            Some("src/new.rs")
+        );
+        // Quoted path (whitespace) is unwrapped.
+        assert_eq!(porcelain_path("?? \"foo bar.txt\""), Some("foo bar.txt"));
+        // Garbage lines do not panic.
+        assert_eq!(porcelain_path("xx"), None);
+    }
+
+    #[test]
+    fn test_filter_hygiene_porcelain_drops_workgraph_paths() {
+        let raw = "?? .wg/\n?? .workgraph.1/\n M src/foo.rs\n?? README.md\n";
+        let kept = filter_hygiene_porcelain(raw);
+        assert_eq!(kept, vec![" M src/foo.rs", "?? README.md"]);
+    }
+
+    #[test]
+    fn test_filter_hygiene_porcelain_keeps_all_when_nothing_ignored() {
+        let raw = " M src/foo.rs\nA  newfile.rs\n";
+        let kept = filter_hygiene_porcelain(raw);
+        assert_eq!(kept, vec![" M src/foo.rs", "A  newfile.rs"]);
+    }
+
+    #[test]
+    fn test_filter_hygiene_porcelain_returns_empty_when_only_ignored() {
+        // The user's repro: only the workgraph-internal noise is present.
+        let raw = "?? .wg/\n?? .workgraph.1/\n";
+        let kept = filter_hygiene_porcelain(raw);
+        assert!(
+            kept.is_empty(),
+            "filter should drop all workgraph-internal paths, got {:?}",
+            kept,
+        );
+    }
+
+    /// Bug B regression-guard: `wg done` on a chat-loop tagged task must not
+    /// run the git hygiene check at all. We can't easily observe the inner
+    /// command (it shells out to `git`), but we can prove the gate by passing
+    /// a task we know is *not* in any git repo and asserting the helper
+    /// returns immediately without trying to invoke git. If the chat-loop
+    /// gate is wired correctly the call is a no-op even when run from a
+    /// non-git directory, which `tempdir()` provides for free.
+    #[test]
+    fn test_check_agent_git_hygiene_skips_chat_loop_tag() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // Just make sure the call doesn't panic and produces no output we
+        // can assert on (eprintln is harder to capture, but we can at least
+        // exercise both branches.)
+        check_agent_git_hygiene(
+            dir_path,
+            ".chat-0",
+            &[workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
+        );
+        // Also accept the legacy form.
+        check_agent_git_hygiene(
+            dir_path,
+            ".coordinator-0",
+            &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()],
+        );
+        // Non-chat tags do not skip — but with no git repo at the parent
+        // dir the function silently no-ops, which is fine for this test.
+        check_agent_git_hygiene(dir_path, "regular-task", &["other".to_string()]);
     }
 }

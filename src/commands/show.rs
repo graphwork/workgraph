@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{
@@ -130,6 +131,41 @@ struct TaskDetails {
     iteration_parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_config: Option<workgraph::agency::IterationConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evaluations: Vec<EvalSummary>,
+    /// Snapshot of the task's worktree (when one exists). Populated for
+    /// retried tasks so the user can inspect prior WIP before deciding to
+    /// resume in-place vs `wg retry --fresh`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree_state: Option<WorktreeStateInfo>,
+}
+
+/// Snapshot of a task's worktree dir + branch.
+#[derive(Debug, Clone, Serialize)]
+struct WorktreeStateInfo {
+    path: String,
+    branch: String,
+    /// Number of commits on this branch ahead of `main` (or `master`)
+    commits_ahead: usize,
+    /// Number of files with uncommitted changes (staged + unstaged + untracked)
+    uncommitted_files: usize,
+    /// Last-modified timestamp of the worktree directory (RFC 3339)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_modified: Option<String>,
+    /// Whether the cleanup-pending marker is present (agent exited)
+    cleanup_pending: bool,
+    /// Whether the branch is merged into main
+    merged_to_main: bool,
+}
+
+/// Lightweight evaluation summary for wg show output.
+#[derive(Debug, Clone, Serialize)]
+struct EvalSummary {
+    score: f64,
+    source: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    dimensions: HashMap<String, f64>,
+    timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,6 +301,75 @@ fn gather_task_runtime_info(
     (actual_executor, actual_model, native_compaction)
 }
 
+/// Gather worktree state for a task, if a worktree exists for it. Returns
+/// branch name, commits ahead of main, uncommitted file count, last-modified
+/// time, and whether the cleanup marker / merged-into-main signals are set.
+fn gather_worktree_state(dir: &Path, task_id: &str) -> Option<WorktreeStateInfo> {
+    use std::process::Command;
+    let project_root = dir.parent()?;
+    let (path, branch) =
+        crate::commands::spawn::worktree::find_worktree_for_task(project_root, task_id)?;
+
+    // commits ahead of main: prefer "main", fall back to "master"
+    let commits_ahead = {
+        let mut count = 0usize;
+        for main in &["main", "master"] {
+            let out = Command::new("git")
+                .args(["rev-list", "--count"])
+                .arg(format!("{}..{}", main, branch))
+                .current_dir(project_root)
+                .output();
+            if let Ok(o) = out
+                && o.status.success()
+            {
+                let s = String::from_utf8_lossy(&o.stdout);
+                if let Ok(n) = s.trim().parse::<usize>() {
+                    count = n;
+                    break;
+                }
+            }
+        }
+        count
+    };
+
+    // Uncommitted file count from `git status --porcelain` in the worktree
+    let uncommitted_files = {
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&path)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.lines().filter(|l| !l.is_empty()).count()
+            }
+            _ => 0,
+        }
+    };
+
+    let last_modified = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+
+    let cleanup_pending = path
+        .join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER)
+        .exists();
+
+    let merged_to_main =
+        crate::commands::service::worktree::is_branch_merged(project_root, &branch);
+
+    Some(WorktreeStateInfo {
+        path: path.to_string_lossy().into_owned(),
+        branch,
+        commits_ahead,
+        uncommitted_files,
+        last_modified,
+        cleanup_pending,
+        merged_to_main,
+    })
+}
+
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
@@ -359,6 +464,26 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
     let (actual_executor, actual_model, native_compaction) = gather_task_runtime_info(dir, task);
 
+    // Load evaluation data for this task (if any)
+    let evaluations = {
+        let evals_dir = dir.join("agency").join("evaluations");
+        if evals_dir.is_dir() {
+            let all_evals = workgraph::agency::load_all_evaluations_or_warn(&evals_dir);
+            all_evals
+                .into_iter()
+                .filter(|e| e.task_id == id)
+                .map(|e| EvalSummary {
+                    score: e.score,
+                    source: e.source,
+                    dimensions: e.dimensions,
+                    timestamp: e.timestamp,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -413,6 +538,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         iteration_anchor: task.iteration_anchor.clone(),
         iteration_parent: task.iteration_parent.clone(),
         iteration_config: task.iteration_config.clone(),
+        evaluations,
+        worktree_state: gather_worktree_state(dir, id),
     };
 
     if json {
@@ -437,7 +564,7 @@ fn print_human_readable(details: &TaskDetails) {
     }
 
     if details.priority != PRIORITY_DEFAULT {
-        println!("Priority: ▴{}", details.priority);
+        println!("Priority: ⌁{}", details.priority);
     }
 
     if details.visibility != "internal" {
@@ -764,6 +891,44 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
+    // Evaluation data
+    if let Some(wt) = &details.worktree_state {
+        println!();
+        println!("Worktree:");
+        println!("  Path:              {}", wt.path);
+        println!("  Branch:            {}", wt.branch);
+        println!("  Commits ahead:     {}", wt.commits_ahead);
+        println!("  Uncommitted files: {}", wt.uncommitted_files);
+        if let Some(ts) = &wt.last_modified {
+            println!("  Last modified:     {}", ts);
+        }
+        println!("  Cleanup pending:   {}", wt.cleanup_pending);
+        println!("  Merged to main:    {}", wt.merged_to_main);
+        if details.retry_count > 0 {
+            println!(
+                "  (Retried {} time{} — `wg retry` resumes in-place; `wg retry --fresh` starts over)",
+                details.retry_count,
+                if details.retry_count == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    if !details.evaluations.is_empty() {
+        println!();
+        println!("Evaluations:");
+        for eval in &details.evaluations {
+            println!("  Score: {:.2}  Source: {}  {}", eval.score, eval.source, eval.timestamp);
+            // Show key dimensions inline
+            if let Some(cf) = eval.dimensions.get("constraint_fidelity") {
+                let flag = if *cf < 0.5 { " \x1b[33m⚠ unanchored constraints\x1b[0m" } else { "" };
+                println!("    constraint_fidelity: {:.2}{}", cf, flag);
+            }
+            if let Some(f) = eval.dimensions.get("intent_fidelity") {
+                println!("    intent_fidelity:    {:.2}", f);
+            }
+        }
+    }
+
     // Log entries
     if !details.log.is_empty() {
         println!();
@@ -1043,6 +1208,8 @@ mod tests {
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            evaluations: vec![],
+            worktree_state: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();
@@ -1355,5 +1522,114 @@ mod tests {
             "haiku",
             "CLAUDE_HAIKU_MODEL_ID must be bare alias, not dated"
         );
+    }
+
+    /// New retention policy (worktree-retention-don):
+    /// `wg show <task>` displays worktree state when a worktree exists for
+    /// the task — branch name, commits ahead, uncommitted file count — so
+    /// the user can decide between resume-in-place and `wg retry --fresh`.
+    #[test]
+    fn test_show_displays_worktree_state_for_retried_tasks() {
+        use std::process::Command;
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        // git init -b main
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(&project)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        std::fs::write(project.join("seed.txt"), "seed").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&project)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+
+        // Set up a graph with a task
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("retried-task", "test");
+        t.retry_count = 1;
+        t.status = Status::Failed;
+        graph.add_node(Node::Task(t));
+        let graph_path = wg_dir.join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+        // Create a worktree for the task with one extra commit
+        let agent_id = "agent-77";
+        let branch = format!("wg/{}/{}", agent_id, "retried-task");
+        let wt = project.join(".wg-worktrees").join(agent_id);
+        std::fs::create_dir_all(project.join(".wg-worktrees")).unwrap();
+        Command::new("git")
+            .args(["worktree", "add"])
+            .arg(&wt)
+            .args(["-b", &branch, "HEAD"])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        std::fs::write(wt.join("delta.txt"), "branch work").unwrap();
+        Command::new("git")
+            .args(["add", "delta.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "wip"])
+            .current_dir(&wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+
+        // Add an uncommitted change
+        std::fs::write(wt.join("dirty.txt"), "uncommitted").unwrap();
+
+        // gather_worktree_state should find the worktree
+        let state = gather_worktree_state(&wg_dir, "retried-task")
+            .expect("worktree state must be detected");
+
+        assert_eq!(state.branch, branch);
+        assert_eq!(
+            state.commits_ahead, 1,
+            "should detect 1 commit on branch ahead of main"
+        );
+        assert!(
+            state.uncommitted_files >= 1,
+            "should detect at least one uncommitted file: {:?}",
+            state.uncommitted_files
+        );
+        assert!(
+            !state.merged_to_main,
+            "branch is not merged into main"
+        );
+        assert!(state.path.contains(".wg-worktrees"));
+
+        // Tasks without a worktree return None
+        let no_state = gather_worktree_state(&wg_dir, "no-such-task");
+        assert!(no_state.is_none());
     }
 }

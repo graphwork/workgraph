@@ -1,3 +1,4 @@
+pub mod chat_tab_state;
 pub mod event;
 pub mod file_browser;
 #[allow(dead_code)]

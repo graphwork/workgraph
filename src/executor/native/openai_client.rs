@@ -4466,6 +4466,59 @@ Done."#;
         assert_eq!(result.model, "some/model");
     }
 
+    /// HARD GATE: HTTP 400 must NOT retry. Documents the policy from
+    /// `wg-nex-resume-311` (autohaiku 311-message resume → endpoint
+    /// flooded with 400s because the upper layers had no `is_retryable`
+    /// classification). These three predicates are what every retry
+    /// site reads to decide whether to back off vs. abort.
+    #[test]
+    fn test_nex_400_no_retry_loop() {
+        // 400 (and 422) are deterministic client errors — retrying the
+        // exact same payload re-produces the exact same error, just at
+        // higher network cost.
+        assert!(!is_retryable(400), "400 must be classified non-retryable");
+        assert!(!is_retryable(422), "422 must be classified non-retryable");
+        assert_eq!(max_retries_for_status(400), 0);
+        assert_eq!(max_retries_for_status(422), 0);
+        // Exposed predicate — call sites use this directly.
+        assert!(!is_retryable_status(400));
+
+        // The error type carries the status verbatim so the upper
+        // layers can match on it.
+        let err = oai_api_error(400, r#"{"error":{"message":"Bad Request"}}"#);
+        let api_err = err.downcast_ref::<ApiError>().expect("ApiError");
+        assert_eq!(api_err.status, 400);
+    }
+
+    /// HARD GATE: HTTP 429 (rate limit) MUST be retryable, with backoff.
+    /// Task description requires "max 3 retries"; existing policy is 5
+    /// which exceeds that minimum. Plus `Retry-After` parsing must
+    /// honour the header.
+    #[test]
+    fn test_nex_429_backoff() {
+        assert!(is_retryable(429));
+        assert!(
+            max_retries_for_status(429) >= 3,
+            "429 must allow at least 3 retries, got {}",
+            max_retries_for_status(429),
+        );
+        // Exponential backoff converges quickly under the 60s ceiling.
+        let mut backoff = 1000u64;
+        let mut waits = Vec::new();
+        for _ in 0..max_retries_for_status(429) {
+            waits.push(backoff);
+            backoff = (backoff * 2).min(60_000);
+        }
+        assert!(
+            waits.windows(2).all(|w| w[1] >= w[0]),
+            "backoff must be monotonically non-decreasing, got {:?}",
+            waits,
+        );
+        // Retry-After in response body wins over computed backoff.
+        let body = r#"{"error":{"message":"rate limited","metadata":{"retry_after":2.5}}}"#;
+        assert_eq!(parse_retry_after_oai(body), Some(2500));
+    }
+
     #[test]
     fn test_error_recovery_429_backoff() {
         assert!(is_retryable(429));

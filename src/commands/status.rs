@@ -15,10 +15,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::check::{OrphanRef, check_orphans};
-use workgraph::graph::{CycleAnalysis, Status, TokenUsage};
+use workgraph::graph::{CycleAnalysis, Status};
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
-use workgraph::service::compactor::CompactorState;
 use workgraph::service::{AgentRegistry, AgentStatus};
 
 use super::dead_agents::is_process_alive;
@@ -95,31 +94,6 @@ struct VerifyFailingTask {
     verify_command: String,
 }
 
-/// Compaction progress info
-#[derive(Debug, Clone, serde::Serialize)]
-struct CompactionInfo {
-    accumulated_tokens: u64,
-    threshold: u64,
-    percent: u8,
-    last_compaction: Option<String>,
-    /// Duration of the last compaction LLM call in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_duration_ms: Option<u64>,
-    /// Token usage from the last compaction LLM call.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_tokens: Option<TokenUsage>,
-    /// Number of consecutive compaction errors (persisted across restarts).
-    #[serde(skip_serializing_if = "is_zero_u64")]
-    error_count: u64,
-    /// Byte size of context.md written in the last compaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_context_bytes: Option<u64>,
-}
-
-fn is_zero_u64(v: &u64) -> bool {
-    *v == 0
-}
-
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -142,8 +116,6 @@ struct StatusOutput {
     coordinator: CoordinatorInfo,
     agents: AgentSummaryInfo,
     tasks: TaskSummaryInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compaction: Option<CompactionInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cycles: Vec<CycleTimingInfo>,
     recent: Vec<RecentActivityEntry>,
@@ -153,8 +125,8 @@ struct StatusOutput {
     verify_failing: Vec<VerifyFailingTask>,
 }
 
-pub fn run(dir: &Path, json: bool) -> Result<()> {
-    let status = gather_status(dir)?;
+pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
+    let status = gather_status(dir, show_all)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -165,7 +137,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn gather_status(dir: &Path) -> Result<StatusOutput> {
+fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     // 1. Service status
     let service = gather_service_status(dir)?;
 
@@ -176,33 +148,25 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     let agents = gather_agent_summary(dir);
 
     // 4. Task summary
-    let tasks = gather_task_summary(dir)?;
+    let tasks = gather_task_summary(dir, show_all)?;
 
-    // 5. Compaction progress (only when service is running)
-    let compaction = if service.running {
-        gather_compaction_info(dir)
-    } else {
-        None
-    };
-
-    // 6. Cycle timing
+    // 5. Cycle timing (legacy compaction widget removed alongside .compact-N retirement)
     let cycles = gather_cycle_timing(dir);
 
-    // 7. Recent activity
-    let recent = gather_recent_activity(dir)?;
+    // 6. Recent activity
+    let recent = gather_recent_activity(dir, show_all)?;
 
-    // 8. Dangling dependencies
+    // 7. Dangling dependencies
     let dangling_deps = gather_dangling_deps(dir);
 
-    // 9. Verify-failing tasks
-    let verify_failing = gather_verify_failing(dir);
+    // 8. Verify-failing tasks
+    let verify_failing = gather_verify_failing(dir, show_all);
 
     Ok(StatusOutput {
         service,
         coordinator,
         agents,
         tasks,
-        compaction,
         cycles,
         recent,
         dangling_deps,
@@ -295,7 +259,7 @@ fn gather_agent_summary(dir: &Path) -> AgentSummaryInfo {
     }
 }
 
-fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
+fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let path = graph_path(dir);
     if !path.exists() {
         return Ok(TaskSummaryInfo {
@@ -315,6 +279,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
 
     let now = Utc::now();
     let mut in_progress = 0;
+    let mut ready_count = 0;
     let mut blocked = 0;
     let mut delayed = 0;
     let mut done_today = 0;
@@ -327,9 +292,14 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
         .and_utc();
 
     for task in graph.tasks() {
+        if !show_all && task.id.starts_with('.') {
+            continue;
+        }
         match task.status {
             Status::Open => {
-                if !ready_ids.contains(task.id.as_str()) {
+                if ready_ids.contains(task.id.as_str()) {
+                    ready_count += 1;
+                } else {
                     // Distinguish delayed (waiting on ready_after) from blocked (waiting on deps)
                     let has_future_ready_after = task.ready_after.as_ref().is_some_and(|ra| {
                         ra.parse::<DateTime<Utc>>()
@@ -384,7 +354,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
 
     Ok(TaskSummaryInfo {
         in_progress,
-        ready: ready_tasks_list.len(),
+        ready: ready_count,
         blocked,
         delayed,
         done_today,
@@ -392,7 +362,7 @@ fn gather_task_summary(dir: &Path) -> Result<TaskSummaryInfo> {
     })
 }
 
-fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
+fn gather_recent_activity(dir: &Path, show_all: bool) -> Result<Vec<RecentActivityEntry>> {
     let path = graph_path(dir);
     if !path.exists() {
         return Ok(Vec::new());
@@ -403,6 +373,7 @@ fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
     // Collect done tasks with completion timestamps
     let mut completed: Vec<_> = graph
         .tasks()
+        .filter(|t| show_all || !t.id.starts_with('.'))
         .filter(|t| t.status == Status::Done && t.completed_at.is_some())
         .filter_map(|t| {
             let completed_at = t.completed_at.as_ref()?;
@@ -437,34 +408,6 @@ fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
         .collect();
 
     Ok(recent)
-}
-
-fn gather_compaction_info(dir: &Path) -> Option<CompactionInfo> {
-    let config = workgraph::config::Config::load_or_default(dir);
-    let threshold = config.effective_compaction_threshold();
-    if threshold == 0 {
-        return None;
-    }
-
-    let accumulated = CoordinatorState::total_accumulated_tokens(dir);
-    let percent = if threshold > 0 {
-        ((accumulated as f64 / threshold as f64) * 100.0).min(100.0) as u8
-    } else {
-        0
-    };
-
-    let compactor = CompactorState::load(dir);
-
-    Some(CompactionInfo {
-        accumulated_tokens: accumulated,
-        threshold,
-        percent,
-        last_compaction: compactor.last_compaction,
-        last_compaction_duration_ms: compactor.last_compaction_duration_ms,
-        last_compaction_tokens: compactor.last_compaction_tokens,
-        error_count: compactor.error_count,
-        last_compaction_context_bytes: compactor.last_compaction_context_bytes,
-    })
 }
 
 fn gather_cycle_timing(dir: &Path) -> Vec<CycleTimingInfo> {
@@ -556,7 +499,7 @@ fn gather_dangling_deps(dir: &Path) -> Vec<DanglingDep> {
         .collect()
 }
 
-fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
+fn gather_verify_failing(dir: &Path, show_all: bool) -> Vec<VerifyFailingTask> {
     let path = super::graph_path(dir);
     if !path.exists() {
         return Vec::new();
@@ -569,6 +512,7 @@ fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
 
     graph
         .tasks()
+        .filter(|t| show_all || !t.id.starts_with('.'))
         .filter(|t| {
             t.verify_failures > 0 && t.status != Status::Failed && t.status != Status::Abandoned
         })
@@ -599,27 +543,6 @@ fn print_status(status: &StatusOutput) {
         model_str,
         status.coordinator.poll_interval
     );
-
-    // Line 3: Compaction progress (when service is running)
-    if let Some(ref c) = status.compaction {
-        let tokens_display = format_tokens(c.accumulated_tokens);
-        let threshold_display = format_tokens(c.threshold);
-        let last_str = match c.last_compaction {
-            Some(ref ts) => {
-                if let Ok(parsed) = ts.parse::<DateTime<Utc>>() {
-                    let ago = Utc::now().signed_duration_since(parsed).num_seconds();
-                    format!("last: {} ago", workgraph::format_duration(ago, true))
-                } else {
-                    "last: unknown".to_string()
-                }
-            }
-            None => "last: never".to_string(),
-        };
-        println!(
-            "Compaction: {}/{} tokens ({}%) — {}",
-            tokens_display, threshold_display, c.percent, last_str
-        );
-    }
 
     // Line 4+: Agent summary
     println!();
@@ -765,20 +688,6 @@ fn print_status(status: &StatusOutput) {
     }
 }
 
-/// Format token count in human-friendly form (e.g. 47000 → "47k", 1500 → "1.5k", 500 → "500")
-fn format_tokens(tokens: u64) -> String {
-    if tokens >= 1000 {
-        let k = tokens as f64 / 1000.0;
-        if (k - k.round()).abs() < 0.05 {
-            format!("{}k", k.round() as u64)
-        } else {
-            format!("{:.1}k", k)
-        }
-    } else {
-        format!("{}", tokens)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,7 +706,7 @@ mod tests {
     #[test]
     fn test_gather_status_empty() {
         let temp_dir = TempDir::new().unwrap();
-        let result = gather_status(temp_dir.path());
+        let result = gather_status(temp_dir.path(), true);
         assert!(result.is_ok());
         let status = result.unwrap();
         assert!(!status.service.running);
@@ -833,7 +742,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.ready, 1);
         assert_eq!(summary.in_progress, 1);
         assert_eq!(summary.done_total, 1);
@@ -859,7 +768,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let recent = gather_recent_activity(temp_dir.path()).unwrap();
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
         // Should return 5 most recent
         assert_eq!(recent.len(), 5);
         // Most recent should be first (t1 is most recent)
@@ -873,7 +782,7 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.ready, 0);
         assert_eq!(summary.in_progress, 0);
         assert_eq!(summary.done_total, 0);
@@ -903,7 +812,7 @@ mod tests {
 
         save_graph(&graph, &path).unwrap();
 
-        let summary = gather_task_summary(temp_dir.path()).unwrap();
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
         assert_eq!(summary.delayed, 1);
         assert_eq!(summary.blocked, 1);
         assert_eq!(summary.ready, 1); // blocker is ready
@@ -916,7 +825,7 @@ mod tests {
         let graph = WorkGraph::new();
         save_graph(&graph, &path).unwrap();
 
-        let recent = gather_recent_activity(temp_dir.path()).unwrap();
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
         assert_eq!(recent.len(), 0);
     }
 
@@ -1031,18 +940,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_tokens() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(500), "500");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1000), "1k");
-        assert_eq!(format_tokens(1500), "1.5k");
-        assert_eq!(format_tokens(47000), "47k");
-        assert_eq!(format_tokens(100000), "100k");
-        assert_eq!(format_tokens(160000), "160k");
-    }
-
-    #[test]
     fn test_gather_verify_failing_none() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
@@ -1051,7 +948,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Normal task")));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(failing.is_empty());
     }
 
@@ -1068,7 +965,7 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert_eq!(failing.len(), 1);
         assert_eq!(failing[0].task_id, "t1");
         assert_eq!(failing[0].failures, 2);
@@ -1089,7 +986,7 @@ mod tests {
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(
             failing.is_empty(),
             "Failed tasks should not be listed as verify-failing"
@@ -1099,21 +996,65 @@ mod tests {
     #[test]
     fn test_gather_verify_failing_no_graph() {
         let temp_dir = TempDir::new().unwrap();
-        let failing = gather_verify_failing(temp_dir.path());
+        let failing = gather_verify_failing(temp_dir.path(), true);
         assert!(failing.is_empty());
     }
 
     #[test]
-    fn test_gather_compaction_info_no_service() {
+    fn test_gather_task_summary_hides_dot_prefixed() {
         let temp_dir = TempDir::new().unwrap();
-        // No coordinator state file → should still return Some with defaults
-        let info = gather_compaction_info(temp_dir.path());
-        // With default config, threshold should be non-zero (160k from default model)
-        assert!(info.is_some());
-        let info = info.unwrap();
-        assert_eq!(info.accumulated_tokens, 0);
-        assert!(info.threshold > 0);
-        assert_eq!(info.percent, 0);
-        assert!(info.last_compaction.is_none());
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("real-task", "Real task")));
+
+        let mut dot_task = make_task(".assign-real-task", "Assign real task");
+        dot_task.status = Status::InProgress;
+        graph.add_node(Node::Task(dot_task));
+
+        let mut dot_done = make_task(".flip-real-task", "FLIP real task");
+        dot_done.status = Status::Done;
+        dot_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(dot_done));
+
+        save_graph(&graph, &path).unwrap();
+
+        // show_all=false: only count non-dot-prefixed tasks
+        let summary = gather_task_summary(temp_dir.path(), false).unwrap();
+        assert_eq!(summary.ready, 1);
+        assert_eq!(summary.in_progress, 0);
+        assert_eq!(summary.done_total, 0);
+
+        // show_all=true: count everything
+        let summary = gather_task_summary(temp_dir.path(), true).unwrap();
+        assert_eq!(summary.ready, 1);
+        assert_eq!(summary.in_progress, 1);
+        assert_eq!(summary.done_total, 1);
+    }
+
+    #[test]
+    fn test_gather_recent_activity_hides_dot_prefixed() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut real_done = make_task("real-done", "Real done");
+        real_done.status = Status::Done;
+        real_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(real_done));
+
+        let mut dot_done = make_task(".flip-real-done", "FLIP done");
+        dot_done.status = Status::Done;
+        dot_done.completed_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(dot_done));
+
+        save_graph(&graph, &path).unwrap();
+
+        let recent = gather_recent_activity(temp_dir.path(), false).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].task_id, "real-done");
+
+        let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
+        assert_eq!(recent.len(), 2);
     }
 }

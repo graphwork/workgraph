@@ -1,0 +1,149 @@
+# Smoke gate manifest
+#
+# `wg done <task>` runs every scenario whose `owners` list contains the task
+# id. If any scenario FAILs (any non-zero exit code other than 77), `wg done`
+# refuses with the broken scenario name. Exit 77 = loud SKIP (e.g. endpoint
+# unreachable). Exit 0 = PASS.
+#
+# This manifest is grow-only: every regression in this codebase that a smoke
+# would have caught becomes a permanent scenario. Do not delete entries —
+# extend.
+#
+# Scenarios run as `bash <script>` from the directory containing this
+# manifest. Each scenario receives `WG_SMOKE_SCENARIO` and
+# `WG_SMOKE_TIMEOUT_SECS` in its environment.
+#
+# Owners are task ids (kebab-case). When in doubt, include the task that
+# introduced the regression and the task that fixed it.
+
+[[scenario]]
+name = "nex_two_message_against_lambda01"
+script = "scenarios/nex_two_message_against_lambda01.sh"
+owners = [
+    "wg-nex-native",
+    "wg-nex-native-2",
+    "wg-nex-native-3",
+    "fix-compaction-llm",
+    "smoke-test-gap",
+    "smoke-gate-is",
+]
+description = "Live two-message wg chat against a real lambda01 endpoint via wg nex. Repros the user-reported 'why isn't this working' first-message regression."
+timeout_seconds = 240
+
+[[scenario]]
+name = "dispatcher_boot_no_orphan_supervisor"
+script = "scenarios/dispatcher_boot_no_orphan_supervisor.sh"
+owners = [
+    "rename-dispatcher-daemon",
+    "bug-a-regression-test",
+    "smoke-gate-is",
+]
+description = "Boot dispatcher and confirm no orphan supervisor / ghost task is registered (Bug A regression check)."
+timeout_seconds = 60
+
+[[scenario]]
+name = "claude_executor_with_global_openrouter_default"
+script = "scenarios/claude_executor_with_global_openrouter_default.sh"
+owners = [
+    "model-is-not",
+    "wire-priority-field",
+    "smoke-gate-is",
+]
+description = "Local executor=claude + a global openrouter is_default endpoint must spawn with executor=claude (no native-exec routing leak)."
+timeout_seconds = 30
+
+[[scenario]]
+name = "priority_int_and_string_deserialize"
+script = "scenarios/priority_int_and_string_deserialize.sh"
+owners = [
+    "wire-priority-field",
+    "smoke-gate-is",
+]
+description = "graph.jsonl rows containing priority as either integer or string load cleanly (regression for the priority schema migration)."
+timeout_seconds = 20
+
+[[scenario]]
+name = "chat_create_via_ipc_works"
+script = "scenarios/chat_create_via_ipc_works.sh"
+owners = [
+    "wg-nex-native",
+    "wg-nex-native-2",
+    "fix-tui-coordinator-2",
+    "fix-tui-new",
+    "smoke-gate-is",
+]
+description = "Open a chat and send 'hi'; expect a non-error coordinator response within 30s of dispatcher boot."
+timeout_seconds = 90
+
+[[scenario]]
+name = "setup_routes_complete_configs"
+script = "scenarios/setup_routes_complete_configs.sh"
+owners = [
+    "wg-setup-5-smooth-2",
+    "wg-setup-5-smooth",
+]
+description = "Five setup routes (openrouter / claude-cli / codex-cli / local / nex-custom) each write a complete config (filled [tiers] + endpoint when applicable). `wg init -x claude` populates [tiers] (the bug). `wg config reset` backs up. `wg setup --route nex-custom --yes` without --url refuses."
+timeout_seconds = 60
+
+[[scenario]]
+name = "nex_resume_oversized_journal_does_not_loop"
+script = "scenarios/nex_resume_oversized_journal_does_not_loop.sh"
+owners = [
+    "wg-nex-resume-311",
+    "smoke-gate-is",
+]
+description = "Resume a 500-msg journal against a 32k context window must truncate to fit and surface; HTTP 400 must NOT retry; 429 must back off. Regression bar for the autohaiku 311-msg lambda01 400-flood."
+timeout_seconds = 300
+
+[[scenario]]
+name = "tui_log_pane_renders_raw_stream"
+script = "scenarios/tui_log_pane_renders_raw_stream.sh"
+owners = [
+    "tui-agent-activity",
+    "tui-log-view",
+    "smoke-gate-is",
+]
+description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-progress task's assigned agent on first draw, and picks up new events as they're appended. Regression for the tui-agent-activity merge that surfaced 'no agent output yet' to users despite stream files existing."
+timeout_seconds = 60
+
+[[scenario]]
+name = "evaluate_record_flag_args"
+script = "scenarios/evaluate_record_flag_args.sh"
+owners = [
+    "wg-evaluate-record",
+    "smoke-gate-is",
+]
+description = "wg evaluate record requires --task/--score/--source (flag-style). Regression for the inline-eval wrapper script in coordinator.rs that passed positionally and silently dropped every FLIP / agency eval result."
+timeout_seconds = 30
+
+[[scenario]]
+name = "agency_local_model_overrides_claude_executor"
+script = "scenarios/agency_local_model_overrides_claude_executor.sh"
+owners = [
+    "agency-picks-claude",
+    "agency-still-picks",
+    "smoke-gate-is",
+]
+description = "Agency MUST NOT pick the claude executor for an agent whose role defaults to claude when the task model has a non-Anthropic provider prefix (local:, openrouter:, oai-compat:, openai:). Regression for the autohaiku 100% failure: agent.executor=claude (default) + model=local:qwen3-coder routed every spawn through the claude CLI which 404'd. Asserts the dispatcher's SpawnPlan provenance line shows executor=native, never claude, for a local: model assigned to a default-claude agent."
+timeout_seconds = 30
+
+[[scenario]]
+name = "dispatcher_codex_wins_over_agency"
+script = "scenarios/dispatcher_codex_wins_over_agency.sh"
+owners = [
+    "agency-still-picks",
+    "smoke-gate-is",
+]
+description = "Dispatcher's explicit `-x codex` MUST win when the assigned agent has only the default claude executor and the task model is `local:qwen3-coder`. Regression for agency-still-picks: the previous fix (agency-picks-claude) put the model-compat override INSIDE the agency, where it fired BEFORE the dispatcher's executor floor in resolve_executor's precedence — silently rewriting `-x codex` to native. Asserts SpawnPlan executor=codex (never native, never claude) for the codex+local: combo."
+timeout_seconds = 30
+
+[[scenario]]
+name = "tui_new_chat_creates_fresh_ids"
+script = "scenarios/tui_new_chat_creates_fresh_ids.sh"
+owners = [
+    "tui-new-chat",
+    "tui-new-coordinator",
+    "smoke-gate-is",
+]
+description = "Three back-to-back `wg service create-coordinator` IPCs (the call the TUI launcher dialog drives) MUST allocate three distinct .chat-N task ids — not reuse the most recent slot. Pins the user-reported regression on tui-new-chat: 'it doesnt convert into chat-2 or whatever it takes over the last coordinator chat.' Independent of LLM credentials — a graph + IPC correctness check."
+timeout_seconds = 60

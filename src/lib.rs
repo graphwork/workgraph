@@ -22,9 +22,11 @@ pub mod chat_id;
 pub mod chat_sessions;
 pub mod check;
 pub mod config;
+pub mod config_defaults;
 pub mod context_scope;
 pub mod cron;
 pub mod cycle;
+pub mod dispatch;
 pub mod executor;
 pub mod executor_discovery;
 pub mod federation;
@@ -33,6 +35,7 @@ pub mod function_memory;
 pub mod graph;
 pub mod json_extract;
 pub mod launcher_history;
+pub mod lifecycle;
 pub mod markdown;
 #[cfg(feature = "matrix")]
 pub mod matrix;
@@ -57,6 +60,7 @@ pub mod registry {
 pub mod runs;
 pub mod service;
 pub mod session_lock;
+pub mod smoke;
 pub mod stream_event;
 pub mod syntect_convert;
 pub mod telegram_commands;
@@ -97,6 +101,7 @@ pub mod commands {
     pub mod service {
         pub mod worktree;
     }
+    pub mod codex_oai_compat;
 }
 
 /// Return the current user identity.

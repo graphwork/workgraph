@@ -289,6 +289,7 @@ fn test_cleanup_orphaned_worktrees_skips_live_agents() {
 #[test]
 fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
     use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
+    use workgraph::graph::{Node, Status, Task, WorkGraph};
     use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
@@ -299,6 +300,15 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
     let wg_dir = project.join(".workgraph");
     std::fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
 
+    // Force the default branch to "main" so the merge-into-main retention check
+    // has a target. (init_test_repo uses default `git init` which may produce
+    // master.) Rename master→main if needed.
+    Command::new("git")
+        .args(["branch", "-m", "master", "main"])
+        .current_dir(&project)
+        .output()
+        .ok();
+
     let worktree_dir = create_test_worktree(&project, "agent-2");
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -308,7 +318,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
         AgentEntry {
             id: "agent-2".to_string(),
             pid: 999_999_999,
-            task_id: "task-2".to_string(),
+            task_id: "test-task".to_string(),
             executor: "test".to_string(),
             started_at: now.clone(),
             last_heartbeat: now.clone(),
@@ -320,9 +330,100 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
     );
     registry.save(&wg_dir).expect("Failed to save registry");
 
+    // Retention policy (worktree-retention-don): orphan cleanup requires
+    // task=Done + eval-pass + branch merged. Set up all three.
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "test-task".to_string(),
+        title: "test".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    graph.add_node(Node::Task(Task {
+        id: ".evaluate-test-task".to_string(),
+        title: "eval test-task".to_string(),
+        status: Status::Done,
+        ..Task::default()
+    }));
+    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+        .expect("Failed to write graph");
+
+    // Merge the branch into main so retention is satisfied
+    Command::new("git")
+        .args(["merge", "--no-ff", "--no-edit", "wg/agent-2/test-task"])
+        .current_dir(&project)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .expect("Failed to merge branch");
+
     let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
     assert_eq!(cleaned_count, 1);
     assert!(!worktree_dir.exists());
+}
+
+/// New retention policy (worktree-retention-don): orphaned dead agents whose
+/// task hasn't reached Done+eval+merged are PRESERVED — their WIP must
+/// survive for `wg retry` to resume in-place.
+#[test]
+fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
+    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
+    use workgraph::graph::{Node, Status, Task, WorkGraph};
+    use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).expect("Failed to create project dir");
+    init_test_repo(&project);
+
+    let wg_dir = project.join(".workgraph");
+    std::fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
+
+    let worktree_dir = create_test_worktree(&project, "agent-crashed");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut registry = AgentRegistry::default();
+    registry.agents.insert(
+        "agent-crashed".to_string(),
+        AgentEntry {
+            id: "agent-crashed".to_string(),
+            pid: 999_999_998,
+            task_id: "in-flight-task".to_string(),
+            executor: "test".to_string(),
+            started_at: now.clone(),
+            last_heartbeat: now.clone(),
+            status: AgentStatus::Dead,
+            output_file: String::new(),
+            model: None,
+            completed_at: None,
+        },
+    );
+    registry.save(&wg_dir).expect("Failed to save registry");
+
+    // Task is Failed (agent crashed mid-work). Under the retention policy,
+    // the orphaned worktree must NOT be removed — the next `wg retry` must
+    // be able to resume in-place.
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(Task {
+        id: "in-flight-task".to_string(),
+        title: "in-flight".to_string(),
+        status: Status::Failed,
+        ..Task::default()
+    }));
+    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+        .expect("Failed to write graph");
+
+    let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
+    assert_eq!(
+        cleaned_count, 0,
+        "MUST NOT reap orphan when task hasn't completed — WIP must survive"
+    );
+    assert!(
+        worktree_dir.exists(),
+        "Worktree directory must survive for retry-in-place"
+    );
 }
 
 #[test]

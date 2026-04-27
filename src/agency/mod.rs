@@ -1,4 +1,5 @@
 mod agency_bridge;
+pub mod constraint_fidelity;
 mod eval;
 pub mod evolver;
 mod hash;
@@ -12,6 +13,7 @@ mod types;
 
 // Re-export everything at the agency:: level for backward compatibility
 pub use agency_bridge::*;
+pub use constraint_fidelity::*;
 pub use eval::*;
 pub use evolver::*;
 pub use hash::*;

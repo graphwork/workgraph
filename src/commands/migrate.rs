@@ -10,7 +10,7 @@ use std::path::Path;
 use workgraph::chat_id::{
     CHAT_LOOP_TAG, CHAT_PREFIX, LEGACY_COORDINATOR_LOOP_TAG, LEGACY_COORDINATOR_PREFIX,
 };
-use workgraph::graph::{LogEntry, Node};
+use workgraph::graph::LogEntry;
 use workgraph::parser::modify_graph;
 
 use super::graph_path;
@@ -193,6 +193,114 @@ pub fn run_chat_rename(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Result of a retire-compact-archive migration.
+#[derive(Debug, Default, Clone)]
+pub struct RetireCompactArchiveResult {
+    /// Task ids that were marked Abandoned.
+    pub abandoned_ids: Vec<String>,
+    /// Number of `after` edges that were stripped from other tasks because
+    /// they pointed at retired `.compact-N` / `.archive-N` ids.
+    pub stripped_edges: usize,
+}
+
+impl RetireCompactArchiveResult {
+    pub fn is_empty(&self) -> bool {
+        self.abandoned_ids.is_empty() && self.stripped_edges == 0
+    }
+}
+
+/// Mark every `.compact-N` and `.archive-N` task as Abandoned and strip
+/// after-edges referencing those ids from other tasks. Idempotent — running
+/// twice on a migrated graph is a no-op.
+pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
+    let graph_path = graph_path(dir);
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut result = RetireCompactArchiveResult::default();
+
+    if dry_run {
+        let graph = workgraph::parser::load_graph(&graph_path)?;
+        for task in graph.tasks() {
+            if (task.id.starts_with(".compact-") || task.id.starts_with(".archive-"))
+                && task.status != workgraph::graph::Status::Abandoned
+            {
+                result.abandoned_ids.push(task.id.clone());
+            }
+        }
+        for task in graph.tasks() {
+            for dep in &task.after {
+                if dep.starts_with(".compact-") || dep.starts_with(".archive-") {
+                    result.stripped_edges += 1;
+                }
+            }
+        }
+    } else {
+        workgraph::parser::modify_graph(&graph_path, |graph| {
+            let all_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
+            for tid in &all_ids {
+                let is_target = tid.starts_with(".compact-") || tid.starts_with(".archive-");
+                let already_abandoned = graph
+                    .get_task(tid)
+                    .map(|t| t.status == workgraph::graph::Status::Abandoned)
+                    .unwrap_or(false);
+                if is_target && !already_abandoned
+                    && let Some(t) = graph.get_task_mut(tid)
+                {
+                    t.status = workgraph::graph::Status::Abandoned;
+                    t.completed_at.get_or_insert_with(|| now.clone());
+                    t.cycle_config = None;
+                    t.log.push(LogEntry {
+                        timestamp: now.clone(),
+                        actor: Some("migration".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message:
+                            "wg migrate retire-compact-archive: retired .compact-N/.archive-N \
+                             cycle scaffolding"
+                                .to_string(),
+                    });
+                    result.abandoned_ids.push(tid.clone());
+                }
+            }
+            // Strip after-edges pointing at retired ids.
+            for tid in &all_ids {
+                if let Some(t) = graph.get_task_mut(tid) {
+                    let before = t.after.len();
+                    t.after.retain(|dep| {
+                        !(dep.starts_with(".compact-") || dep.starts_with(".archive-"))
+                    });
+                    let removed = before - t.after.len();
+                    if removed > 0 {
+                        result.stripped_edges += removed;
+                    }
+                }
+            }
+            true
+        })?;
+    }
+
+    if json {
+        let payload = serde_json::json!({
+            "abandoned_ids": result.abandoned_ids,
+            "stripped_edges": result.stripped_edges,
+            "dry_run": dry_run,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else if result.is_empty() {
+        println!("No legacy .compact-N or .archive-N tasks found — graph is already migrated.");
+    } else {
+        if dry_run {
+            println!("Dry run — no changes written:");
+        } else {
+            println!("Migration complete:");
+        }
+        println!("  tasks abandoned: {}", result.abandoned_ids.len());
+        for id in &result.abandoned_ids {
+            println!("    {}", id);
+        }
+        println!("  after-edges stripped: {}", result.stripped_edges);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +378,77 @@ mod tests {
             workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
         assert!(graph.get_task(".chat-0").is_some());
         assert!(graph.get_task(".coordinator-0").is_none());
+    }
+
+    #[test]
+    fn retire_compact_archive_abandons_legacy_tasks() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let chat = Task {
+            id: ".chat-0".to_string(),
+            title: "Chat 0".to_string(),
+            status: Status::InProgress,
+            ..Default::default()
+        };
+        let compact = Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let archive = Task {
+            id: ".archive-0".to_string(),
+            title: "Archive 0".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let blocked = Task {
+            id: "real-task".to_string(),
+            title: "Real task".to_string(),
+            status: Status::Open,
+            after: vec![".compact-0".to_string(), "real-prereq".to_string()],
+            ..Default::default()
+        };
+        write_graph(dir, vec![chat, compact, archive, blocked]);
+
+        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
+
+        let graph =
+            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(".compact-0").unwrap().status,
+            Status::Abandoned
+        );
+        assert_eq!(
+            graph.get_task(".archive-0").unwrap().status,
+            Status::Abandoned
+        );
+        assert_eq!(graph.get_task(".chat-0").unwrap().status, Status::InProgress);
+        let real = graph.get_task("real-task").unwrap();
+        assert_eq!(real.after, vec!["real-prereq".to_string()]);
+    }
+
+    #[test]
+    fn retire_compact_archive_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let compact = Task {
+            id: ".compact-0".to_string(),
+            title: "Compact 0".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        write_graph(dir, vec![compact]);
+
+        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
+        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
+
+        let graph =
+            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(".compact-0").unwrap().status,
+            Status::Abandoned
+        );
     }
 
     #[test]

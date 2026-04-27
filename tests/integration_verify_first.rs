@@ -408,6 +408,8 @@ fn test_eval_prompt_includes_verify_findings() {
         ),
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let prompt = render_evaluator_prompt(&input);
@@ -473,6 +475,8 @@ fn test_eval_prompt_no_verify_section_when_absent() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     };
 
     let prompt = render_evaluator_prompt(&input);

@@ -22,6 +22,38 @@ use super::state::{
     RightPanelTab, TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
 };
 
+/// Switch to a chat tab by zero-based positional index in
+/// `list_coordinator_ids()`. No-op if the index is out of range.
+/// Used by the Alt+N hotkey handler in the right-panel key flow.
+pub(crate) fn switch_chat_tab_to_index(app: &mut VizApp, idx: usize) {
+    let ids = app.list_coordinator_ids();
+    if let Some(&target) = ids.get(idx)
+        && target != app.active_coordinator_id
+    {
+        app.switch_coordinator(target);
+    }
+}
+
+/// Cycle to the chat tab `delta` positions away from the current one
+/// (positive = next, negative = previous), wrapping around. No-op if
+/// only one chat tab exists. Used by the Ctrl+Tab / Ctrl+Shift+Tab
+/// chord handlers.
+pub(crate) fn switch_chat_tab_relative(app: &mut VizApp, delta: i32) {
+    let ids = app.list_coordinator_ids();
+    if ids.len() < 2 {
+        return;
+    }
+    let pos = ids
+        .iter()
+        .position(|&id| id == app.active_coordinator_id)
+        .unwrap_or(0) as i32;
+    let len = ids.len() as i32;
+    let new_pos = ((pos + delta).rem_euclid(len)) as usize;
+    if let Some(&target) = ids.get(new_pos) {
+        app.switch_coordinator(target);
+    }
+}
+
 /// Handle content reload when iteration changes.
 fn handle_iteration_change(app: &mut VizApp) {
     // Always reload Detail tab content
@@ -453,6 +485,15 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     if vendor_pty_active {
         let is_toggle =
             matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl+N: global "new chat" hotkey. Without this escape hatch the
+        // launcher dialog is unreachable from inside a PTY-focused chat —
+        // every other keystroke gets forwarded to the embedded REPL. The
+        // only way out before was Ctrl+T → click [+] in the coord bar, and
+        // users repeatedly reported being unable to "break in" to start a
+        // new chat. Ctrl+N flips out of PTY mode AND opens the launcher in
+        // one keystroke. Fall through to the global handler below.
+        let is_new_chat =
+            matches!(code, KeyCode::Char('n')) && modifiers.contains(KeyModifiers::CONTROL);
         let is_scroll = matches!(
             code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
@@ -471,7 +512,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 return;
             }
         }
-        if !is_toggle {
+        if !is_toggle && !is_new_chat {
             let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 let key_event = crossterm::event::KeyEvent::new(code, modifiers);
@@ -479,7 +520,19 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 return;
             }
         }
-        // Fall through only for Ctrl+T so it toggles PTY mode.
+        // Fall through for Ctrl+T (toggles PTY mode) and Ctrl+N (opens launcher).
+    }
+
+    // Global Ctrl+N: open the launcher unconditionally.
+    if matches!(code, KeyCode::Char('n'))
+        && modifiers.contains(KeyModifiers::CONTROL)
+        && !matches!(app.input_mode, InputMode::Launcher)
+    {
+        // Move focus off the chat PTY so the launcher is the active surface.
+        app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.open_launcher();
+        return;
     }
 
     // Dispatch based on input mode
@@ -931,8 +984,128 @@ fn handle_service_control_panel_key(app: &mut VizApp, code: KeyCode) {
     }
 }
 
+/// Mouse left-click handler for the new-chat launcher dialog.
+///
+/// Routes a click at (row, column) to the matching launcher row:
+/// - Name field         → focus Name section
+/// - Executor row       → set selection + refresh model list, focus Executor
+/// - Model row          → set selection, focus Model. Custom row → enter custom-text mode.
+/// - Endpoint row       → set selection, focus Endpoint. Custom row → enter custom-text mode.
+/// - Recent row         → populate executor/model/endpoint from history entry, launch.
+/// - Click outside any row → no-op (modal stays open; Esc or tab-click dismisses).
+pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u16) {
+    use super::state::{LauncherListHit, LauncherSection};
+    let pos = Position::new(column, row);
+
+    // Take ownership of hit lists to avoid borrow conflicts when mutating launcher.
+    let name_hit = app.launcher_name_hit;
+    let exec_hits = app.launcher_executor_hits.clone();
+    let model_hits = app.launcher_model_hits.clone();
+    let ep_hits = app.launcher_endpoint_hits.clone();
+    let recent_hits = app.launcher_recent_hits.clone();
+    let launch_btn = app.launcher_launch_btn_hit;
+    let cancel_btn = app.launcher_cancel_btn_hit;
+
+    // Action buttons take priority over field rows (they're in the footer below
+    // everything else, but a click on either should commit the dialog state).
+    if launch_btn.height > 0 && launch_btn.contains(pos) {
+        app.launch_from_launcher();
+        return;
+    }
+    if cancel_btn.height > 0 && cancel_btn.contains(pos) {
+        app.close_launcher();
+        return;
+    }
+
+    let launcher = match app.launcher.as_mut() {
+        Some(l) => l,
+        None => return,
+    };
+
+    if name_hit.height > 0 && name_hit.contains(pos) {
+        launcher.active_section = LauncherSection::Name;
+        return;
+    }
+    for (idx, rect) in &exec_hits {
+        if rect.contains(pos) {
+            launcher.active_section = LauncherSection::Executor;
+            launcher.select_executor(*idx);
+            return;
+        }
+    }
+    for (hit, rect) in &model_hits {
+        if rect.contains(pos) {
+            launcher.active_section = LauncherSection::Model;
+            match hit {
+                LauncherListHit::Item(filtered_idx) => {
+                    launcher.model_picker.custom_active = false;
+                    launcher.model_picker.selected = *filtered_idx;
+                }
+                LauncherListHit::Custom => {
+                    launcher.model_picker.selected =
+                        launcher.model_picker.filtered_indices.len();
+                    launcher.model_picker.enter_custom();
+                }
+            }
+            return;
+        }
+    }
+    for (hit, rect) in &ep_hits {
+        if rect.contains(pos) {
+            launcher.active_section = LauncherSection::Endpoint;
+            match hit {
+                LauncherListHit::Item(filtered_idx) => {
+                    launcher.endpoint_picker.custom_active = false;
+                    launcher.endpoint_picker.selected = *filtered_idx;
+                }
+                LauncherListHit::Custom => {
+                    launcher.endpoint_picker.selected =
+                        launcher.endpoint_picker.filtered_indices.len();
+                    launcher.endpoint_picker.enter_custom();
+                }
+            }
+            return;
+        }
+    }
+    for (idx, rect) in &recent_hits {
+        if rect.contains(pos) {
+            launcher.active_section = LauncherSection::Recent;
+            launcher.recent_selected = *idx;
+            if let Some(entry) = launcher.recent_list.get(*idx).cloned() {
+                if let Some(pos_e) = launcher
+                    .executor_list
+                    .iter()
+                    .position(|(name, _, _)| name == &entry.executor)
+                {
+                    launcher.select_executor(pos_e);
+                }
+                if let Some(ref model) = entry.model {
+                    launcher.select_model_by_id(model);
+                }
+                if let Some(ref endpoint) = entry.endpoint {
+                    launcher.select_endpoint_by_value(endpoint);
+                }
+            }
+            // Single-click on a recent entry launches immediately, matching
+            // the keyboard "1..9" quick-select behavior.
+            app.launch_from_launcher();
+            return;
+        }
+    }
+    // Click in launcher area but no row matched: just no-op.
+}
+
 fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::LauncherSection;
+
+    // Universal submit: Ctrl+Enter from any section/state. Bypasses the
+    // section-specific handlers (which can swallow Enter — e.g. Name section
+    // moves to next field, Custom row enters edit mode). Without this safety
+    // valve, users have reported getting "stuck" in the dialog.
+    if matches!(code, KeyCode::Enter) && modifiers.contains(KeyModifiers::CONTROL) {
+        app.launch_from_launcher();
+        return;
+    }
 
     let launcher = match app.launcher.as_mut() {
         Some(l) => l,
@@ -958,7 +1131,11 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 return;
             }
             KeyCode::Enter => {
-                launcher.next_section();
+                // Submit immediately — Name is optional, no need to step through
+                // the rest of the form. Users have reported getting "stuck" in
+                // the selector when Enter just navigated to the next section
+                // (no clear indication it was a Tab-style move, not a submit).
+                app.launch_from_launcher();
                 return;
             }
             KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1113,7 +1290,8 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         KeyCode::Up | KeyCode::Char('k') => match launcher.active_section {
             LauncherSection::Executor => {
                 if launcher.executor_selected > 0 {
-                    launcher.executor_selected -= 1;
+                    let new_idx = launcher.executor_selected - 1;
+                    launcher.select_executor(new_idx);
                 }
             }
             LauncherSection::Model => {
@@ -1133,7 +1311,8 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             LauncherSection::Executor => {
                 let max = launcher.executor_list.len().saturating_sub(1);
                 if launcher.executor_selected < max {
-                    launcher.executor_selected += 1;
+                    let new_idx = launcher.executor_selected + 1;
+                    launcher.select_executor(new_idx);
                 }
             }
             LauncherSection::Model => {
@@ -2214,9 +2393,36 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.open_history_browser();
         }
 
+        // Ctrl+Tab / Ctrl+Shift+Tab: cycle chat tabs (Chat tab only).
+        // Provides a discoverable, IDE-style chord for switching between
+        // multiple coordinator chats (per task tui-chat-tab).
+        KeyCode::Tab
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && app.right_panel_tab == RightPanelTab::Chat =>
+        {
+            switch_chat_tab_relative(app, 1);
+        }
+        KeyCode::BackTab
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && app.right_panel_tab == RightPanelTab::Chat =>
+        {
+            switch_chat_tab_relative(app, -1);
+        }
+
         // Tab: switch panel focus back to graph
         KeyCode::Tab => {
             app.toggle_panel_focus();
+        }
+
+        // Alt+1..Alt+9: jump directly to chat tab N (Chat tab only).
+        // The tab bar renders [N] hotkey hints in the dim-gray prefix to
+        // make these discoverable.
+        KeyCode::Char(d @ '1'..='9')
+            if modifiers.contains(KeyModifiers::ALT)
+                && app.right_panel_tab == RightPanelTab::Chat =>
+        {
+            let n = (d as u8 - b'0') as usize;
+            switch_chat_tab_to_index(app, n - 1);
         }
 
         // ]/[: cycle single-panel views in compact mode
@@ -3139,6 +3345,55 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     app.fullscreen_top_hover = in_fullscreen_top;
     app.fullscreen_bottom_hover = in_fullscreen_bottom;
 
+    // Launcher modal: route scroll wheel to whichever picker the cursor is
+    // over. Done before the generic match so scroll events don't fall through
+    // to the graph/chat handlers behind the modal.
+    if matches!(app.input_mode, InputMode::Launcher)
+        && (matches!(kind, MouseEventKind::ScrollUp) || matches!(kind, MouseEventKind::ScrollDown))
+    {
+        let in_model_list = app.launcher_model_list_area.height > 0
+            && app.launcher_model_list_area.contains(pos);
+        let in_endpoint_list = app.launcher_endpoint_list_area.height > 0
+            && app.launcher_endpoint_list_area.contains(pos);
+        if let Some(launcher) = app.launcher.as_mut() {
+            let delta = 3usize;
+            match kind {
+                MouseEventKind::ScrollUp => {
+                    if in_model_list {
+                        launcher.model_picker.scroll_up(delta);
+                    } else if in_endpoint_list {
+                        launcher.endpoint_picker.scroll_up(delta);
+                    } else {
+                        // Scroll over launcher but not over a list:
+                        // default to the active section's picker.
+                        match launcher.active_section {
+                            super::state::LauncherSection::Endpoint => {
+                                launcher.endpoint_picker.scroll_up(delta)
+                            }
+                            _ => launcher.model_picker.scroll_up(delta),
+                        }
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if in_model_list {
+                        launcher.model_picker.scroll_down(delta);
+                    } else if in_endpoint_list {
+                        launcher.endpoint_picker.scroll_down(delta);
+                    } else {
+                        match launcher.active_section {
+                            super::state::LauncherSection::Endpoint => {
+                                launcher.endpoint_picker.scroll_down(delta)
+                            }
+                            _ => launcher.model_picker.scroll_down(delta),
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+    }
+
     match kind {
         MouseEventKind::ScrollUp => {
             if in_text_prompt {
@@ -3241,6 +3496,27 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     }
                 }
                 _ => {}
+            }
+
+            // Launcher (new-chat dialog) modal-trap fix: a click on the
+            // coordinator tab bar should dismiss the launcher AND switch to
+            // that tab in one action. Without this, the dialog "traps" the
+            // user — only Esc dismisses, and tab clicks are silently ignored.
+            if matches!(app.input_mode, InputMode::Launcher) && in_coordinator_bar {
+                app.close_launcher();
+                // Fall through to the existing tab-bar click handler below.
+            }
+
+            // Click on the launcher pane itself: route to the section/row.
+            if matches!(app.input_mode, InputMode::Launcher) {
+                let launcher_area = app.last_launcher_area;
+                if launcher_area.width > 0 && launcher_area.contains(pos) {
+                    handle_launcher_mouse_click(app, row, column);
+                    return;
+                }
+                // Click outside launcher, not on tab bar: do nothing
+                // (modal — let the user use Esc or click a tab to leave).
+                return;
             }
 
             // Service health badge click
@@ -6977,6 +7253,552 @@ mod scrollbar_tests {
             "Clicking on the chat input area with text should enter ChatInput mode"
         );
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Launcher (new-chat dialog) mouse + scroll tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    use crate::tui::viz_viewer::state::{
+        FilterPicker, LauncherListHit, LauncherSection, LauncherState, filter_models_for_executor,
+    };
+
+    fn make_launcher(executors: Vec<(&str, &str, bool)>, models: Vec<(&str, &str)>) -> LauncherState {
+        let executor_list: Vec<(String, String, bool)> = executors
+            .into_iter()
+            .map(|(n, d, a)| (n.to_string(), d.to_string(), a))
+            .collect();
+        let all_models: Vec<(String, String)> = models
+            .into_iter()
+            .map(|(n, d)| (n.to_string(), d.to_string()))
+            .collect();
+        let initial_executor = executor_list
+            .first()
+            .map(|(n, _, _)| n.clone())
+            .unwrap_or_else(|| "claude".to_string());
+        let initial_models = filter_models_for_executor(&all_models, &initial_executor);
+        let model_picker = FilterPicker::new(initial_models, true);
+        let endpoint_picker = FilterPicker::new(vec![], true);
+        LauncherState {
+            active_section: LauncherSection::Executor,
+            name: String::new(),
+            executor_list,
+            executor_selected: 0,
+            model_picker,
+            endpoint_picker,
+            recent_list: vec![],
+            recent_selected: 0,
+            all_models,
+        }
+    }
+
+    /// Test: clicking on an executor row in the launcher selects it AND
+    /// re-filters the model list to compatible models only.
+    #[test]
+    fn test_dialog_handles_mouse_click_on_executor_selector() {
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![
+                ("claude", "claude CLI", true),
+                ("native", "in-process loop", true),
+            ],
+            vec![
+                ("claude:opus", ""),
+                ("openai:gpt-4o", ""),
+                ("google:gemini-2.5-pro", ""),
+            ],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 30,
+        };
+        app.launcher_executor_hits = vec![
+            (
+                0,
+                Rect {
+                    x: 0,
+                    y: 5,
+                    width: 80,
+                    height: 1,
+                },
+            ),
+            (
+                1,
+                Rect {
+                    x: 0,
+                    y: 6,
+                    width: 80,
+                    height: 1,
+                },
+            ),
+        ];
+        // Click on the second executor row (native).
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 6, 10);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.executor_selected, 1, "click should select native");
+        assert_eq!(
+            l.active_section,
+            LauncherSection::Executor,
+            "section should be Executor"
+        );
+        // native shows endpoint section
+        assert!(l.show_endpoint(), "native should reveal endpoint");
+        // model list always shows all models — filter never strips
+        assert_eq!(l.model_picker.items.len(), 3);
+    }
+
+    /// Test: scroll-wheel events over the model list area scroll the picker.
+    #[test]
+    fn test_dialog_handles_scroll_wheel_in_model_list() {
+        let (mut app, _tmp) = build_test_app();
+        let many_models: Vec<(&str, &str)> = (0..20)
+            .map(|i| {
+                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
+                (s, "")
+            })
+            .collect();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            many_models,
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 30,
+        };
+        app.launcher_model_list_area = Rect {
+            x: 0,
+            y: 8,
+            width: 80,
+            height: 6,
+        };
+        let initial = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
+        assert_eq!(initial, 0);
+        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 10);
+        let after_down = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
+        assert!(after_down > 0, "scroll down should move offset forward");
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 10);
+        let after_up = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
+        assert!(after_up < after_down, "scroll up should move offset back");
+    }
+
+    /// Test: clicking another coordinator tab while the launcher is open
+    /// dismisses the launcher AND switches to that tab in one action.
+    #[test]
+    fn test_dialog_click_on_other_tab_dismisses_and_switches() {
+        let (mut app, _tmp) = build_test_app();
+        // Add two coordinators so we have a second tab to click.
+        app.coordinator_chats.insert(0, Default::default());
+        app.coordinator_chats.insert(1, Default::default());
+        app.active_coordinator_id = 0;
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 1,
+            width: 80,
+            height: 29,
+        };
+        app.last_coordinator_bar_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 1,
+        };
+        app.coordinator_tab_hits = vec![crate::tui::viz_viewer::state::CoordinatorTabHit {
+            tab_start: 5,
+            tab_end: 15,
+            close_start: 0,
+            close_end: 0,
+            kind: crate::tui::viz_viewer::state::TabBarEntryKind::Coordinator(1),
+        }];
+        // Click on the tab (column 10, row 0).
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 10);
+        assert!(app.launcher.is_none(), "launcher should be dismissed");
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "input mode should be Normal"
+        );
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "should switch to clicked coordinator"
+        );
+    }
+
+    /// Test: selecting the native executor reveals the endpoint section
+    /// (which would not be present for claude). Sanity check on
+    /// `LauncherState::show_endpoint`, which the renderer keys off of.
+    #[test]
+    fn test_dialog_native_executor_reveals_endpoint_input() {
+        let mut launcher = make_launcher(
+            vec![
+                ("claude", "claude CLI", true),
+                ("native", "in-process loop", true),
+            ],
+            vec![("claude:opus", ""), ("openai:gpt-4o", "")],
+        );
+        // Default executor (claude) — endpoint hidden.
+        assert!(!launcher.show_endpoint());
+        launcher.select_executor(1);
+        assert!(launcher.show_endpoint(), "native should reveal endpoint");
+    }
+
+    /// Test: model list reorders by executor (compatible first), but ALWAYS
+    /// returns all models — never strips them. A strict filter would trap
+    /// users whose registry uses unconventional naming on the Custom row.
+    #[test]
+    fn test_filter_models_for_executor_reorders_compatible_first() {
+        let all = vec![
+            ("openrouter:claude-opus-4-6".to_string(), "".to_string()),
+            ("openrouter:gpt-4o".to_string(), "".to_string()),
+            ("openrouter:gemini-2.5-pro".to_string(), "".to_string()),
+            ("claude:opus".to_string(), "".to_string()),
+            ("openai:gpt-4o-mini".to_string(), "".to_string()),
+        ];
+        // claude executor: all 5 returned, claude/anthropic ones first
+        let claude_models = filter_models_for_executor(&all, "claude");
+        assert_eq!(claude_models.len(), 5, "should never strip models");
+        assert!(
+            claude_models[0].0.contains("claude"),
+            "claude-compatible model should come first, got {:?}",
+            claude_models[0].0
+        );
+        // codex executor: openai first
+        let codex_models = filter_models_for_executor(&all, "codex");
+        assert_eq!(codex_models.len(), 5);
+        assert!(codex_models[0].0.contains("openai") || codex_models[0].0.contains("gpt"));
+        // gemini executor: google first
+        let gemini_models = filter_models_for_executor(&all, "gemini");
+        assert_eq!(gemini_models.len(), 5);
+        assert!(gemini_models[0].0.contains("google") || gemini_models[0].0.contains("gemini"));
+        // native executor: all models, original order
+        let native_models = filter_models_for_executor(&all, "native");
+        assert_eq!(native_models.len(), 5);
+        assert_eq!(native_models, all);
+    }
+
+    /// Test: Ctrl+Enter from any section submits the launcher.
+    /// Regression guard for "stuck in selector" — users couldn't always find
+    /// the submit path because Enter is overloaded across sections.
+    #[test]
+    fn test_dialog_ctrl_enter_submits_from_any_section() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Park in Name section — the section that historically did NOT submit
+        // on Enter (it just stepped to the next field).
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
+        // Ctrl+Enter should submit (close launcher) regardless of section.
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(
+            app.launcher.is_none(),
+            "Ctrl+Enter on Name section should submit + close launcher"
+        );
+    }
+
+    /// Test: plain Enter on Name section now submits too (was: navigated).
+    /// The old "Enter in Name moves to next section" behavior was the most
+    /// common reason users got stuck — they typed a name, hit Enter, nothing
+    /// visible happened.
+    #[test]
+    fn test_dialog_enter_on_name_section_submits() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        assert!(
+            app.launcher.is_none(),
+            "Enter on Name section should submit + close launcher"
+        );
+    }
+
+    /// Test: clicking [Launch] button submits the launcher.
+    #[test]
+    fn test_dialog_click_launch_button_submits() {
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 30,
+        };
+        app.launcher_launch_btn_hit = Rect {
+            x: 2,
+            y: 28,
+            width: 8,
+            height: 1,
+        };
+        // Click on the Launch button.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 5);
+        assert!(
+            app.launcher.is_none(),
+            "[Launch] click should submit + close launcher"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    /// Test: clicking [Cancel] button dismisses without submitting.
+    #[test]
+    fn test_dialog_click_cancel_button_dismisses() {
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 30,
+        };
+        app.launcher_cancel_btn_hit = Rect {
+            x: 13,
+            y: 28,
+            width: 8,
+            height: 1,
+        };
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 16);
+        assert!(app.launcher.is_none(), "[Cancel] click should close launcher");
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    /// Test: Ctrl+N opens the launcher even when chat PTY has focus.
+    /// Regression guard: without this hotkey, users can't "break in" to the
+    /// launcher when an embedded REPL is consuming all keystrokes.
+    #[test]
+    fn test_dialog_ctrl_n_opens_launcher_from_pty() {
+        let (mut app, tmp) = build_test_app();
+        // Simulate the worst case: chat PTY active and forwarding stdin.
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        // Need a real workgraph dir so open_launcher's Config::load_or_default
+        // succeeds.
+        app.workgraph_dir = tmp.path().to_path_buf();
+        std::fs::write(tmp.path().join("config.toml"), "").ok();
+        // Simulate Ctrl+N keystroke.
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert!(
+            app.launcher.is_some(),
+            "Ctrl+N should open the launcher even from PTY focus"
+        );
+        assert_eq!(app.input_mode, InputMode::Launcher);
+    }
+
+    /// Test: full submit flow — open launcher, press Enter, dialog dismisses
+    /// and exec_command was scheduled (we can't intercept the wg subprocess
+    /// here, but the launcher being None + InputMode back to Normal means
+    /// `launch_from_launcher` ran end-to-end).
+    #[test]
+    fn test_dialog_enter_submits_end_to_end() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        // Build a launcher with a real model, on Executor section (default).
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "Most capable")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Default: active_section = Executor, model_picker.selected = 0.
+        // Plain Enter should submit.
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        assert!(
+            app.launcher.is_none(),
+            "Enter on Executor section should submit + close launcher"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "input_mode should be Normal after submit"
+        );
+    }
+
+    /// Test: clicking a model row selects it and switches focus to Model section.
+    #[test]
+    fn test_launcher_click_on_model_row_selects_model() {
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", ""), ("claude:sonnet", "")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        app.last_launcher_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 30,
+        };
+        app.launcher_model_hits = vec![
+            (
+                LauncherListHit::Item(0),
+                Rect {
+                    x: 0,
+                    y: 8,
+                    width: 80,
+                    height: 1,
+                },
+            ),
+            (
+                LauncherListHit::Item(1),
+                Rect {
+                    x: 0,
+                    y: 9,
+                    width: 80,
+                    height: 1,
+                },
+            ),
+        ];
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 9, 10);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.active_section, LauncherSection::Model);
+        assert_eq!(l.model_picker.selected, 1);
+    }
+
+    /// Test: Shift+Enter on Model section also submits, mirroring the
+    /// common chat-input convention where Shift+Enter is a "send"
+    /// affordance. Plain Enter has always submitted; this guards against
+    /// regressions if Shift gets accidentally captured elsewhere.
+    #[test]
+    fn test_dialog_shift_enter_also_submits() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "Most capable")],
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Move to Model section so Enter is unambiguously a submit action.
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(
+            app.launcher.is_none(),
+            "Shift+Enter should submit + close launcher (mirror of plain Enter)"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    /// Test: keyboard ↑/↓ moves the model list selection. Regression guard
+    /// for "we still cant scroll the coordinator config" — selection-by-
+    /// keyboard is the primary navigation path when the list overflows.
+    #[test]
+    fn test_dialog_scroll_with_keyboard() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        let many_models: Vec<(&str, &str)> = (0..20)
+            .map(|i| {
+                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
+                (s, "")
+            })
+            .collect();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            many_models,
+        ));
+        app.input_mode = InputMode::Launcher;
+        // Park focus on the Model section so up/down navigates the picker.
+        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
+        let initial = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert_eq!(initial, 0);
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        let after_down = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(
+            after_down > initial,
+            "keyboard down should advance the model selection"
+        );
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
+        let after_more = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(after_more > after_down, "more downs should keep advancing");
+        handle_launcher_input(&mut app, KeyCode::Up, KeyModifiers::empty());
+        let after_up = app.launcher.as_ref().unwrap().model_picker.selected;
+        assert!(after_up < after_more, "keyboard up should move selection back");
+    }
+
+    /// Test: after rendering the launcher, the [Launch] button hit area
+    /// is positioned ABOVE the model list. This pins the user-requested
+    /// layout — "launch at top of view so its clear why we are doing the
+    /// list below". Without this assertion the renderer is free to put
+    /// Launch at the bottom (the old layout) and users keep getting lost.
+    #[test]
+    fn test_dialog_launch_at_top_of_layout() {
+        use crate::tui::viz_viewer::render::draw_launcher_pane;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_test_app();
+        let many_models: Vec<(&str, &str)> = (0..30)
+            .map(|i| {
+                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
+                (s, "")
+            })
+            .collect();
+        app.launcher = Some(make_launcher(
+            vec![("claude", "claude CLI", true)],
+            many_models,
+        ));
+        app.input_mode = InputMode::Launcher;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let launcher_area = Rect {
+            x: 0,
+            y: 1,
+            width: 120,
+            height: 38,
+        };
+        terminal
+            .draw(|frame| draw_launcher_pane(frame, &mut app, launcher_area))
+            .unwrap();
+
+        let launch_y = app.launcher_launch_btn_hit.y;
+        let model_list_y = app.launcher_model_list_area.y;
+        let model_list_h = app.launcher_model_list_area.height;
+        assert!(
+            launch_y > 0 && model_list_y > 0,
+            "render should populate hit areas for both launch and model list (got launch={}, model={})",
+            launch_y,
+            model_list_y,
+        );
+        assert!(
+            launch_y < model_list_y,
+            "[Launch] button must render ABOVE the model list — \
+             launch_y={}, model_list_y={}",
+            launch_y,
+            model_list_y,
+        );
+        // Also assert the model list is given enough vertical real estate
+        // to actually scroll. With 30 models and a 40-row terminal, we
+        // expect at least 10 rows of list visible.
+        assert!(
+            model_list_h >= 10,
+            "model list should dominate vertical space — got height={}, expected >=10",
+            model_list_h,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7222,5 +8044,257 @@ mod iteration_nav_click_tests {
         assert_eq!(iter_nav_click_zone(13, 16, 2, 12), IterNavClickZone::Middle);
         assert_eq!(iter_nav_click_zone(14, 16, 2, 12), IterNavClickZone::Right);
         assert_eq!(iter_nav_click_zone(15, 16, 2, 12), IterNavClickZone::Right);
+    }
+}
+
+#[cfg(test)]
+mod chat_tab_navigation_tests {
+    //! Tests for multi-chat-tab navigation (per task tui-chat-tab):
+    //!   - Alt+1..9 jumps to chat tab N
+    //!   - Ctrl+Tab / Ctrl+Shift+Tab cycles forward/backward
+    //!   - Helper functions cover the underlying state mutation
+    //!
+    //! Click-to-switch is already covered by `mouse_click_on_each_tab_in_bar`
+    //! and `mouse_click_on_tab_bar_switches_tab_stacked_mode` above.
+
+    use super::*;
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    /// Build a VizApp whose graph contains chat-loop tasks for each
+    /// `coordinator_ids` entry, so `list_coordinator_ids()` returns them
+    /// in order. Returns `(app, tmpdir)` — keep the tmpdir alive.
+    fn build_app_with_chats(coordinator_ids: &[u32]) -> (VizApp, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        for &cid in coordinator_ids {
+            let id = if cid == 0 {
+                ".coordinator".to_string()
+            } else {
+                format!(".coordinator-{}", cid)
+            };
+            let title = format!("Coordinator {}", cid);
+            let mut task = make_task_with_status(&id, &title, Status::InProgress);
+            task.tags = vec!["coordinator-loop".to_string()];
+            graph.add_node(Node::Task(task));
+        }
+        // A regular task so the viz output isn't empty.
+        let regular = make_task_with_status("regular-task", "Regular Task", Status::Open);
+        graph.add_node(Node::Task(regular));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let graph_path = wg_dir.join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        // Use an unknown executor so `maybe_auto_enable_chat_pty` returns
+        // early and does NOT spawn a real `claude` PTY child during the
+        // test (which would set `chat_pty_forwards_stdin = true` and
+        // swallow all subsequent keystrokes).
+        let config_path = wg_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[coordinator]\nexecutor = \"shell\"\n",
+        )
+        .unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = wg_dir;
+        // Default to first coordinator so cycling has a predictable starting point.
+        app.active_coordinator_id = coordinator_ids[0];
+        app.right_panel_tab = RightPanelTab::Chat;
+        (app, tmp)
+    }
+
+    // ── Helper-function tests ──
+
+    #[test]
+    fn switch_chat_tab_to_index_jumps_to_nth_tab() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        assert_eq!(app.active_coordinator_id, 0);
+
+        switch_chat_tab_to_index(&mut app, 2);
+        assert_eq!(
+            app.active_coordinator_id, 2,
+            "Index 2 should switch to the 3rd chat tab (cid=2)"
+        );
+
+        switch_chat_tab_to_index(&mut app, 0);
+        assert_eq!(app.active_coordinator_id, 0, "Index 0 → cid=0");
+    }
+
+    #[test]
+    fn switch_chat_tab_to_index_out_of_range_is_noop() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1]);
+        switch_chat_tab_to_index(&mut app, 9);
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "Out-of-range index should not switch chats"
+        );
+    }
+
+    #[test]
+    fn switch_chat_tab_relative_cycles_forward() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        switch_chat_tab_relative(&mut app, 1);
+        assert_eq!(app.active_coordinator_id, 1);
+        switch_chat_tab_relative(&mut app, 1);
+        assert_eq!(app.active_coordinator_id, 2);
+        // Wrap.
+        switch_chat_tab_relative(&mut app, 1);
+        assert_eq!(app.active_coordinator_id, 0);
+    }
+
+    #[test]
+    fn switch_chat_tab_relative_cycles_backward() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        switch_chat_tab_relative(&mut app, -1);
+        assert_eq!(app.active_coordinator_id, 2, "Wrap from index 0 → 2");
+        switch_chat_tab_relative(&mut app, -1);
+        assert_eq!(app.active_coordinator_id, 1);
+    }
+
+    #[test]
+    fn switch_chat_tab_relative_noop_with_single_chat() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        switch_chat_tab_relative(&mut app, 1);
+        assert_eq!(app.active_coordinator_id, 0);
+        switch_chat_tab_relative(&mut app, -1);
+        assert_eq!(app.active_coordinator_id, 0);
+    }
+
+    // ── Key-routing tests (end-to-end via handle_key) ──
+
+    #[test]
+    fn alt_number_key_switches_to_chat_n_on_chat_tab() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        // Move focus to right panel so handle_right_panel_key fires.
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::ALT);
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "Alt+2 should jump to the 2nd chat tab (positional index 1, cid=1)"
+        );
+
+        super::handle_key(&mut app, KeyCode::Char('3'), KeyModifiers::ALT);
+        assert_eq!(
+            app.active_coordinator_id, 2,
+            "Alt+3 should jump to the 3rd chat tab (positional index 2, cid=2)"
+        );
+
+        super::handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "Alt+1 should jump back to the 1st chat tab"
+        );
+    }
+
+    #[test]
+    fn alt_number_key_does_nothing_off_chat_tab() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        // Off the Chat tab — Alt+N should not switch chats.
+        app.right_panel_tab = RightPanelTab::Detail;
+
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::ALT);
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "Alt+N off the Chat tab should not switch chats"
+        );
+    }
+
+    #[test]
+    fn plain_number_key_still_switches_right_panel_tab() {
+        // Regression: don't break the existing 0-9 right-panel-tab shortcut
+        // by adding the Alt+N chat-jump handler.
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Detail,
+            "Plain '1' should switch to right-panel tab #1 (Detail), not jump chats"
+        );
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "Plain '1' must not change the active chat"
+        );
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_chat_tabs_forward() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Tab, KeyModifiers::CONTROL);
+        assert_eq!(app.active_coordinator_id, 1);
+        super::handle_key(&mut app, KeyCode::Tab, KeyModifiers::CONTROL);
+        assert_eq!(app.active_coordinator_id, 2);
+        super::handle_key(&mut app, KeyCode::Tab, KeyModifiers::CONTROL);
+        assert_eq!(app.active_coordinator_id, 0, "Wraps after last chat");
+    }
+
+    #[test]
+    fn ctrl_shift_tab_cycles_chat_tabs_backward() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(
+            &mut app,
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.active_coordinator_id, 2, "Wrap from 0 → 2");
+        super::handle_key(
+            &mut app,
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.active_coordinator_id, 1);
+    }
+
+    #[test]
+    fn ctrl_tab_off_chat_tab_falls_through_to_panel_focus_toggle() {
+        // When NOT on the Chat tab, plain Tab still toggles panel focus.
+        // The Ctrl+Tab branch is gated to Chat tab only, so on Detail tab
+        // the existing Tab handler runs (which toggles focus for plain Tab).
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Detail;
+
+        super::handle_key(&mut app, KeyCode::Tab, KeyModifiers::CONTROL);
+        // active_coordinator_id should not change; Ctrl+Tab on Detail tab
+        // is a no-op for chat navigation (the Tab handler runs but only
+        // plain Tab calls toggle_panel_focus).
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "Ctrl+Tab off the Chat tab should not switch chats"
+        );
     }
 }

@@ -334,30 +334,6 @@ pub(crate) fn generate_ascii(
                 .get(id)
                 .map(|a| format!(" \x1b[38;5;219m{}\x1b[0m", a.text))
                 .unwrap_or_default()
-        } else if use_color && id == ".compact-0" && annotations.contains_key(id) {
-            // Color the compact-0 annotation based on compaction state:
-            //   ⟳ (running)  → red
-            //   ✓ (done)     → green
-            //   ⚠ (warning)  → yellow
-            //   idle         → gray
-            let ansi = annotations
-                .get(id)
-                .map(|a| {
-                    if a.text.contains('⟳') {
-                        "\x1b[31m" // red: actively compacting
-                    } else if a.text.contains('✓') {
-                        "\x1b[32m" // green: recently completed
-                    } else if a.text.contains('⚠') {
-                        "\x1b[33m" // yellow: approaching/past threshold
-                    } else {
-                        "\x1b[90m" // gray: idle, far from threshold
-                    }
-                })
-                .unwrap_or("\x1b[90m");
-            annotations
-                .get(id)
-                .map(|a| format!(" {}{}\x1b[0m", ansi, a.text))
-                .unwrap_or_default()
         } else {
             phase_info
         };
@@ -370,7 +346,7 @@ pub(crate) fn generate_ascii(
         let agency_usage = agency_token_usage.get(id);
         let priority_suffix = task
             .filter(|t| t.priority != PRIORITY_DEFAULT)
-            .map(|t| format!(" · ▴{}", t.priority))
+            .map(|t| format!(" · ⌁{}", t.priority))
             .unwrap_or_default();
         let status_with_tokens = if let Some(tok_str) = format_token_display(usage, agency_usage) {
             format!("{} · {}{}", status, tok_str, priority_suffix)

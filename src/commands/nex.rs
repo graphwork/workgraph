@@ -3,6 +3,21 @@
 //! `wg nex` drops the user into an agentic coding session powered by any
 //! OpenAI-compatible model. Supports streaming, tool calling, and multi-turn
 //! conversation.
+//!
+//! ## Stdout-is-protocol contract (handler invocations)
+//!
+//! When invoked as a handler — `wg nex --chat <ref>` (and also
+//! autonomous task-agent runs spawned by the daemon) — stdout is part
+//! of the protocol stream that parent supervisors parse line-by-line.
+//! **Never write diagnostic text to stdout from this file or anything
+//! it transitively calls.** Config-load chatter, deprecation warnings,
+//! progress notes, and debug output all belong on stderr or in the
+//! daemon log; the existing call sites use `eprintln!` exactly because
+//! a single stray `println!` corrupts the json-line stream and crashes
+//! the next-turn parse silently. The only legitimate stdout writers in
+//! this file are gated by `eval_mode` (one-line JSON summary for
+//! benchmark harnesses) and are documented inline. The regression lock
+//! lives in `tests/integration_handler_stdout_pristine.rs`.
 
 use std::path::Path;
 
@@ -32,6 +47,8 @@ pub fn run(
     autonomous: bool,
     no_mcp: bool,
     eval_mode: bool,
+    idle_timeout_secs: Option<u64>,
+    minimal_tools: bool,
 ) -> Result<()> {
     // --eval-mode is a preset for benchmark-harness invocation:
     //   * implies --autonomous  (one-shot, EndTurn exits the loop)
@@ -44,7 +61,20 @@ pub fn run(
     // CLI surface stays orthogonal — a caller could still pass
     // `--autonomous --eval-mode` redundantly without confusion.
     let autonomous = autonomous || eval_mode;
-    let no_mcp = no_mcp || eval_mode;
+    // --minimal-tools implies --no-mcp (minimal surface excludes all MCP tools)
+    let no_mcp = no_mcp || eval_mode || minimal_tools;
+
+    // Set the idle timeout via env var if provided via flag (flag takes precedence over
+    // existing env var). The agent loop reads WG_STREAM_IDLE_TIMEOUT_SECS; we set it
+    // here so the flag wiring is transparent to downstream code.
+    if let Some(timeout) = idle_timeout_secs {
+        // SAFETY: We're in single-threaded CLI setup before spawning any threads, and
+        // we're setting a process-wide config that the agent loop will read shortly after.
+        // No concurrent access to env vars at this point.
+        unsafe {
+            std::env::set_var("WG_STREAM_IDLE_TIMEOUT_SECS", timeout.to_string());
+        }
+    }
 
     let config = Config::load_or_default(workgraph_dir);
 
@@ -52,6 +82,8 @@ pub fn run(
         .map(String::from)
         .or_else(|| std::env::var("WG_MODEL").ok())
         .unwrap_or_else(|| config.resolve_model_for_role(DispatchRole::TaskAgent).model);
+
+    record_nex_invocation(&effective_model, endpoint, eval_mode);
 
     let working_dir = std::env::current_dir().unwrap_or_default();
 
@@ -75,6 +107,19 @@ pub fn run(
             // Interactive/skill mode: strip wg mutation tools — there's
             // no task context. wg_show/wg_list kept for browsing.
             reg.remove_tools(&["wg_done", "wg_add", "wg_fail", "wg_rescue", "wg_artifact"]);
+        }
+        if minimal_tools {
+            // Minimal tool surface: keep only the canonical local-dev set.
+            // Dramatically reduces prefill cost for small local models.
+            reg.keep_only_tools(&[
+                "read_file",
+                "edit_file",
+                "write_file",
+                "bash",
+                "grep",
+                "glob",
+                "todo_write",
+            ]);
         }
         if read_only {
             reg.filter_read_only()
@@ -597,6 +642,25 @@ fn default_interactive_alias(stamp: &str) -> String {
     format!("session-{}", stamp)
 }
 
+/// Record a `wg nex` invocation in launcher history. Done early in
+/// `run()` (before the long-running agent loop) so even a Ctrl-C'd
+/// session leaves a recallable entry for the TUI new-coordinator
+/// dialog. Eval mode skips recording — benchmark harnesses don't
+/// want to pollute the history with one-shot grader invocations.
+fn record_nex_invocation(effective_model: &str, endpoint: Option<&str>, eval_mode: bool) {
+    if eval_mode {
+        return;
+    }
+    let _ = workgraph::launcher_history::record_use(
+        &workgraph::launcher_history::HistoryEntry::new(
+            "native",
+            Some(effective_model),
+            endpoint,
+            "cli",
+        ),
+    );
+}
+
 /// Load an agency role/skill component by name. Scans all YAML files
 /// in `.workgraph/agency/primitives/components/` for one whose `name`
 /// field matches (case-insensitive substring match). Returns the
@@ -631,4 +695,68 @@ fn load_agency_role(workgraph_dir: &Path, role_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn with_history_env<F: FnOnce(&Path)>(f: F) {
+        let tmp = TempDir::new().unwrap();
+        let history_path = tmp.path().join("launcher-history.jsonl");
+        unsafe {
+            std::env::set_var("WG_LAUNCHER_HISTORY_PATH", &history_path);
+        }
+        f(&history_path);
+        unsafe {
+            std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(launcher_history_env)]
+    fn test_cli_nex_records_to_launcher_history() {
+        with_history_env(|history_path| {
+            record_nex_invocation(
+                "qwen3-coder",
+                Some("https://lambda01.tail334fe6.ts.net:30000"),
+                false,
+            );
+            let contents = fs::read_to_string(history_path).expect("history file should exist");
+            assert!(
+                contents.contains("\"executor\":\"native\""),
+                "wg nex records as native executor: {}",
+                contents
+            );
+            assert!(
+                contents.contains("qwen3-coder"),
+                "history contains the model: {}",
+                contents
+            );
+            assert!(
+                contents.contains("lambda01.tail334fe6.ts.net"),
+                "history contains the endpoint: {}",
+                contents
+            );
+            assert!(
+                contents.contains("\"source\":\"cli\""),
+                "wg nex source = cli: {}",
+                contents
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(launcher_history_env)]
+    fn test_cli_nex_eval_mode_skips_recording() {
+        with_history_env(|history_path| {
+            record_nex_invocation("qwen3-coder", None, true);
+            assert!(
+                !history_path.exists() || fs::read_to_string(history_path).unwrap().is_empty(),
+                "eval mode should not write to history"
+            );
+        });
+    }
 }

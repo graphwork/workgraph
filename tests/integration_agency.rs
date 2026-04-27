@@ -575,6 +575,8 @@ fn test_full_agency_lifecycle_new_design() {
         verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
+        constraint_fidelity_score: None,
+        constraint_fidelity_unanchored: None,
     });
     assert!(evaluator_prompt.contains("integration-test-agent"));
     assert!(evaluator_prompt.contains("Integration Implementer"));

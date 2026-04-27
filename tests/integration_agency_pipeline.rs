@@ -665,9 +665,10 @@ fn assigner_to_creator_signal_path_exists() {
     // Roles resolve independently
     let assigner = config.resolve_model_for_role(DispatchRole::Assigner);
     let creator = config.resolve_model_for_role(DispatchRole::Creator);
-    // Assigner uses Fast tier, Creator uses Standard tier
+    // Assigner uses Fast tier (cheap routing), Creator uses Premium tier (strong reasoning
+    // for task decomposition).
     assert_eq!(DispatchRole::Assigner.default_tier(), Tier::Fast);
-    assert_eq!(DispatchRole::Creator.default_tier(), Tier::Standard);
+    assert_eq!(DispatchRole::Creator.default_tier(), Tier::Premium);
     assert_ne!(assigner.model, creator.model);
 }
 

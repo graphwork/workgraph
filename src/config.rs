@@ -899,9 +899,21 @@ impl EndpointConfig {
 /// LLM endpoints configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EndpointsConfig {
+    /// When `true`, local config inherits `[[llm_endpoints.endpoints]]` entries
+    /// from the global config. When `false` (default), the local config's
+    /// endpoints list FULLY replaces the global list — set this to `true`
+    /// in local config to keep the legacy "global cascades into local"
+    /// behavior. Has no effect when read from global config.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inherit_global: bool,
+
     /// List of configured endpoints
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<EndpointConfig>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl EndpointsConfig {
@@ -1096,9 +1108,12 @@ impl DispatchRole {
 
     /// Default quality tier for this role.
     ///
-    /// Metacognition/routing roles (assigner, compactor, triage, etc.) default to Fast
-    /// so they use haiku and don't burn budget on every dispatch. Only task_agent and
-    /// evolver get premium (opus) by default; creator and verification get standard (sonnet).
+    /// Metacognition/routing roles (assigner, compactor, triage, evaluator, etc.) default
+    /// to Fast so they use haiku and don't burn budget on every dispatch. TaskAgent runs
+    /// at Standard (sonnet) — typical implementation work. Evolver, Creator, and
+    /// Verification get Premium (opus) because they require strong reasoning:
+    /// evolver redesigns the agency, creator decomposes work into new tasks, and
+    /// verification is the correctness gate.
     pub fn default_tier(&self) -> Tier {
         match self {
             Self::Triage => Tier::Fast,
@@ -2607,12 +2622,41 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_interval")]
     pub interval: u64,
 
-    /// Background poll interval in seconds for the service daemon safety net.
-    /// The daemon runs a coordinator tick on this slow interval even without
-    /// receiving any GraphChanged IPC events. Catches manual edits, lost events,
-    /// or external tools modifying the graph. Default: 60s.
-    #[serde(default = "default_poll_interval")]
+    /// Safety-timer interval (seconds) for the service daemon.
+    ///
+    /// With graph filesystem watching as the *primary* trigger, the dispatcher
+    /// loop is normally event-driven (`notify` watcher on `graph.jsonl`). This
+    /// safety timer fires on a slow schedule even when no graph events arrive,
+    /// so that purely time-based work (cycle_delay scheduling, agent heartbeat
+    /// reaping, registry refresh, compaction trigger checks) still progresses.
+    ///
+    /// Also serves as the *fallback poll interval* on filesystems where the
+    /// watcher cannot start (some NFS mounts, WSL1, certain sandbox FS): the
+    /// daemon then polls at this interval as the only trigger.
+    ///
+    /// Default: 30s. The forward-looking key name is `safety_interval`; the
+    /// legacy `poll_interval` continues to work as an alias.
+    #[serde(default = "default_poll_interval", alias = "safety_interval")]
     pub poll_interval: u64,
+
+    /// Enable filesystem watching of `graph.jsonl` as the primary dispatcher
+    /// trigger. When enabled (default), graph changes are detected via the
+    /// `notify` crate and the dispatcher wakes within ~debounce_ms of any
+    /// write — typically faster than `poll_interval`.
+    ///
+    /// When disabled, the dispatcher relies solely on the safety timer above
+    /// plus IPC `GraphChanged` events from `wg` CLI commands.
+    #[serde(default = "default_graph_watch_enabled")]
+    pub graph_watch_enabled: bool,
+
+    /// Debounce window (milliseconds) for the graph filesystem watcher.
+    ///
+    /// A single logical write (e.g. one `wg add`) often produces multiple
+    /// `write`/`fsync` syscalls visible to inotify. The debouncer collapses
+    /// events arriving within this window into one wake-up. Recommended range:
+    /// 50–200 ms. Values below 10 ms are clamped up. Default: 100 ms.
+    #[serde(default = "default_graph_watch_debounce_ms")]
+    pub graph_watch_debounce_ms: u64,
 
     /// Executor to use for spawned agents.
     /// When `None` (not set in config), `effective_executor()` auto-detects
@@ -2656,25 +2700,22 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
 
-    /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
+    /// **Deprecated (retired-compact-archive):** the graph-cycle compactor
+    /// (`.compact-N`) has been removed. Field is parsed for one release so
+    /// existing config files keep loading; values are ignored. A warning is
+    /// emitted at config load time if the value is non-default.
     #[serde(default = "default_compactor_interval")]
     pub compactor_interval: u32,
 
-    /// Provenance ops growth threshold that triggers compaction (default: 100)
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compactor_ops_threshold")]
     pub compactor_ops_threshold: usize,
 
-    /// Accumulated coordinator conversation token threshold for triggering compaction.
-    /// Compaction is deferred until at least this many tokens have been accumulated
-    /// since the last compaction. Default: 100_000. Set to 0 to disable token gating.
-    /// Used as the fallback when context window size cannot be determined.
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compaction_token_threshold")]
     pub compaction_token_threshold: u64,
 
-    /// Fraction of the coordinator model's context window to use as compaction threshold.
-    /// Threshold = context_window * compaction_threshold_ratio.
-    /// Default: 0.8 (trigger compaction at 80% of context window).
-    /// Set to 0.0 to disable dynamic threshold (use compaction_token_threshold always).
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compaction_threshold_ratio")]
     pub compaction_threshold_ratio: f64,
 
@@ -2735,7 +2776,12 @@ pub struct CoordinatorConfig {
     /// When a task's verify command fails this many times in a row, the task
     /// transitions to Failed with a descriptive error. Default: 3.
     /// Set to 0 to disable the circuit breaker (unlimited retries).
-    #[serde(default = "default_max_verify_failures")]
+    ///
+    /// Also serves as the cap for cascade-failure auto-rescue chains: if eval
+    /// rejects a task and the rescue chain has reached this depth, the task
+    /// stays Failed instead of spawning yet another rescue. Accepts the alias
+    /// `max_eval_rescues` for forward-compat clarity.
+    #[serde(default = "default_max_verify_failures", alias = "max_eval_rescues")]
     pub max_verify_failures: u32,
 
     /// Default verify timeout for tasks without specific override
@@ -2907,7 +2953,19 @@ fn default_coordinator_agent() -> bool {
 }
 
 fn default_poll_interval() -> u64 {
-    60
+    // Safety-timer interval (seconds). With graph watching enabled by default,
+    // the loop is event-driven; this is just the slow safety net. 30s is a
+    // good balance between catching missed events promptly and not waking the
+    // daemon constantly on idle systems.
+    30
+}
+
+fn default_graph_watch_enabled() -> bool {
+    true
+}
+
+fn default_graph_watch_debounce_ms() -> u64 {
+    100
 }
 
 fn default_compactor_interval() -> u32 {
@@ -3061,6 +3119,8 @@ impl Default for CoordinatorConfig {
             max_agents: default_max_agents(),
             interval: default_coordinator_interval(),
             poll_interval: default_poll_interval(),
+            graph_watch_enabled: default_graph_watch_enabled(),
+            graph_watch_debounce_ms: default_graph_watch_debounce_ms(),
             executor: None,
             model: None,
             provider: None,
@@ -3307,6 +3367,32 @@ fn emit_legacy_warnings(warnings: &[String]) {
     }
 }
 
+/// LLM endpoint inheritance is opt-in: local config does NOT inherit
+/// `[[llm_endpoints.endpoints]]` entries from global by default. The user must
+/// set `[llm_endpoints] inherit_global = true` in local config to keep the
+/// legacy "global cascades into local" behavior.
+///
+/// This mutates `global_val` in place to drop the `endpoints` array from its
+/// `[llm_endpoints]` table when local hasn't opted in. Call this BEFORE
+/// `merge_toml` so the deep-merge sees an effectively-empty global endpoints
+/// list and the merged config reflects only what local declared.
+fn apply_endpoint_inheritance_policy(global_val: &mut toml::Value, local_val: &toml::Value) {
+    let inherit = local_val
+        .get("llm_endpoints")
+        .and_then(|t| t.get("inherit_global"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    if inherit {
+        return;
+    }
+    if let Some(global_endpoints) = global_val
+        .get_mut("llm_endpoints")
+        .and_then(|t| t.as_table_mut())
+    {
+        global_endpoints.remove("endpoints");
+    }
+}
+
 /// Deep-merge two TOML values. For (Table, Table) pairs, recursively merge
 /// with `local` keys overriding `global`. For all other cases, `local` wins.
 pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
@@ -3383,6 +3469,48 @@ fn strip_global_only_model_roles(
     }
 }
 
+/// A deprecated config key found in raw TOML, with a human-readable replacement
+/// suggestion the daemon can log on startup.
+///
+/// Use [`detect_deprecated_keys`] to scan a parsed `toml::Value` for legacy keys
+/// that the codebase still accepts via serde aliases but plans to retire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeprecatedKey {
+    /// Dot-separated path of the deprecated key as it appears in TOML
+    /// (e.g. `"coordinator.poll_interval"`).
+    pub path: String,
+    /// Suggested replacement path the user should migrate to.
+    pub replacement: String,
+}
+
+/// Scan a (possibly merged) `toml::Value` for deprecated configuration keys.
+///
+/// Returns one entry per legacy key found anywhere in the document. The daemon
+/// uses this on startup to print one-shot deprecation warnings per legacy key,
+/// while still honoring the value via serde aliases.
+///
+/// Currently surfaces:
+/// - `[coordinator] poll_interval` → `[coordinator] safety_interval`
+/// - `[dispatcher] poll_interval` → `[dispatcher] safety_interval`
+pub fn detect_deprecated_keys(val: &toml::Value) -> Vec<DeprecatedKey> {
+    let mut found = Vec::new();
+    let table = match val.as_table() {
+        Some(t) => t,
+        None => return found,
+    };
+    for legacy_section in ["coordinator", "dispatcher"] {
+        if let Some(section) = table.get(legacy_section).and_then(|v| v.as_table())
+            && section.contains_key("poll_interval")
+        {
+            found.push(DeprecatedKey {
+                path: format!("{}.poll_interval", legacy_section),
+                replacement: format!("{}.safety_interval", legacy_section),
+            });
+        }
+    }
+    found
+}
+
 /// Walk a TOML Value table and record source per leaf key (dot-separated path).
 fn record_sources(
     val: &toml::Value,
@@ -3447,7 +3575,7 @@ impl Config {
 
     /// Load raw TOML value from a config file path.
     /// Returns empty table if file doesn't exist.
-    fn load_toml_value(path: &Path) -> anyhow::Result<toml::Value> {
+    pub fn load_toml_value(path: &Path) -> anyhow::Result<toml::Value> {
         if !path.exists() {
             return Ok(toml::Value::Table(toml::map::Map::new()));
         }
@@ -3483,6 +3611,7 @@ impl Config {
             &mut warnings,
         );
         emit_legacy_warnings(&warnings);
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         Ok(merge_toml(global_val, local_val))
     }
 
@@ -3518,6 +3647,7 @@ impl Config {
             .and_then(|m| m.as_str())
             .is_some();
 
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         let mut merged = merge_toml(global_val.clone(), local_val.clone());
         strip_global_only_model_roles(&mut merged, &global_val, &local_val);
         let mut config: Config = merged
@@ -3611,7 +3741,52 @@ impl Config {
 
         config.validate_model_format()?;
 
+        for warning in config.deprecated_compaction_warnings() {
+            eprintln!("warning: {}", warning);
+        }
+
         Ok(config)
+    }
+
+    /// Returns warning strings for any deprecated graph-cycle compaction keys
+    /// (`compactor_interval`, `compactor_ops_threshold`,
+    /// `compaction_token_threshold`, `compaction_threshold_ratio`) that were
+    /// loaded with non-default values. These keys are no-ops after the
+    /// `.compact-N` cycle was retired; the warning gives users one release to
+    /// migrate before the fields are removed entirely.
+    pub fn deprecated_compaction_warnings(&self) -> Vec<String> {
+        let c = &self.coordinator;
+        let mut out = Vec::new();
+        if c.compactor_interval != default_compactor_interval() {
+            out.push(format!(
+                "config key `coordinator.compactor_interval = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired in retire-compact-archive); remove it from config.toml",
+                c.compactor_interval
+            ));
+        }
+        if c.compactor_ops_threshold != default_compactor_ops_threshold() {
+            out.push(format!(
+                "config key `coordinator.compactor_ops_threshold = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compactor_ops_threshold
+            ));
+        }
+        if c.compaction_token_threshold != default_compaction_token_threshold() {
+            out.push(format!(
+                "config key `coordinator.compaction_token_threshold = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compaction_token_threshold
+            ));
+        }
+        if (c.compaction_threshold_ratio - default_compaction_threshold_ratio()).abs() > f64::EPSILON
+        {
+            out.push(format!(
+                "config key `coordinator.compaction_threshold_ratio = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compaction_threshold_ratio
+            ));
+        }
+        out
     }
 
     /// Load configuration with global+local merge, falling back to defaults on error.
@@ -3820,6 +3995,12 @@ impl Config {
             &mut warnings,
         );
         emit_legacy_warnings(&warnings);
+
+        // Apply endpoint inheritance policy BEFORE recording sources, so the
+        // source map reflects the effective merged config: a global endpoint
+        // entry that's been suppressed because local opted out should not
+        // appear as "from global" in `wg config --list`.
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
 
         // Record sources: global first, then local overwrites
         let mut sources = BTreeMap::new();
@@ -5141,6 +5322,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_single_match() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "my-openai".to_string(),
                 provider: "openai".to_string(),
@@ -5161,6 +5343,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_no_match() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "my-openai".to_string(),
                 provider: "openai".to_string(),
@@ -5179,6 +5362,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_prefers_default() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "first-openai".to_string(),
@@ -5223,6 +5407,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_first_match_without_default() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "anthropic-ep".to_string(),
@@ -5267,6 +5452,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_for_provider_url_and_key() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
@@ -5297,6 +5483,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_default_returns_default_endpoint() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "openai".to_string(),
@@ -5329,6 +5516,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_default_falls_back_to_first() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "only".to_string(),
                 provider: "openai".to_string(),
@@ -5351,6 +5539,7 @@ model = "claude:haiku"
         // the only configured endpoint has provider "openrouter". find_for_provider("openai")
         // returns None but find_default() returns the openrouter endpoint.
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
@@ -5678,6 +5867,7 @@ model = "claude:haiku"
     #[test]
     fn test_find_by_name() {
         let endpoints = EndpointsConfig {
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "openrouter".to_string(),
@@ -6767,7 +6957,11 @@ provider = "openrouter"
     }
 
     #[test]
-    fn test_merge_preserves_global_endpoints_when_local_omits_them() {
+    fn test_merge_toml_preserves_global_endpoints_when_local_omits_them() {
+        // This tests the *primitive* `merge_toml` behavior — global wins when
+        // local omits a key. The user-facing `load_merged*` paths layer
+        // `apply_endpoint_inheritance_policy` on top to invert this for
+        // endpoints specifically (see tests below).
         let global: toml::Value = toml::from_str(
             r#"
 [llm_endpoints]
@@ -6792,6 +6986,136 @@ model = "claude:haiku"
         let config: Config = merged.try_into().unwrap();
         assert_eq!(config.llm_endpoints.endpoints.len(), 1);
         assert_eq!(config.llm_endpoints.endpoints[0].name, "openrouter");
+    }
+
+    // ---- Endpoint inheritance opt-in tests ----
+    //
+    // Endpoint inheritance from global → local is opt-in. Local must set
+    // `[llm_endpoints] inherit_global = true` to get the legacy cascade.
+    // Without that flag, the user's local config defines the *complete* set
+    // of available endpoints. See `apply_endpoint_inheritance_policy`.
+
+    fn make_global_with_openrouter_default() -> toml::Value {
+        toml::from_str(
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-global"
+is_default = true
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_local_no_endpoints_does_not_inherit_global() {
+        // The user's reported symptom: global has openrouter as is_default,
+        // and the user's local has no `[llm_endpoints]` at all. Under the new
+        // policy this MUST NOT cascade — global's endpoints are dropped.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[agent]
+model = "claude:haiku"
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert!(
+            config.llm_endpoints.endpoints.is_empty(),
+            "local with no [llm_endpoints] must not inherit global endpoints; got {:?}",
+            config.llm_endpoints.endpoints
+        );
+        assert!(
+            config.llm_endpoints.find_default().is_none(),
+            "no default endpoint should leak from global"
+        );
+    }
+
+    #[test]
+    fn test_local_with_own_endpoints_replaces_global() {
+        // Local has its own endpoint list; under approach A this fully
+        // replaces global's list (no per-name merging, no global leak).
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "claude-direct"
+provider = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key = "sk-anthropic-local"
+is_default = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "claude-direct");
+        assert!(
+            config.llm_endpoints.find_by_name("openrouter").is_none(),
+            "global openrouter must not leak when local declares its own endpoints"
+        );
+    }
+
+    #[test]
+    fn test_inherit_global_knob_works() {
+        // With `[llm_endpoints] inherit_global = true` in local, the legacy
+        // cascade behavior is preserved.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+inherit_global = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(
+            config.llm_endpoints.endpoints.len(),
+            1,
+            "inherit_global=true must keep the global openrouter entry"
+        );
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "openrouter");
+        assert!(config.llm_endpoints.inherit_global);
+    }
+
+    #[test]
+    fn test_inherit_global_with_local_endpoints_unions() {
+        // `inherit_global = true` plus a local entry — under this branch,
+        // merge_toml's "local list wins" rule for arrays still applies, so
+        // local replaces global's array even with inherit_global=true. The
+        // knob's job is to RESTORE legacy behavior, and legacy merge_toml
+        // already had this property: a non-empty local array replaces global's.
+        // We assert the documented contract.
+        let mut global = make_global_with_openrouter_default();
+        let local: toml::Value = toml::from_str(
+            r#"
+[llm_endpoints]
+inherit_global = true
+[[llm_endpoints.endpoints]]
+name = "claude-direct"
+provider = "anthropic"
+url = "https://api.anthropic.com/v1"
+api_key = "sk-anthropic-local"
+is_default = true
+"#,
+        )
+        .unwrap();
+        apply_endpoint_inheritance_policy(&mut global, &local);
+        let merged = merge_toml(global, local);
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "claude-direct");
     }
 
     // ---- Global config propagation tests ----
@@ -6942,7 +7266,12 @@ api_key = "sk-or-global"
     }
 
     #[test]
-    fn test_global_endpoints_propagate_to_merged_config() {
+    fn test_global_endpoints_do_not_propagate_to_merged_config_by_default() {
+        // Endpoint inheritance is opt-in. With an empty local config (no
+        // `[llm_endpoints] inherit_global = true`), global endpoints must
+        // NOT leak into the merged config. This is the user-facing
+        // contract that `load_merged` and `load_with_sources` enforce by
+        // calling `apply_endpoint_inheritance_policy` before `merge_toml`.
         let global_path = tempfile::NamedTempFile::new().unwrap();
 
         std::fs::write(
@@ -6963,8 +7292,51 @@ is_default = true
         let local_path = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(local_path.path(), "").unwrap();
 
-        let global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
         let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        let merged = merge_toml(global_val, local_val);
+
+        let config: Config = merged.try_into().unwrap();
+        assert!(
+            config.llm_endpoints.endpoints.is_empty(),
+            "global endpoints must not leak into local without inherit_global; got {:?}",
+            config.llm_endpoints.endpoints
+        );
+    }
+
+    #[test]
+    fn test_global_endpoints_propagate_when_inherit_global_set() {
+        // When local explicitly sets `[llm_endpoints] inherit_global = true`,
+        // the legacy cascade is restored and global endpoints flow through.
+        let global_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            global_path.path(),
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-test-global"
+is_default = true
+"#,
+        )
+        .unwrap();
+
+        let local_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            local_path.path(),
+            r#"
+[llm_endpoints]
+inherit_global = true
+"#,
+        )
+        .unwrap();
+
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
         let merged = merge_toml(global_val, local_val);
 
         let config: Config = merged.try_into().unwrap();
@@ -6974,6 +7346,7 @@ is_default = true
             Some("sk-or-test-global".to_string())
         );
         assert_eq!(config.llm_endpoints.endpoints[0].provider, "openrouter");
+        assert!(config.llm_endpoints.inherit_global);
     }
 
     #[test]

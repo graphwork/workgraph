@@ -281,6 +281,8 @@ The coordinator spawns agents via a configurable executor. Built-in executors:
 | Executor | Command | Use case |
 |----------|---------|----------|
 | **claude** | `claude --print --model <M>` | Default — Anthropic Claude CLI agents |
+| **codex** | `codex --model <M>` | OpenAI Codex CLI agents |
+| **native** (a.k.a. **nex**) | In-process OAI-compatible HTTP client | OpenRouter, local Ollama / vLLM, custom OAI-compatible endpoints. Used by the `openrouter`, `local`, and `nex-custom` setup routes |
 | **amplifier** | `amplifier run --mode single -m <M>` | OpenRouter-backed models, supports `provider:model` syntax (e.g., `provider-openai:gpt-4o`) |
 | **shell** | Custom command from task `exec` field | Non-LLM tasks, scripts, builds |
 
@@ -288,6 +290,8 @@ The coordinator spawns agents via a configurable executor. Built-in executors:
 wg config --coordinator-executor claude      # default
 wg config --coordinator-executor amplifier   # switch to amplifier
 ```
+
+The `nex` executor is the **native path for any OAI-compatible endpoint** — when you pick the `openrouter`, `local`, or `nex-custom` route in `wg setup`, it's the executor wired in under the hood. The legacy alias `nex` is normalized to the canonical `native` in config.
 
 Custom executors can be defined in `.workgraph/executors/<name>.toml`.
 
@@ -437,10 +441,39 @@ The coordinator detects and fails circular waits (task A waiting on task B waiti
 View merged configuration with source annotations:
 
 ```bash
-wg config --list                # show merged config (global/local/default)
+wg config --merged              # show effective config (global + local merged)
+wg config --list                # show merged config with source annotations
 wg config --global --show       # show only global config
 wg config --local --show        # show only local config
 ```
+
+### Endpoint inheritance (opt-in)
+
+`[[llm_endpoints.endpoints]]` entries do **not** cascade from global to local
+by default. If your global config declares an endpoint (e.g. an `openrouter`
+entry with `is_default = true`) and your local config has no `[llm_endpoints]`
+section, **no global endpoints will be visible to the project**. The local
+config defines the complete set of available endpoints.
+
+This is opt-in inheritance: if you want the legacy "global cascades into
+local" behavior, set the knob explicitly in local config:
+
+```toml
+[llm_endpoints]
+inherit_global = true
+# (and any local-only endpoints below; they still take precedence)
+```
+
+Use `wg config --merged` to confirm what's actually in effect — that view
+prints the current `inherit_global` value and the effective endpoints list.
+This is the cleanest way to debug "why is openrouter still being inherited
+from global?": if `inherit_global = false (default — local endpoints fully
+replace global)` is shown, no global endpoints are merged in.
+
+If a local endpoint shares the same `name` as a global one, local always
+wins (the local list fully replaces global's, regardless of `inherit_global`
+when local declares its own entries — `inherit_global` only matters when
+local has no endpoints of its own).
 
 Writes target local config by default. Use `--global` to write to `~/.workgraph/config.toml`:
 

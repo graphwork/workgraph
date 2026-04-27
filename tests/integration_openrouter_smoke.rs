@@ -114,6 +114,7 @@ fn openrouter_endpoint_config_roundtrip() {
     // Build a config with an OpenRouter endpoint
     let mut config = Config::default();
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![EndpointConfig {
             name: "my-openrouter".to_string(),
             provider: "openrouter".to_string(),
@@ -150,6 +151,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
 
     // Add an OpenRouter endpoint
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![EndpointConfig {
             name: "my-openrouter".to_string(),
             provider: "openrouter".to_string(),
@@ -202,6 +204,7 @@ fn openrouter_client_creation_from_resolved_config() {
 
     let mut config = Config::default();
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![EndpointConfig {
             name: "or-prod".to_string(),
             provider: "openrouter".to_string(),
@@ -266,6 +269,7 @@ fn mixed_endpoints_different_roles_different_providers() {
     let mut config = Config::default();
 
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![
             EndpointConfig {
                 name: "anthropic-direct".to_string(),
@@ -353,6 +357,7 @@ fn endpoint_cascades_from_default_role() {
     let mut config = Config::default();
 
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![EndpointConfig {
             name: "global-or".to_string(),
             provider: "openrouter".to_string(),
@@ -761,6 +766,7 @@ fn config_toml_roundtrip_with_endpoints() {
 
     let mut config = Config::default();
     config.llm_endpoints = EndpointsConfig {
+        inherit_global: false,
         endpoints: vec![
             EndpointConfig {
                 name: "openrouter-main".to_string(),

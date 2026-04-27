@@ -71,6 +71,21 @@ wg add "Implement feature X" --after <dep> \
 
 Research/design tasks should specify what artifacts to produce and how to verify completeness instead of test criteria.
 
+### Smoke gate (HARD GATE on `wg done`)
+
+`wg done` runs every scenario in `tests/smoke/manifest.toml` whose `owners = [...]`
+list contains the task id. Any FAIL blocks `wg done` with the broken scenario name.
+Exit 77 from a scenario script = loud SKIP (e.g. endpoint unreachable) and does not block.
+
+- Agents CANNOT bypass the gate. `--skip-smoke` is refused when `WG_AGENT_ID` is set
+  unless a human exports `WG_SMOKE_AGENT_OVERRIDE=1`.
+- Use `wg done <id> --full-smoke` locally to run every scenario, not just owned.
+- The manifest is **grow-only**: when you fix a regression that smoke should have caught,
+  add a permanent scenario under `tests/smoke/scenarios/` and list your task id in `owners`.
+- Scenarios MUST run live against real binaries / endpoints. Do not stub. The original
+  wave-1 smoke silently passed against a fake LLM and that is exactly how the wg-nex 404
+  shipped to users.
+
 ## Glossary
 
 - **dispatcher** — the daemon launched by `wg service start`; polls the graph and spawns worker agents on ready tasks. Replaces the old "coordinator" terminology for the daemon.

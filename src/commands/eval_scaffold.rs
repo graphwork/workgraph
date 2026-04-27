@@ -21,6 +21,11 @@ use workgraph::graph::{Node, PRIORITY_DEFAULT, Priority, Status, Task, WorkGraph
 /// Tasks with these tags do not get their own eval tasks (no meta-evaluation).
 const DOMINATED_TAGS: &[&str] = &["evaluation", "assignment", "flip", "placement"];
 
+/// Tag that exempts a task from `.evaluate-*` and `.flip-*` scaffolding.
+/// Unlike DOMINATED_TAGS (which skip the entire pipeline including assignment),
+/// `skip-eval` only suppresses evaluation and FLIP — assignment still proceeds.
+const SKIP_EVAL_TAG: &str = "skip-eval";
+
 /// System task prefixes that are eligible for the full agency pipeline.
 /// These tasks go through placement, assignment, FLIP, and evaluation like
 /// regular tasks — unlike other system tasks (`.evaluate-*`, `.assign-*`,
@@ -89,6 +94,13 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     // Skip system tasks (unless pipeline-eligible like .verify-*)
     if workgraph::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
         return false;
+    }
+
+    // Skip tasks tagged skip-eval
+    if let Some(task) = graph.get_task(task_id) {
+        if task.tags.iter().any(|t| t == SKIP_EVAL_TAG) {
+            return false;
+        }
     }
 
     // Idempotency: skip if flip task already exists
@@ -178,6 +190,11 @@ pub fn scaffold_full_pipeline(
     // .flip/.evaluate), so .place/.assign might still be missing.  Each
     // individual task creation below has its own idempotency guard.
 
+    let skip_eval = graph
+        .get_task(task_id)
+        .map(|t| t.tags.iter().any(|tag| tag == SKIP_EVAL_TAG))
+        .unwrap_or(false);
+
     let assign_task_id = format!(".assign-{}", task_id);
     let flip_task_id = format!(".flip-{}", task_id);
     let eval_task_id = format!(".evaluate-{}", task_id);
@@ -193,7 +210,11 @@ pub fn scaffold_full_pipeline(
             status: Status::Open,
             after: vec![],
             before: vec![task_id.to_string()],
-            tags: vec!["assignment".to_string(), "agency".to_string()],
+            tags: vec![
+                "assignment".to_string(),
+                "agency".to_string(),
+                SKIP_EVAL_TAG.to_string(),
+            ],
             exec: Some(format!("wg assign {} --auto", task_id)),
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
@@ -216,8 +237,8 @@ pub fn scaffold_full_pipeline(
         source.after.push(assign_task_id.clone());
     }
 
-    // 3. Create .flip-* task (depends on main task)
-    let run_flip = should_run_flip(graph, task_id, config);
+    // 3. Create .flip-* task (depends on main task) — skip if skip-eval tagged
+    let run_flip = !skip_eval && should_run_flip(graph, task_id, config);
     if run_flip && graph.get_task(&flip_task_id).is_none() {
         let flip_resolved =
             config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
@@ -248,7 +269,8 @@ pub fn scaffold_full_pipeline(
     }
 
     // 4. Create .evaluate-* task (depends on .flip-* if FLIP enabled, else main task)
-    if config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
+    //    Skip if skip-eval tagged.
+    if !skip_eval && config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
         let eval_after = if run_flip {
             vec![flip_task_id.clone()]
         } else {
@@ -371,7 +393,11 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
         priority,
         after: vec![],
         before: vec![task_id.to_string()],
-        tags: vec!["assignment".to_string(), "agency".to_string()],
+        tags: vec![
+            "assignment".to_string(),
+            "agency".to_string(),
+            SKIP_EVAL_TAG.to_string(),
+        ],
         exec: Some(format!("wg assign {} --auto", task_id)),
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),
@@ -451,6 +477,10 @@ pub fn scaffold_eval_task(
         }
         // Skip if already tagged as having had evaluation scheduled
         if task.tags.iter().any(|tag| tag == "eval-scheduled") {
+            return false;
+        }
+        // Skip tasks tagged skip-eval
+        if task.tags.iter().any(|t| t == SKIP_EVAL_TAG) {
             return false;
         }
     }
@@ -1541,5 +1571,125 @@ mod tests {
         assert!(graph.get_task(".assign-check-batch").is_some());
         assert!(graph.get_task(".flip-check-batch").is_some());
         assert!(graph.get_task(".evaluate-check-batch").is_some());
+    }
+
+    // --- skip-eval tag tests ---
+
+    #[test]
+    fn test_skip_eval_tag_prevents_flip_creation() {
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("pulse-task", "Pulse Task");
+        task.tags = vec!["skip-eval".to_string()];
+        graph.add_node(Node::Task(task));
+
+        let modified = scaffold_flip_task(&mut graph, "pulse-task", &config);
+        assert!(!modified, "skip-eval tag should prevent .flip-* creation");
+        assert!(graph.get_task(".flip-pulse-task").is_none());
+    }
+
+    #[test]
+    fn test_skip_eval_tag_prevents_eval_creation() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("pulse-task", "Pulse Task");
+        task.tags = vec!["skip-eval".to_string()];
+        graph.add_node(Node::Task(task));
+
+        let modified =
+            scaffold_eval_task(dir.path(), &mut graph, "pulse-task", "Pulse Task", &config);
+        assert!(
+            !modified,
+            "skip-eval tag should prevent .evaluate-* creation"
+        );
+        assert!(graph.get_task(".evaluate-pulse-task").is_none());
+        assert!(graph.get_task(".flip-pulse-task").is_none());
+    }
+
+    #[test]
+    fn test_skip_eval_tag_allows_assign_in_full_pipeline() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_assign = true;
+        config.agency.auto_evaluate = true;
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("pulse-task", "Pulse Task");
+        task.tags = vec!["skip-eval".to_string()];
+        graph.add_node(Node::Task(task));
+
+        let modified =
+            scaffold_full_pipeline(dir.path(), &mut graph, "pulse-task", "Pulse Task", &config);
+        assert!(modified, "skip-eval should still allow .assign-* creation");
+
+        // .assign-* should be created
+        assert!(
+            graph.get_task(".assign-pulse-task").is_some(),
+            ".assign-* should still be created for skip-eval tasks"
+        );
+
+        // .flip-* and .evaluate-* should NOT be created
+        assert!(
+            graph.get_task(".flip-pulse-task").is_none(),
+            ".flip-* should NOT be created for skip-eval tasks"
+        );
+        assert!(
+            graph.get_task(".evaluate-pulse-task").is_none(),
+            ".evaluate-* should NOT be created for skip-eval tasks"
+        );
+    }
+
+    #[test]
+    fn test_skip_eval_tag_in_batch() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("normal", "Normal Task")));
+        let mut skip_task = make_task("mechanical", "Mechanical Task");
+        skip_task.tags = vec!["skip-eval".to_string()];
+        graph.add_node(Node::Task(skip_task));
+
+        let ids = vec![
+            ("normal".to_string(), "Normal Task".to_string()),
+            ("mechanical".to_string(), "Mechanical Task".to_string()),
+        ];
+        let count = scaffold_eval_tasks_batch(dir.path(), &mut graph, &ids, &config);
+        assert_eq!(count, 1, "only non-skip-eval task should get eval");
+        assert!(graph.get_task(".evaluate-normal").is_some());
+        assert!(graph.get_task(".evaluate-mechanical").is_none());
+    }
+
+    #[test]
+    fn test_assign_tasks_get_skip_eval_tag() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        scaffold_assign_task(&mut graph, "my-task", "My Task");
+
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert!(
+            assign.tags.contains(&"skip-eval".to_string()),
+            ".assign-* tasks should have the skip-eval tag"
+        );
+    }
+
+    #[test]
+    fn test_assign_tasks_in_full_pipeline_get_skip_eval_tag() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_assign = true;
+        config.agency.auto_evaluate = true;
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+        scaffold_full_pipeline(dir.path(), &mut graph, "my-task", "My Task", &config);
+
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert!(
+            assign.tags.contains(&"skip-eval".to_string()),
+            ".assign-* tasks created by full pipeline should have skip-eval tag"
+        );
     }
 }
