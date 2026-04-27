@@ -135,9 +135,16 @@ fn cleanup_and_count_alive(
 }
 
 /// Tags for daemon-managed loop tasks that should not be spawned as regular agents.
+///
+/// `chat-loop` (new) and `coordinator-loop` (legacy) both identify chat-agent
+/// supervisors. The daemon's `subprocess_coordinator_loop` spawns these via
+/// `wg spawn-task` directly; if the dispatcher were also allowed to claim them
+/// it would spawn a regular worker that idle-loops `wg log` + `wg done` and
+/// burns tokens (see chat-agent-loops bug A).
 const DAEMON_MANAGED_TAGS: &[&str] = &[
     "compact-loop",
     "archive-loop",
+    "chat-loop",
     "coordinator-loop",
     "registry-refresh-loop",
     "user-board",
@@ -6700,5 +6707,61 @@ mod tests {
                 f
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // chat-agent-loops bug A: chat-loop tagged tasks must NOT be claimed
+    // by the dispatcher — the daemon's `subprocess_coordinator_loop`
+    // owns spawning chat handlers via `wg spawn-task` directly. Letting
+    // the dispatcher also claim them spawns a regular worker that idle-
+    // loops `wg log` + `wg done`, which is the user's repro.
+    // ------------------------------------------------------------------
+
+    fn task_with_tags(id: &str, tags: &[&str]) -> Task {
+        let mut t = Task::default();
+        t.id = id.to_string();
+        t.title = id.to_string();
+        t.status = Status::Open;
+        t.tags = tags.iter().map(|s| s.to_string()).collect();
+        t
+    }
+
+    #[test]
+    fn test_is_daemon_managed_skips_chat_loop_tag() {
+        let chat_new = task_with_tags(".chat-2", &[workgraph::chat_id::CHAT_LOOP_TAG]);
+        assert!(
+            is_daemon_managed(&chat_new),
+            "chat-loop tagged tasks must be daemon-managed (bug A regression)"
+        );
+
+        let chat_legacy =
+            task_with_tags(".coordinator-0", &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG]);
+        assert!(
+            is_daemon_managed(&chat_legacy),
+            "legacy coordinator-loop tag still daemon-managed"
+        );
+
+        let regular = task_with_tags("real-work", &["impl", "test"]);
+        assert!(
+            !is_daemon_managed(&regular),
+            "regular tasks must remain spawnable by the dispatcher"
+        );
+    }
+
+    #[test]
+    fn test_daemon_managed_tags_includes_chat_loop() {
+        // Lock the constant against accidental removal — every other
+        // entry has callers in the codebase but the chat-loop entry
+        // is here purely as a dispatcher-skip rule.
+        assert!(
+            DAEMON_MANAGED_TAGS.contains(&workgraph::chat_id::CHAT_LOOP_TAG),
+            "DAEMON_MANAGED_TAGS must contain '{}' to prevent dispatcher from claiming chat tasks",
+            workgraph::chat_id::CHAT_LOOP_TAG,
+        );
+        assert!(
+            DAEMON_MANAGED_TAGS.contains(&workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG),
+            "DAEMON_MANAGED_TAGS must still contain legacy '{}' until migration is complete",
+            workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG,
+        );
     }
 }
