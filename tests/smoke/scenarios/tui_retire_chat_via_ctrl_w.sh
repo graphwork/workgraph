@@ -34,41 +34,18 @@ fi
 
 scratch=$(make_scratch)
 session="wgsmoke-retire-$$"
-cleanup() {
+kill_tmux_session() {
     tmux kill-session -t "$session" 2>/dev/null || true
-    if [[ -n "${daemon_pid:-}" ]]; then
-        kill_tree "$daemon_pid"
-    fi
-    rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook kill_tmux_session
 cd "$scratch"
 
 if ! wg init --executor shell >init.log 2>&1; then
     loud_fail "wg init --executor shell failed: $(tail -5 init.log)"
 fi
 
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$scratch/$cand" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
-fi
-
-wg service start --max-agents 1 >daemon.log 2>&1 &
-daemon_pid=$!
-
-for _ in $(seq 1 30); do
-    if [[ -S "$graph_dir/service/daemon.sock" ]] \
-        || [[ -f "$graph_dir/service/state.json" ]]; then
-        break
-    fi
-    sleep 0.5
-done
+start_wg_daemon "$scratch" --max-agents 1
+graph_dir="$WG_SMOKE_DAEMON_DIR"
 
 # Three chats: at least two must remain after one retire so the count
 # delta (3 → 2) is unambiguously caused by Ctrl+W rather than a hidden

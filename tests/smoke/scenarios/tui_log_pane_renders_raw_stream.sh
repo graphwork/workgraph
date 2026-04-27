@@ -37,11 +37,10 @@ fi
 
 scratch=$(make_scratch)
 session="wgsmoke-tuilog-$$"
-cleanup() {
+kill_tmux_session() {
     tmux kill-session -t "$session" 2>/dev/null || true
-    rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook kill_tmux_session
 
 cd "$scratch"
 

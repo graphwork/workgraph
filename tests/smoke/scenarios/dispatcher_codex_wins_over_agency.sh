@@ -27,7 +27,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 
 # Isolate from any user-level workgraph config.
 fake_home="$scratch/home"
@@ -52,17 +51,6 @@ if ! run_wg init -x codex -m local:qwen3-coder \
         -e https://example.invalid/v1 \
         >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
-fi
-
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$project/$cand" ]]; then
-        graph_dir="$project/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
 fi
 
 # Seed the agency with starter primitives + default agents. The default
@@ -101,11 +89,34 @@ if ! WG_SMOKE_AGENT_OVERRIDE=1 run_wg done .assign-smoke-probe \
     loud_fail "wg done .assign-smoke-probe failed: $(tail -10 done.log)"
 fi
 
-# Boot dispatcher in background.
-run_wg service start --max-agents 1 --no-coordinator-agent --interval 1 \
-    >start.log 2>&1 &
-daemon_pid=$!
-trap 'kill_tree "$daemon_pid"; rm -rf "$scratch"' EXIT
+# Boot dispatcher in background. We need the env-isolated `run_wg` wrapper
+# so we replicate start_wg_daemon's canonical-PID-from-state.json discipline
+# manually (see _helpers.sh comments).
+( env -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER -u WG_AGENT_ID -u WG_TASK_ID \
+        HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" \
+        wg service start --max-agents 1 --no-coordinator-agent --interval 1 \
+        >start.log 2>&1 ) &
+wrap_pid=$!
+graph_dir=""
+for _ in $(seq 1 30); do
+    for cand in .wg .workgraph; do
+        if [[ -d "$project/$cand" ]]; then
+            graph_dir="$project/$cand"
+            break
+        fi
+    done
+    [[ -n "$graph_dir" ]] && break
+    sleep 0.2
+done
+if [[ -z "$graph_dir" ]]; then
+    loud_fail "no .wg/ or .workgraph/ directory after wg service start"
+fi
+if ! daemon_pid=$(wait_for_daemon_pid "$graph_dir" 30); then
+    wait "$wrap_pid" 2>/dev/null || true
+    loud_fail "daemon never wrote state.json. start.log:\n$(tail -20 start.log 2>/dev/null)"
+fi
+wait "$wrap_pid" 2>/dev/null || true
+register_wg_daemon "$daemon_pid" "$graph_dir"
 
 daemon_log="$graph_dir/service/daemon.log"
 
@@ -121,8 +132,7 @@ done
 
 spawn_lines=$(grep "smoke-probe: SpawnPlan" "$daemon_log" 2>/dev/null || true)
 
-kill_tree "$daemon_pid"
-trap 'rm -rf "$scratch"' EXIT
+# Daemon teardown handled by wg_smoke_cleanup trap.
 
 if ! $spawn_seen; then
     loud_fail "dispatcher did not emit a SpawnPlan line for smoke-probe within 30s. Tail of daemon.log:\n$(tail -40 "$daemon_log" 2>/dev/null || echo '<no daemon log>')\nstart.log:\n$(tail -10 start.log 2>/dev/null)"

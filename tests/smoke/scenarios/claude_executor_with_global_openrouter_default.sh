@@ -25,7 +25,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 
 # Fake global config dir with an openrouter is_default endpoint.
 fake_home="$scratch/home"

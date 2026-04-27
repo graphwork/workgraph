@@ -43,6 +43,42 @@ scenario here. Do not delete entries; extend.
 4. Source `_helpers.sh` for the `loud_skip` / `loud_fail` / `require_wg` /
    `endpoint_reachable` helpers — the SKIP/FAIL banners are greppable.
 
+## Fixture lifecycle (cleanup contract — REQUIRED)
+
+Smoke scenarios spawn `wg service daemon` processes and create temp dirs.
+Two failure modes have leaked daemons + dirs in production (see
+`smoke-tests-leak`): per-scenario `trap` lines silently overwrote each
+other, and `daemon_pid=$!` after `wg service start &` captured the
+wrapper PID instead of the real daemon (which was re-parented to init
+when the wrapper exited and could no longer be killed).
+
+The contract `_helpers.sh` enforces:
+
+* **Always use `make_scratch`** — never `mktemp -d` directly. Scratch dirs
+  live under a single shared root (`${WG_SMOKE_ROOT:-${TMPDIR:-/tmp}/wgsmoke}`)
+  so cleanup is one `rm -rf` of the parent, not a glob hunt across `/tmp`.
+* **Always use `start_wg_daemon`** — never `wg service start &; daemon_pid=$!`.
+  The helper reads the canonical daemon PID from `service/state.json` and
+  registers it for teardown. The capture-`$!` pattern catches the
+  wrapper, which has already forked and exited by the time you try to
+  kill it.
+* **Never install your own `EXIT`/`INT`/`TERM` trap.** `_helpers.sh` owns
+  the EXIT trap and tears down every daemon + scratch on exit. If you
+  need extra cleanup (e.g. `tmux kill-session`), register a function via
+  `add_cleanup_hook <fn>`. Setting your own `trap` clobbers the helper's
+  trap and the daemon leaks.
+* **`wg_smoke_sweep`** is a sledgehammer that scans `/proc/*/cmdline`
+  for `wg service daemon` processes whose `--dir` is under the smoke
+  root and kills them, then rms the leftover dirs. The smoke gate calls
+  it before AND after every run (with a 10-minute age cutoff so a
+  concurrent smoke run isn't cannibalised). You can call it manually
+  to clean up after a crashed dev session.
+
+The regression test for this contract is
+`smoke_cleanup_survives_panic.sh` — it spawns a real daemon in a child
+shell, SIGKILLs the child (so traps don't fire), and asserts
+`wg_smoke_sweep` reaps both the re-parented daemon and the scratch dir.
+
 ## Live, not stubs
 
 Scenarios MUST hit real endpoints / real binaries. The original wave-1 smoke

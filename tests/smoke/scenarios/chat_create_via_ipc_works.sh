@@ -25,37 +25,14 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]] && [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
 fi
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 if ! wg init -x claude >init.log 2>&1; then
     loud_fail "wg init -x claude failed: $(tail -5 init.log)"
 fi
 
-# Discover the canonical workgraph directory (.wg or legacy .workgraph).
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$scratch/$cand" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
-fi
-
-wg service start --max-agents 1 >daemon.log 2>&1 &
-daemon_pid=$!
-trap 'kill_tree "$daemon_pid"; rm -rf "$scratch"' EXIT
-
-# Wait for daemon.
-for _ in $(seq 1 30); do
-    if [[ -S "$graph_dir/service/daemon.sock" ]] \
-        || [[ -f "$graph_dir/service/state.json" ]]; then
-        break
-    fi
-    sleep 0.5
-done
+start_wg_daemon "$scratch" --max-agents 1
+graph_dir="$WG_SMOKE_DAEMON_DIR"
 
 # Single 'hi' must succeed within 30s.
 if ! timeout 60 wg chat "hi" --timeout 30 >chat.log 2>&1; then

@@ -24,7 +24,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 if ! wg init -x shell >init.log 2>&1; then

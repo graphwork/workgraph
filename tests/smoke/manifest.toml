@@ -192,6 +192,16 @@ description = "Pins user-reported tui-cannot-retire regression: 'man why can't w
 timeout_seconds = 90
 
 [[scenario]]
+name = "smoke_cleanup_survives_panic"
+script = "scenarios/smoke_cleanup_survives_panic.sh"
+owners = [
+    "smoke-tests-leak",
+    "smoke-gate-is",
+]
+description = "Pins the smoke-tests-leak regression: production runs left 70+ orphaned `wg service daemon` processes and 200+ /tmp scratch dirs because per-test traps did not survive SIGKILL/panic. Spawns a real daemon in a child shell, kills the child with SIGKILL (no trap fires), then asserts wg_smoke_sweep reaps both the re-parented daemon and the leftover scratch dir. Defense in depth for the central trap in `tests/smoke/scenarios/_helpers.sh`."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_chat_redesign_modal_close_persist"
 script = "scenarios/tui_chat_redesign_modal_close_persist.sh"
 owners = [

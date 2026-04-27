@@ -52,9 +52,10 @@ cd "$repo_root"
 
 # Run the three regression tests. cargo test runs them in parallel by
 # default and prints pass/fail per test. We capture stdout/stderr so we
-# can dump it on failure.
-log=$(mktemp -t wg_resume_smoke.XXXXXX)
-trap 'rm -f "$log"' EXIT
+# can dump it on failure. Stash the log in a smoke-root scratch so the
+# central trap (wg_smoke_cleanup) reaps it on EXIT.
+scratch=$(make_scratch)
+log="$scratch/cargo.log"
 
 # cargo test takes a single positional filter, but each filter is a
 # substring match. `test_nex_` matches all four target tests. Use

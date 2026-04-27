@@ -17,7 +17,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 if ! wg init -x shell >init.log 2>&1; then
@@ -29,30 +28,8 @@ fi
 
 # --no-chat-agent (legacy alias --no-coordinator-agent) skips spawning the
 # chat agent so we are testing scaffold behaviour, not LLM behaviour.
-wg service start --max-agents 0 --no-chat-agent >daemon.log 2>&1 &
-daemon_pid=$!
-trap 'kill_tree "$daemon_pid"; rm -rf "$scratch"' EXIT
-
-# Discover the canonical workgraph directory (.wg or legacy .workgraph).
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$scratch/$cand" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
-fi
-
-# Wait until registry exists or 10s elapses.
-for _ in $(seq 1 20); do
-    if [[ -f "$graph_dir/service/registry.json" ]] \
-        || [[ -f "$graph_dir/service/state.json" ]]; then
-        break
-    fi
-    sleep 0.5
-done
+start_wg_daemon "$scratch" --max-agents 0 --no-chat-agent
+graph_dir="$WG_SMOKE_DAEMON_DIR"
 
 sleep 1  # let daemon settle
 registry="$graph_dir/service/registry.json"

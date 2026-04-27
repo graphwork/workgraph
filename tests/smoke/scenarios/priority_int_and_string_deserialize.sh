@@ -17,7 +17,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 # Init to discover the canonical graph dir. We don't care which executor —

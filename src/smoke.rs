@@ -22,6 +22,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+/// Default smoke fixture root. Bash-side `wg_smoke_root` in `_helpers.sh`
+/// and the Rust-side sweeper agree on this path so a leak left by either
+/// side is reachable from either side.
+const DEFAULT_SMOKE_ROOT_NAME: &str = "wgsmoke";
+
 /// Default location of the smoke manifest, relative to the repo root.
 pub const DEFAULT_MANIFEST_PATH: &str = "tests/smoke/manifest.toml";
 
@@ -334,12 +339,190 @@ impl GateReport {
 
 /// Run every scenario in `scenarios`. The manifest_dir is needed to resolve
 /// relative script paths.
+///
+/// Sweeps stale smoke-test daemons + scratch dirs both before AND after the
+/// run. Pre-sweep prevents leaked state from a prior crashed run from
+/// influencing the current run. Post-sweep guarantees that even if a
+/// scenario crashes past its bash trap (SIGKILL, OOM, hard panic), the
+/// system is left clean. See `tests/smoke/scenarios/_helpers.sh` for the
+/// matching bash-side `wg_smoke_sweep`.
+///
+/// The pre-sweep applies an age cutoff so a concurrent smoke run in
+/// another worktree (sharing the same smoke root) is not killed mid-test;
+/// the post-sweep applies the same cutoff for symmetry. Production leaks
+/// in this codebase have always been hours old by the time anyone notices,
+/// so the cutoff is generous.
 pub fn run_scenarios(scenarios: &[&Scenario], manifest_dir: &Path) -> GateReport {
+    sweep_smoke_leaks_older_than(LEAK_REAP_MIN_AGE);
     let mut results = Vec::with_capacity(scenarios.len());
     for s in scenarios {
         results.push(run_scenario(s, manifest_dir));
     }
+    sweep_smoke_leaks_older_than(LEAK_REAP_MIN_AGE);
     GateReport { results }
+}
+
+/// Daemons / scratch dirs younger than this are left alone by the gate
+/// sweep so a concurrent smoke run doesn't cannibalise itself. Per-scenario
+/// bash traps in `_helpers.sh` are the primary teardown; this sweep is
+/// defence in depth for genuinely leaked fixtures.
+const LEAK_REAP_MIN_AGE: Duration = Duration::from_secs(600);
+
+/// Resolve the smoke fixture root (`${WG_SMOKE_ROOT:-${TMPDIR:-/tmp}/wgsmoke}`).
+/// Mirrors the bash `wg_smoke_root` in `tests/smoke/scenarios/_helpers.sh`.
+pub fn smoke_root() -> PathBuf {
+    if let Ok(env_root) = std::env::var("WG_SMOKE_ROOT")
+        && !env_root.is_empty()
+    {
+        return PathBuf::from(env_root);
+    }
+    let tmp = std::env::var("TMPDIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/tmp".to_string());
+    PathBuf::from(tmp).join(DEFAULT_SMOKE_ROOT_NAME)
+}
+
+/// Find and SIGTERM/SIGKILL any `wg service daemon` whose `--dir` argv lives
+/// under the smoke root and is older than `min_age`, then remove every
+/// matching subdir under the root. Idempotent.
+///
+/// Survives re-parenting: the scan walks `/proc/*/cmdline` so init-owned
+/// orphans are caught the same as direct children. This is the defence
+/// against trap handlers that did not fire on SIGKILL / panic / OOM and
+/// left a daemon to accumulate over weeks.
+///
+/// `min_age` of `Duration::ZERO` reaps everything; pass a larger value when
+/// concurrent smoke runs may be sharing the same root.
+pub fn sweep_smoke_leaks_older_than(min_age: Duration) {
+    sweep_smoke_leaks_under(&smoke_root(), min_age)
+}
+
+/// Convenience: reap everything under the smoke root regardless of age.
+/// Public so tests and CLI helpers can drive an unconditional cleanup.
+pub fn sweep_smoke_leaks() {
+    sweep_smoke_leaks_under(&smoke_root(), Duration::ZERO);
+}
+
+/// Sweep against an explicit root (useful for tests, where pointing at a
+/// shared global root would race with parallel test threads).
+#[cfg(unix)]
+pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
+    let root_str = root.to_string_lossy().to_string();
+    let prefix = format!("{}/", root_str);
+
+    let victims = find_smoke_daemons_older_than(&prefix, min_age);
+    for &pid in &victims {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    if !victims.is_empty() {
+        std::thread::sleep(Duration::from_millis(500));
+        // SIGKILL anything still alive after the SIGTERM grace period.
+        for &pid in &victims {
+            if unsafe { libc::kill(pid as i32, 0) } == 0 {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if !path_age_exceeds(&entry.path(), min_age) {
+                continue;
+            }
+            let path = entry.path();
+            // Don't follow symlinks; just rm whatever's there.
+            let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn sweep_smoke_leaks_under(_root: &Path, _min_age: Duration) {}
+
+#[cfg(unix)]
+fn path_age_exceeds(path: &Path, min_age: Duration) -> bool {
+    if min_age.is_zero() {
+        return true;
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let modified = match metadata.modified() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    match std::time::SystemTime::now().duration_since(modified) {
+        Ok(age) => age >= min_age,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn path_age_exceeds(_path: &Path, _min_age: Duration) -> bool {
+    false
+}
+
+/// Scan /proc for `wg ... service daemon ... --dir <prefix>...` processes
+/// older than `min_age` (process start time). Returns the matching PIDs.
+#[cfg(target_os = "linux")]
+fn find_smoke_daemons_older_than(dir_prefix: &str, min_age: Duration) -> Vec<u32> {
+    let mut victims = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return victims,
+    };
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_string_lossy().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let cmdline = match std::fs::read(entry.path().join("cmdline")) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // cmdline is NUL-separated argv.
+        let s = String::from_utf8_lossy(&cmdline);
+        let args: Vec<&str> = s.split('\0').filter(|a| !a.is_empty()).collect();
+        let has_service_daemon = args
+            .windows(2)
+            .any(|w| w[0] == "service" && w[1] == "daemon");
+        if !has_service_daemon {
+            continue;
+        }
+        let dir_match = args
+            .windows(2)
+            .any(|w| w[0] == "--dir" && w[1].starts_with(dir_prefix));
+        if !dir_match {
+            continue;
+        }
+        if !min_age.is_zero() && !proc_age_exceeds(pid, min_age) {
+            continue;
+        }
+        victims.push(pid);
+    }
+    victims
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn find_smoke_daemons_older_than(_dir_prefix: &str, _min_age: Duration) -> Vec<u32> {
+    // /proc-based discovery is Linux-specific; on other Unix platforms
+    // the bash-side cleanup trap is the only line of defence. The smoke
+    // gate still works — it just lacks the hard-kill backstop here.
+    Vec::new()
+}
+
+/// True if `/proc/<pid>` exists and has been around at least `min_age`.
+/// Uses the directory's mtime as a proxy for process start time.
+#[cfg(target_os = "linux")]
+fn proc_age_exceeds(pid: u32, min_age: Duration) -> bool {
+    let p = format!("/proc/{}", pid);
+    path_age_exceeds(Path::new(&p), min_age)
 }
 
 #[cfg(test)]
@@ -505,6 +688,76 @@ script = "b.sh"
             results: vec![r1, r2, r3],
         };
         assert!(report2.blocks_done());
+    }
+
+    /// Combined into one test because env vars are process-global and
+    /// cargo test runs tests in parallel — if we split the env-var case
+    /// from the default case, the latter occasionally observes the former
+    /// mid-flight and fails.
+    #[test]
+    fn smoke_root_resolution() {
+        let prior = std::env::var("WG_SMOKE_ROOT").ok();
+
+        unsafe { std::env::set_var("WG_SMOKE_ROOT", "/tmp/wgsmoke-test-override") };
+        assert_eq!(smoke_root(), PathBuf::from("/tmp/wgsmoke-test-override"));
+
+        unsafe { std::env::remove_var("WG_SMOKE_ROOT") };
+        let r = smoke_root();
+        assert!(
+            r.ends_with(DEFAULT_SMOKE_ROOT_NAME),
+            "expected default smoke root to end with '{}', got {}",
+            DEFAULT_SMOKE_ROOT_NAME,
+            r.display()
+        );
+
+        if let Some(p) = prior {
+            unsafe { std::env::set_var("WG_SMOKE_ROOT", p) };
+        }
+    }
+
+    #[test]
+    fn sweep_removes_old_subdirs_only() {
+        // Create a fresh root with one young dir and one mtime-aged dir.
+        // The age-cutoff sweep must keep the young one and reap the old one.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("wgsmoke");
+        std::fs::create_dir_all(&root).unwrap();
+        let young = root.join("young.scenario.AAAAAA");
+        let old = root.join("old.scenario.BBBBBB");
+        std::fs::create_dir_all(&young).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+
+        // Backdate the "old" dir's mtime via `touch -d` so it counts as aged.
+        // Avoids pulling in a new crate just for the test.
+        let status = Command::new("touch")
+            .arg("-d")
+            .arg("2020-01-01")
+            .arg(&old)
+            .status()
+            .expect("touch must be available for this test");
+        assert!(status.success(), "touch -d failed");
+
+        sweep_smoke_leaks_under(&root, Duration::from_secs(3600));
+
+        assert!(young.is_dir(), "young dir should be kept");
+        assert!(!old.exists(), "old dir should be reaped");
+    }
+
+    #[test]
+    fn sweep_zero_age_reaps_everything() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("wgsmoke");
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.scenario.XX");
+        let b = root.join("b.scenario.YY");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+
+        sweep_smoke_leaks_under(&root, Duration::ZERO);
+
+        assert!(!a.exists());
+        assert!(!b.exists());
+        assert!(root.is_dir(), "root itself should remain");
     }
 
     #[test]

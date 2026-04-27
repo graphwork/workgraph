@@ -30,7 +30,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 
 fake_home="$scratch/home"
 mkdir -p "$fake_home"

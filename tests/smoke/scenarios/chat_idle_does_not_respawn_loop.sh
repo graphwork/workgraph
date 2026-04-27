@@ -35,7 +35,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 if ! wg init -x shell >init.log 2>&1; then
@@ -44,33 +43,11 @@ if ! wg init -x shell >init.log 2>&1; then
     fi
 fi
 
-# Discover the canonical workgraph directory (.wg or legacy .workgraph).
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$scratch/$cand" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
-fi
-
 # Boot daemon WITHOUT a chat agent so we don't need credentials. We also
 # pin --max-agents 0 so the dispatcher doesn't try to spawn workers on any
 # auto-created scaffold tasks while we're poking at the graph.
-wg service start --max-agents 0 --no-chat-agent >daemon.log 2>&1 &
-daemon_pid=$!
-trap 'kill_tree "$daemon_pid"; rm -rf "$scratch"' EXIT
-
-# Wait for daemon to come up (socket appears).
-for _ in $(seq 1 30); do
-    if [[ -S "$graph_dir/service/daemon.sock" ]] \
-        || [[ -f "$graph_dir/service/state.json" ]]; then
-        break
-    fi
-    sleep 0.5
-done
+start_wg_daemon "$scratch" --max-agents 0 --no-chat-agent
+graph_dir="$WG_SMOKE_DAEMON_DIR"
 
 # Create a chat task via IPC. The bug repros without ever sending a message.
 if ! wg service create-chat --name idle-test >create.log 2>&1; then

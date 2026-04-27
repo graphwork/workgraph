@@ -29,42 +29,15 @@ if ! endpoint_reachable "${ENDPOINT}/v1/models"; then
 fi
 
 scratch=$(make_scratch)
-trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 
 if ! wg init -x nex -m "$MODEL" -e "$ENDPOINT" >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 
-# Discover the canonical workgraph directory (.wg or legacy .workgraph).
-graph_dir=""
-for cand in .wg .workgraph; do
-    if [[ -d "$scratch/$cand" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
-fi
-
 # Boot dispatcher in background. We use --max-agents=1 to bound resource use.
-wg service start --max-agents 1 >daemon.log 2>&1 &
-daemon_pid=$!
-trap 'kill_tree "$daemon_pid"; rm -rf "$scratch"' EXIT
-
-# Wait for daemon to be ready (up to 15s).
-ready=false
-for _ in $(seq 1 30); do
-    if [[ -S "$graph_dir/service/daemon.sock" ]] || [[ -f "$graph_dir/service/state.json" ]]; then
-        ready=true
-        break
-    fi
-    sleep 0.5
-done
-if ! $ready; then
-    loud_fail "daemon did not come up within 15s. Tail of daemon.log:\n$(tail -10 daemon.log)"
-fi
+start_wg_daemon "$scratch" --max-agents 1
+graph_dir="$WG_SMOKE_DAEMON_DIR"
 
 # Locate the chat outbox so we can assert positive coordinator output rather
 # than just "no error markers." The outbox is the canonical record of what
