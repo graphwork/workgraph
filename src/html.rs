@@ -14,12 +14,72 @@
 //! rendered as inline SVG.
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use crate::graph::{Status, Task, WorkGraph};
 use crate::parser::load_graph;
+
+/// Parse a human-readable duration string (e.g. "1h", "24h", "7d", "30d", "2w") into a
+/// chrono Duration. Returns an error with a clear message on invalid input.
+pub fn parse_since(s: &str) -> Result<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        anyhow::bail!("Empty duration string — use a value like 1h, 24h, 7d, 30d");
+    }
+    let (num_str, unit) = if let Some(n) = s.strip_suffix('h') {
+        (n, 'h')
+    } else if let Some(n) = s.strip_suffix('d') {
+        (n, 'd')
+    } else if let Some(n) = s.strip_suffix('w') {
+        (n, 'w')
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 'm')
+    } else {
+        anyhow::bail!(
+            "Invalid --since value '{}': expected a number followed by h/d/w/m (e.g. 1h, 24h, 7d, 30d)",
+            s
+        );
+    };
+
+    let num: i64 = num_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid --since value '{}': '{}' is not a valid number",
+            s,
+            num_str
+        )
+    })?;
+
+    if num <= 0 {
+        anyhow::bail!("--since value must be positive (got '{}')", s);
+    }
+
+    Ok(match unit {
+        'h' => Duration::hours(num),
+        'd' => Duration::days(num),
+        'w' => Duration::weeks(num),
+        'm' => Duration::minutes(num),
+        _ => unreachable!(),
+    })
+}
+
+/// Return true if the task has any timestamp that falls within the window.
+/// Uses created_at, started_at, completed_at, and last_iteration_completed_at.
+fn task_in_window(task: &Task, cutoff: DateTime<Utc>) -> bool {
+    let timestamps: &[Option<&str>] = &[
+        task.created_at.as_deref(),
+        task.started_at.as_deref(),
+        task.completed_at.as_deref(),
+        task.last_iteration_completed_at.as_deref(),
+    ];
+    timestamps.iter().flatten().any(|ts| {
+        DateTime::parse_from_rfc3339(ts)
+            .map(|dt| dt.with_timezone(&Utc) >= cutoff)
+            .unwrap_or(false)
+    })
+}
 
 /// Status palette mirrored from `src/tui/viz_viewer/state.rs`.
 /// Returned as CSS-formatted `rgb(r,g,b)` strings for direct embedding.
@@ -304,6 +364,7 @@ fn render_index(
     included_ids: &HashSet<&str>,
     laid: &HashMap<String, LaidOut>,
     show_all: bool,
+    since_label: Option<&str>,
 ) -> String {
     // Status counts.
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -345,7 +406,7 @@ fn render_index(
     list.push_str("</ul>\n");
 
     let legend = render_legend();
-    let footer = render_footer(total_in_graph, total_public, show_all);
+    let footer = render_footer(total_in_graph, total_public, show_all, since_label);
 
     format!(
         "<!DOCTYPE html>\n\
@@ -411,21 +472,37 @@ fn render_legend() -> String {
     s
 }
 
-fn render_footer(total_in_graph: usize, total_public: usize, show_all: bool) -> String {
+fn render_footer(
+    total_in_graph: usize,
+    total_public: usize,
+    show_all: bool,
+    since_label: Option<&str>,
+) -> String {
     let now = chrono::Utc::now().to_rfc3339();
+    let visibility_str = if show_all { "all tasks" } else { "public-only" };
     let filter_note = if show_all {
         format!(
-            "Visibility filter: <strong>OFF</strong> (--all). Showing all {} tasks. \
-             To restrict to public-only output, run <code>wg html</code> without --all.",
-            total_in_graph
+            "Visibility filter: <strong>OFF</strong> (--all). Showing {} of {} tasks{}.",
+            total_public,
+            total_in_graph,
+            since_label
+                .map(|s| format!(", last {}", s))
+                .unwrap_or_default(),
         )
     } else {
         let hidden = total_in_graph.saturating_sub(total_public);
-        format!(
-            "Visibility filter: <strong>public-only</strong>. Showing {} of {} tasks; \
-             {} internal/peer tasks are hidden.",
-            total_public, total_in_graph, hidden,
-        )
+        if let Some(label) = since_label {
+            format!(
+                "Showing {} of {} tasks: {}, last {}. {} internal/peer tasks are hidden.",
+                total_public, total_in_graph, visibility_str, label, hidden,
+            )
+        } else {
+            format!(
+                "Visibility filter: <strong>public-only</strong>. Showing {} of {} tasks; \
+                 {} internal/peer tasks are hidden.",
+                total_public, total_in_graph, hidden,
+            )
+        }
     };
     format!(
         "<p>{filter}</p>\n\
@@ -611,7 +688,13 @@ pub fn render_site(
     graph: &WorkGraph,
     out_dir: &Path,
     show_all: bool,
+    since: Option<&str>,
 ) -> Result<RenderSummary> {
+    // Parse --since into a cutoff timestamp.
+    let since_cutoff: Option<DateTime<Utc>> = since
+        .map(|s| parse_since(s).map(|d| Utc::now() - d))
+        .transpose()?;
+
     fs::create_dir_all(out_dir)
         .with_context(|| format!("failed to create output dir: {}", out_dir.display()))?;
     let tasks_dir = out_dir.join("tasks");
@@ -619,7 +702,9 @@ pub fn render_site(
         .with_context(|| format!("failed to create tasks dir: {}", tasks_dir.display()))?;
 
     let all_tasks: Vec<&Task> = graph.tasks().collect();
-    let included: Vec<&Task> = if show_all {
+
+    // Visibility filter.
+    let visibility_filtered: Vec<&Task> = if show_all {
         all_tasks.clone()
     } else {
         all_tasks
@@ -627,6 +712,16 @@ pub fn render_site(
             .filter(|t| t.visibility == "public")
             .copied()
             .collect()
+    };
+
+    // Time-window filter (applied on top of visibility filter).
+    let included: Vec<&Task> = if let Some(cutoff) = since_cutoff {
+        visibility_filtered
+            .into_iter()
+            .filter(|t| task_in_window(t, cutoff))
+            .collect()
+    } else {
+        visibility_filtered
     };
 
     let included_ids: HashSet<&str> = included.iter().map(|t| t.id.as_str()).collect();
@@ -639,7 +734,15 @@ pub fn render_site(
     fs::write(&css_path, STYLE_CSS).context("failed to write style.css")?;
 
     // Write index.html
-    let index_html = render_index(graph, &included, &tasks_by_id, &included_ids, &laid, show_all);
+    let index_html = render_index(
+        graph,
+        &included,
+        &tasks_by_id,
+        &included_ids,
+        &laid,
+        show_all,
+        since,
+    );
     let index_path = out_dir.join("index.html");
     fs::write(&index_path, &index_html).context("failed to write index.html")?;
 
@@ -659,6 +762,7 @@ pub fn render_site(
         public_count: included.len(),
         pages_written,
         show_all,
+        since: since.map(|s| s.to_string()),
     })
 }
 
@@ -669,9 +773,10 @@ pub struct RenderSummary {
     pub public_count: usize,
     pub pages_written: usize,
     pub show_all: bool,
+    pub since: Option<String>,
 }
 
-pub fn run(workgraph_dir: &Path, out: &Path, all: bool, json: bool) -> Result<()> {
+pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, json: bool) -> Result<()> {
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
         anyhow::bail!(
@@ -681,7 +786,7 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, json: bool) -> Result<()
     }
     let graph = load_graph(&graph_path).context("failed to load graph")?;
 
-    let summary = render_site(&graph, out, all)?;
+    let summary = render_site(&graph, out, all, since)?;
 
     if json {
         let payload = serde_json::json!({
@@ -690,15 +795,26 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, json: bool) -> Result<()
             "public_count": summary.public_count,
             "pages_written": summary.pages_written,
             "show_all": summary.show_all,
+            "since": summary.since,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         let filter = if summary.show_all {
-            "all tasks (visibility filter OFF)".to_string()
+            let since_str = summary
+                .since
+                .as_deref()
+                .map(|s| format!(", last {}", s))
+                .unwrap_or_default();
+            format!("all tasks (visibility filter OFF{})", since_str)
         } else {
+            let since_str = summary
+                .since
+                .as_deref()
+                .map(|s| format!(", last {}", s))
+                .unwrap_or_default();
             format!(
-                "{} public of {} total",
-                summary.public_count, summary.total_in_graph,
+                "{} public of {} total{}",
+                summary.public_count, summary.total_in_graph, since_str,
             )
         };
         println!(
@@ -711,4 +827,100 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, json: bool) -> Result<()
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_since tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_since_hours() {
+        let d = parse_since("1h").unwrap();
+        assert_eq!(d.num_seconds(), 3600);
+        let d24 = parse_since("24h").unwrap();
+        assert_eq!(d24.num_seconds(), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_since_days() {
+        let d = parse_since("7d").unwrap();
+        assert_eq!(d.num_seconds(), 7 * 86400);
+        let d30 = parse_since("30d").unwrap();
+        assert_eq!(d30.num_seconds(), 30 * 86400);
+    }
+
+    #[test]
+    fn test_parse_since_weeks() {
+        let d = parse_since("2w").unwrap();
+        assert_eq!(d.num_seconds(), 2 * 7 * 86400);
+    }
+
+    #[test]
+    fn test_parse_since_minutes() {
+        let d = parse_since("30m").unwrap();
+        assert_eq!(d.num_seconds(), 30 * 60);
+    }
+
+    #[test]
+    fn test_parse_since_rejects_garbage() {
+        assert!(parse_since("").is_err(), "empty string should fail");
+        assert!(parse_since("abc").is_err(), "no unit and non-numeric should fail");
+        assert!(parse_since("7x").is_err(), "unknown unit 'x' should fail");
+        assert!(parse_since("0d").is_err(), "zero is not positive");
+        assert!(parse_since("-1d").is_err(), "negative should fail");
+    }
+
+    #[test]
+    fn test_parse_since_rejects_no_unit() {
+        // No unit → error (unlike archive.rs which defaults to days)
+        assert!(parse_since("7").is_err());
+    }
+
+    // ── task_in_window tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_task_in_window_created_at_matches() {
+        use crate::graph::Task;
+        let now = Utc::now();
+        let recent = (now - Duration::hours(1)).to_rfc3339();
+        let mut task = Task::default();
+        task.created_at = Some(recent);
+        let cutoff = now - Duration::hours(2);
+        assert!(task_in_window(&task, cutoff));
+    }
+
+    #[test]
+    fn test_task_in_window_old_task_excluded() {
+        use crate::graph::Task;
+        let now = Utc::now();
+        let old = (now - Duration::days(10)).to_rfc3339();
+        let mut task = Task::default();
+        task.created_at = Some(old);
+        let cutoff = now - Duration::hours(24);
+        assert!(!task_in_window(&task, cutoff));
+    }
+
+    #[test]
+    fn test_task_in_window_completed_at_matches() {
+        use crate::graph::Task;
+        let now = Utc::now();
+        let old_created = (now - Duration::days(30)).to_rfc3339();
+        let recent_completed = (now - Duration::hours(2)).to_rfc3339();
+        let mut task = Task::default();
+        task.created_at = Some(old_created);
+        task.completed_at = Some(recent_completed);
+        let cutoff = now - Duration::hours(24);
+        assert!(task_in_window(&task, cutoff));
+    }
+
+    #[test]
+    fn test_task_in_window_no_timestamps_excluded() {
+        use crate::graph::Task;
+        let now = Utc::now();
+        let task = Task::default();
+        let cutoff = now - Duration::hours(24);
+        assert!(!task_in_window(&task, cutoff));
+    }
 }

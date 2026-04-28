@@ -82,7 +82,7 @@ fn renders_index_with_only_public_task_count() {
     let graph = build_graph(vec![t1, t2, t3, internal_a, internal_b]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), false).unwrap();
+    let summary = html::render_site(&graph, dir.path(), false, None).unwrap();
 
     assert_eq!(summary.public_count, 3, "expected 3 public tasks");
     assert_eq!(summary.total_in_graph, 5);
@@ -109,7 +109,7 @@ fn internal_tasks_excluded_from_all_output() {
     let graph = build_graph(vec![public, internal, peer]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     // The internal-only id should not appear in any rendered file.
     let blob = read_all(dir.path());
@@ -152,7 +152,7 @@ fn per_task_links_resolve_within_output() {
     let graph = build_graph(vec![t1.clone(), t2, t3]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     // Index should link to tasks/a.html, tasks/b.html, tasks/c.html.
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
@@ -186,7 +186,7 @@ fn empty_public_graph_renders_without_crashing() {
     let graph = build_graph(vec![internal]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), false).unwrap();
+    let summary = html::render_site(&graph, dir.path(), false, None).unwrap();
     assert_eq!(summary.public_count, 0);
     assert_eq!(summary.pages_written, 0);
 
@@ -204,7 +204,7 @@ fn show_all_overrides_visibility_filter() {
     let graph = build_graph(vec![public, internal]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), true).unwrap();
+    let summary = html::render_site(&graph, dir.path(), true, None).unwrap();
     assert_eq!(summary.public_count, 2, "with --all both tasks should appear");
     assert_eq!(summary.pages_written, 2);
 
@@ -228,7 +228,7 @@ fn dag_layout_is_left_to_right_by_dependency() {
 
     let graph = build_graph(vec![a, b, c]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     assert!(index.contains("<svg"));
@@ -250,7 +250,7 @@ fn description_html_is_escaped() {
 
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/xss-test.html")).unwrap();
     assert!(
@@ -278,7 +278,7 @@ fn dependency_on_internal_task_aggregates_as_count_no_id_leak() {
 
     let graph = build_graph(vec![pub_a, internal_assign, internal_other]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/pub-a.html")).unwrap();
     assert!(
@@ -306,11 +306,87 @@ fn output_files_layout_matches_expected() {
     let graph = build_graph(vec![p1, p2]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), false).unwrap();
+    html::render_site(&graph, dir.path(), false, None).unwrap();
 
     let files: HashSet<String> = paths_in(dir.path()).into_iter().collect();
     assert!(files.contains("index.html"));
     assert!(files.contains("style.css"));
     assert!(files.contains("tasks/layout-x.html"));
     assert!(files.contains("tasks/layout-y.html"));
+}
+
+#[test]
+fn since_filter_excludes_old_tasks_and_notes_in_footer() {
+    use chrono::{Duration, Utc};
+
+    // One task with a recent timestamp, one with a 30-day-old timestamp.
+    let recent_ts = (Utc::now() - Duration::hours(1)).to_rfc3339();
+    let old_ts = (Utc::now() - Duration::days(30)).to_rfc3339();
+
+    let mut recent = make_task("recent-task", "Recent", "public");
+    recent.created_at = Some(recent_ts);
+
+    let mut old = make_task("old-task", "Old", "public");
+    old.created_at = Some(old_ts);
+
+    let graph = build_graph(vec![recent, old]);
+
+    let dir = TempDir::new().unwrap();
+    // --all --since 24h: should only include the recent task
+    let summary = html::render_site(&graph, dir.path(), true, Some("24h")).unwrap();
+
+    assert_eq!(
+        summary.public_count, 1,
+        "expected only 1 task within 24h window"
+    );
+    assert!(
+        dir.path().join("tasks/recent-task.html").exists(),
+        "recent-task page missing"
+    );
+    assert!(
+        !dir.path().join("tasks/old-task.html").exists(),
+        "old-task page should not exist within 24h window"
+    );
+
+    // Footer must mention the time window.
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    assert!(
+        index.contains("last 24h"),
+        "footer must mention 'last 24h'; got footer area: {}",
+        index
+            .find("<footer>")
+            .map(|i| &index[i..])
+            .unwrap_or("(no footer)")
+    );
+}
+
+#[test]
+fn since_filter_composes_with_visibility() {
+    use chrono::{Duration, Utc};
+
+    let recent_ts = (Utc::now() - Duration::hours(2)).to_rfc3339();
+
+    // A recent public task and a recent internal task.
+    let mut pub_task = make_task("pub-recent", "Public recent", "public");
+    pub_task.created_at = Some(recent_ts.clone());
+    let mut int_task = make_task("int-recent", "Internal recent", "internal");
+    int_task.created_at = Some(recent_ts);
+
+    let graph = build_graph(vec![pub_task, int_task]);
+    let dir = TempDir::new().unwrap();
+
+    // Without --all: visibility filter removes internal; --since keeps the recent public one.
+    let summary = html::render_site(&graph, dir.path(), false, Some("24h")).unwrap();
+    assert_eq!(
+        summary.public_count, 1,
+        "public-only filter should keep 1 public task"
+    );
+    assert!(
+        dir.path().join("tasks/pub-recent.html").exists(),
+        "public recent task page missing"
+    );
+    assert!(
+        !dir.path().join("tasks/int-recent.html").exists(),
+        "internal task must not appear in public-only output"
+    );
 }

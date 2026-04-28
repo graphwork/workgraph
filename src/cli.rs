@@ -1913,6 +1913,10 @@ pub enum Commands {
         /// Include ALL tasks regardless of visibility (defaults to public-only)
         #[arg(long)]
         all: bool,
+
+        /// Only include tasks active within this time window (e.g. 1h, 24h, 7d, 30d)
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Detect and recover orphaned in-progress tasks with dead agents

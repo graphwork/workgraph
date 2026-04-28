@@ -2687,8 +2687,8 @@ fn main() -> Result<()> {
                 commands::dead_agents::run_check(&workgraph_dir, threshold, cli.json)
             }
         }
-        Commands::Html { out, all } => {
-            workgraph::html::run(&workgraph_dir, &out, all, cli.json)
+        Commands::Html { out, all, since } => {
+            workgraph::html::run(&workgraph_dir, &out, all, since.as_deref(), cli.json)
         }
         Commands::Sweep {
             dry_run,

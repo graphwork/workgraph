@@ -345,6 +345,15 @@ description = "Pins the `lol you archived _this_ chat too` regression: `wg servi
 timeout_seconds = 30
 
 [[scenario]]
+name = "html_since_filter"
+script = "scenarios/html_since_filter.sh"
+owners = [
+    "wg-html-add",
+]
+description = "Regression for wg-html-add: `wg html --since <duration>` filters tasks by recency. Asserts: (1) --since 24h on a mixed-age graph produces fewer tasks than --all, (2) the rendered index.html footer mentions the active time window, (3) valid durations (1h, 24h, 7d, 30d) are accepted, (4) invalid durations (garbage, 0d, abc, 7x) are rejected with a non-zero exit code. No daemon, no LLM."
+timeout_seconds = 60
+
+[[scenario]]
 name = "retry_clears_downstream_stale_claims"
 script = "scenarios/retry_clears_downstream_stale_claims.sh"
 owners = [
