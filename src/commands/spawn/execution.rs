@@ -405,9 +405,7 @@ pub(crate) fn spawn_agent_inner(
     // When no custom prompt_template is defined (built-in defaults),
     // use build_prompt() to assemble the prompt based on context scope.
     if settings.prompt_template.is_none()
-        && (settings.executor_type == "claude"
-            || settings.executor_type == "amplifier"
-            || settings.executor_type == "native")
+        && executor_uses_auto_prompt(&settings.executor_type)
     {
         let prompt = build_prompt(&vars, scope, &scope_ctx);
 
@@ -895,6 +893,19 @@ pub(crate) fn should_create_worktree(
         return false;
     }
     true
+}
+
+/// Built-in executors that ship without a `prompt_template` and rely on
+/// `build_prompt()` to assemble the agent prompt at spawn time.
+///
+/// CLI handlers (claude, codex) and in-process handlers (native, amplifier)
+/// all need the same workgraph-context preamble, so the spawn pipeline
+/// auto-builds a `PromptTemplate` for any of these when the user hasn't
+/// supplied one in their executor config. Adding a new built-in handler
+/// without listing it here means the spawn writes no prompt.txt and the
+/// resulting subprocess receives empty stdin — exactly the codex bug.
+fn executor_uses_auto_prompt(executor_type: &str) -> bool {
+    matches!(executor_type, "claude" | "codex" | "amplifier" | "native")
 }
 
 /// Build the inner command string for the executor.
@@ -1868,6 +1879,38 @@ fn handle_cost_cap_violation(
 mod tests {
     use super::*;
     use workgraph::config::CLAUDE_OPUS_MODEL_ID;
+
+    // --- executor_uses_auto_prompt tests ---
+
+    // Regression for codex-handler-doesn: the spawn pipeline used to hard-code
+    // the auto-prompt list as `claude | amplifier | native`, which silently
+    // dropped codex. Codex agents spawned with no prompt_template, fell
+    // through to the codex case in build_inner_command's `else { codex_cmd }`
+    // branch, and the resulting run.sh had no `cat prompt.txt | ...` prefix.
+    // Codex CLI sat reading stdin, got nothing, exited with 'No prompt
+    // provided via stdin'. Pin the four built-in handlers here.
+    #[test]
+    fn test_executor_uses_auto_prompt_includes_codex() {
+        assert!(executor_uses_auto_prompt("codex"));
+    }
+
+    #[test]
+    fn test_executor_uses_auto_prompt_includes_all_builtins() {
+        for kind in ["claude", "codex", "amplifier", "native"] {
+            assert!(
+                executor_uses_auto_prompt(kind),
+                "{} must auto-build prompt",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn test_executor_uses_auto_prompt_excludes_shell_and_unknown() {
+        assert!(!executor_uses_auto_prompt("shell"));
+        assert!(!executor_uses_auto_prompt(""));
+        assert!(!executor_uses_auto_prompt("custom"));
+    }
 
     // --- should_create_worktree tests ---
 

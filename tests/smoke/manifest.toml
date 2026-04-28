@@ -148,6 +148,16 @@ description = "Dispatcher's explicit `-x codex` MUST win when the assigned agent
 timeout_seconds = 30
 
 [[scenario]]
+name = "codex_handler_pipes_prompt_to_stdin"
+script = "scenarios/codex_handler_pipes_prompt_to_stdin.sh"
+owners = [
+    "codex-handler-doesn",
+    "smoke-gate-is",
+]
+description = "Dispatcher MUST write a non-empty prompt.txt and a run.sh that pipes it into `codex exec` via stdin. Regression for codex-handler-doesn: spawn_agent_inner's auto-prompt gate hard-coded `claude | amplifier | native`, omitting codex, so every codex agent shipped with empty stdin and exited 1 reading 'No prompt provided via stdin'. Asserts cat <prompt.txt> | 'codex' 'exec' appears in the agent's run.sh and prompt.txt has content — no LLM call required."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_new_chat_creates_fresh_ids"
 script = "scenarios/tui_new_chat_creates_fresh_ids.sh"
 owners = [
