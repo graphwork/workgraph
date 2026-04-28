@@ -294,3 +294,14 @@ owners = [
 ]
 description = "`wg reset` must clear the `assigned` claim field so reset tasks are immediately ready for fresh dispatch. Regression: dead-agent claims survived reset; user had to `wg unclaim` each task by hand or it looked identical to the dispatcher-poll bug."
 timeout_seconds = 30
+
+
+[[scenario]]
+name = "chat_launched_with_codex_uses_codex"
+script = "scenarios/chat_launched_with_codex_uses_codex.sh"
+owners = [
+    "chat-launched-with",
+    "smoke-gate-is",
+]
+description = "Regression for chat-launched-with: launching a chat with --executor codex --model codex:gpt-5 against a project whose default is claude:opus must dispatch wg codex-handler with -m codex:gpt-5, NOT wg claude-handler with -m claude:opus. Locks both halves of the fix end-to-end: (1) wg chat create persists executor_override and model_override into CoordinatorState, (2) spawn-task with WG_EXECUTOR_TYPE=codex + WG_MODEL=codex:gpt-5 honors WG_MODEL alongside WG_EXECUTOR_TYPE in plan_spawn (pre-fix: WG_MODEL was dropped, the codex handler ran with claude:opus). The TUI auto-PTY half is locked by unit tests in chat_pty_executor_resolution_tests."
+timeout_seconds = 30

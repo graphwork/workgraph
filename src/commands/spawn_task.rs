@@ -200,12 +200,26 @@ pub fn resolve_handler(
     });
 
     // Single source of truth: ALL executor/model/endpoint decisions flow
-    // through `plan_spawn`. We only source `WG_EXECUTOR_TYPE` (which the
-    // daemon sets per-coordinator so a Claude coordinator in the same graph
-    // as a native one routes correctly even if the global default differs)
-    // and feed it as the `agent_executor` hint.
+    // through `plan_spawn`. We source TWO env vars set by the parent
+    // (typically the daemon supervisor):
+    //   - `WG_EXECUTOR_TYPE` — agency-derived executor for THIS chat/task,
+    //     so a codex chat in the same graph as a claude one routes
+    //     correctly even if the global `[dispatcher].executor` differs.
+    //   - `WG_MODEL` — agency-derived model for THIS chat/task, fed as
+    //     `default_model`. Without this, the per-chat model the daemon
+    //     resolved (from `CoordinatorState.model_override` etc.) silently
+    //     falls back to `[dispatcher].model` here — the chat-launched-with
+    //     bug where "create chat with codex:gpt-5" ran codex with
+    //     `-m claude:opus` because spawn-task only honored the executor
+    //     half of the per-chat plan.
     let env_executor = std::env::var("WG_EXECUTOR_TYPE").ok();
-    let plan = workgraph::dispatch::plan_spawn(task, &config, env_executor.as_deref(), None)?;
+    let env_model = std::env::var("WG_MODEL").ok();
+    let plan = workgraph::dispatch::plan_spawn(
+        task,
+        &config,
+        env_executor.as_deref(),
+        env_model.as_deref(),
+    )?;
 
     // Provenance: every spawn emits one line tracing each decision back to
     // the config knob that produced it. Eliminates silent-routing bugs.
@@ -635,6 +649,81 @@ mod tests {
                 );
             }
             _ => panic!("expected Claude handler"),
+        }
+    }
+
+    /// Regression test for chat-launched-with: when the daemon supervisor
+    /// spawns `wg spawn-task .chat-N`, it sets BOTH `WG_EXECUTOR_TYPE` and
+    /// `WG_MODEL` env vars carrying the per-chat overrides resolved from
+    /// `CoordinatorState`. spawn-task must honor BOTH — previously only
+    /// WG_EXECUTOR_TYPE was read, so the chat would dispatch to the right
+    /// executor binary but with the wrong model (the global
+    /// `[dispatcher].model` fallback, which is `claude:opus` in most
+    /// installs). The user-visible symptom: "I asked for codex and got
+    /// claude" — the codex-handler received `-m claude:opus` and either
+    /// errored out or fell through.
+    #[test]
+    #[serial]
+    fn spawn_task_propagates_wg_model_env_var() {
+        let saved_exec = std::env::var("WG_EXECUTOR_TYPE").ok();
+        let saved_model = std::env::var("WG_MODEL").ok();
+        unsafe {
+            std::env::set_var("WG_EXECUTOR_TYPE", "codex");
+            std::env::set_var("WG_MODEL", "codex:gpt-5");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        // Set a config.coordinator.model that differs from the env var so
+        // we can tell which one won.
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+
+        // Synthesized chat task — no task.model field, mirroring what
+        // create_chat_in_graph writes today.
+        let task = mktask(".chat-7");
+        assert!(task.model.is_none(), "chat tasks have no task.model today");
+        let spec = resolve_handler(wg_dir, &task, None).unwrap();
+
+        // Restore env before assertions.
+        unsafe {
+            if let Some(v) = saved_exec {
+                std::env::set_var("WG_EXECUTOR_TYPE", v);
+            } else {
+                std::env::remove_var("WG_EXECUTOR_TYPE");
+            }
+            if let Some(v) = saved_model {
+                std::env::set_var("WG_MODEL", v);
+            } else {
+                std::env::remove_var("WG_MODEL");
+            }
+        }
+
+        match spec {
+            HandlerSpec::Codex { model, .. } => {
+                assert_eq!(
+                    model,
+                    Some("codex:gpt-5".to_string()),
+                    "WG_MODEL env var must take precedence over \
+                     config.coordinator.model. Got: {:?}",
+                    model,
+                );
+            }
+            other => panic!(
+                "expected Codex handler with codex:gpt-5 model, got {:?}",
+                match other {
+                    HandlerSpec::Claude { model, .. } =>
+                        format!("Claude {{ model: {:?} }}", model),
+                    HandlerSpec::Native { model, .. } =>
+                        format!("Native {{ model: {:?} }}", model),
+                    HandlerSpec::Codex { model, .. } =>
+                        format!("Codex {{ model: {:?} }}", model),
+                    HandlerSpec::Gemini { .. } => "Gemini".to_string(),
+                    HandlerSpec::Amplifier { .. } => "Amplifier".to_string(),
+                }
+            ),
         }
     }
 }

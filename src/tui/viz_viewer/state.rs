@@ -1079,6 +1079,35 @@ pub struct LauncherState {
 /// - `codex`   → put `openai:*` first
 /// - `gemini`  → put `google:*` first
 /// - `native`/`amplifier` → no reorder (all models work via OAI-compat)
+/// Resolve the executor + model the TUI's auto-PTY launcher should use for
+/// chat `coordinator_id`. Per-chat overrides written by `wg chat create
+/// --executor <X> --model <M>` (stored in `CoordinatorState`) win over
+/// the global `[dispatcher].executor` / `[dispatcher].model`. Returns
+/// `(executor, model)` where `model` is `None` when no per-chat or
+/// global override is configured (the vendor CLI then runs with its own
+/// default).
+///
+/// Pure function (no &mut self) so unit tests can exercise it without
+/// constructing a full `VizViewer`. See
+/// `chat_launched_with_uses_per_chat_executor` for the regression lock.
+pub fn resolve_chat_pty_executor_and_model(
+    workgraph_dir: &std::path::Path,
+    config: &Config,
+    coordinator_id: u32,
+) -> (String, Option<String>) {
+    let coord_state =
+        crate::commands::service::CoordinatorState::load_for(workgraph_dir, coordinator_id);
+    let executor = coord_state
+        .as_ref()
+        .and_then(|s| s.executor_override.clone())
+        .unwrap_or_else(|| config.coordinator.effective_executor());
+    let model = coord_state
+        .as_ref()
+        .and_then(|s| s.model_override.clone())
+        .or_else(|| config.coordinator.model.clone());
+    (executor, model)
+}
+
 pub fn filter_models_for_executor(
     all_models: &[(String, String)],
     executor: &str,
@@ -12596,7 +12625,16 @@ impl VizApp {
     /// manually. Idempotent: no-op when a live pane already exists.
     pub fn maybe_auto_enable_chat_pty(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
-        let executor = config.coordinator.effective_executor();
+        // Per-chat overrides win over the global default. Without this
+        // step the TUI was spawning the global `[dispatcher].executor`
+        // binary (typically `claude`) for every chat tab, ignoring the
+        // `--executor codex` / `--model codex:gpt-5` the user actually
+        // picked when creating that chat — chat-launched-with bug.
+        let (executor, chat_model) = resolve_chat_pty_executor_and_model(
+            &self.workgraph_dir,
+            &config,
+            self.active_coordinator_id,
+        );
 
         // Task ID (`.chat-N`, with dot) is what `wg spawn-task`
         // needs to look the task up in the graph and what our
@@ -12728,11 +12766,15 @@ impl VizApp {
                         "--resume".to_string(),
                         chat_ref.clone(),
                     ];
-                    let model = config
-                        .coordinator
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| config.agent.model.clone());
+                    // Per-chat model override wins; otherwise use
+                    // config.coordinator.model, then config.agent.model.
+                    let model = chat_model.clone().unwrap_or_else(|| {
+                        config
+                            .coordinator
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| config.agent.model.clone())
+                    });
                     if !model.is_empty() {
                         args.push("-m".to_string());
                         args.push(model);
@@ -12785,6 +12827,16 @@ impl VizApp {
                         args.push("--system-prompt".to_string());
                         args.push(sys_prompt);
                     }
+                    // Honor per-chat model override (e.g. --model opus
+                    // vs sonnet on a per-tab basis). Strip the provider
+                    // prefix — claude CLI expects bare model ids.
+                    if let Some(ref m) = chat_model {
+                        let spec = workgraph::config::parse_model_spec(m);
+                        if !spec.model_id.is_empty() {
+                            args.push("--model".to_string());
+                            args.push(spec.model_id);
+                        }
+                    }
                     ("claude".to_string(), args, Some(project_root))
                 }
                 "codex" => {
@@ -12815,7 +12867,7 @@ impl VizApp {
                         .ok()
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
-                    let args = if let Some(sid) = prior_session_id {
+                    let mut args = if let Some(sid) = prior_session_id {
                         vec!["resume".to_string(), sid]
                     } else if pty_marker.exists() {
                         vec!["resume".to_string(), "--last".to_string()]
@@ -12823,6 +12875,18 @@ impl VizApp {
                         let _ = std::fs::write(&pty_marker, "");
                         Vec::new()
                     };
+                    // Honor per-chat model override (e.g. gpt-5 vs
+                    // gpt-5-codex on a per-tab basis). codex accepts
+                    // `--model <id>` as a top-level flag and as a
+                    // subcommand flag for `exec`. Strip the provider
+                    // prefix — codex expects bare model ids.
+                    if let Some(ref m) = chat_model {
+                        let spec = workgraph::config::parse_model_spec(m);
+                        if !spec.model_id.is_empty() {
+                            args.push("--model".to_string());
+                            args.push(spec.model_id);
+                        }
+                    }
                     ("codex".to_string(), args, Some(chat_dir.clone()))
                 }
                 _ => {
@@ -12833,7 +12897,7 @@ impl VizApp {
         self.chat_pty_observer = observer_mode && executor == "native";
 
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
-        let env: Vec<(String, String)> = vec![
+        let mut env: Vec<(String, String)> = vec![
             (
                 "WG_DIR".to_string(),
                 self.workgraph_dir.display().to_string(),
@@ -12848,6 +12912,12 @@ impl VizApp {
             // minimal terminal like linux console or dumb.
             ("TERM".to_string(), "xterm-256color".to_string()),
         ];
+        // Propagate the resolved per-chat model so any nested
+        // `wg spawn-task` invocation (e.g. native's `wg nex` re-execing)
+        // honors it instead of falling back to `[dispatcher].model`.
+        if let Some(ref m) = chat_model {
+            env.push(("WG_MODEL".to_string(), m.clone()));
+        }
 
         let spawn_result = crate::tui::pty_pane::PtyPane::spawn_in(
             &bin,
@@ -23454,5 +23524,94 @@ mod launcher_history_tests {
             recent.endpoint.as_deref(),
             Some("https://lambda01.tail334fe6.ts.net:30000")
         );
+    }
+}
+
+#[cfg(test)]
+mod chat_pty_executor_resolution_tests {
+    use super::*;
+    use crate::commands::service::CoordinatorState;
+
+    fn write_state(dir: &std::path::Path, cid: u32, executor: Option<&str>, model: Option<&str>) {
+        let mut state = CoordinatorState {
+            executor_override: executor.map(String::from),
+            model_override: model.map(String::from),
+            ..CoordinatorState::default()
+        };
+        state.save_for(dir, cid);
+    }
+
+    /// Regression lock for chat-launched-with: when the user creates a
+    /// chat via `wg chat create --executor codex --model codex:gpt-5`
+    /// (or the TUI `+` launcher's codex pick), the per-chat overrides
+    /// land in `CoordinatorState` and MUST beat `[dispatcher].executor`
+    /// when the TUI auto-spawns the embedded PTY pane. Previously the
+    /// resolver read only the global config, so codex chats opened a
+    /// claude session.
+    #[test]
+    fn chat_launched_with_codex_uses_codex_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        // Simulate the user's environment: global default is claude.
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"claude\"\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+        // Chat 0 was created with codex + codex:gpt-5.
+        write_state(wg_dir, 0, Some("codex"), Some("codex:gpt-5"));
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 0);
+
+        assert_eq!(
+            executor, "codex",
+            "per-chat executor_override must beat [dispatcher].executor"
+        );
+        assert_eq!(
+            model.as_deref(),
+            Some("codex:gpt-5"),
+            "per-chat model_override must beat [dispatcher].model"
+        );
+    }
+
+    /// Pre-fix chats without overrides keep the global default — no
+    /// regression on the common path.
+    #[test]
+    fn chat_with_no_overrides_uses_global_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"claude\"\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+        // No CoordinatorState file written for chat 0.
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 0);
+
+        assert_eq!(executor, "claude", "global default executor");
+        assert_eq!(model.as_deref(), Some("claude:opus"), "global default model");
+    }
+
+    /// Mixed overrides: only model is per-chat, executor defaults
+    /// globally. Sanity-check the two fields cascade independently.
+    #[test]
+    fn chat_with_only_model_override_keeps_global_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"claude\"\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+        write_state(wg_dir, 1, None, Some("claude:sonnet"));
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 1);
+
+        assert_eq!(executor, "claude");
+        assert_eq!(model.as_deref(), Some("claude:sonnet"));
     }
 }
