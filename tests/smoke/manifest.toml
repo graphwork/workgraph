@@ -264,3 +264,13 @@ owners = [
 ]
 description = "Inline spawn of an `.evaluate-*` task must register the agent with `executor=\"claude\"` (not legacy `\"eval\"`) in both registry.json and the agent's metadata.json. Regression: agency one-shot LLM calls share the claude CLI dispatch path with worker agents, so the registered executor label must reflect that — `executor=\"eval\"` was misleading observability noise that masked today's openrouter-cascade outage."
 timeout_seconds = 60
+
+[[scenario]]
+name = "reset_clears_claim"
+script = "scenarios/reset_clears_claim.sh"
+owners = [
+    "fold-unclaim-semantics",
+    "smoke-gate-is",
+]
+description = "`wg reset` must clear the `assigned` claim field so reset tasks are immediately ready for fresh dispatch. Regression: dead-agent claims survived reset; user had to `wg unclaim` each task by hand or it looked identical to the dispatcher-poll bug."
+timeout_seconds = 30

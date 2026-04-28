@@ -198,18 +198,30 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
         for id in &closure_set {
             if let Some(task) = graph.get_task_mut(id) {
                 let prev = task.status;
+                let prev_assigned = task.assigned.clone();
                 task.status = Status::Open;
                 task.completed_at = None;
                 task.failure_reason = None;
                 task.retry_count = 0;
+                // Mirror `wg unclaim`: a reset task should be ready for a
+                // fresh dispatcher pickup, so clear claim fields too.
+                // Without this, dead-agent claims survive `wg reset` and
+                // block the dispatcher from spawning on the next tick.
+                task.assigned = None;
+                task.started_at = None;
+                let claim_note = match &prev_assigned {
+                    Some(a) => format!(" (cleared claim from @{})", a),
+                    None => String::new(),
+                };
                 task.log.push(LogEntry {
                     timestamp: now.clone(),
                     actor: Some("reset".to_string()),
                     user: Some(user.clone()),
                     message: format!(
-                        "reset via `wg reset {}`; was {:?}",
+                        "reset via `wg reset {}`; was {:?}{}",
                         seeds_owned.join(","),
-                        prev
+                        prev,
+                        claim_note
                     ),
                 });
                 reset_count += 1;
@@ -520,6 +532,105 @@ mod tests {
         let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
         // No mutation
         assert_eq!(g.get_task("t").unwrap().status, Status::Failed);
+    }
+
+    #[test]
+    fn reset_clears_assigned_field() {
+        // A task that was claimed by an agent (status=InProgress, assigned=Some)
+        // should have `assigned` cleared after reset, so the dispatcher can
+        // re-claim it on the next tick without manual `wg unclaim`.
+        let dir = tempdir().unwrap();
+        let mut t = make("t", Status::InProgress);
+        t.assigned = Some("agent-dead".to_string());
+        t.started_at = Some("2026-04-27T00:00:00Z".to_string());
+        setup_workgraph(dir.path(), vec![t]);
+
+        let _ = run(
+            dir.path(),
+            &["t".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert_eq!(t.status, Status::Open);
+        assert!(
+            t.assigned.is_none(),
+            "reset must clear `assigned` so the task is ready for fresh dispatch"
+        );
+        assert!(
+            t.started_at.is_none(),
+            "reset should also clear `started_at` since task is no longer in progress"
+        );
+    }
+
+    #[test]
+    fn reset_with_strip_meta_still_clears_assigned() {
+        // Regression check: --also-strip-meta path must not skip the
+        // assigned/started_at clearing on the closure tasks.
+        let dir = tempdir().unwrap();
+        write_chain(dir.path());
+        // Mark t as claimed by a dead agent.
+        let path = super::super::graph_path(dir.path());
+        let mut g = load_graph(&path).unwrap();
+        if let Some(t) = g.get_task_mut("t") {
+            t.assigned = Some("agent-dead".to_string());
+            t.started_at = Some("2026-04-27T00:00:00Z".to_string());
+        }
+        workgraph::parser::save_graph(&g, &path).unwrap();
+
+        let _ = run(
+            dir.path(),
+            &["t".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: true,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&path).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert!(t.assigned.is_none(), "--also-strip-meta must also clear assigned");
+        assert!(t.started_at.is_none());
+        // meta tasks gone (regression check on existing strip behavior)
+        assert!(g.get_task(".flip-t").is_none());
+        assert!(g.get_task(".evaluate-t").is_none());
+    }
+
+    #[test]
+    fn reset_on_unclaimed_task_is_noop_for_claim_fields() {
+        // A task with no claim should reset cleanly without crashing
+        // and without spuriously setting/changing claim fields.
+        let dir = tempdir().unwrap();
+        let t = make("t", Status::Failed); // no assigned, no started_at
+        setup_workgraph(dir.path(), vec![t]);
+
+        let _ = run(
+            dir.path(),
+            &["t".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert_eq!(t.status, Status::Open);
+        assert!(t.assigned.is_none());
+        assert!(t.started_at.is_none());
     }
 
     #[test]
