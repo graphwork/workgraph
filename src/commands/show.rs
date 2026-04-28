@@ -357,8 +357,16 @@ fn gather_worktree_state(dir: &Path, task_id: &str) -> Option<WorktreeStateInfo>
         .join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER)
         .exists();
 
-    let merged_to_main =
-        crate::commands::service::worktree::is_branch_merged(project_root, &branch);
+    // A branch is only honestly "merged to main" when *all* of the agent's
+    // work has actually landed. `is_branch_merged` alone returns true whenever
+    // the branch tip is reachable from main — but a branch with 0 commits
+    // ahead and uncommitted/staged tracked files has work that has NOT landed.
+    // Reporting `Merged to main: true` in that case is the lie that hid the
+    // wg-done-silent bug (see docs/codex-handler-merge-bug.md).
+    let merged_to_main = crate::commands::service::worktree::is_branch_merged(
+        project_root,
+        &branch,
+    ) && uncommitted_files == 0;
 
     Some(WorktreeStateInfo {
         path: path.to_string_lossy().into_owned(),

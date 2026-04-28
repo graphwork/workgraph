@@ -105,6 +105,12 @@ enum PushOutcome {
 enum WorktreeMergeResult {
     NotInWorktree,
     NoCommits,
+    /// Worktree branch has 0 commits ahead of main, but the working tree has
+    /// staged or modified tracked files — the agent prepared work but never
+    /// committed it. Treating this as NoCommits silently drops the work.
+    UncommittedChanges {
+        files: Vec<String>,
+    },
     Merged {
         commit_sha: String,
         push_outcome: PushOutcome,
@@ -252,11 +258,37 @@ fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
         .any(|n| stdout.contains(n) || stderr.contains(n))
 }
 
-fn detect_worktree() -> Option<WorktreeInfo> {
+/// Detect whether we're running inside a workgraph-managed agent worktree
+/// for the project rooted at `wg_dir`'s parent.
+///
+/// Reads `WG_WORKTREE_PATH` / `WG_BRANCH` / `WG_PROJECT_ROOT` from the
+/// environment. Returns `None` (silently — env vars unset is the common
+/// case for a human running `wg done`) when any are missing OR when
+/// `WG_PROJECT_ROOT` does not match `wg_dir`'s parent. The mismatch case
+/// catches stale/leaked env vars: e.g. a user running `wg done --dir
+/// /other/project` from inside an agent shell, or a test harness running
+/// `wg done` against a temp `--dir` while the parent shell still has the
+/// agent's `WG_WORKTREE_PATH` exported. Acting on a worktree that doesn't
+/// belong to the project we're managing would mutate the wrong git tree.
+fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
     let wt_path = std::env::var("WG_WORKTREE_PATH").ok()?;
     let branch = std::env::var("WG_BRANCH").ok()?;
     let project_root = std::env::var("WG_PROJECT_ROOT").ok()?;
     let agent_id = std::env::var("WG_AGENT_ID").ok();
+
+    // Sanity-check: WG_PROJECT_ROOT must match the parent of the
+    // workgraph dir we're operating on. Use canonicalized paths so
+    // symlinks and `.`/`..` segments don't cause false negatives.
+    let expected_root = wg_dir.parent()?;
+    let env_root = Path::new(&project_root);
+    let same = match (env_root.canonicalize(), expected_root.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => env_root == expected_root,
+    };
+    if !same {
+        return None;
+    }
+
     Some(WorktreeInfo {
         worktree_path: wt_path,
         branch,
@@ -290,6 +322,34 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         .count();
 
     if commit_count == 0 {
+        // Before declaring NoCommits, make sure the agent didn't stage work and
+        // forget to commit. `git status --porcelain` runs in the worktree
+        // directory because the staging area is per-working-tree. Any entry
+        // that isn't `??` (untracked) represents work that would silently
+        // disappear when we mark the task done and clean up the worktree.
+        let porcelain = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&wt.worktree_path)
+            .output()
+            .context("Failed to check worktree status for uncommitted changes")?;
+
+        if porcelain.status.success() {
+            let dirty: Vec<String> = String::from_utf8_lossy(&porcelain.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .filter(|l| !l.starts_with("??"))
+                .map(|l| {
+                    // Porcelain format is "XY path" (X staged, Y unstaged).
+                    // Skip the 2-char status field and the separating space.
+                    l.get(3..).unwrap_or(l).to_string()
+                })
+                .collect();
+
+            if !dirty.is_empty() {
+                return Ok(WorktreeMergeResult::UncommittedChanges { files: dirty });
+            }
+        }
+
         return Ok(WorktreeMergeResult::NoCommits);
     }
 
@@ -2109,11 +2169,41 @@ fn run_inner(
     // If running inside an agent worktree, attempt to squash-merge the branch
     // back to main before marking the task done. On conflict, either refuse
     // (agent can fix it) or defer (--ignore-unmerged-worktree creates .merge-* task).
-    if let Some(wt) = detect_worktree() {
+    if let Some(wt) = detect_worktree(dir) {
         match attempt_worktree_merge(&wt, id)? {
-            WorktreeMergeResult::NotInWorktree | WorktreeMergeResult::NoCommits => {
+            WorktreeMergeResult::NotInWorktree => {
                 // Nothing to merge — proceed to mark done
                 mark_worktree_for_cleanup(&wt);
+            }
+            WorktreeMergeResult::NoCommits => {
+                // Surface the no-op so the agent (and human reading logs) sees
+                // what happened. Prior to this line, NoCommits was a silent
+                // pass-through and `wg show` lied about "Merged to main: true".
+                eprintln!(
+                    "[merge] No commits on branch {} — nothing to merge",
+                    wt.branch
+                );
+                mark_worktree_for_cleanup(&wt);
+            }
+            WorktreeMergeResult::UncommittedChanges { files } => {
+                // Loud refusal — prior behavior silently dropped this work and
+                // marked the task done. See docs/codex-handler-merge-bug.md.
+                let files_display = files
+                    .iter()
+                    .map(|f| format!("  - {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!(
+                    "Worktree has uncommitted changes — refusing to mark '{}' as done.\n\n\
+                     Uncommitted/staged tracked files in {}:\n{}\n\n\
+                     These changes would be silently dropped when the worktree is cleaned up.\n\
+                     Fix: run `git commit -m '...' && git push` in the worktree, then re-run `wg done {}`.\n\
+                     If you want to discard them, run `git reset --hard HEAD` in the worktree first.",
+                    id,
+                    wt.worktree_path,
+                    files_display,
+                    id,
+                );
             }
             WorktreeMergeResult::Merged {
                 commit_sha,

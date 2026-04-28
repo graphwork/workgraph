@@ -45,6 +45,15 @@ fn wg_cmd_with_env(
     cmd.env_remove("WG_AGENT_ID");
     cmd.env_remove("WG_SMOKE_AGENT_OVERRIDE");
     cmd.env_remove("WG_SMOKE_MANIFEST");
+    // Also strip any inherited worktree context — when this suite runs from
+    // inside an agent's worktree, WG_WORKTREE_PATH/BRANCH/PROJECT_ROOT point
+    // at the *agent's* worktree, and `wg done`'s worktree-merge codepath
+    // would look at that worktree's git status (not the temp-dir fixture).
+    cmd.env_remove("WG_WORKTREE_PATH");
+    cmd.env_remove("WG_BRANCH");
+    cmd.env_remove("WG_PROJECT_ROOT");
+    cmd.env_remove("WG_WORKTREE_ACTIVE");
+    cmd.env_remove("WG_TASK_ID");
     for (k, v) in env {
         cmd.env(k, v);
     }

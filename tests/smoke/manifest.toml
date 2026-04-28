@@ -296,6 +296,16 @@ description = "`wg reset` must clear the `assigned` claim field so reset tasks a
 timeout_seconds = 30
 
 [[scenario]]
+name = "wg_done_refuses_uncommitted_worktree"
+script = "scenarios/wg_done_refuses_uncommitted_worktree.sh"
+owners = [
+    "wg-done-silent",
+    "smoke-gate-is",
+]
+description = "Pins wg-done-silent: when an agent's worktree branch has 0 commits ahead of main but staged-but-uncommitted tracked files, `wg done` MUST refuse with non-zero exit + actionable error naming the file. Regression history: codex agent for create-agents-md ran `git add AGENTS.md && wg done`, saw zero error, AGENTS.md never landed on main; the work was silently dropped because attempt_worktree_merge's `commit_count == 0` short-circuit returned NoCommits without checking the porcelain. Drives a real git worktree + staged file, asserts (a) wg done exits non-zero, (b) error names the staged file, (c) the file is NOT on main, (d) the task is NOT marked done. No LLM credentials needed; pure git + graph assertions."
+timeout_seconds = 30
+
+[[scenario]]
 name = "chat_launched_with_codex_uses_codex"
 script = "scenarios/chat_launched_with_codex_uses_codex.sh"
 owners = [
