@@ -343,3 +343,36 @@ owners = [
 ]
 description = "Pins the `lol you archived _this_ chat too` regression: `wg service purge-chats` must skip chats with recent consumer-cursor activity (the user's actually-attached chat) by default; the legacy full-nuke is opt-in via --include-active. Builds a graph with three chat-loop tasks, marks one active by touching its .cursor file, runs purge-chats, asserts only the inactive ones get archived AND the output line surfaces the skipped count + override hint, then re-runs with --include-active to verify the override path also still works. No LLM credentials needed."
 timeout_seconds = 30
+
+[[scenario]]
+name = "retry_clears_downstream_stale_claims"
+script = "scenarios/retry_clears_downstream_stale_claims.sh"
+owners = [
+    "fix-claim-lifecycle",
+    "design-claim-lifecycle",
+    "smoke-gate-is",
+]
+description = "Pins bug-retry-doesnt-clear-stale-downstream-claims: `wg retry <upstream>` must walk the forward closure and clear `assigned` on any non-terminal downstream task whose claim references a Dead/missing agent. Pre-fix the dispatcher silently skipped stale-claimed downstream tasks forever; the user's fan-out workflow stalled with 'spawned=0' for hours. Builds upstream→downstream, claims downstream with an absent agent, fails+retries upstream, asserts (a) downstream.assigned cleared, (b) downstream.status==Open, (c) log records the cleanup cause."
+timeout_seconds = 30
+
+[[scenario]]
+name = "reconciler_clears_open_with_dead_agent"
+script = "scenarios/reconciler_clears_open_with_dead_agent.sh"
+owners = [
+    "fix-claim-lifecycle",
+    "design-claim-lifecycle",
+    "smoke-gate-is",
+]
+description = "Lazy / safety-net path from design-claim-lifecycle: a Status::Open task whose `assigned` references a missing agent must be unclaimed by the dispatcher's reconciler tick (proxied here via `wg sweep`, which shares the predicate). Catches kill -9, panic-on-startup, host-reboot failure modes that no eager path can cover. Pre-fix the reconciler filtered to `status==InProgress`, so Open+dead-claim sat forever."
+timeout_seconds = 30
+
+[[scenario]]
+name = "reset_clears_downstream_claims_too"
+script = "scenarios/reset_clears_downstream_claims_too.sh"
+owners = [
+    "fix-claim-lifecycle",
+    "design-claim-lifecycle",
+    "smoke-gate-is",
+]
+description = "Belt-and-suspenders for the closure walk: `wg reset upstream --yes` (default Forward direction) must clear claims on transitive downstream tasks too, not just the seed. The existing `reset_clears_claim` scenario uses --seeds with all IDs explicit and would not catch a regression that drops downstream from `compute_closure`."
+timeout_seconds = 30

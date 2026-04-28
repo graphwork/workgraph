@@ -27,6 +27,7 @@ pub mod chat_session;
 pub mod check;
 pub mod checkpoint;
 pub mod claim;
+pub mod claim_lifecycle;
 pub mod claude_handler;
 pub mod cleanup;
 pub mod codex_handler;

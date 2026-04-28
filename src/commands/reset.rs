@@ -633,6 +633,41 @@ mod tests {
         assert!(t.started_at.is_none());
     }
 
+    /// TDD for bug-reset-leaves-stale-claims (named to match the
+    /// validation criterion in `fix-claim-lifecycle`).
+    /// Asserts the full repro: a task claimed by a dead agent gets
+    /// status=Open AND assigned=None after `wg reset`, so the
+    /// dispatcher's "ready" check finds it on the next tick.
+    #[test]
+    fn test_wg_reset_clears_stale_claims() {
+        let dir = tempdir().unwrap();
+        let mut t = make("stuck", Status::InProgress);
+        t.assigned = Some("agent-dead-1".to_string());
+        t.started_at = Some("2026-01-01T00:00:00Z".to_string());
+        setup_workgraph(dir.path(), vec![t]);
+
+        let _ = run(
+            dir.path(),
+            &["stuck".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
+        let t = g.get_task("stuck").unwrap();
+        assert_eq!(t.status, Status::Open, "reset must move status back to Open");
+        assert!(
+            t.assigned.is_none(),
+            "reset must clear the stale claim — dispatcher won't dispatch otherwise"
+        );
+        assert!(t.started_at.is_none());
+    }
+
     #[test]
     fn direction_parses_aliases() {
         use std::str::FromStr;

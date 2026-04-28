@@ -44,10 +44,16 @@ pub struct SweepResult {
     pub bytes_freed: u64,
 }
 
-/// Detect orphaned in-progress tasks whose agents are dead or missing.
+/// Detect orphaned tasks whose agents are dead, missing, or unreachable.
 ///
-/// This is the reconciliation safety net that catches tasks missed by the
-/// split-save race in cleanup_dead_agents().
+/// Covers two shapes of orphaning:
+/// - `Status::InProgress` with a dead/missing agent (the original
+///   split-save race in `cleanup_dead_agents()`).
+/// - `Status::Open` with a dead/missing-agent claim — see
+///   `bug-retry-doesnt-clear-stale-downstream-claims`. These tasks are
+///   never going to be picked up by the dispatcher because its "ready"
+///   check excludes assigned tasks. Surfacing them in `wg sweep` lets
+///   users diagnose why the dispatcher silently stalled on a fan-out.
 pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let gpath = graph_path(dir);
     let graph = load_graph(&gpath).context("Failed to load graph")?;
@@ -56,14 +62,16 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let mut orphaned = Vec::new();
 
     for task in graph.tasks() {
-        if task.status != Status::InProgress {
+        let is_inprogress = task.status == Status::InProgress;
+        let is_open_with_claim = task.status == Status::Open && task.assigned.is_some();
+        if !is_inprogress && !is_open_with_claim {
             continue;
         }
 
         let agent_id = match &task.assigned {
             Some(id) => id,
             None => {
-                // InProgress but no agent assigned — orphaned
+                // InProgress but no agent assigned — orphaned (split-save).
                 orphaned.push(OrphanedTask {
                     task_id: task.id.clone(),
                     task_title: task.title.clone(),
@@ -74,6 +82,7 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
             }
         };
 
+        let status_label = if is_inprogress { "InProgress" } else { "Open" };
         match registry.get_agent(agent_id) {
             Some(agent) => {
                 if agent.status == AgentStatus::Dead {
@@ -81,7 +90,10 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                         task_id: task.id.clone(),
                         task_title: task.title.clone(),
                         assigned_agent: agent_id.clone(),
-                        reason: format!("Agent '{}' is marked Dead in registry", agent_id),
+                        reason: format!(
+                            "{} task; agent '{}' is marked Dead in registry",
+                            status_label, agent_id
+                        ),
                     });
                 } else if agent.is_alive() && !is_process_alive(agent.pid) {
                     orphaned.push(OrphanedTask {
@@ -89,8 +101,8 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                         task_title: task.title.clone(),
                         assigned_agent: agent_id.clone(),
                         reason: format!(
-                            "Agent '{}' (PID {}) process is not running",
-                            agent_id, agent.pid
+                            "{} task; agent '{}' (PID {}) process is not running",
+                            status_label, agent_id, agent.pid
                         ),
                     });
                 }
@@ -101,7 +113,10 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                     task_id: task.id.clone(),
                     task_title: task.title.clone(),
                     assigned_agent: agent_id.clone(),
-                    reason: format!("Agent '{}' not found in registry", agent_id),
+                    reason: format!(
+                        "{} task; agent '{}' not found in registry",
+                        status_label, agent_id
+                    ),
                 });
             }
         }
@@ -224,10 +239,27 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
         let mut modified = false;
         for o in &orphaned_clone {
             if let Some(task) = graph.get_task_mut(&o.task_id)
-                && task.status == Status::InProgress
+                && matches!(task.status, Status::InProgress | Status::Open)
+                && task.assigned.is_some()
             {
                 task.status = Status::Open;
                 task.assigned = None;
+                task.started_at = None;
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("sweep".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: format!("Sweep: task unclaimed — {}", o.reason),
+                });
+                fixed.push(o.task_id.clone());
+                modified = true;
+            } else if let Some(task) = graph.get_task_mut(&o.task_id)
+                && task.status == Status::InProgress
+                && task.assigned.is_none()
+            {
+                // The "(none)" sentinel branch: InProgress with no assigned.
+                // Just transition to Open; nothing to clear.
+                task.status = Status::Open;
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("sweep".to_string()),
@@ -296,20 +328,32 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
 }
 
 /// Reconciliation function for use inside the coordinator tick.
-/// Scans for InProgress tasks whose assigned agent is Dead in the registry
-/// and resets them to Open. Returns the number of tasks recovered.
+/// Scans for tasks in `InProgress` OR `Open` whose assigned agent is Dead
+/// (or unreachable, or absent from the registry) and clears the stale
+/// claim. `InProgress` tasks transition to Open; `Open` tasks just have
+/// their claim wiped — both end up dispatchable on the next tick.
+/// Returns the number of tasks recovered.
 ///
-/// This is the safety net for Bug 1 (split-save ordering) described in the
-/// root cause analysis.
+/// This is the safety net the eager paths (`wg reset`, `wg retry`) cannot
+/// cover: kill -9, OOM, panic-before-cleanup, host reboot. The eager
+/// paths handle user-initiated transitions with low latency; this lazy
+/// path catches everything else once per dispatcher tick (poll_interval).
+///
+/// Originally only handled `Status::InProgress`. The `Open + assigned-but-
+/// dead` predicate was added to fix `bug-retry-doesnt-clear-stale-
+/// downstream-claims`: synthesis tasks that were never claimed by a live
+/// agent (the agency assigner stamped an `assigned` value, then the
+/// upstream agent died before reaching them) used to sit there forever
+/// because the previous filter `status == InProgress` skipped them.
 pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> {
     let registry = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
 
     let mut count = 0usize;
     modify_graph(graph_path, |graph| {
-        // First pass: collect IDs of orphaned tasks
-        let orphaned_ids: Vec<(String, String)> = graph
+        // First pass: collect IDs of orphaned tasks (status + reason).
+        let orphaned_ids: Vec<(String, Status, String)> = graph
             .tasks()
-            .filter(|task| task.status == Status::InProgress)
+            .filter(|task| matches!(task.status, Status::InProgress | Status::Open))
             .filter_map(|task| {
                 let dominated = match &task.assigned {
                     Some(agent_id) => match registry.get_agent(agent_id) {
@@ -318,7 +362,17 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                                 || (agent.is_alive() && !is_process_alive(agent.pid))
                         }
                         None => {
-                            if let Some(ref started) = task.started_at {
+                            // Agent absent from registry. For InProgress we
+                            // require >5min since started_at to avoid races
+                            // with a freshly-spawned agent that hasn't
+                            // written its registry entry yet. For Open we
+                            // can act immediately — `started_at` is None
+                            // for an Open task that was never picked up,
+                            // and a missing-agent claim means whatever
+                            // process owned it is unrecoverable.
+                            if task.status == Status::Open {
+                                true
+                            } else if let Some(ref started) = task.started_at {
                                 if let Ok(started_dt) =
                                     started.parse::<chrono::DateTime<chrono::Utc>>()
                                 {
@@ -331,34 +385,49 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                             }
                         }
                     },
-                    None => !task
-                        .tags
-                        .iter()
-                        .any(|t| t == "coordinator-loop" || t == "compact-loop"),
+                    None => {
+                        // Status=Open with no assigned is normal — skip.
+                        // Status=InProgress with no assigned IS orphaned
+                        // (split-save race), unless this is a long-lived
+                        // loop task without an agent (coordinator/compact).
+                        task.status == Status::InProgress
+                            && !task.tags.iter().any(|t| {
+                                t == "coordinator-loop" || t == "compact-loop"
+                            })
+                    }
                 };
 
                 if dominated {
                     let agent_desc = task.assigned.as_deref().unwrap_or("(none)").to_string();
-                    Some((task.id.clone(), agent_desc))
+                    Some((task.id.clone(), task.status, agent_desc))
                 } else {
                     None
                 }
             })
             .collect();
 
-        // Second pass: mutate the orphaned tasks
+        // Second pass: mutate the orphaned tasks.
         count = orphaned_ids.len();
-        for (task_id, agent_desc) in &orphaned_ids {
+        for (task_id, prev_status, agent_desc) in &orphaned_ids {
             if let Some(task) = graph.get_task_mut(task_id) {
+                let was_open = *prev_status == Status::Open;
                 task.status = Status::Open;
                 task.assigned = None;
+                // started_at only matters for InProgress; clearing it on
+                // an Open task is a no-op, but explicit is fine.
+                task.started_at = None;
+                let kind = if was_open {
+                    "stale-claim cleared"
+                } else {
+                    "task recovered from orphaned state"
+                };
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("reconcile".to_string()),
                     user: Some(workgraph::current_user()),
                     message: format!(
-                        "Reconciliation: task recovered from orphaned state (agent: {})",
-                        agent_desc
+                        "Reconciliation: {} (was {:?}, agent: {})",
+                        kind, prev_status, agent_desc
                     ),
                 });
             }
@@ -682,6 +751,106 @@ mod tests {
         assert_eq!(archives.len(), 1);
         let archived = std::fs::read_to_string(archives[0].path().join("output.txt")).unwrap();
         assert!(archived.contains("stream hung"));
+    }
+
+    /// TDD for the lazy reconciler path described in design-claim-lifecycle:
+    /// a task in `Status::Open` (not InProgress!) whose `assigned` references
+    /// a Dead agent must be unclaimed by the next dispatcher tick. This is
+    /// the safety net that catches what `wg reset`/`wg retry` eager paths
+    /// miss (kill -9, panic, host reboot).
+    #[test]
+    fn test_dispatcher_heartbeat_unclaims_dead_agents() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gpath = dir.join("graph.jsonl");
+
+        // Open task assigned to a dead agent — would have been silently
+        // skipped by the dispatcher pre-fix (status==InProgress filter).
+        let mut t = make_task("ready-task", "Ready Task", Status::Open);
+        t.assigned = Some("agent-zombie-1".to_string());
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(t));
+        save_graph(&graph, &gpath).unwrap();
+
+        // Registry: dead agent.
+        use workgraph::service::registry::AgentEntry;
+        let mut reg = AgentRegistry::new();
+        reg.agents.insert(
+            "agent-zombie-1".to_string(),
+            AgentEntry {
+                id: "agent-zombie-1".to_string(),
+                pid: 99999,
+                task_id: "ready-task".to_string(),
+                executor: "claude".to_string(),
+                status: AgentStatus::Dead,
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: "2020-01-01T00:00:00Z".to_string(),
+                completed_at: Some(Utc::now().to_rfc3339()),
+                output_file: "/tmp/output.log".to_string(),
+                model: None,
+                worktree_path: None,
+            },
+        );
+        reg.save(dir).unwrap();
+
+        // Simulate one dispatcher tick.
+        let count = reconcile_orphaned_tasks(dir, &gpath).unwrap();
+        assert!(count >= 1, "reconciler must cover Open + dead-agent claims");
+
+        let graph = load_graph(&gpath).unwrap();
+        let task = graph.get_task("ready-task").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(
+            task.assigned.is_none(),
+            "lazy reconciler must wipe the stale claim so dispatcher can pick it up"
+        );
+        assert!(
+            task.log.iter().any(|e| e.message.contains("Reconciliation")),
+            "log entry should record reconciler action: {:?}",
+            task.log.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Reconciler must NOT touch an Open task with a still-alive agent
+    /// claim. (Possible if assignment was made but the agent hasn't yet
+    /// flipped the task to InProgress.)
+    #[test]
+    fn test_reconciler_preserves_open_tasks_with_live_claims() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let gpath = dir.join("graph.jsonl");
+
+        let mut t = make_task("warming-up", "Warming up", Status::Open);
+        t.assigned = Some("agent-alive-1".to_string());
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(t));
+        save_graph(&graph, &gpath).unwrap();
+
+        use workgraph::service::registry::AgentEntry;
+        let mut reg = AgentRegistry::new();
+        reg.agents.insert(
+            "agent-alive-1".to_string(),
+            AgentEntry {
+                id: "agent-alive-1".to_string(),
+                pid: std::process::id(),
+                task_id: "warming-up".to_string(),
+                executor: "claude".to_string(),
+                status: AgentStatus::Working,
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                completed_at: None,
+                output_file: "/tmp/output.log".to_string(),
+                model: None,
+                worktree_path: None,
+            },
+        );
+        reg.save(dir).unwrap();
+
+        let _ = reconcile_orphaned_tasks(dir, &gpath).unwrap();
+
+        let graph = load_graph(&gpath).unwrap();
+        let task = graph.get_task("warming-up").unwrap();
+        assert_eq!(task.assigned, Some("agent-alive-1".to_string()));
     }
 
     /// Regression test for tui-cannot-view: orphaned tasks where assigned was

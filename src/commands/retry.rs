@@ -6,6 +6,8 @@ use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::modify_graph;
 use workgraph::service::{AgentRegistry, is_process_alive, kill_process_graceful};
 
+use super::claim_lifecycle;
+
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
@@ -88,6 +90,12 @@ pub fn run(
     let mut max_retries: Option<u32> = None;
     let mut was_incomplete = false;
     let mut tier_escalation_msg: Option<String> = None;
+    let mut downstream_cleared: Vec<String> = Vec::new();
+
+    // Snapshot the registry once outside the graph lock — eager
+    // downstream walk consults it to decide whether each downstream
+    // claim is stale (Dead-or-missing-or-unreachable agent).
+    let registry_snapshot = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
 
     modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(id) {
@@ -181,6 +189,21 @@ pub fn run(
         retry_count = task.retry_count;
         max_retries = task.max_retries;
 
+        // Eager downstream-claim cleanup (design-claim-lifecycle):
+        // walk the forward closure from this seed and clear any
+        // downstream task whose claim references a dead agent. This is
+        // the user-intent path — `wg retry <upstream>` says "the
+        // scheduling context for everything below has changed". Live
+        // agents are deliberately untouched; the lazy reconciler
+        // catches them later if they die.
+        let report = claim_lifecycle::clear_stale_downstream_claims(
+            graph,
+            &registry_snapshot,
+            id,
+            id,
+        );
+        downstream_cleared = report.cleared;
+
         true
     })
     .context("Failed to modify graph")?;
@@ -233,6 +256,14 @@ pub fn run(
 
     if let Some(ref msg) = tier_escalation_msg {
         println!("  {}", msg);
+    }
+
+    if !downstream_cleared.is_empty() {
+        println!(
+            "  Cleared stale claim on {} downstream task(s): {}",
+            downstream_cleared.len(),
+            downstream_cleared.join(", ")
+        );
     }
 
     if let Some(p) = fresh_removed_path {
@@ -314,6 +345,12 @@ fn retry_in_progress(
     let mut error: Option<anyhow::Error> = None;
     let mut attempt: u32 = 0;
     let mut tier_escalation_msg: Option<String> = None;
+    let mut downstream_cleared: Vec<String> = Vec::new();
+
+    // Re-snapshot the registry — we just marked the killed agent Dead
+    // above, so the eager walk now sees that state and will clear any
+    // downstream claims still pointing at it.
+    let registry_snapshot = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
 
     modify_graph(path, |graph| {
         let task = match graph.get_task_mut(id) {
@@ -385,6 +422,17 @@ fn retry_in_progress(
                 task.retry_count, kill_note, reason_suffix
             ),
         });
+
+        // Eager downstream-claim cleanup — see the failed-path branch
+        // for rationale. Same call, same semantics.
+        let report = claim_lifecycle::clear_stale_downstream_claims(
+            graph,
+            &registry_snapshot,
+            id,
+            id,
+        );
+        downstream_cleared = report.cleared;
+
         true
     })
     .context("Failed to modify graph")?;
@@ -450,6 +498,13 @@ fn retry_in_progress(
     }
     if let Some(msg) = tier_escalation_msg {
         println!("  {}", msg);
+    }
+    if !downstream_cleared.is_empty() {
+        println!(
+            "  Cleared stale claim on {} downstream task(s): {}",
+            downstream_cleared.len(),
+            downstream_cleared.join(", ")
+        );
     }
 
     Ok(())
@@ -1061,6 +1116,120 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&branches.stdout).contains("wg/agent-prior/retry-here"),
             "branch must survive retry-in-place"
+        );
+    }
+
+    /// Helper: write a registry with one Dead agent at `dir/registry.json`.
+    /// Used by the downstream-claim TDD tests below.
+    fn write_dead_agent_registry(dir: &Path, agent_id: &str) {
+        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+        let mut reg = AgentRegistry::new();
+        reg.agents.insert(
+            agent_id.to_string(),
+            AgentEntry {
+                id: agent_id.to_string(),
+                pid: 99999,
+                task_id: "irrelevant".to_string(),
+                executor: "claude".to_string(),
+                status: AgentStatus::Dead,
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: "2020-01-01T00:00:00Z".to_string(),
+                completed_at: Some(Utc::now().to_rfc3339()),
+                output_file: "/tmp/output.log".to_string(),
+                model: None,
+                worktree_path: None,
+            },
+        );
+        reg.save(dir).unwrap();
+    }
+
+    /// TDD for bug-retry-doesnt-clear-stale-downstream-claims.
+    /// `wg retry <upstream>` must walk the forward closure and clear any
+    /// downstream task claimed by a now-dead agent. Without this the
+    /// dispatcher silently skips the downstream task forever (its
+    /// `assigned` field is non-null so it's not "ready").
+    #[test]
+    fn test_wg_retry_clears_downstream_claims_on_dead_agents() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut upstream = make_task("upstream", "Upstream", Status::Failed);
+        upstream.retry_count = 1;
+        upstream.before = vec!["downstream".into()];
+
+        let mut downstream = make_task("downstream", "Downstream", Status::Open);
+        downstream.after = vec!["upstream".into()];
+        downstream.assigned = Some("agent-dead-1".to_string());
+        downstream.started_at = Some("2026-01-01T00:00:00Z".to_string());
+
+        setup_workgraph(dir_path, vec![upstream, downstream]);
+        write_dead_agent_registry(dir_path, "agent-dead-1");
+
+        run(dir_path, "upstream", false, false, Some("downstream-clear-test")).unwrap();
+
+        let g = load_graph(&graph_path(dir_path)).unwrap();
+        let down = g.get_task("downstream").unwrap();
+        assert!(
+            down.assigned.is_none(),
+            "wg retry must clear stale downstream claim — found: {:?}",
+            down.assigned
+        );
+        assert!(
+            down.started_at.is_none(),
+            "started_at must also be cleared so dispatcher won't think it's mid-run"
+        );
+        assert!(
+            down.log.iter().any(|e| e.message.contains("stale-claim cleared via retry")),
+            "downstream log must record the cause: {:?}",
+            down.log.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Live agents downstream of a retry seed must NOT have their claim
+    /// cleared — eager path is conservative.
+    #[test]
+    fn test_wg_retry_preserves_live_downstream_claims() {
+        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut upstream = make_task("upstream", "Upstream", Status::Failed);
+        upstream.retry_count = 1;
+        upstream.before = vec!["downstream".into()];
+
+        let mut downstream = make_task("downstream", "Downstream", Status::Open);
+        downstream.after = vec!["upstream".into()];
+        downstream.assigned = Some("agent-alive-1".to_string());
+
+        setup_workgraph(dir_path, vec![upstream, downstream]);
+
+        let mut reg = AgentRegistry::new();
+        reg.agents.insert(
+            "agent-alive-1".to_string(),
+            AgentEntry {
+                id: "agent-alive-1".to_string(),
+                pid: std::process::id(),
+                task_id: "downstream".to_string(),
+                executor: "claude".to_string(),
+                status: AgentStatus::Working,
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                completed_at: None,
+                output_file: "/tmp/output.log".to_string(),
+                model: None,
+                worktree_path: None,
+            },
+        );
+        reg.save(dir_path).unwrap();
+
+        run(dir_path, "upstream", false, false, None).unwrap();
+
+        let g = load_graph(&graph_path(dir_path)).unwrap();
+        let down = g.get_task("downstream").unwrap();
+        assert_eq!(
+            down.assigned,
+            Some("agent-alive-1".to_string()),
+            "live-agent claim must be preserved on retry"
         );
     }
 
