@@ -199,9 +199,21 @@ impl<'de> serde::Deserialize<'de> for Status {
 impl Status {
     /// Whether this status is terminal — the task will not progress further
     /// without explicit intervention (retry, reopen, etc.).
-    /// Terminal statuses should not block dependent tasks.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Status::Done | Status::Failed | Status::Abandoned)
+    }
+
+    /// Whether this status satisfies a dependency edge — i.e. the upstream is
+    /// "done enough" that downstream work may proceed.
+    ///
+    /// `Failed` does NOT satisfy a dependency: it means work was attempted but
+    /// produced no valid output.  Downstream tasks spawned against a failed
+    /// upstream would run against missing/broken artifacts.
+    ///
+    /// `Abandoned` DOES satisfy: an operator explicitly decided not to do that
+    /// work; proceeding downstream is intentional.
+    pub fn is_dep_satisfied(&self) -> bool {
+        matches!(self, Status::Done | Status::Abandoned)
     }
 
     /// Whether this status counts as "active" for HUD/viz consistency:

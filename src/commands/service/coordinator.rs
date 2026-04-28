@@ -946,7 +946,7 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
             Some(task) => task.after.iter().all(|dep_id| {
                 // Check if dependency exists
                 match graph.tasks().find(|t| t.id == *dep_id) {
-                    Some(dep_task) => dep_task.status.is_terminal(),
+                    Some(dep_task) => dep_task.status.is_dep_satisfied(),
                     None => true, // Missing dependency = satisfied for stuck tasks
                 }
             }),

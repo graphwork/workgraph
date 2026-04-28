@@ -317,6 +317,15 @@ description = "Regression for chat-launched-with: launching a chat with --execut
 timeout_seconds = 30
 
 [[scenario]]
+name = "failed_upstream_blocks_downstream"
+script = "scenarios/failed_upstream_blocks_downstream.sh"
+owners = [
+    "fix-failed-upstream",
+]
+description = "Regression for fix-failed-upstream: a failed upstream task must NOT unblock downstream tasks. `wg ready` and `wg list` must NOT show downstream as ready when its upstream is failed; downstream must become ready only after upstream reaches done."
+timeout_seconds = 30
+
+[[scenario]]
 name = "purge_chats_skips_active_by_default"
 script = "scenarios/purge_chats_skips_active_by_default.sh"
 owners = [
